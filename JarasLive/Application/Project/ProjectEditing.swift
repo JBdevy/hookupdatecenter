@@ -1,13 +1,352 @@
 import Foundation
 
+public enum UnifiedRegionNaming {
+    private static func split(_ name: String) -> (number: Int?, title: String) {
+        var title = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        var number: Int?
+        while let range = title.range(of: "^[0-9]{3,}\\s*-\\s*", options: .regularExpression) {
+            let prefix = title[range].prefix(while: { $0.isNumber })
+            if number == nil { number = Int(prefix) }
+            title.removeSubrange(range)
+        }
+        return (number, title)
+    }
+    public static func normalized(_ name: String) -> String {
+        let value = split(name)
+        guard let number = value.number else { return value.title }
+        return String(format: "%03d", number)+" - "+value.title
+    }
+    public static func next(_ title: String, existing: [String]) -> String {
+        let highest = max(existing.count, existing.compactMap { split($0).number }.max() ?? 0)
+        return String(format: "%03d", highest + 1) + " - " + split(title).title
+    }
+}
+
+public extension Song {
+    func isOrdinaryRegion(_ part: Part) -> Bool {
+        part.parentRegionID == nil && !parts.contains { $0.parentRegionID == part.id }
+    }
+    func endAtLongestItem(in region: UUID) -> Double? {
+        guard let part = parts.first(where: { $0.id == region }), isOrdinaryRegion(part) else { return nil }
+        return tracks.flatMap { track in track.clips.filter {
+            !(track.kind == .timecode && track.importedTimecodeItems != true) &&
+            !(track.kind == .click && $0.audioFile == nil) &&
+            regionMovementOwner(at: $0.startTime, end: $0.startTime + $0.duration, preferred: $0.regionOwnerID) == region
+        } }.map { $0.startTime + $0.duration }.filter { $0 > part.startTime }.max()
+    }
+}
+public struct RegionSpacingPlan {
+    public let offsets: [UUID: Double]
+    private let cuts: [Double]
+    private let gap: Double
+    public init(song: Song, selected: Set<UUID>, seconds: Double = 30) {
+        gap = seconds.isFinite && seconds > 0 ? seconds : 0
+        let roots = song.parts.filter { $0.parentRegionID == nil }.sorted {
+            $0.startTime == $1.startTime ? $0.id.uuidString < $1.id.uuidString : $0.startTime < $1.startTime
+        }
+        var offsets: [UUID: Double] = [:], cuts: [Double] = [], offset = 0.0
+        for (index, root) in roots.enumerated() {
+            offsets[root.id] = offset
+            if index + 1 < roots.count, selected.contains(root.id), song.isOrdinaryRegion(root), gap > 0 {
+                cuts.append(root.endTime); offset += gap
+            }
+        }
+        self.offsets = offsets; self.cuts = cuts
+    }
+    private func displacement(song: Song, time: Double, owner: UUID?) -> Double {
+        if let owner, let root = song.parts.first(where: { $0.id == owner }), let offset = offsets[root.parentRegionID ?? root.id] { return offset }
+        return Double(cuts.filter { time >= $0 }.count) * gap
+    }
+    public func position(_ time: Double, in song: Song) -> Double {
+        time + displacement(song: song, time: time, owner: song.regionMovementOwner(at: time))
+    }
+    public func apply(to song: inout Song) {
+        guard !cuts.isEmpty else { return }
+        let original = song
+        for track in song.tracks.indices {
+            song.tracks[track].automation?.mapTimelineTimes { position($0, in: original) }
+            if song.tracks[track].programChanges != nil {
+                for marker in song.tracks[track].programChanges!.indices {
+                    song.tracks[track].programChanges![marker].position = position(song.tracks[track].programChanges![marker].position, in: original)
+                }
+                song.tracks[track].programChanges!.sort { $0.position < $1.position }
+            }
+            for item in song.tracks[track].clips.indices {
+                let clip = song.tracks[track].clips[item]
+                let owner = original.regionMovementOwner(at: clip.startTime, end: clip.startTime + clip.duration, preferred: clip.regionOwnerID)
+                let offset = displacement(song: original, time: clip.startTime, owner: owner)
+                song.tracks[track].clips[item].startTime += offset
+                if offset != 0, let owner, !original.regionOwns(owner, owner: clip.regionOwnerID) { song.tracks[track].clips[item].regionOwnerID = owner }
+            }
+        }
+        if song.markers != nil {
+            for marker in song.markers!.indices {
+                let value = song.markers![marker]
+                let owner = value.unifiedRegionID ?? original.regionMovementOwner(at: value.position, preferred: value.regionOwnerID ?? value.sourceRegionID)
+                let offset = displacement(song: original, time: value.position, owner: owner)
+                song.markers![marker].position += offset
+                if offset != 0, let owner, !original.regionOwns(owner, owner: value.regionOwnerID) { song.markers![marker].regionOwnerID = owner }
+            }
+        }
+        for part in song.parts.indices {
+            let offset = offsets[song.parts[part].parentRegionID ?? song.parts[part].id] ?? 0
+            song.parts[part].startTime += offset; song.parts[part].endTime += offset
+        }
+        song.duration = position(original.duration, in: original)
+        song.duration = max(song.duration, song.parts.map(\.endTime).max() ?? 0,
+                            song.tracks.flatMap(\.clips).map { $0.startTime + $0.duration }.max() ?? 0)
+    }
+}
+
 public enum GridDeleteTarget: Equatable {
     case items(Set<UUID>), tracks(Set<UUID>), none
     public init(items: Set<UUID>, tracks: Set<UUID>) {
         self = !items.isEmpty ? .items(items) : !tracks.isEmpty ? .tracks(tracks) : .none
     }
+    public init(items: Set<UUID>, tracks: Set<UUID>, song: Song, visibility: TrackVisibilityState) {
+        let gridTracks = visibility.visibleTracks(in: song.tracks, area: .trackMixer)
+        let mixerTracks = visibility.visibleTracks(in: song.tracks, area: .barMixer)
+            .filter { $0.kind == .standard || $0.kind == .click }
+        // Both mixers share the track selection. A track selected in the bottom
+        // mixer remains the delete target even when its grid row is hidden.
+        let selectable = Set(gridTracks.map(\.id)).union(mixerTracks.map(\.id))
+        self.init(items: items.intersection(gridTracks.flatMap(\.clips).map(\.id)),
+                  tracks: tracks.intersection(selectable))
+    }
+}
+
+public enum TimelineBulkDeletion: String, CaseIterable, Identifiable {
+    case tempo, regions, markers
+    public var id: String { rawValue }
+    public func matches(_ marker: TimelineMarker) -> Bool {
+        if marker.unifiedRegionID != nil || marker.sourceRegionID != nil { return self == .regions }
+        return self == .tempo ? marker.tempoBPM != nil : self == .markers && marker.tempoBPM == nil
+    }
+}
+
+/// Matches VS Hook's Converter for markers outside existing regions.
+public struct MarkerRegionConversion {
+    public struct Plan { public let marker: TimelineMarker; public let end: Double }
+    public let plans: [Plan]
+    public let skipped: [String]
+    public var message: String {
+        let summary = "\(plans.count) marcador(es) convertido(s) em região."
+        return skipped.isEmpty ? summary : summary + "\n\nNão convertidos:\n" + skipped.joined(separator: "\n")
+    }
+    public static func outsideRegions(_ marker: TimelineMarker, in song: Song) -> Bool {
+        marker.tempoBPM == nil && marker.unifiedRegionID == nil && marker.sourceRegionID == nil &&
+        !song.parts.contains { marker.position >= $0.startTime - 0.000001 && marker.position < $0.endTime - 0.000001 }
+    }
+    private static func reserved(_ marker: TimelineMarker) -> Bool {
+        let name = marker.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let loop = name.hasPrefix("*") ? Int(name.dropFirst().drop(while: { $0.isWhitespace }).prefix(while: { $0.isNumber })) : nil
+        return marker.isSection || marker.isLoopSection || name.hasPrefix("$") || name.hasPrefix("!") || loop == 1 || loop == 2
+    }
+    public init(song: Song, markerID: UUID? = nil) {
+        let epsilon = 0.000001
+        let markers = (song.markers ?? []).sorted { $0.position == $1.position ? $0.id.uuidString < $1.id.uuidString : $0.position < $1.position }
+        let audio = song.tracks.flatMap(\.clips).filter { $0.audioFile != nil && $0.midi == nil && $0.duration > epsilon }
+        func audioEnd(_ position: Double) -> Double? {
+            audio.filter { abs($0.startTime - position) <= epsilon }.map { $0.startTime + $0.duration }.max()
+        }
+        func ordinary(_ marker: TimelineMarker) -> Bool {
+            marker.tempoBPM == nil && marker.unifiedRegionID == nil && marker.sourceRegionID == nil && !Self.reserved(marker) && !marker.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        var plans: [Plan] = [], skipped: [String] = []
+        for marker in markers where markerID == nil || marker.id == markerID {
+            // Tempo and unified-region heads are not ordinary markers.
+            if markerID == nil && (marker.tempoBPM != nil || marker.unifiedRegionID != nil || marker.sourceRegionID != nil) { continue }
+            let name = marker.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            var reason: String?
+            if !Self.outsideRegions(marker, in: song) { reason = "Já pertence a uma região ou é um marcador de tempo. Use um marcador comum fora das regiões." }
+            else if Self.reserved(marker) { reason = "Marcador reservado para Parts/loops ou desativado. Use um marcador comum, sem os prefixos $, !, *1 ou *2." }
+            else if name.isEmpty { reason = "O marcador está sem nome. Edite o marcador e dê um nome antes de converter." }
+            else if let end = audioEnd(marker.position) {
+                var limit = end
+                for region in song.parts where region.startTime > marker.position + epsilon { limit = min(limit, region.startTime) }
+                for next in markers where next.position > marker.position + epsilon && ordinary(next) && audioEnd(next.position) != nil { limit = min(limit, next.position) }
+                if plans.contains(where: { abs($0.marker.position - marker.position) <= epsilon }) {
+                    reason = "Outro marcador já será convertido neste ponto. Mova este marcador para o início de outro item de áudio."
+                } else if limit > marker.position + epsilon { plans.append(Plan(marker: marker, end: limit)) }
+                else { reason = "Não há duração disponível para a região. Ajuste o áudio ou o início da próxima região." }
+            } else { reason = "Nenhum item de áudio começa neste ponto. Alinhe o marcador ao início de um item de áudio com duração maior que zero." }
+            if let reason { skipped.append("\(name.isEmpty ? "Sem nome" : name): \(reason)") }
+        }
+        if plans.isEmpty && skipped.isEmpty { skipped.append("Não há marcadores comuns nesta timeline. Crie um marcador no início de um item de áudio, fora das regiões.") }
+        self.plans = plans; self.skipped = skipped
+    }
 }
 
 public extension Project {
+    @discardableResult mutating func convertMarkersToRegions(song songID: UUID, markerID: UUID? = nil) -> MarkerRegionConversion? {
+        guard let index = songs.firstIndex(where: { $0.id == songID }) else { return nil }
+        let result = MarkerRegionConversion(song: songs[index], markerID: markerID)
+        for plan in result.plans {
+            var part = Part(id: UUID(), name: plan.marker.name, startTime: plan.marker.position, endTime: plan.end)
+            part.color = plan.marker.color
+            songs[index].parts.append(part)
+        }
+        let converted = Set(result.plans.map { $0.marker.id })
+        songs[index].markers?.removeAll { converted.contains($0.id) }
+        return result
+    }
+
+    mutating func deleteTimelineElements(_ kind: TimelineBulkDeletion, song songID: UUID) {
+        guard let index = songs.firstIndex(where: { $0.id == songID }) else { return }
+        if kind == .regions {
+            let regions = songs[index].parts
+            let ids = Set(regions.map(\.id))
+            // Remove members before wrappers: bulk deletion must not disunify them.
+            for part in regions.sorted(by: { ($0.parentRegionID != nil ? 0 : 1) < ($1.parentRegionID != nil ? 0 : 1) }) { deleteRegion(part.id) }
+            for track in songs[index].tracks.indices {
+                for item in songs[index].tracks[track].clips.indices {
+                    if let owner = songs[index].tracks[track].clips[item].regionOwnerID, ids.contains(owner) { songs[index].tracks[track].clips[item].regionOwnerID = nil }
+                }
+            }
+            if var markers = songs[index].markers {
+                for item in markers.indices { if let owner = markers[item].regionOwnerID, ids.contains(owner) { markers[item].regionOwnerID = nil } }
+                songs[index].markers = markers
+            }
+            regionSetlist?.playedLiveRegionIDs?.removeAll { ids.contains($0) }
+        }
+        let removed = Set((songs[index].markers ?? []).filter { kind.matches($0) }.map(\.id))
+        songs[index].markers?.removeAll { removed.contains($0.id) }
+        for part in songs[index].parts.indices {
+            songs[index].parts[part].multiLoops?.removeAll { removed.contains($0.marker1) || removed.contains($0.marker2) }
+        }
+    }
+
+    /// A track copy owns its editable state while reusing immutable media files.
+    /// Folders include their descendants; linked stereo channels stay a pair.
+    @discardableResult mutating func duplicateTracks(_ ids: Set<UUID>, song songID: UUID, copiedSong: Song? = nil) throws -> Set<UUID> {
+        let draft = try trackDuplicationDraft(ids, song: songID, copiedSong: copiedSong)
+        guard !draft.ids.isEmpty else { return [] }
+        try draft.project.validate()
+        self = draft.project
+        return draft.ids
+    }
+    /// The command executor validates this draft before committing it. Keeping
+    /// construction separate avoids scanning every waveform twice per paste.
+    internal func trackDuplicationDraft(_ ids: Set<UUID>, song songID: UUID, copiedSong: Song? = nil,
+                                       insertingAfter: [UUID: UUID] = [:]) throws -> (project: Project, ids: Set<UUID>, mapping: [UUID: UUID]) {
+        guard let index = songs.firstIndex(where: { $0.id == songID }) else { return (self, [], [:]) }
+        let destination = songs[index], source = copiedSong ?? destination
+        guard source.id == songID else { return (self, [], [:]) }
+        let selected = source.trackDuplicationTargets(ids)
+        guard !selected.isEmpty else { return (self, [], [:]) }
+        guard selected.isSubset(of: Set(destination.tracks.map(\.id))) else {
+            throw ProjectError.invalid("The copied tracks no longer exist.")
+        }
+        let hierarchy = TrackHierarchy(source.tracks)
+        let destinationHierarchy = TrackHierarchy(destination.tracks)
+        let roots = source.tracks.filter { selected.contains($0.id) && Set(hierarchy.ancestors(of: $0.id)).isDisjoint(with: selected) }
+        let rootIDs = Set(roots.map(\.id))
+        let mapping = Dictionary(uniqueKeysWithValues: source.tracks.filter { selected.contains($0.id) }.map { ($0.id, UUID()) })
+        func mapped(_ id: UUID) -> UUID { mapping[id] ?? id }
+        func routing(_ value: TrackRouting?) -> TrackRouting? {
+            value.map { original in
+                var copy = original
+                copy.receives = original.receives.map { $0.map(mapped) }
+                copy.transmitters = original.transmitters.map { $0.map(mapped) }
+                copy.sendTaps = nil
+                copy.sendGains = nil
+                for target in original.transmitters.compactMap({ $0 }) {
+                    copy.setSendTap(original.sendTap(to: target), to: mapped(target))
+                    copy.setSendGain(original.sendGain(to: target), to: mapped(target))
+                }
+                return copy
+            }
+        }
+        var copies: [UUID: Track] = [:]
+        let connections = source.trackConnections.sorted {
+            $0.source == $1.source ? $0.destination.uuidString < $1.destination.uuidString : $0.source.uuidString < $1.source.uuidString
+        }
+        for original in source.tracks where selected.contains(original.id) {
+            var copy = original
+            copy.id = mapped(original.id)
+            copy.parentTrackID = original.parentTrackID.map(mapped)
+            copy.routing = routing(original.routing)
+            if var link = copy.stereoLink {
+                link.partner = mapped(link.partner); link.original.routing = routing(link.original.routing)
+                copy.stereoLink = link
+            }
+            // A connection can be stored only on the opposite endpoint. Carry
+            // it onto the new endpoint without modifying the original tracks.
+            for edge in connections where edge.source == original.id || edge.destination == original.id {
+                var routes = copy.routing ?? TrackRouting()
+                if edge.source == original.id {
+                    let destination = mapped(edge.destination)
+                    if !routes.transmitters.contains(destination) { routes.transmitters.append(destination) }
+                } else {
+                    let sender = mapped(edge.source)
+                    if !routes.receives.contains(sender) { routes.receives.append(sender) }
+                }
+                copy.routing = routes
+            }
+            var trackFX = TrackCopyFXIdentities()
+            copy.fx = original.fx.map { trackFX.copy($0) }
+            copy.automation = trackFX.copy(original.automation)
+            copy.clips = original.clips.map { original in
+                var clip = original
+                clip.id = UUID()
+                clip.separatedStemTracks = original.separatedStemTracks?.map(mapped)
+                if var midi = clip.midi {
+                    for note in midi.notes.indices { midi.notes[note].id = UUID() }
+                    clip.midi = midi
+                }
+                var clipFX = TrackCopyFXIdentities()
+                clip.fx = original.fx.map { clipFX.copy($0) }
+                clip.automation = clipFX.copy(original.automation)
+                return clip
+            }
+            copies[original.id] = copy
+        }
+        // Insert each complete subtree after its source. Child copies retain
+        // the same parent when that parent was outside the selection.
+        var insertions: [Int: [Track]] = [:], handled: Set<UUID> = []
+        for root in roots where !handled.contains(root.id) {
+            var block = hierarchy.descendants(of: root.id).union([root.id])
+            handled.insert(root.id)
+            if let partner = root.stereoLink?.partner, rootIDs.contains(partner),
+               source.tracks.first(where: { $0.id == partner })?.parentTrackID == root.parentTrackID {
+                block.formUnion(hierarchy.descendants(of: partner).union([partner])); handled.insert(partner)
+            }
+            let copiedBlock = source.tracks.filter { block.contains($0.id) }.compactMap { copies[$0.id] }
+            // The source may have moved since Copy. Anchor to its current row,
+            // while retaining the captured item, plugin and control values.
+            if let previous = insertingAfter[root.id],
+               let previousTrack = destination.tracks.first(where: { $0.id == previous }),
+               let originalTrack = destination.tracks.first(where: { $0.id == root.id }),
+               previousTrack.parentTrackID == originalTrack.parentTrackID {
+                // Repeated Paste follows the previous copies, while the
+                // clipboard still supplies the original captured sound.
+                block = Set(block.compactMap { insertingAfter[$0] })
+                for anchor in Array(block) { block.formUnion(destinationHierarchy.descendants(of: anchor)) }
+            } else {
+                block.formUnion(destinationHierarchy.descendants(of: root.id))
+            }
+            let positions = destination.tracks.indices.filter { block.contains(destination.tracks[$0].id) }
+            if let last = positions.last { insertions[last, default: []] += copiedBlock }
+        }
+        var candidate = self
+        candidate.songs[index].tracks = destination.tracks.enumerated().flatMap { [$0.element] + (insertions[$0.offset] ?? []) }
+        // Explicit region pitch selections and multi-loop mixer rules are part
+        // of the track's sound. Nil pitch lists already include all tracks.
+        for part in candidate.songs[index].parts.indices {
+            if let tracks = destination.parts[part].pitchTrackIDs { candidate.songs[index].parts[part].pitchTrackIDs = tracks + tracks.compactMap { mapping[$0] } }
+            if let groups = destination.parts[part].pitchGroupIDs { candidate.songs[index].parts[part].pitchGroupIDs = groups + groups.compactMap { mapping[$0] } }
+            if var loops = destination.parts[part].multiLoops {
+                for loop in loops.indices {
+                    loops[loop].tracks += loops[loop].tracks.compactMap { original -> MultiLoopTrack? in
+                        guard let id = mapping[original.id] else { return nil }
+                        var copy = original; copy.id = id; return copy
+                    }
+                }
+                candidate.songs[index].parts[part].multiLoops = loops
+            }
+        }
+        return (candidate, Set(mapping.values), mapping)
+    }
     /// Track IDs may appear in more than one song; deletion removes them all.
     func tracksContainItems(_ ids: Set<UUID>) -> Bool {
         songs.contains { song in song.tracks.contains { ids.contains($0.id) && !$0.clips.isEmpty } }
@@ -55,7 +394,9 @@ public extension Project {
                 throw ProjectError.invalid("More than one unified marker refers to the same song. Resolve the duplicate markers before unifying these regions.")
             }
         }
-        var group = existingGroup ?? Part(id: UUID(), name: name, startTime: start, endTime: end, color: first.color)
+        let groupNames = songs.flatMap { song in song.parts.filter { part in song.parts.contains { $0.parentRegionID == part.id } }.map(\.name) }
+        var group = existingGroup ?? Part(id: UUID(), name: UnifiedRegionNaming.next(name, existing: groupNames), startTime: start, endTime: end, color: first.color)
+        group.name = UnifiedRegionNaming.normalized(group.name)
         group.startTime = start; group.endTime = end
         songs[songIndex].parts.removeAll { replacedGroups.contains($0.id) }
         let memberIDs = Set(members.map(\.id))
@@ -77,9 +418,28 @@ public extension Project {
         markers.removeAll { $0.unifiedRegionID.map(replacedGroups.contains) == true }
         markers += members.map { TimelineMarker(id: UUID(), name: originalMarkers[$0.id]?.name ?? $0.name, position: originalMarkers[$0.id]?.position ?? $0.startTime, color: originalMarkers[$0.id]?.color ?? $0.color ?? 0x54ff93, unifiedRegionID: group.id, sourceRegionID: $0.id) }
         songs[songIndex].markers = markers
+        let unifiedSong = songs[songIndex]
+        for track in songs[songIndex].tracks.indices {
+            for index in songs[songIndex].tracks[track].clips.indices {
+                let clip = songs[songIndex].tracks[track].clips[index]
+                // A clip deliberately left loose, or owned by a different
+                // overlapping region, must not be adopted by this drawer.
+                guard let priorOwner = clip.regionOwnerID,
+                      rootIDs.contains(priorOwner) || memberIDs.contains(priorOwner) || priorOwner == group.id,
+                      clip.audioFile != nil || songs[songIndex].tracks[track].audioFile != nil,
+                      let owner = unifiedSong.dominantUnifiedOwner(at: clip.startTime, end: clip.startTime + clip.duration,
+                                                                   group: group.id, preferred: clip.regionOwnerID) else { continue }
+                songs[songIndex].tracks[track].clips[index].regionOwnerID = owner
+            }
+        }
         if var state = regionSetlist {
             for index in state.playlists.indices where state.playlists[index].songId == songs[songIndex].id {
                 var inserted = false
+                state.playlists[index].duplicates = state.playlists[index].duplicates?.map { alias in
+                    var alias = alias
+                    if rootIDs.contains(alias.regionId) || memberIDs.contains(alias.regionId) { alias.regionId = group.id }
+                    return alias
+                }
                 state.playlists[index].regionIds = state.playlists[index].regionIds.compactMap { region in
                     guard rootIDs.contains(region) || memberIDs.contains(region) else { return region }
                     if inserted { return nil }; inserted = true; return group.id
@@ -123,7 +483,18 @@ public extension Project {
         }
         if var state = candidate.regionSetlist {
             for index in state.playlists.indices {
-                state.playlists[index].regionIds = state.playlists[index].regionIds.flatMap { $0 == id ? members.map(\.id) : [$0] }
+                let prior = state.playlists[index]
+                var duplicates = (prior.duplicates ?? []).filter { $0.regionId != id }
+                state.playlists[index].regionIds = prior.regionIds.flatMap { entry -> [UUID] in
+                    if entry == id { return members.map(\.id) }
+                    guard prior.isDuplicate(entry), prior.regionSourceID(forEntry: entry) == id else { return [entry] }
+                    return members.enumerated().map { offset, member in
+                        let alias = RegionPlaylistDuplicate(id: offset == 0 ? entry : UUID(), regionId: member.id)
+                        duplicates.append(alias)
+                        return alias.id
+                    }
+                }
+                state.playlists[index].duplicates = duplicates.isEmpty ? nil : duplicates
             }
             if var blocks = state.blocks {
                 for index in blocks.indices where blocks[index].beforeRegionId == id { blocks[index].beforeRegionId = members.first?.id }
@@ -137,24 +508,32 @@ public extension Project {
     }
     /// Special tracks keep a stable prefix; normal tracks and their groups retain their order.
     mutating func orderSpecialTracks() {
-        let order: [TrackKind] = [.timecode, .click, .chords, .teleprompt, .teleprompt2, .video, .standard]
+        let order: [TrackKind] = [.programChange, .timecode, .teleprompt, .teleprompt2, .chords, .click, .video, .standard]
         for song in songs.indices {
             let tracks = songs[song].tracks
-            let ranks = tracks.map { order.firstIndex(of: $0.kind)! }
+            func rank(_ track: Track) -> Int { track.role.rawValue == "vinhetas" ? 9 : order.firstIndex(of: track.kind)! * 2 }
+            let ranks = tracks.map(rank)
             guard zip(ranks, ranks.dropFirst()).contains(where: { $0.0 > $0.1 }) else { continue }
-            songs[song].tracks = order.flatMap { kind in tracks.filter { $0.kind == kind } }
+            songs[song].tracks = tracks.enumerated().sorted { lhs, rhs in
+                rank(lhs.element) == rank(rhs.element) ? lhs.offset < rhs.offset : rank(lhs.element) < rank(rhs.element)
+            }.map(\.element)
         }
     }
     /// Removing an item never removes its source file. History keeps this value
     /// and shares the immutable waveform storage through Swift copy-on-write.
-    mutating func resizeItem(_ id: UUID, start: Double, end: Double) {
+    mutating func resizeItem(_ id: UUID, start: Double, end: Double, sourceDuration: Double? = nil) {
         guard start.isFinite, end.isFinite, start >= 0, end - start >= 0.01 else { return }
         for song in songs.indices {
             for track in songs[song].tracks.indices {
                 guard let index = songs[song].tracks[track].clips.firstIndex(where: { $0.id == id }) else { continue }
+                if songs[song].tracks[track].kind == .click, songs[song].tracks[track].clips[index].audioFile == nil {
+                    guard let resized = songs[song].resizedClick(songs[song].tracks[track].clips[index], start: start, end: end) else { return }
+                    songs[song].tracks[track].clips[index] = resized
+                    return
+                }
                 guard songs[song].tracks[track].canPlaceItem(start: start, duration: end - start, excluding: id) else { return }
                 if songs[song].tracks[track].clips[index].isProjectionMedia {
-                    songs[song].tracks[track].clips[index] = songs[song].tracks[track].clips[index].resized(start: start, end: end)
+                    songs[song].tracks[track].clips[index] = songs[song].tracks[track].clips[index].resized(start: start, end: end, sourceDuration: sourceDuration)
                 } else if songs[song].tracks[track].kind == .timecode {
                     if songs[song].tracks[track].importedTimecodeItems == true {
                         songs[song].tracks[track].clips[index].startTime = start
@@ -168,27 +547,48 @@ public extension Project {
                     songs[song].tracks[track].clips[index].startTime = start
                     songs[song].tracks[track].clips[index].duration = end - start
                 } else if songs[song].tracks[track].kind.isText && !songs[song].tracks[track].clips[index].isProjectionMedia {
-                    songs[song].tracks[track].clips[index] = songs[song].tracks[track].clips[index].resized(start: start, end: end)
+                    songs[song].tracks[track].clips[index] = songs[song].tracks[track].clips[index].resized(start: start, end: end, sourceDuration: sourceDuration)
                 } else if songs[song].tracks[track].kind == .standard {
-                    songs[song].tracks[track].clips[index] = songs[song].tracks[track].clips[index].resized(start: start, end: end)
+                    songs[song].tracks[track].clips[index] = songs[song].tracks[track].clips[index].resized(start: start, end: end, sourceDuration: sourceDuration)
                 } else { continue }
                 songs[song].duration = max(songs[song].duration, end)
             }
         }
     }
-    mutating func splitItems(_ ids: Set<UUID>, at position: Double) {
-        guard position.isFinite else { return }
+    @discardableResult mutating func splitItems(_ ids: Set<UUID>, at position: Double) -> Set<UUID> {
+        guard position.isFinite else { return [] }
+        var rightItems = Set<UUID>()
         for song in songs.indices {
+            var tempoPrograms = AudioTempoPrograms(song: songs[song])
             for track in songs[song].tracks.indices where songs[song].tracks[track].kind != .timecode {
                 let textTrack = songs[song].tracks[track].kind.isText
+                let clickTrack = songs[song].tracks[track].kind == .click
+                let clickOwners = clickTrack ? Dictionary(uniqueKeysWithValues: songs[song].tracks[track].clips.compactMap { clip in
+                    songs[song].clickRegion(for: clip).map { (clip.id, $0.id) }
+                }) : [:]
                 songs[song].tracks[track].clips = songs[song].tracks[track].clips.flatMap { clip -> [AudioClip] in
                     guard ids.contains(clip.id), position > clip.startTime + 0.000001, position < clip.startTime + clip.duration - 0.000001 else { return [clip] }
                     var left = clip, right = clip
                     left.duration = position - clip.startTime
                     right.id = UUID(); right.startTime = position; right.duration = clip.duration - left.duration
+                    rightItems.insert(right.id)
+                    if clickTrack && clip.audioFile == nil {
+                        left.regionOwnerID = clickOwners[clip.id]; right.regionOwnerID = clickOwners[clip.id]
+                        return [left, right]
+                    }
                     if textTrack && !clip.isProjectionMedia && clip.loopLength == nil { return [left, right] }
-                    right.sourceOffset += left.duration * clip.audioRate
-                    let fraction = left.duration / clip.duration
+                    let followsTempo = !textTrack || clip.isProjectionMedia
+                    let fragments = followsTempo ? tempoPrograms.fragments(for: clip) : [clip]
+                    let consumedSource = fragments.reduce(0.0) { result, fragment in
+                        result + max(0, min(position, fragment.startTime + fragment.duration) - fragment.startTime) * fragment.audioRate
+                    }
+                    let sourceLength = fragments.reduce(0.0) { $0 + $1.duration * $1.audioRate }
+                    right.sourceOffset += consumedSource
+                    // A split creates an uninterrupted internal edge. Keep the
+                    // original outer fades without copying them onto that edge.
+                    left.fadeOut = nil; left.fadeOutCurve = nil; left.fadeOutSCurve = nil
+                    right.fadeIn = nil; right.fadeInCurve = nil; right.fadeInSCurve = nil
+                    let fraction = sourceLength > 0 ? consumedSource / sourceLength : left.duration / clip.duration
                     func pieces(_ peaks: [Double]) -> ([Double], [Double]) {
                         let cut = min(peaks.count, max(0, Int((Double(peaks.count) * fraction).rounded())))
                         return (Array(peaks.prefix(cut)), Array(peaks.dropFirst(cut)))
@@ -202,6 +602,7 @@ public extension Project {
                 }
             }
         }
+        return rightItems
     }
     mutating func deleteItems(_ ids: Set<UUID>) {
         for song in songs.indices {
@@ -210,6 +611,46 @@ public extension Project {
                 songs[song].tracks[track].clips.removeAll { ids.contains($0.id) && (!timecode || $0.isProjectionMedia) }
             }
         }
+    }
+    /// Turn a root track into the folder for every normal root below it.
+    /// Existing subgroups keep their descendants and route through this new parent.
+    mutating func createTrackGroup(_ id: UUID, song songID: UUID, selection: Set<UUID>? = nil) throws {
+        if selection == nil {
+            guard let song = songs.firstIndex(where: { $0.id == songID }), songs[song].canCreateTrackGroup(id),
+                  let parent = songs[song].tracks.firstIndex(where: { $0.id == id }) else { return }
+            var candidate = self
+            for index in candidate.songs[song].tracks.indices where index > parent {
+                let track = candidate.songs[song].tracks[index]
+                guard track.kind == .standard, track.role.rawValue != "vinhetas", track.parentTrackID == nil else { continue }
+                candidate.songs[song].tracks[index].sendToGroup(id)
+            }
+            try candidate.validate(); self = candidate
+            return
+        }
+        guard let song = songs.firstIndex(where: { $0.id == songID }),
+              let parent = songs[song].tracks.first(where: { $0.id == id }),
+              parent.kind == .standard, parent.role.rawValue != "vinhetas", parent.stereoLink == nil else { return }
+        let chosen = selection ?? Set(songs[song].tracks.drop(while: { $0.id != id }).dropFirst().filter {
+            $0.kind == .standard && $0.role.rawValue != "vinhetas" && $0.parentTrackID == nil
+        }.map(\.id))
+        let hierarchy = TrackHierarchy(songs[song].tracks)
+        let selected = Set(songs[song].tracks.filter {
+            $0.id != id && chosen.contains($0.id) && $0.kind == .standard && $0.role.rawValue != "vinhetas" &&
+                ($0.stereoLink == nil || $0.stereoLink.map { chosen.contains($0.partner) } == true) && !hierarchy.ancestors(of: id).contains($0.id)
+        }.map(\.id))
+        guard !selected.isEmpty else { return }
+        var moving = selected
+        for target in selected { moving.formUnion(hierarchy.descendants(of: target)) }
+        var candidate = self
+        var members = candidate.songs[song].tracks.filter { moving.contains($0.id) }
+        for index in members.indices where selected.contains(members[index].id) &&
+            !hierarchy.ancestors(of: members[index].id).contains(where: selected.contains) { members[index].sendToGroup(id) }
+        var remaining = candidate.songs[song].tracks.filter { !moving.contains($0.id) }
+        guard let index = remaining.firstIndex(where: { $0.id == id }) else { return }
+        remaining.insert(contentsOf: members, at: index + 1)
+        candidate.songs[song].tracks = remaining
+        try candidate.validate()
+        self = candidate
     }
     mutating func moveNormalTrack(_ source: UUID, on target: UUID, after: Bool, outsideGroup: Bool, song songID: UUID) {
         guard let song = songs.firstIndex(where: { $0.id == songID }),
@@ -291,6 +732,7 @@ public extension Project {
                 guard var routing = songs[song].tracks[index].routing else { continue }
                 routing.receives = routing.receives.map { $0.flatMap { ids.contains($0) ? nil : $0 } }
                 routing.transmitters = routing.transmitters.map { $0.flatMap { ids.contains($0) ? nil : $0 } }
+                routing.removeUnusedSendSettings()
                 songs[song].tracks[index].routing = routing
             }
         }
@@ -304,9 +746,19 @@ public extension Project {
             return
         }
         for song in songs.indices { songs[song].markers?.removeAll { $0.unifiedRegionID == id } }
-        for song in songs.indices { songs[song].parts.removeAll { $0.id == id } }
+        for song in songs.indices {
+            songs[song].parts.removeAll { $0.id == id }
+            for track in songs[song].tracks.indices {
+                for clip in songs[song].tracks[track].clips.indices where songs[song].tracks[track].clips[clip].regionOwnerID == id {
+                    songs[song].tracks[track].clips[clip].regionOwnerID = nil
+                }
+            }
+            for marker in (songs[song].markers ?? []).indices where songs[song].markers?[marker].regionOwnerID == id {
+                songs[song].markers?[marker].regionOwnerID = nil
+            }
+        }
         if var state = regionSetlist {
-            for index in state.playlists.indices { Self.removeRegion(id, from: &state, playlist: state.playlists[index].id) }
+            for index in state.playlists.indices { Self.removeRegion(id, from: &state, playlist: state.playlists[index].id, includingDuplicates: true) }
             if var blocks = state.blocks {
                 for index in blocks.indices where blocks[index].beforeRegionId == id { blocks[index].beforeRegionId = nil }
                 state.blocks = blocks
@@ -330,16 +782,15 @@ public extension Project {
     /// blocks in the current list can be removed, in one undoable edit.
     mutating func deleteSetlistEntries(_ ids: Set<UUID>, song songID: UUID, playlist: UUID?) {
         guard let song = songs.first(where: { $0.id == songID }) else { return }
-        let listed: Set<UUID>
+        let regions: [UUID]
         if let playlist {
             guard let list = regionSetlist?.playlists.first(where: { $0.id == playlist && $0.songId == songID }) else { return }
-            listed = Set(list.regionIds)
-        } else { listed = Set(song.parts.map(\.id)) }
-        let regions = song.parts.filter { $0.parentRegionID == nil && ids.contains($0.id) && listed.contains($0.id) }.map(\.id)
+            regions = list.regionIds.filter { ids.contains($0) && list.region(forEntry: $0, in: song)?.parentRegionID == nil }
+        } else { regions = song.parts.filter { $0.parentRegionID == nil && ids.contains($0.id) }.map(\.id) }
         regionSetlist?.blocks?.removeAll { ids.contains($0.id) && $0.songId == songID && $0.playlistId == playlist }
         for id in regions {
             if let playlist { removeRegion(id, from: playlist) }
-            else { deleteRegionWithContents(id, song: songID) }
+            else { deleteRegion(id) }
         }
     }
     /// All Regions deletes the song and its owned timeline content together.
@@ -377,7 +828,7 @@ public extension Project {
             // Keep surviving playlist order and move block anchors to the next
             // surviving song, exactly as when removing a playlist entry.
             for region in source.parts where removed.contains(region.id) {
-                for playlist in state.playlists { Self.removeRegion(region.id, from: &state, playlist: playlist.id) }
+                for playlist in state.playlists { Self.removeRegion(region.id, from: &state, playlist: playlist.id, includingDuplicates: true) }
             }
             if var blocks = state.blocks {
                 for block in blocks.indices where blocks[block].songId == songID && blocks[block].playlistId == nil && blocks[block].beforeRegionId.map(removed.contains) == true {
@@ -388,20 +839,105 @@ public extension Project {
             regionSetlist = state
         }
     }
-    private static func removeRegion(_ id: UUID, from state: inout RegionSetlist, playlist: UUID) {
-        guard let index = state.playlists.firstIndex(where: { $0.id == playlist }),
-              let position = state.playlists[index].regionIds.firstIndex(of: id) else { return }
-        let following = state.playlists[index].regionIds.dropFirst(position + 1).first
-        state.playlists[index].regionIds.removeAll { $0 == id }
+    private static func removeRegion(_ id: UUID, from state: inout RegionSetlist, playlist: UUID, includingDuplicates: Bool = false) {
+        guard let index = state.playlists.firstIndex(where: { $0.id == playlist }) else { return }
+        let list = state.playlists[index]
+        let removed = Set(list.regionIds.filter { $0 == id || (includingDuplicates && list.regionSourceID(forEntry: $0) == id) })
+        guard !removed.isEmpty else { return }
+        state.playlists[index].regionIds.removeAll { removed.contains($0) }
+        state.playlists[index].duplicates?.removeAll { removed.contains($0.id) }
+        if state.playlists[index].duplicates?.isEmpty == true { state.playlists[index].duplicates = nil }
         if var blocks = state.blocks {
-            for index in blocks.indices where blocks[index].playlistId == playlist && blocks[index].beforeRegionId == id {
-                blocks[index].beforeRegionId = following
+            for index in blocks.indices where blocks[index].playlistId == playlist {
+                guard let anchor = blocks[index].beforeRegionId, removed.contains(anchor),
+                      let position = list.regionIds.firstIndex(of: anchor) else { continue }
+                blocks[index].beforeRegionId = list.regionIds.dropFirst(position + 1).first { !removed.contains($0) }
             }
             state.blocks = blocks
         }
     }
     var mediaPaths: Set<String> {
-        Set(songs.flatMap(\.tracks).flatMap { track in track.clips.compactMap { $0.audioFile?.path } + [track.audioFile?.path, track.clickSound?.path].compactMap { $0 } })
+        var paths = Set(songs.flatMap(\.tracks).flatMap { track in track.clips.compactMap { $0.audioFile?.path } + [track.audioFile?.path, track.clickSound?.path].compactMap { $0 } })
+        paths.formUnion(masterFX?.samplePaths ?? [])
+        for track in songs.flatMap(\.tracks) {
+            paths.formUnion(track.fx?.samplePaths ?? [])
+            for clip in track.clips { paths.formUnion(clip.fx?.samplePaths ?? []) }
+        }
+        return paths
+    }
+}
+
+public extension Song {
+    func canCreateTrackGroup(_ id: UUID) -> Bool {
+        guard let parent = tracks.firstIndex(where: { $0.id == id }),
+              tracks[parent].kind == .standard, tracks[parent].role.rawValue != "vinhetas",
+              tracks[parent].parentTrackID == nil, tracks[parent].stereoLink == nil else { return false }
+        return tracks.dropFirst(parent + 1).contains {
+            $0.kind == .standard && $0.role.rawValue != "vinhetas" && $0.parentTrackID == nil
+        }
+    }
+    /// Master and special singleton lanes have no duplication action.
+    func trackDuplicationTargets(_ ids: Set<UUID>) -> Set<UUID> {
+        let eligible = Set(tracks.filter { $0.kind == .standard && $0.role.rawValue != "vinhetas" }.map(\.id))
+        let hierarchy = TrackHierarchy(tracks)
+        var result = ids.intersection(eligible), previous: Set<UUID> = []
+        while result != previous {
+            previous = result
+            for track in tracks where previous.contains(track.id) {
+                result.formUnion(hierarchy.descendants(of: track.id).intersection(eligible))
+                if let partner = track.stereoLink?.partner, eligible.contains(partner) { result.insert(partner) }
+            }
+        }
+        return result
+    }
+}
+
+/// Effect keys and EQ-band references must travel with their automation. The
+/// plugin's opaque component/controller state is copied byte for byte.
+private struct TrackCopyFXIdentities {
+    private var effects: [String: String] = [:]
+    private var plugins: [String: String] = [:]
+    private var bands: [String: [UUID: UUID]] = [:]
+    mutating func copy(_ original: NativeFXSettings) -> NativeFXSettings {
+        var result = original
+        func copyBands(_ original: [EQBand]) -> (values: [EQBand], ids: [UUID: UUID]) {
+            var ids: [UUID: UUID] = [:]
+            let values = original.map { band -> EQBand in var copy = band; copy.id = UUID(); ids[band.id] = copy.id; return copy }
+            return (values, ids)
+        }
+        let base = copyBands(original.bands); result.bands = base.values; bands["EQ"] = base.ids
+        if let instances = original.instances {
+            result.instances = instances.map { instance in
+                var copy = instance; copy.id = UUID().uuidString
+                effects[instance.effectKey] = copy.effectKey
+                let nested = copyBands(instance.settings.bands)
+                copy.settings.bands = nested.values; bands[instance.effectKey] = nested.ids
+                return copy
+            }
+        }
+        if let external = original.externalPlugins {
+            result.externalPlugins = external.map { plugin in
+                var copy = plugin; copy.id = UUID().uuidString
+                effects[plugin.effectKey] = copy.effectKey; plugins[plugin.id] = copy.id
+                return copy
+            }
+        }
+        result.inserted = original.inserted.map { effects[$0] ?? $0 }
+        return result
+    }
+    func copy(_ original: TrackAutomation?) -> TrackAutomation? {
+        guard var result = original else { return nil }
+        for index in result.envelopes.indices {
+            result.envelopes[index].id = UUID()
+            for point in result.envelopes[index].points.indices { result.envelopes[index].points[point].id = UUID() }
+            if var native = result.envelopes[index].target.native {
+                native.band = native.band.map { bands[native.effect]?[$0] ?? $0 }
+                native.effect = effects[native.effect] ?? native.effect
+                result.envelopes[index].target.native = native
+            }
+            if let plugin = result.envelopes[index].target.plugin { result.envelopes[index].target.plugin = plugins[plugin] ?? plugin }
+        }
+        return result
     }
 }
 
@@ -431,8 +967,26 @@ public struct ProjectEditHistory {
     public var canUndo: Bool { !past.isEmpty }
     public var canRedo: Bool { !future.isEmpty }
     public init(_ project: Project) { baseline = project }
-    public mutating func record(_ project: Project, preservingMediaStorage: Bool = false) {
-        guard project != baseline else { return }
+    /// Track artwork is document metadata, deliberately outside Undo/Redo.
+    /// Rebase only matching track identities; clips and all other edit history stay intact.
+    public mutating func setTrackInstrumentIcon(_ ids: Set<UUID>, icon: String?) {
+        func update(_ project: inout Project) {
+            for song in project.songs.indices {
+                for track in project.songs[song].tracks.indices
+                    where ids.contains(project.songs[song].tracks[track].id) {
+                    project.songs[song].tracks[track].instrumentIcon = icon
+                }
+            }
+        }
+        update(&baseline)
+        for index in past.indices { update(&past[index]) }
+        for index in future.indices { update(&future[index]) }
+    }
+    public mutating func record(_ project: Project, preservingMediaStorage: Bool = false,
+                                knownChanged: Bool = false) {
+        // A mixer gesture has already compared its scalar values. Comparing
+        // every clip and waveform again can pause the UI in large projects.
+        guard knownChanged || project != baseline else { return }
         past.append(baseline); if past.count > 100 { past.removeFirst() }
         // Mixer controls already retain immutable clip/waveform storage.
         // Preserve that storage directly instead of visiting every project item.
@@ -465,14 +1019,19 @@ public struct ProjectEditHistory {
 
 public extension AudioClip {
     /// Both edges follow the same original source interval, including backward extension.
-    func resized(start: Double, end: Double) -> AudioClip {
+    func resized(start: Double, end: Double, sourceDuration: Double? = nil) -> AudioClip {
         guard start.isFinite, end.isFinite, start >= 0, end - start >= 0.01 else { return self }
         var clip = self
-        if var midi = clip.midi {
-            let offset = clip.sourceOffset + (start - clip.startTime) * clip.audioRate
-            if offset < 0 { for index in midi.notes.indices { midi.notes[index].start -= offset * midi.sourceBPM / 60 } }
-            clip.sourceOffset = max(0, offset); clip.midi = midi
-            clip.startTime = start; clip.duration = end - start
+        // A trimmed item's present length is not its source period. Repeat the
+        // complete media only at its real EOF, retaining imported loop sections.
+        if clip.loopLength == nil, let sourceDuration, sourceDuration.isFinite, sourceDuration > 0 {
+            clip.loopStart = 0; clip.loopLength = sourceDuration
+        }
+        if clip.audioFile != nil && clip.loopLength == nil {
+            let actualStart = max(start, clip.startTime - clip.sourceOffset / clip.audioRate)
+            guard end - actualStart >= 0.01 else { return self }
+            clip.sourceOffset = max(0, clip.sourceOffset + (actualStart - clip.startTime) * clip.audioRate)
+            clip.startTime = actualStart; clip.duration = end - actualStart
             return clip
         }
         let loopStart = clip.loopStart ?? clip.sourceOffset
@@ -495,9 +1054,7 @@ public enum ProjectAudioRecovery {
     }
 
     public static func missingPaths(in project: Project, directory: URL) -> [String] {
-        let paths = Set(project.songs.flatMap(\.tracks).flatMap { track in
-            [track.audioFile?.path, track.clickSound?.path].compactMap { $0 } + track.clips.compactMap { $0.audioFile?.path }
-        })
+        let paths = project.mediaPaths
         return paths.filter { path in
             let url = directory.appendingPathComponent(path)
             return (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) != true
@@ -537,5 +1094,74 @@ public enum ProjectAudioRecovery {
             }
         }
         return Result(recovered: recovered, remaining: missingPaths(in: project, directory: directory), errors: errors)
+    }
+}
+
+public extension Song {
+    /// One translation for the entire selection; reject an incompatible destination atomically.
+    func movingItems(_ ids: Set<UUID>, anchor: UUID, start: Double, track destination: UUID?) -> Song? {
+        guard start.isFinite, let source = tracks.firstIndex(where: { $0.clips.contains { $0.id == anchor } }),
+              let item = tracks[source].clips.first(where: { $0.id == anchor }) else { return nil }
+        let target = destination.flatMap { id in tracks.firstIndex(where: { $0.id == id }) } ?? source
+        let rows = target - source
+        let selected = tracks.enumerated().flatMap { row, track in track.clips.filter { ids.contains($0.id) }.map { (row, $0) } }
+        guard !selected.isEmpty else { return nil }
+        let delta = max(start - item.startTime, -(selected.map { $0.1.startTime }.min() ?? 0))
+        var result = self
+        for row in result.tracks.indices { result.tracks[row].clips.removeAll { ids.contains($0.id) } }
+        for (row, original) in selected {
+            let to = row + rows
+            guard tracks.indices.contains(to), tracks[row].kind != .timecode,
+                  tracks[row].kind != .click || original.isProjectionMedia,
+                  row == to || (tracks[row].kind == .standard && tracks[to].kind == .standard) || original.isProjectionMedia else { return nil }
+            var clip = original; clip.startTime += delta
+            guard result.tracks[to].canPlaceItem(start: clip.startTime, duration: clip.duration, media: clip.isProjectionMedia) else { return nil }
+            clip.regionOwnerID = (clip.audioFile ?? tracks[row].audioFile) == nil ? regionOwner(at: clip.startTime)
+                : regionOwnerForMedia(at: clip.startTime, end: clip.startTime + clip.duration, preferred: clip.regionOwnerID)
+            result.tracks[to].clips.append(clip)
+            result.duration = max(result.duration, clip.startTime + clip.duration)
+        }
+        return result
+    }
+}
+
+public extension Project {
+    mutating func remapFXSamples(_ mapping: [String:String]) {
+        masterFX?.remapSamples(mapping)
+        for s in songs.indices { for t in songs[s].tracks.indices {
+            songs[s].tracks[t].fx?.remapSamples(mapping)
+            for c in songs[s].tracks[t].clips.indices { songs[s].tracks[t].clips[c].fx?.remapSamples(mapping) }
+        }}
+    }
+}
+
+public extension Project {
+    /// Move a selection as one ordered block. Selected folders carry their
+    /// descendants and only the roots acquire the destination group's send.
+    mutating func moveSelectedTracks(_ selection: Set<UUID>, on target: UUID, after: Bool, outsideGroup: Bool, song songID: UUID) {
+        guard let songIndex = songs.firstIndex(where: { $0.id == songID }) else { return }
+        let song = songs[songIndex], roots = Set(song.trackDragRoots(selection))
+        let hierarchy = TrackHierarchy(song.tracks)
+        let movingIDs = roots.reduce(into: roots) { $0.formUnion(hierarchy.descendants(of: $1)) }
+        guard !roots.isEmpty, !movingIDs.contains(target), let hit = song.tracks.first(where: { $0.id == target && $0.kind == .standard }) else { return }
+        var remaining = song.tracks.filter { !movingIDs.contains($0.id) }
+        var parent = after && song.tracks.contains(where: { $0.parentTrackID == target }) ? target : hit.parentTrackID
+        var boundary = remaining.firstIndex { $0.id == target }!
+        if outsideGroup, let group = parent, let folder = remaining.first(where: { $0.id == group }) {
+            let members = hierarchy.descendants(of: group).union([group])
+            boundary = after ? remaining.lastIndex(where: { members.contains($0.id) })! : remaining.firstIndex(where: { $0.id == group })!
+            parent = folder.parentTrackID
+        }
+        guard parent.map({ !movingIDs.contains($0) }) ?? true else { return }
+        let moving = song.tracks.filter { movingIDs.contains($0.id) }.map { original -> Track in
+            var track = original
+            if roots.contains(track.id), track.parentTrackID != parent {
+                if let parent { track.sendToGroup(parent) } else { track.detachFromGroup() }
+            }
+            return track
+        }
+        remaining.insert(contentsOf: moving, at: boundary + (after ? 1 : 0))
+        songs[songIndex].tracks = remaining
+        orderSpecialTracks()
     }
 }

@@ -15,5 +15,5 @@ import pathlib,sys
 source=pathlib.Path('Apple/Shared/ExternalPluginEditor.swift').read_text()
 pathlib.Path(sys.argv[1]).write_text(source[:source.index('\n#endif\n\n#if os(macOS)')]+'\n#endif\n')
 PY
-swiftc -swift-version 5 -parse-as-library -import-objc-header Apple/Bridge/JarasVST3.h Application/Project/NativeFXSettings.swift Tests/Apple/VST3/ClipEditorStateStubs.swift "$build_dir/Editor.swift" Tests/Apple/VST3/ClipEditorStateTests.swift "$build_dir"/*.o -framework Accelerate -lc++ -o "$build_dir/test"
+swiftc -swift-version 5 -parse-as-library -import-objc-header Apple/Bridge/JarasVST3.h Application/Project/DrummerPadKit.swift Application/Project/NativeFXSettings.swift Tests/Apple/VST3/ClipEditorStateStubs.swift "$build_dir/Editor.swift" Tests/Apple/VST3/ClipEditorStateTests.swift "$build_dir"/*.o -framework Accelerate -lc++ -o "$build_dir/test"
 "$build_dir/test" "$plugin"

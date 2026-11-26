@@ -1,0 +1,52 @@
+#pragma once
+#include "Common.h"
+#include "MeterRepaint.h"
+namespace catlive {
+// Store actual gain; map only the control's position through the Mac dB range.
+class GainFader final : public ParameterSlider {
+    std::array<float, 2> levels{};
+    meterDisplay::RepaintState meterPaint;
+    float reduction = -1.f;
+    bool linked = false;
+
+  public:
+    std::function<void()> mapControl;
+    void mouseDown(const MouseEvent &event) override {
+        if (event.mods.isPopupMenu() && mapControl) { mapControl(); return; }
+        ParameterSlider::mouseDown(event);
+    }
+    void setMeterLevels(const std::array<float, 2>& next) {
+        levels = next;
+        if (meterPaint.update(levels)) repaint();
+    }
+    void setGainReduction(float db) {
+        const auto next = db < 0.f ? -1.f : std::round(std::min(24.f, db) * 10.f) / 10.f;
+        if (reduction != next) { reduction = next; repaint(); }
+    }
+    float gainReduction() const { return reduction; }
+    const std::array<float, 2>& meterLevels() const { return levels; }
+    void setLinked(bool next) {
+        if (linked != next) { linked = next; repaint(); }
+    }
+    bool isLinked() const { return linked; }
+
+    GainFader() { setRange(0, std::pow(10., 12. / 20.), 0); }
+    String getTextFromValue(double gain) override {
+        if (getComponentID() != "masterVolume") return ParameterSlider::getTextFromValue(gain);
+        return gain <= 0 ? String::fromUTF8("−∞ dB") : (gain >= 1 ? "+" : "") + String(Decibels::gainToDecibels(gain),1) + " dB";
+    }
+    double proportionOfLengthToValue(double proportion) override {
+        const auto db = getComponentID() == "trackVolume" && isHorizontal()
+            ? meterDisplay::horizontalTrackDB(proportion, getLookAndFeel().getSliderLayout(*this).sliderBounds.getWidth())
+            : -60 + jlimit(0., 1., proportion) * 72;
+        return proportion <= 0 ? 0 : std::pow(10., db / 20.);
+    }
+    double valueToProportionOfLength(double gain) override {
+        if (gain <= 0) return 0;
+        const auto db = 20 * std::log10(gain);
+        return getComponentID() == "trackVolume" && isHorizontal()
+            ? meterDisplay::horizontalTrackFraction(db, getLookAndFeel().getSliderLayout(*this).sliderBounds.getWidth())
+            : jlimit(0., 1., (db + 60) / 72.);
+    }
+};
+}

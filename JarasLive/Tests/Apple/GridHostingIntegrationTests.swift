@@ -1,6 +1,21 @@
 import SwiftUI
 import AppKit
 
+// This isolated host has no app font bundle; retain the production font API.
+extension NSFont {
+    static func jarasSystemFont(ofSize size: CGFloat, weight: NSFont.Weight = .regular) -> NSFont {
+        NSFont(name: weight.rawValue >= NSFont.Weight.semibold.rawValue ? "Inter-SemiBold" : "Inter-Regular", size: size)
+            ?? NSFont.systemFont(ofSize: size, weight: weight)
+    }
+}
+
+// The host fixture does not load a project or accept plug-in drops.
+@MainActor struct NativeLibraryTrackDrop {
+    static let type = NSPasteboard.PasteboardType("com.catlive.library-effect")
+    func operation(for sender: NSDraggingInfo, in view: NSView) -> NSDragOperation { [] }
+    func perform(_ sender: NSDraggingInfo, in view: NSView) -> Bool { false }
+}
+
 /// Test-only binding adapter to exercise the native scroll host at changing document scales.
 private struct ZoomFixtureBinding<Content: View>: View {
     @ObservedObject var state: TimelineZoomState
@@ -177,6 +192,8 @@ struct NormalizationFixtureTrack { enum Kind { case standard, video }; let kind:
 struct NormalizationFixtureSong { let tracks: [NormalizationFixtureTrack] }
 final class NormalizationFixtureShow: ObservableObject {
     @Published var normalizeItemsRequest: UInt64 = 0
+    @Published var tempoMarkerRequest: UInt64 = 0
+    var tempoEditors = 0
     let audio = UUID(), video = UUID(), silent = UUID()
     var current: NormalizationFixtureSong? { NormalizationFixtureSong(tracks: [
         NormalizationFixtureTrack(kind: .standard, clips: [NormalizationFixtureClip(id: audio), NormalizationFixtureClip(id: silent, audioFile: nil)]),
@@ -192,11 +209,13 @@ struct NormalizationFixtureContent: View, Equatable {
     static func == (lhs: Self, rhs: Self) -> Bool { lhs.show === rhs.show }
     @State private var showingNormalize = false
     @State private var normalizingItems = Set<UUID>()
+    private func beginTempoMarker() { show.tempoEditors += 1 }
     var gridInteractionBlocked = false
     var selectedClips: Set<UUID> { [show.audio, show.video, show.silent] }
     var body: some View {
         Text(showingNormalize ? "Normalize" : "Grid").frame(width: 200, height: 100)
             NORMALIZATION_NOTIFICATION
+            TEMPO_NOTIFICATION
             .onChange(of: showingNormalize) { if $0 { show.displayed.append(normalizingItems) } }
     }
 }
@@ -207,6 +226,18 @@ let normalizationRoot = NSHostingView(rootView: NormalizationFixtureRoot(show: n
 normalizationWindow.contentView = normalizationRoot
 normalizationRoot.layoutSubtreeIfNeeded()
 RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+// Opening a project publishes a zero reset, even when already zero.
+normalizationShow.normalizeItemsRequest = 0
+normalizationShow.tempoMarkerRequest = 0
+RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+precondition(normalizationShow.displayed.isEmpty, "Project reset must not open the normalization editor")
+precondition(normalizationShow.tempoEditors == 0, "Project reset must not open the tempo editor")
+normalizationShow.tempoMarkerRequest = 1
+RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+precondition(normalizationShow.tempoEditors == 1, "Explicit tempo request must still work")
+normalizationShow.tempoMarkerRequest = 0
+RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+precondition(normalizationShow.tempoEditors == 1, "Resetting an earlier tempo request must not reopen its editor")
 normalizationShow.normalizeItemsRequest += 1
 RunLoop.main.run(until: Date().addingTimeInterval(0.05))
 precondition(normalizationShow.displayed == [[normalizationShow.audio]], "N reaches the equatable grid and opens normalize only for selected audio items")
@@ -248,7 +279,7 @@ private let parentBuilds = zoomCounters.parent
 private let documentBuilds = zoomCounters.document
 zoomScroll.zoomAnchor = (0.5, 400, 6000)
 isolatedZoom.value = 2
-precondition(zoomScroll.contentView.bounds.minX == 0, "zoom must not scroll before the new document layout")
+precondition(zoomScroll.contentView.bounds.minX == -TimelineAppearanceDefaults.leadingSpace, "zoom must not scroll before the new document layout")
 RunLoop.main.run(until: Date().addingTimeInterval(0.05))
 zoomRoot.layoutSubtreeIfNeeded()
 precondition(zoomCounters.parent == parentBuilds && zoomCounters.document > documentBuilds,
@@ -320,7 +351,7 @@ for width: CGFloat in [3000, 6000, 1400, 7500, 2600] {
     let anchoredX = min(max(0, 0.65 * width - 400), width - 800)
     precondition(virtualScroll.zoomAnchor == nil && abs(virtualScroll.contentView.bounds.minX - anchoredX) < 0.001,
                  "virtual document size and zoom anchor commit at the same scale")
-    precondition(abs(virtualScroll.contentView.documentRect.width - width) < 0.001 && virtualDocument.frame.width == virtualCapacity && virtualHost.frame.width == 800,
+    precondition(abs(virtualScroll.contentView.documentRect.maxX - width) < 0.001 && virtualDocument.frame.width == virtualCapacity && virtualHost.frame.width == 800,
                  "logical extent scales while native capacity and hosting viewport remain retained")
     virtualScroll.contentView.scroll(to: CGPoint(x: width - 800, y: 0))
     virtualScroll.reflectScrolledClipView(virtualScroll.contentView)
@@ -371,7 +402,7 @@ virtualRoot.rootView = VirtualViewportFixture(state: virtualZoom, counters: virt
     documentHeight: 420, blocked: true)
 RunLoop.main.run(until: Date().addingTimeInterval(0.025))
 virtualRoot.layoutSubtreeIfNeeded()
-precondition(virtualDocument.frame.size == CGSize(width: virtualCapacity, height: 420) && virtualScroll.contentView.documentRect.width == 6000 && virtualHost.frame.size == CGSize(width: 800, height: 420),
+precondition(virtualDocument.frame.size == CGSize(width: virtualCapacity, height: 420) && virtualScroll.contentView.documentRect.maxX == 6000 && virtualHost.frame.size == CGSize(width: 800, height: 420),
              "outer environment/row-height updates preserve the live bridge width while applying the new height")
 precondition(refreshedDocumentWidths.allSatisfy { $0 == virtualCapacity } && virtualScroll.contentView.bounds.minX == 5200,
              "refresh never briefly reapplies stale width and clamps horizontal scrolling")
@@ -491,7 +522,7 @@ for width: CGFloat in [3000, 4500, 3200, 5900, 1200, 6100, 4000] {
     let anchoredX = min(max(0, 0.65 * width - 400), width - 800)
     precondition(planeScroll.zoomAnchor == nil && abs(planeScroll.contentView.bounds.minX - anchoredX) < 0.001,
                  "coordinate plane commits logical width and anchor at the same scale")
-    precondition(abs(planeScroll.contentView.documentRect.width - width) < 0.001 && planeDocument.frame.width == expectedCapacity && planeHost.frame.width == expectedCapacity,
+    precondition(abs(planeScroll.contentView.documentRect.maxX - width) < 0.001 && planeDocument.frame.width == expectedCapacity && planeHost.frame.width == expectedCapacity,
                  "logical scroll extent changes while the native document and full host retain capacity")
     if expectedCapacity == previousCapacity {
         precondition(planeCounters.plane == previousPlaneBuilds, "zoom within capacity never rebuilds the coordinate-plane scope")
@@ -504,7 +535,7 @@ for width: CGFloat in [3000, 4500, 3200, 5900, 1200, 6100, 4000] {
     clip.setBoundsOrigin(CGPoint(x: expectedCapacity + 1000, y: 0))
     precondition(clip.bounds.minX == width - 800, "direct momentum bounds changes clamp to logical end")
     clip.setBoundsOrigin(CGPoint(x: -1000, y: 0))
-    precondition(clip.bounds.minX == 0, "direct momentum cannot cross time zero")
+    precondition(clip.bounds.minX == -TimelineAppearanceDefaults.leadingSpace, "direct momentum clamps to the space before time zero")
     planeScroll.contentView.scroll(to: CGPoint(x: width - 800, y: 0))
     planeScroll.reflectScrolledClipView(planeScroll.contentView)
     precondition(planeHost.frame.origin == .zero && planeHost.bounds.origin == .zero,
@@ -558,7 +589,7 @@ precondition(planeCounters.parent == planeParentBuilds && planeCounters.body > p
 planeRoot.rootView = CoordinatePlaneFixture(state: planeZoom, counters: planeCounters, documentHeight: 420, blocked: true)
 RunLoop.main.run(until: Date().addingTimeInterval(0.03))
 planeRoot.layoutSubtreeIfNeeded()
-precondition(planeDocument.frame.size == CGSize(width: previousCapacity, height: 420) && planeScroll.contentView.documentRect.width == 4000 && planeHost.frame.size == CGSize(width: previousCapacity, height: 420),
+precondition(planeDocument.frame.size == CGSize(width: previousCapacity, height: 420) && planeScroll.contentView.documentRect.maxX == 4000 && planeHost.frame.size == CGSize(width: previousCapacity, height: 420),
              "structural row-height changes retain both live logical width and hosting capacity")
 precondition(planeHost.frame.origin == .zero && planeHost.bounds.origin == .zero)
 // A logical document shorter than the viewport still reports its exact scale;
@@ -567,10 +598,23 @@ planeZoom.value = 0.2
 RunLoop.main.run(until: Date().addingTimeInterval(0.03))
 planeRoot.layoutSubtreeIfNeeded()
 planeScroll.contentView.scroll(to: CGPoint(x: previousCapacity, y: 0))
-precondition(planeScroll.contentView.documentRect.width == 600 && planeScroll.contentView.bounds.minX == 0)
+precondition(planeScroll.contentView.documentRect.maxX == 600 && planeScroll.contentView.bounds.minX == -TimelineAppearanceDefaults.leadingSpace)
 precondition(planeDocument.frame.width == previousCapacity && planeDocument.frame.height == 420,
              "zoom below viewport size retains capacity and structural row height")
 NotificationCenter.default.removeObserver(planeFrameObserver)
+// Fractional wheel steps must retain the exact cursor anchor in the mounted
+// AppKit clip view, rather than rounding and correcting it at gesture end.
+for step in 0..<40 {
+    let width = CGFloat(6000) + CGFloat(step) * 0.137
+    planeScroll.zoomAnchor = (0.65, 400, width)
+    planeZoom.value = width / 3000
+    planeHost.needsLayout = true
+    RunLoop.main.run(until: Date().addingTimeInterval(0.005))
+    planeRoot.layoutSubtreeIfNeeded()
+    let expected = 0.65 * width - 400
+    precondition(abs(planeScroll.contentView.bounds.minX - expected) < 0.0001,
+                 "Fractional zoom rounded the mounted cursor anchor: \(planeScroll.contentView.bounds.minX - expected)")
+}
 planeWindow.close()
 print("RETAINED_DOCUMENT_CAPACITY_NO_ZOOM_FRAME_NOTIFICATIONS_AND_LOGICAL_MOMENTUM_BOUNDS_OK")
 print("RETAINED_COORDINATE_PLANE_LOCALIZED_SCALE_LOGICAL_EXTENT_FIXED_CONTROLS_FAR_RIGHT_HEADER_AND_PIXELS_OK")
@@ -605,7 +649,7 @@ private struct PersistentHostedControl: View {
         HostedControlProbeRepresentable(count: count, revision: revision,
                                         edit: { count += 1 }, open: { openFX(nil, "eq") },
                                         details: { editTrackDetails(TrackDetailsEditRequest(project: detailsProject,
-                                            tracks: detailsTracks, name: "Captured", color: UInt32(revision), nameEditable: false)) })
+                                            tracks: detailsTracks, name: "Captured", color: UInt32(revision))) })
             .frame(width: 100, height: 40)
     }
 }
@@ -659,8 +703,8 @@ for revision in 1...8 {
     retainedControl.details()
     let (handlerRevision, request) = resizeState.details.last!
     precondition(handlerRevision == revision && request.color == UInt32(revision), "track edit actions cross hosting with current callbacks")
-    precondition(request.project == detailsProject && request.tracks == detailsTracks && !request.nameEditable,
-                 "batch edit preserves the menu's captured project, targets and color-only mode")
+    precondition(request.project == detailsProject && request.tracks == detailsTracks && !request.iconOnly,
+                 "batch edit preserves the menu's captured project, targets and color action")
     retainedControl.open()
     precondition(resizeState.opened.last == revision, "stable hosted actions always forward to the latest parent handler")
 }
@@ -670,16 +714,57 @@ precondition(retainedControl.count == 2, "the retained control continues editing
 resizeWindow.close()
 print("HOSTED_RESIZE_PRESERVES_NATIVE_CONTROLS_STATE_LIVE_ENVIRONMENT_ACTIONS_AND_DOCUMENT_GEOMETRY_OK")
 
-// A viewport can change continuously while the document keeps one capacity.
-let resizeExtents = (513...1024).map { TimelineZoomLimits.minimumExtent(viewportWidth: CGFloat($0)) }
-precondition(Set(resizeExtents).count == 1, "Minimum-zoom document capacity must not change for every resize pixel")
+// Minimum zoom preserves the same overview duration at every viewport width.
 for width: CGFloat in [0, 1, 511, 512, 513, 1024, 1025, 3840, 7680] {
-    let extent = TimelineZoomLimits.minimumExtent(viewportWidth: width)
-    precondition((extent - 120) * (10 * TimelineZoomLimits.minimum) >= width,
-        "Reserved extent must cover the entire viewport even at the farthest zoom")
-    precondition((extent - 120) * (10 * TimelineZoomLimits.minimum) < width + 512.01,
-        "Blank-space reserve remains bounded to one screen-width bucket")
-    precondition(max(240, 200_000 + 120, extent) >= 200_120,
-        "Viewport capacity cannot truncate a long project or its trailing blank area")
+    let minimum = TimelineZoomLimits.minimumZoom(viewportWidth: width)
+    precondition(abs(max(1, Double(width)) / (10 * minimum) - 45 * 3600) < 0.00001,
+        "Maximum overview shows 45 hours regardless of viewport width")
 }
-print("WINDOW_RESIZE_BUCKETED_TIMELINE_EXTENT_MINIMUM_ZOOM_AND_LONG_PROJECT_COVERAGE_OK")
+print("WINDOW_RESIZE_45_HOUR_OVERVIEW_OK")
+
+final class HeightZoomFixtureState: ObservableObject {
+    @Published var height: CGFloat = 64
+    @Published var selected: Int? = nil
+}
+struct HeightZoomFixture: View {
+    @ObservedObject var state: HeightZoomFixtureState
+    var body: some View {
+        GridScrollView(axis: .vertical, contentWidth: 600, contentHeight: state.height * 42,
+            trackHeight: state.height, rowHeights: Array(repeating: state.height, count: 40), selectedRow: state.selected) {
+                Color.gray.frame(width: 600, height: state.height * 42)
+            }.frame(width: 600, height: 400)
+    }
+}
+let heightState = HeightZoomFixtureState()
+let heightWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 400), styleMask: [.titled], backing: .buffered, defer: false)
+heightWindow.isReleasedWhenClosed = false
+heightWindow.contentView = NSHostingView(rootView: HeightZoomFixture(state: heightState))
+func settleHeight() {
+    RunLoop.main.run(until: Date().addingTimeInterval(0.06))
+    let view = heightWindow.contentView!
+    view.layoutSubtreeIfNeeded()
+    // The timeline's native projection commits the staged anchor after
+    // publishing the new row frames. This isolated scroll host has no projection.
+    allDescendants(GridNativeScrollView.self, in: view).first?.commitTrackHeightAnchor()
+}
+settleHeight()
+let heightScroll = allDescendants(GridNativeScrollView.self, in: heightWindow.contentView!).first!
+heightScroll.contentView.scroll(to: CGPoint(x: 0, y: 650))
+func centerInRowUnits() -> CGFloat {
+    let viewport = heightScroll.contentView.bounds
+    return viewport.midY / heightState.height
+}
+let initialCenter = centerInRowUnits()
+heightState.height = 96; settleHeight()
+precondition(abs(centerInRowUnits() - initialCenter) < 0.02, "Height zoom preserves the center of the visible tracks: \(centerInRowUnits()) vs \(initialCenter)")
+heightState.selected = 2; settleHeight()
+heightState.height = 128; settleHeight()
+precondition(abs(centerInRowUnits() - initialCenter) < 0.02, "Selection must not replace the viewport center anchor")
+heightState.height = 64; settleHeight()
+precondition(abs(centerInRowUnits() - initialCenter) < 0.02, "Shrinking preserves the same center anchor")
+heightState.selected = nil; settleHeight()
+heightScroll.contentView.scroll(to: CGPoint(x: 0, y: 2200))
+heightState.height = 24; settleHeight()
+precondition(heightScroll.contentView.bounds.minY > 0 && heightScroll.contentView.bounds.maxY <= heightScroll.documentView!.frame.height + 1, "Near the bottom, clamp to the new end without jumping to zero")
+heightWindow.close()
+print("GRID_HOSTED_HEIGHT_ZOOM_CENTER_INDEPENDENT_OF_SELECTION_SHRINK_END_CLAMP_OK")

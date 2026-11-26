@@ -1,8 +1,10 @@
 import SwiftUI
 #if os(macOS)
 import AppKit
+private typealias TPPlatformFont = NSFont
 #else
 import UIKit
+private typealias TPPlatformFont = UIFont
 #endif
 
 // One native layout for Mac and iPad: settings and geometry follow the same formulas.
@@ -15,7 +17,10 @@ struct TeleprompterProjectionLayout<Media: View>: View {
     private var preview: Bool { settings.displaysPreview(content.preview) }
     var body: some View {
         GeometryReader { geometry in
-            if settings.isClear { media().scaleEffect(settings.mediaScale / 100).frame(maxWidth: .infinity, maxHeight: .infinity).clipped() }
+            if settings.isClear && !preview {
+                media().frame(width: geometry.size.width, height: geometry.size.height).scaleEffect(settings.mediaScale / 100).frame(width: geometry.size.width, height: geometry.size.height).clipped()
+                    .overlay(alignment: .bottom) { if content.loopActive == true { loopBar } }
+            }
             else {
                 let animatedBorders = settings.rgbWindowBorderEnabled || settings.rgbClockBorderEnabled || settings.rgbTextBoxBorderEnabled || settings.rgbChordBorderEnabled
                 TimelineView(.periodic(from: .now,by: animatedBorders ? 0.2 : 0.5)) { context in
@@ -24,8 +29,20 @@ struct TeleprompterProjectionLayout<Media: View>: View {
                         GeometryReader { area in
                             ZStack {
                                 Color.clear
-                                if preview { previewGrid(size: area.size) }
-                                else if !content.text.isEmpty { lyricText(size: area.size,date: context.date) }
+                                if preview && settings.showsLyricsWithPreview {
+                                    let landscape = geometry.size.width >= geometry.size.height
+                                    let panel = CGSize(
+                                        width: landscape ? max(1, (area.size.width - 8) / 2) : area.size.width,
+                                        height: landscape ? area.size.height : max(1, (area.size.height - 8) / 2))
+                                    let lyrics = lyricColumns(size: panel, landscape: false, date: context.date)
+                                        .frame(width: panel.width, height: panel.height).clipped()
+                                    if landscape {
+                                        HStack(spacing: 8) { lyrics; previewGrid(size: panel) }
+                                    } else {
+                                        VStack(spacing: 8) { lyrics; previewGrid(size: panel) }
+                                    }
+                                } else if preview { previewGrid(size: area.size) }
+                                else if !content.text.isEmpty { lyricColumns(size: area.size, landscape: geometry.size.width >= geometry.size.height, date: context.date) }
                             }.clipped()
                         }
                         decorations(top: false,date: context.date,size: geometry.size)
@@ -33,7 +50,7 @@ struct TeleprompterProjectionLayout<Media: View>: View {
                         .background {
                             ZStack {
                                 Color.black
-                                if !preview { media().scaleEffect(settings.mediaScale / 100).clipped() }
+                                if !preview { media().frame(width: geometry.size.width, height: geometry.size.height).scaleEffect(settings.mediaScale / 100).frame(width: geometry.size.width, height: geometry.size.height).clipped() }
                             }
                         }
                         .overlay(RoundedRectangle(cornerRadius: 6).stroke(settings.windowBorderEnabled ? border(settings.borderColor,rgb: settings.rgbWindowBorderEnabled,date: context.date) : .clear,lineWidth: 2))
@@ -45,52 +62,54 @@ struct TeleprompterProjectionLayout<Media: View>: View {
         let timerHere = settings.clockEnabled && settings.clockPosition.hasSuffix(top ? "top" : "bottom")
         let localHere = settings.localClockEnabled && (settings.clockEnabled ? timerHere : top)
         if timerHere || localHere { clockRow(date: date,size: size,timer: timerHere,local: localHere) }
-        if settings.songNameEnabled && !content.song.isEmpty && settings.songNamePosition == (top ? "top" : "bottom") {
+        if !preview && settings.songNameEnabled && !content.song.isEmpty && settings.songNamePosition == (top ? "top" : "bottom") {
             title(content.song,color: settings.songNameColor,font: settings.songNameFontFamily,scale: settings.songNameScale)
         }
-        if settings.queueNameEnabled && !content.queued.isEmpty && settings.queueNamePosition == (top ? "top" : "bottom") {
+        if !preview && settings.queueNameEnabled && !content.queued.isEmpty && settings.queueNamePosition == (top ? "top" : "bottom") {
             title(content.queued,color: settings.queueNameColor,font: settings.queueNameFontFamily,scale: settings.queueNameScale)
         }
         if !preview && settings.chordsEnabled && !content.chords.isEmpty && settings.chordPosition == (top ? "top" : "bottom") {
-            Text(settings.display(content.chords)).font(tpFont(settings.chordFontFamily,size: settings.chordScale))
+            ItemTextColors.view(content.chordsStyled ?? content.chords, display: settings.display).font(tpFont(settings.chordFontFamily,size: settings.chordScale))
                 .foregroundStyle(Color(hex: settings.chordColor)).lineLimit(2).minimumScaleFactor(0.4).padding(6)
-                .frame(maxWidth: .infinity)
                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(border(settings.chordColor,rgb: settings.rgbChordBorderEnabled,date: date),lineWidth: 1))
+                .frame(maxWidth: .infinity)
         }
-        if settings.progressEnabled && settings.progressPosition == (top ? "top" : "bottom") {
+        if content.loopActive == true {
+            if !top { loopBar }
+        } else if !preview && settings.progressEnabled && settings.progressPosition == (top ? "top" : "bottom") {
             GeometryReader { bar in Color(hex: settings.progressColor).frame(width: bar.size.width * content.progress) }
                 .frame(height: 5).background(Color.white.opacity(0.1))
         }
     }
+    private var loopBar: some View {
+        Text("Loop ativo").font(.system(size: 14, weight: .bold)).foregroundStyle(Color.black)
+            .lineLimit(1).minimumScaleFactor(0.5).frame(maxWidth: .infinity).frame(height: 24)
+            .background(Color(hex: 0xffff00))
+    }
     private func clockRow(date: Date, size: CGSize, timer: Bool, local: Bool) -> some View {
         let width = max(1,size.width - 16), side = !settings.clockPosition.hasPrefix("center")
         let font = max(size.height > size.width ? 15 : 18,min(width / 11,size.height / 8) * settings.clockScale / 100)
-        let localSideFont = max(size.height > size.width ? 15 : 18,min(width / 11,size.height / 8) * settings.localClockScale / 100)
-        let sameSide = side && timer && local && settings.clockPosition.hasPrefix(settings.localClockPosition)
-        let height = sameSide ? font + localSideFont + 24 : max(28,(side && local ? max(font,localSideFont) : font) + (side && local ? 10 : 18))
+        let localSideFont = font
+        let localOnlyFont = max(10,min(24,size.height/28) * settings.localClockScale / 100)
+        let height = !timer ? localOnlyFont + 10 : max(28,(side && local ? max(font,localSideFont) : font) + (side && local ? 10 : 18))
         // Keep a real clock column on narrow phone screens, including fullscreen.
         let timerLimit = compactPhone && local && !side ? max(1, width - 152) : width
         let timerWidth = min(timerLimit,max(118,tpTimerTextWidth(font) + 36))
         return ZStack {
-            if sameSide {
-                // Both controls may be assigned to the same edge. Stack them
-                // there instead of silently overriding the local-clock setting.
-                VStack(alignment: settings.localClockPosition == "left" ? .leading : .trailing, spacing: 4) {
-                    timerText(font: font,date: date)
-                    localClock(date,font: localSideFont)
-                }.frame(maxWidth: .infinity, alignment: settings.localClockPosition == "left" ? .leading : .trailing)
-            } else if side && timer && local {
+            if side && timer && local {
                 HStack(spacing: 8) {
-                    if settings.clockPosition.hasPrefix("right") { localClock(date,font: localSideFont).frame(maxWidth: .infinity) }
-                    timerText(font: font,date: date).frame(maxWidth: .infinity)
-                    if settings.clockPosition.hasPrefix("left") { localClock(date,font: localSideFont).frame(maxWidth: .infinity) }
+                    if settings.clockPosition.hasPrefix("right") { localClock(date,font: localSideFont, fillWidth: true).frame(width: max(1, (width - 8) / 2)) }
+                    timerText(font: font,date: date, fillWidth: true).frame(width: max(1, (width - 8) / 2))
+                    if settings.clockPosition.hasPrefix("left") { localClock(date,font: localSideFont, fillWidth: true).frame(width: max(1, (width - 8) / 2)) }
                 }
             } else {
                 if timer {
                     timerText(font: font,date: date).frame(width: timerWidth)
-                        .frame(maxWidth: .infinity,alignment: settings.clockPosition.hasPrefix("left") ? .leading : settings.clockPosition.hasPrefix("right") ? .trailing : .center)
+                        .frame(maxWidth: .infinity,alignment: .center)
                 }
-                if local {
+                if local && !timer {
+                    localClock(date,font: localOnlyFont).frame(maxWidth: .infinity, alignment: .center)
+                } else if local {
                     let localWidth = timer ? max(0,(width-timerWidth)/2-8) : width
                     let localFont = max(10,min(24,size.height/28) * settings.localClockScale / 100)
                     HStack {
@@ -102,17 +121,19 @@ struct TeleprompterProjectionLayout<Media: View>: View {
             }
         }.frame(height: height).frame(maxWidth: .infinity)
     }
-    private func timerText(font: CGFloat,date: Date) -> some View {
+    private func timerText(font: CGFloat,date: Date, fillWidth: Bool = false) -> some View {
         Text(timerValue().text).opacity(timerValue().opacity).font(.custom("Arial-BoldMT",size: font)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.3)
             .foregroundStyle(Color(hex: timerValue().expired ? settings.clockExpiredColor : settings.clockColor)).padding(.horizontal,10).padding(.vertical,5)
-            .overlay(RoundedRectangle(cornerRadius: 6).stroke(settings.clockBorderEnabled ? border(settings.clockBorderColor,rgb: settings.rgbClockBorderEnabled,date: date) : .clear,lineWidth: 2))
+            .frame(maxWidth: fillWidth ? .infinity : nil, maxHeight: fillWidth ? .infinity : nil)
+            .overlay(RoundedRectangle(cornerRadius: 6).stroke(settings.clockBorderEnabled ? border(settings.clockBorderColor,rgb: settings.rgbClockBorderEnabled,date: date) : .clear,lineWidth: 1))
     }
-    private func localClock(_ date: Date,font: CGFloat) -> some View {
+    private func localClock(_ date: Date,font: CGFloat, fillWidth: Bool = false) -> some View {
         let values = Calendar.current.dateComponents([.hour,.minute,.second],from: date)
         return Text(String(format: "%02d:%02d:%02d",values.hour ?? 0,values.minute ?? 0,values.second ?? 0)).font(.custom("Arial-BoldMT",size: font)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.3)
             .foregroundStyle(Color(hex: settings.localClockColor)).padding(.horizontal,5).padding(.vertical,5)
+            .frame(maxWidth: fillWidth ? .infinity : nil, maxHeight: fillWidth ? .infinity : nil)
             .overlay(RoundedRectangle(cornerRadius: 6).stroke(settings.localClockBorderEnabled ? border(settings.localClockBorderColor,rgb: settings.rgbClockBorderEnabled,date: date) : .clear,lineWidth: 1))
-            .padding(.horizontal,fullscreen && !compactPhone ? 24 : 0)
+            .padding(.horizontal,fullscreen && !compactPhone && !fillWidth ? 24 : 0)
     }
     private var compactPhone: Bool {
         #if os(iOS)
@@ -125,54 +146,211 @@ struct TeleprompterProjectionLayout<Media: View>: View {
         Text(settings.display(text)).font(tpFont(font,size: 22 * scale / 100)).foregroundStyle(Color(hex: color))
             .lineLimit(1).minimumScaleFactor(0.5).frame(maxWidth: .infinity)
     }
-    private func lyricText(size: CGSize,date: Date) -> some View {
-        let text = settings.display(content.text)
+    @ViewBuilder private func lyricColumns(size: CGSize, landscape: Bool, date: Date) -> some View {
+        let columns = ItemTextColors.columns(content.textStyled ?? content.text)
+        if columns.count == 2 {
+            if landscape {
+                HStack(spacing: 8) {
+                    ForEach(0..<2, id: \.self) { index in
+                        lyricText(columns[index], size: CGSize(width: max(1, (size.width-8)/2), height: size.height), date: date)
+                    }
+                }
+            } else {
+                VStack(spacing: 8) {
+                    ForEach(0..<2, id: \.self) { index in
+                        lyricText(columns[index], size: CGSize(width: size.width, height: max(1, (size.height-8)/2)), date: date)
+                    }
+                }
+            }
+        } else { lyricText(columns[0], size: size, date: date) }
+    }
+    private func lyricText(_ value: String, size: CGSize,date: Date) -> some View {
+        let text = settings.display(ItemTextColors.plain(value))
         let lines = text.components(separatedBy: .newlines)
-        let longest = max(1,lines.map(\.count).max() ?? 1)
-        let font = max(9,min(120,min((size.width-20) / (Double(longest)*0.64),(size.height-20) / (Double(max(1,lines.count))*1.2))) * settings.textScale / 100)
-        let textWidth = min(size.width,max(20,Double(longest) * font * 0.64 + 12))
+        #if os(macOS)
+        let native = tpFontNames[settings.fontFamily]?.compactMap { NSFont(name: $0, size: 100) }.first ?? NSFont.systemFont(ofSize: 100, weight: .bold)
+        #else
+        let native = tpFontNames[settings.fontFamily]?.compactMap { UIFont(name: $0, size: 100) }.first ?? UIFont.boldSystemFont(ofSize: 100)
+        #endif
+        let longest = max(1, lines.map { ($0 as NSString).size(withAttributes: [.font: native]).width }.max() ?? 1)
+        let font = max(1,min(max(1,size.width-16) / longest * 100,max(1,size.height-12) / (Double(max(1,lines.count))*1.2)) * settings.textScale / 100)
         let alignment: Alignment = settings.textAlignment == "left" ? .leading : settings.textAlignment == "right" ? .trailing : .center
         let textAlignment: TextAlignment = settings.textAlignment == "left" ? .leading : settings.textAlignment == "right" ? .trailing : .center
-        return Text(text).font(tpFont(settings.fontFamily,size: font)).foregroundStyle(Color(hex: settings.textColor))
-            .multilineTextAlignment(textAlignment).lineLimit(nil).minimumScaleFactor(0.3).padding(6).frame(width: textWidth)
+        return ItemTextColors.view(value, display: settings.display).font(tpFont(settings.fontFamily,size: font)).foregroundStyle(Color(hex: settings.textColor))
+            .multilineTextAlignment(textAlignment).lineLimit(nil).minimumScaleFactor(0.3).padding(6)
+            .frame(width: max(1,size.width),height: max(1,size.height),alignment: alignment)
             .overlay(RoundedRectangle(cornerRadius: 6).stroke(settings.textBoxEnabled ? border(settings.textBoxColor,rgb: settings.rgbTextBoxBorderEnabled,date: date) : .clear,lineWidth: 2))
             .frame(maxWidth: .infinity,maxHeight: .infinity,alignment: alignment)
     }
     private func previewGrid(size: CGSize) -> some View {
-        let blocks = content.blocks
-        let columns = max(1,min(4,blocks.count))
-        let longestColumn = max(1,(blocks.count + columns - 1) / columns)
-        let mostSongs = max(1,blocks.map { $0.rows.count + ($0.name.isEmpty ? 0 : 1) }.max() ?? 1)
-        let font = max(9,min((size.width/Double(columns)-20)/13,(size.height/Double(longestColumn)-20)/Double(mostSongs)/1.1) * settings.previewScale / 100)
-        return LazyVGrid(columns: Array(repeating: GridItem(.flexible(),spacing: 8,alignment: .top),count: columns),alignment: .leading,spacing: 8) {
-            ForEach(blocks) { block in
-                VStack(alignment: .leading,spacing: 3) {
-                    if !block.name.isEmpty {
-                        Text(settings.display(block.name) + (settings.previewBlockDurationEnabled && (block.rows.reduce(0) { $0 + $1.duration }) > 0 ? " • " + tpTime(Int(ceil((block.rows.reduce(0) { $0 + $1.duration })))) : ""))
-                            .font(tpFont(settings.previewFontFamily,size: font * 1.05)).foregroundStyle(Color(hex: block.color)).lineLimit(2)
+        let blocks = Array(content.blocks.prefix(4))
+        let columns = min(2, max(1, blocks.count))
+        let rowCount = max(1, (blocks.count + columns - 1) / columns)
+        let width = max(1, (size.width - 12 - CGFloat(columns - 1) * 8) / CGFloat(columns))
+        let layout = tpPreviewLayout(blocks: blocks.map { (previewHeading($0), previewTitles($0)) },
+            settings: settings, columns: columns, width: max(1, width - 18),
+            height: max(1, size.height - 12 - CGFloat(rowCount - 1) * 8))
+        // Explicit cells prevent old geometry surviving a preview/page change.
+        return VStack(alignment: .leading, spacing: 8) {
+            ForEach(0..<rowCount, id: \.self) { row in
+                HStack(alignment: .top, spacing: 8) {
+                    ForEach(Array(blocks.dropFirst(row * columns).prefix(columns))) { block in
+                        previewBlock(block, width: width, height: layout.heights[row], font: layout.font)
                     }
-                    ForEach(block.rows) { song in
-                        Text(settings.display(song.name) + (settings.previewSongDurationEnabled ? " • " + tpTime(Int(ceil(song.duration))) : ""))
-                            .font(tpFont(settings.previewFontFamily,size: font))
-                            .underline(settings.previewUnderlineEnabled)
-                            .foregroundStyle(Color(hex: song.color)).lineLimit(2)
-                    }
-                }.frame(maxWidth: .infinity,alignment: .leading).padding(6)
-                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color(hex: block.color).opacity(0.7)))
+                }
             }
-        }.padding(6).frame(maxWidth: .infinity,maxHeight: .infinity,alignment: .topLeading)
+        }.padding(6).frame(width: max(1, size.width), height: max(1, size.height), alignment: .topLeading)
+            .clipped().transaction { $0.animation = nil }
+    }
+    private func previewHeading(_ block: DAWRemoteTeleprompter.Block) -> TPPreviewLine {
+        let duration = block.rows.reduce(0) { $0 + $1.duration }
+        return TPPreviewLine(name: settings.display(block.name),
+            time: settings.previewBlockDurationEnabled && duration > 0 ? tpTime(Int(ceil(duration))) : "")
+    }
+    private func previewTitles(_ block: DAWRemoteTeleprompter.Block) -> [TPPreviewLine] {
+        block.rows.map { song in
+            TPPreviewLine(name: settings.display(song.name),
+                time: settings.previewSongDurationEnabled && song.duration > 0 ? tpTime(Int(ceil(song.duration))) : "")
+        }
+    }
+    private func previewLine(_ line: TPPreviewLine, font: CGFloat, block: Bool, played: Bool = false) -> some View {
+        let nameScale = block ? settings.previewBlockNameScale : settings.previewScale
+        let timeScale = block ? settings.previewBlockTimeScale : settings.previewRegionTimeScale
+        return HStack(alignment: .firstTextBaseline, spacing: 5) {
+            Text(verbatim: line.name).font(tpFont(settings.previewFontFamily, size: max(1, font * nameScale / 100)))
+                .underline(!block && settings.previewUnderlineEnabled).strikethrough(played)
+                .lineLimit(2).frame(maxWidth: .infinity, alignment: .leading)
+            if !line.time.isEmpty {
+                Text(verbatim: line.time).font(tpFont(settings.previewFontFamily, size: max(1, font * timeScale / 100)))
+                    .strikethrough(played)
+                    .monospacedDigit().lineLimit(1).fixedSize()
+            }
+        }
+    }
+    private func previewBlock(_ block: DAWRemoteTeleprompter.Block, width: CGFloat, height: CGFloat, font: CGFloat) -> some View {
+        let heading = previewHeading(block)
+        let titles = previewTitles(block)
+        return VStack(alignment: .leading, spacing: 4) {
+            if !heading.name.isEmpty {
+                previewLine(heading, font: font, block: true)
+                    .foregroundStyle(Color(hex: block.nameColor ?? 0x69ed91))
+                Rectangle().fill(Color(hex: block.color).opacity(0.85)).frame(height: 2).padding(.vertical, 2)
+            }
+            ForEach(Array(block.rows.enumerated()), id: \.element.id) { index, song in
+                previewLine(titles[index], font: font, block: false, played: song.liveExecuted == true)
+                    .foregroundStyle(Color(hex: song.previewTextColor))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 3).padding(.bottom, 4)
+                    .background(song.hasPlaybackHighlight ? Color(hex: song.playing == true ? 0x701818 : 0x665000) : .clear)
+                    .overlay(alignment: .bottomLeading) {
+                        if song.hasPlaybackHighlight {
+                            GeometryReader { geometry in
+                                Rectangle().fill(Color(hex: song.playing == true ? 0xff4040 : 0xffdf40))
+                                    .frame(width: geometry.size.width * song.progressFraction, height: 3)
+                            }.frame(height: 3)
+                        }
+                    }
+            }
+            Spacer(minLength: 0)
+        }.multilineTextAlignment(.leading).padding(6)
+            .frame(width: width, height: height, alignment: .topLeading)
+            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color(hex: block.color).opacity(0.7)))
+            .clipped()
     }
     private func border(_ color: UInt32,rgb: Bool,date: Date) -> Color {
         rgb ? Color(hue: date.timeIntervalSince1970.truncatingRemainder(dividingBy: 6)/6,saturation: 0.9,brightness: 1) : Color(hex: color)
     }
 }
 
+/// Preview owns the projection first. A notice replaces the whole scene, so
+/// legacy banner settings cannot leave clocks, lyrics or video behind it.
+struct TeleprompterNoticeStage<Content: View, Notice: View>: View {
+    let settings: TeleprompterSettings
+    let preview: Bool
+    let noticeActive: Bool
+    @ViewBuilder let content: () -> Content
+    @ViewBuilder let notice: () -> Notice
+    private var showingNotice: Bool { noticeActive && !settings.displaysPreview(preview) }
+    var body: some View {
+        ZStack {
+            if showingNotice { notice() }
+            else { content() }
+        }.frame(maxWidth: .infinity, maxHeight: .infinity)
+            .overlay {
+                if showingNotice && settings.windowBorderEnabled {
+                    TimelineView(.periodic(from: .now, by: settings.rgbWindowBorderEnabled ? 0.2 : 60)) { context in
+                        let color = settings.rgbWindowBorderEnabled
+                            ? Color(hue: context.date.timeIntervalSince1970.truncatingRemainder(dividingBy: 6) / 6, saturation: 0.9, brightness: 1)
+                            : Color(hex: settings.borderColor)
+                        RoundedRectangle(cornerRadius: 6).strokeBorder(color, lineWidth: 2)
+                    }.allowsHitTesting(false)
+                }
+            }
+    }
+}
+
+private let tpFontNames = ["arial":["Arial-BoldMT"],"segoe":["SegoeUI-Bold","HelveticaNeue-Bold"],"bahnschrift":["Bahnschrift","DINAlternate-Bold"],"verdana":["Verdana-Bold"],"tahoma":["Tahoma-Bold"],"georgia":["Georgia-Bold"],"trebuchet":["TrebuchetMS-Bold"],"impact":["Impact"],"mono":["CourierNewPS-BoldMT"]]
+private struct TPPreviewLine {
+    let name: String
+    let time: String
+}
+private final class TPPreviewLayout: NSObject {
+    let font: CGFloat
+    let heights: [CGFloat]
+    init(font: CGFloat, heights: [CGFloat]) { self.font = font; self.heights = heights }
+}
+private let tpPreviewLayoutCache: NSCache<NSString, TPPreviewLayout> = { let cache = NSCache<NSString, TPPreviewLayout>(); cache.countLimit = 256; return cache }()
+private func tpPreviewLayout(blocks: [(TPPreviewLine, [TPPreviewLine])], settings: TeleprompterSettings, columns: Int, width: CGFloat, height: CGFloat) -> TPPreviewLayout {
+    let family = settings.previewFontFamily
+    let scales = [settings.previewScale, settings.previewRegionTimeScale, settings.previewBlockNameScale, settings.previewBlockTimeScale]
+    var cacheParts: [String] = [family, String(columns), String(Double(width)), String(Double(height))]
+    cacheParts.append(contentsOf: scales.map { String($0) })
+    for (heading, songs) in blocks {
+        for line in [heading] + songs { cacheParts.append(contentsOf: [line.name, line.time]) }
+        cacheParts.append("\u{1e}")
+    }
+    let key = cacheParts.joined(separator: "\u{1f}") as NSString
+    if let cached = tpPreviewLayoutCache.object(forKey: key) { return cached }
+    let rows = max(1, (blocks.count + columns - 1) / columns)
+    func nativeFont(_ size: CGFloat) -> TPPlatformFont {
+        #if os(macOS)
+        return tpFontNames[family]?.compactMap { NSFont(name: $0, size: size) }.first ?? NSFont.systemFont(ofSize: size, weight: .bold)
+        #else
+        return tpFontNames[family]?.compactMap { UIFont(name: $0, size: size) }.first ?? UIFont.boldSystemFont(ofSize: size)
+        #endif
+    }
+    func rowHeights(_ size: CGFloat, scaled: Bool = false) -> [CGFloat] {
+        let sizes = scales.map { max(1, scaled ? size * CGFloat($0 / 100) : size) }
+        let fonts = sizes.map(nativeFont)
+        func textHeight(_ line: TPPreviewLine, index: Int) -> CGFloat {
+            let time = (line.time as NSString).size(withAttributes: [.font: fonts[index + 1]])
+            let nameWidth = max(1, width - (line.time.isEmpty ? 0 : time.width + 5))
+            let rect = (line.name as NSString).boundingRect(with: CGSize(width: nameWidth, height: .greatestFiniteMagnitude),
+                options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: [.font: fonts[index]], context: nil)
+            return ceil(max(min(rect.height, sizes[index] * 2.4), line.time.isEmpty ? 0 : time.height)) + 2
+        }
+        var heights = Array(repeating: CGFloat(16), count: rows)
+        for (index, block) in blocks.enumerated() {
+            let required = (block.0.name.isEmpty ? 0 : textHeight(block.0, index: 2) + 14) + block.1.reduce(0) { $0 + textHeight($1, index: 0) + 8 } + 16
+            heights[index / columns] = max(heights[index / columns], required)
+        }
+        return heights
+    }
+    var low: CGFloat = 1, high: CGFloat = 96
+    for _ in 0..<12 { let mid = (low + high) / 2; if rowHeights(mid).reduce(0, +) <= height { low = mid } else { high = mid } }
+    let font = max(1, floor(low * 2) / 2), needed = rowHeights(font, scaled: true)
+    // Give a dense row more space while preserving the 2 × 2 order and shared font.
+    let total = max(1, needed.reduce(0, +))
+    let result = TPPreviewLayout(font: font, heights: needed.map { max(1, height * $0 / total) })
+    tpPreviewLayoutCache.setObject(result, forKey: key)
+    return result
+}
 private func tpFont(_ name: String,size: CGFloat) -> Font {
     // Imported Windows families may not be installed on Mac/iOS. Choose their
     // native counterpart instead of making several menu choices all render as
     // the same default font. Use the original whenever it is available.
-    let names = ["arial":["Arial-BoldMT"],"segoe":["SegoeUI-Bold","HelveticaNeue-Bold"],"bahnschrift":["Bahnschrift","DINAlternate-Bold"],"verdana":["Verdana-Bold"],"tahoma":["Tahoma-Bold"],"georgia":["Georgia-Bold"],"trebuchet":["TrebuchetMS-Bold"],"impact":["Impact"],"mono":["CourierNewPS-BoldMT"]]
-    if let font = names[name]?.first(where: { tpFontAvailable($0, size: size) }) { return .custom(font,size: size) }
+
+    if let font = tpFontNames[name]?.first(where: { tpFontAvailable($0, size: size) }) { return .custom(font,size: size) }
     return .system(size: size,weight: .bold,design: name == "mono" ? .monospaced : .default)
 }
 func tpNoticeFont(_ name: String,size: CGFloat) -> Font {
@@ -194,7 +372,7 @@ private func tpFontAvailable(_ name: String, size: CGFloat) -> Bool {
 }
 private func tpTimerTextWidth(_ size: CGFloat) -> CGFloat {
     #if os(macOS)
-    let font = NSFont(name: "Arial-BoldMT", size: size) ?? NSFont.boldSystemFont(ofSize: size)
+    let font = NSFont(name: "Arial-BoldMT", size: size) ?? NSFont.jarasBoldSystemFont(ofSize: size)
     #else
     let font = UIFont(name: "Arial-BoldMT", size: size) ?? UIFont.boldSystemFont(ofSize: size)
     #endif
@@ -211,6 +389,8 @@ private struct TPPreviewSong: Identifiable, Equatable, Codable {
     let name: String
     let duration: Double
     let color: UInt32
+    let unified: Bool
+    var liveExecuted = false
 }
 private struct TPPreviewBlock: Identifiable, Equatable, Codable {
     let id: String
@@ -223,13 +403,20 @@ private struct TPProjectionData: Equatable {
     var text = "", chords = "", song = "", queued = ""
     var currentRegion: UUID?, queuedRegion: UUID?
     var progress = 0.0
+    var loopActive = false
+    var previewPlayback = TeleprompterPreviewPlayback()
     var preview: [TPPreviewBlock] = []
+    var previewPlaylist = false
+    @MainActor func previewColor(_ entry: TPPreviewSong, settings: TeleprompterSettings) -> UInt32 {
+        let regionColor = entry.id == currentRegion ? settings.highlightColor : entry.id == queuedRegion ? settings.queueNameColor : entry.color
+        return settings.previewNameColor(region: regionColor, setlist: teleprompterSetlistColor(playlist: previewPlaylist, unified: entry.unified))
+    }
 }
 @MainActor private final class TPProjectionDisplay: ObservableObject {
     @Published var data = TPProjectionData()
     @Published var fullscreen = false
     @Published var previewActive = false
-    @Published var previewPage = 0
+    @Published var previewBlocks = 0..<4
 }
 private struct LocalizedTeleprompterConfig: View {
     let initialSlot: Int
@@ -243,7 +430,7 @@ private struct LocalizedTeleprompterConfig: View {
                 Text("Teleprompter 2").tag(2)
                 Text("Messages").tag(3)
             }.pickerStyle(.segmented).padding(12)
-            TeleprompterConfig(showingNotices: slot == 3, preferences: slot == 2 ? .second : .shared, close: close)
+            TeleprompterConfig(showingNotices: slot == 3, showsClose: false, preferences: slot == 2 ? .second : .shared, close: close)
         }.onAppear { slot = initialSlot }
             .environment(\.locale, Locale(identifier: language)).preferredColorScheme(.dark)
     }
@@ -255,7 +442,8 @@ private struct LocalizedTeleprompterConfig: View {
     let index: Int
     @Published private(set) var visible = false
     @Published private(set) var previewActive = false
-    @Published private(set) var previewPage = 0
+    @Published private(set) var previewSlots = TeleprompterPreviewSlots.load()
+    var previewPage: Int { previewSlots.selected }
     private var window: ProjectionWindow?
     private var remoteConfiguration: NSPanel?
     private var configuration: NSPanel?
@@ -263,41 +451,25 @@ private struct LocalizedTeleprompterConfig: View {
     private let display = TPProjectionDisplay()
     private let preferences: TeleprompterPreferences
     private var video: VideoPlayback { index == 1 ? .teleprompter : .teleprompter2 }
-    private var minimizeObservation: NSObjectProtocol?
-    private var restoreObservation: NSObjectProtocol?
-    private var minimizedWithMain = false
     private var preferenceObservation: AnyCancellable?
     private var cachedProject: UUID?, cachedSong: UUID?
     private var cachedRevision: UInt64?
+    private var cachedLiveEnabled = false
+    private var cachedLiveMarks: [UUID] = []
     private var lastRemoteRefresh = 0.0
     private var cachedPreview: [TPPreviewBlock] = []
     init(index: Int) {
         self.index = index
         preferences = index == 1 ? .shared : .second
         super.init()
-        minimizeObservation = NotificationCenter.default.addObserver(forName: NSWindow.didMiniaturizeNotification,object: nil,queue: .main) { [weak self] notice in
-            guard let parent = notice.object as? NSWindow, parent.title == "CatLive" else { return }
-            MainActor.assumeIsolated {
-                guard let self, let window = self.window, !window.isProjectionFullscreen else { return }
-                self.minimizedWithMain = true
-                window.orderOut(nil)
-            }
-        }
-        restoreObservation = NotificationCenter.default.addObserver(forName: NSWindow.didDeminiaturizeNotification,object: nil,queue: .main) { [weak self] notice in
-            guard let parent = notice.object as? NSWindow, parent.title == "CatLive" else { return }
-            MainActor.assumeIsolated {
-                guard let self, self.minimizedWithMain else { return }
-                self.minimizedWithMain = false
-                self.window?.orderFrontRegardless()
-            }
-        }
+        display.previewBlocks = previewSlots.visibleBlocks
         preferenceObservation = preferences.$settings.dropFirst().sink { [weak self] _ in
             guard self?.visible == true || (self.map { TeleprompterRemote.panel($0.index).enabled } ?? false) else { return }
             // Published sends before the stored profile changes. Read it on the
             // next main-queue turn so progress mode also changes while stopped.
             DispatchQueue.main.async { [weak self] in
                 guard let self, let show = self.show else { return }
-                self.video.setProjectionEnabled(self.visible && (!self.preferences.settings.displaysPreview(self.previewActive) || self.preferences.settings.isClear))
+                self.video.setProjectionEnabled(self.visible && !self.preferences.settings.displaysPreview(self.previewActive))
                 self.update(show.snapshot,revision: show.projectRevision)
             }
         }
@@ -308,17 +480,21 @@ private struct LocalizedTeleprompterConfig: View {
         let window = ProjectionWindow(contentRect: NSRect(x: 0,y: 0,width: 800,height: 450),styleMask: [.titled,.closable,.resizable,.miniaturizable],backing: .buffered,defer: false)
         window.title = "Teleprompter \(index)"; window.isReleasedWhenClosed = false
         window.contentMinSize = NSSize(width: 320,height: 180)
-        window.level = .floating; window.hidesOnDeactivate = false; window.delegate = self
+        window.followApplicationWindowOrder(); window.delegate = self
         let host = NSHostingView(rootView: TeleprompterProjectionView(index: index, display: display, preferences: preferences, video: video))
         if #available(macOS 13, *) { host.sizingOptions = [] }
         window.contentView = host
         self.window = window; visible = true; display.fullscreen = false
         if index == 2 { previewActive = Self.shared.previewActive; display.previewActive = previewActive }
-        video.setProjectionEnabled(!preferences.settings.displaysPreview(previewActive) || preferences.settings.isClear)
         cachedRevision = nil
-        update(show.snapshot,revision: show.projectRevision)
-        window.restorePlacement(key: "jaras.teleprompterWindow.\(index)"); window.makeKeyAndOrderFront(nil)
+        window.restorePlacement(key: "jaras.teleprompterWindow.\(index)")
+        ProjectionWindow.presentWorkspaceWindow(window, activates: false)
         display.fullscreen = window.isProjectionFullscreen
+        DispatchQueue.main.async { [weak self, weak window] in
+            guard let self, let window, self.window === window, let show = self.show else { return }
+            self.video.setProjectionEnabled(!self.preferences.settings.displaysPreview(self.previewActive))
+            self.update(show.snapshot, revision: show.projectRevision)
+        }
     }
     func togglePreview() {
         setPreview(!previewActive)
@@ -327,18 +503,37 @@ private struct LocalizedTeleprompterConfig: View {
     private func setPreview(_ active: Bool) {
         previewActive = active
         display.previewActive = active
-        video.setProjectionEnabled(visible && (!preferences.settings.displaysPreview(active) || preferences.settings.isClear))
+        video.setProjectionEnabled(visible && !preferences.settings.displaysPreview(active))
     }
     func selectPreviewPage(_ page: Int) {
-        previewPage = min(5,max(0,page))
-        display.previewPage = previewPage
-        if index == 1 { Self.second.previewPage = previewPage; Self.second.display.previewPage = previewPage }
+        var slots = previewSlots
+        slots.selected = min(TeleprompterPreviewSlots.slotCount - 1, max(0, page))
+        setPreviewSlots(slots)
+    }
+    func advancePreviewSlot(_ slot: Int) {
+        var slots = previewSlots
+        slots.advance(slot)
+        setPreviewSlots(slots)
+    }
+    private func setPreviewSlots(_ slots: TeleprompterPreviewSlots) {
+        slots.save()
+        for controller in [Self.shared, Self.second] {
+            controller.previewSlots = slots
+            controller.display.previewBlocks = slots.visibleBlocks
+            if let show = controller.show {
+                controller.lastRemoteRefresh = 0
+                controller.update(show.snapshot, revision: show.projectRevision)
+            }
+        }
     }
     /// Setlist edits invalidate only the cached preview, without rescheduling audio.
     func invalidatePreview() { cachedRevision = nil }
     /// INIT AUTO observes only playback identity; closed projections do no content work.
     func update(_ snapshot: ShowSnapshot, revision: UInt64 = 0) {
-        if index == 1 { TeleprompterTimerController.shared.observePlayback(snapshot) }
+        if index == 1 {
+            TeleprompterTimerController.shared.observePlayback(snapshot)
+            TPNoticeController.shared.observeTransport(playing: snapshot.transport.playing || snapshot.transport.subPlay.playing)
+        }
         guard visible || TeleprompterRemote.panel(index).enabled else { return }
         if !visible {
             let now = ProcessInfo.processInfo.systemUptime
@@ -351,13 +546,16 @@ private struct LocalizedTeleprompterConfig: View {
             return
         }
         let song = snapshot.transport.multiLoop?.projectionSong(originalSong) ?? originalSong
-        if cachedProject != snapshot.project.id || cachedSong != song.id || cachedRevision != revision {
+        let liveEnabled = snapshot.project.regionSetlist?.liveEnabled == true
+        let liveMarks = snapshot.project.regionSetlist?.playedLiveRegionIDs ?? []
+        if cachedProject != snapshot.project.id || cachedSong != song.id || cachedRevision != revision || cachedLiveEnabled != liveEnabled || cachedLiveMarks != liveMarks {
+            cachedLiveEnabled = liveEnabled; cachedLiveMarks = liveMarks
             cachedProject = snapshot.project.id; cachedSong = song.id; cachedRevision = revision
             cachedPreview = preview(song: song,project: snapshot.project)
         }
         if visible {
             video.setStretch(preferences.settings.stretchesMedia)
-            video.update(snapshot)
+            video.update(snapshot, revision: revision)
         }
         let transport = snapshot.transport
         let position = transport.playing ? transport.position : transport.editPosition ?? transport.position
@@ -365,9 +563,10 @@ private struct LocalizedTeleprompterConfig: View {
             .min { $0.endTime - $0.startTime < $1.endTime - $1.startTime }
         let queue = song.parts.first(where: { $0.id == transport.queuedRegionId })
         var next = TPProjectionData()
+        next.loopActive = transport.loop.enabled
         next.song = region?.name ?? ""
         next.queued = queue?.name ?? snapshot.project.songs.first(where: { $0.id == transport.queue.songId })?.name ?? ""
-        next.currentRegion = region?.id; next.queuedRegion = queue?.id
+        next.currentRegion = transport.playlistEntryId ?? region?.id; next.queuedRegion = transport.queuedPlaylistEntryId ?? queue?.id
         var lyricClip: AudioClip?, chordClip: AudioClip?
         let lyricKind: TrackKind = index == 1 ? .teleprompt : .teleprompt2
         for track in song.tracks where !track.mute && (track.kind == lyricKind || track.kind == .chords) {
@@ -382,31 +581,39 @@ private struct LocalizedTeleprompterConfig: View {
             next.progress = (min(1,max(0,(position - clip.startTime) / clip.duration)) * 1000).rounded() / 1000
         }
         next.preview = cachedPreview
+        next.previewPlaylist = snapshot.project.regionSetlist?.playlists.contains { $0.id == snapshot.project.regionSetlist?.selectedId && $0.songId == song.id } == true
+        next.previewPlayback = TeleprompterPreviewPlayback(song: song, transport: transport,
+            playlist: snapshot.project.regionSetlist?.playlists.first { $0.id == snapshot.project.regionSetlist?.selectedId && $0.songId == song.id })
         if visible, display.data != next { display.data = next }
         if let window, display.fullscreen != window.isProjectionFullscreen { display.fullscreen = window.isProjectionFullscreen }
         if TeleprompterRemote.panel(index).enabled {
-            let blocks = Array(next.preview.dropFirst(previewPage * 4).prefix(4)).map { block in
+            let range = previewSlots.visibleBlocks
+            let blocks = next.preview.dropFirst(range.lowerBound).prefix(range.count).map { block in
                 TeleprompterRemoteBlock(name: block.name, color: block.color, duration: block.duration, songs: block.songs.map {
-                    TeleprompterRemoteSong(name: $0.name, color: $0.id == next.currentRegion ? preferences.settings.highlightColor : $0.id == next.queuedRegion ? preferences.settings.queueNameColor : $0.color, duration: $0.duration)
-                })
+                    TeleprompterRemoteSong(name: $0.name, color: next.previewColor($0, settings: preferences.settings), duration: $0.duration, liveExecuted: $0.liveExecuted,
+                        playing: next.previewPlayback.playingEntry == $0.id, queued: next.previewPlayback.queuedEntry == $0.id,
+                        playbackProgress: next.previewPlayback.progress(for: $0.id))
+                }, nameColor: UInt32(AppearanceColor.shared("jaras.setlist.blockTextColor", default: 0x69ed91).value))
             }
             TeleprompterRemote.panel(index).update(text: next.text, chords: next.chords, song: next.song, queued: next.queued, progress: next.progress, preview: previewActive, blocks: blocks, snapshot: snapshot)
         }
     }
     private func preview(song: Song, project: Project) -> [TPPreviewBlock] {
         let state = project.regionSetlist ?? RegionSetlist()
+        let played = SetlistLivePlaybackTracker.previewMarks(project: project)
         let playlist = state.playlists.first { $0.id == state.selectedId && $0.songId == song.id }
-        let lookup = Dictionary(uniqueKeysWithValues: song.parts.map { ($0.id,$0) })
-        let regions = playlist.map { $0.regionIds.compactMap { lookup[$0] } } ?? song.parts.filter { $0.parentRegionID == nil }.sorted { $0.startTime < $1.startTime }
+        let entries = TeleprompterPreviewEntry.make(song: song, playlist: playlist)
         let blocks = Dictionary(grouping: (state.blocks ?? []).filter { $0.songId == song.id && $0.playlistId == playlist?.id },by: \.beforeRegionId)
         var result = [TPPreviewBlock(id: song.id.uuidString,name: "",color: 0xffea00)]
-        for region in regions {
-            for block in blocks[region.id] ?? [] {
+        for entry in entries {
+            let region = entry.region
+            for block in entry.blockAnchors.flatMap({ blocks[$0] ?? [] }) {
                 result.append(TPPreviewBlock(id: block.id.uuidString,name: block.name,color: block.color))
             }
             let last = result.count - 1
             result[last].duration += region.endTime - region.startTime
-            result[last].songs.append(TPPreviewSong(id: region.id,name: region.displayName,duration: region.endTime-region.startTime,color: region.color ?? result[last].color))
+            result[last].songs.append(TPPreviewSong(id: entry.id,name: region.displayName,duration: region.endTime-region.startTime,color: region.color ?? result[last].color, unified: region.parentRegionID != nil,
+                liveExecuted: played.contains(region.id)))
         }
         result += (blocks[nil] ?? []).map { TPPreviewBlock(id: $0.id.uuidString,name: $0.name,color: $0.color) }
         return result.filter { !$0.name.isEmpty || !$0.songs.isEmpty }
@@ -418,21 +625,20 @@ private struct LocalizedTeleprompterConfig: View {
     }
     private func showSettings(initialSlot: Int) {
         if let configuration {
-            let host = NSHostingView(rootView: LocalizedTeleprompterConfig(initialSlot: initialSlot, close: { [weak configuration] in configuration?.close() }))
+            let host = NSHostingView(rootView: LocalizedTeleprompterConfig(initialSlot: initialSlot, close: { [weak configuration] in configuration?.close() }).interfaceScaled())
             if #available(macOS 13, *) { host.sizingOptions = [] }
             configuration.contentView = host
-            configuration.makeKeyAndOrderFront(nil)
+            ProjectionWindow.presentWorkspaceWindow(configuration)
             return
         }
-        let panel = NSPanel(contentRect: NSRect(x: 0,y: 0,width: 760,height: 700),styleMask: [.titled,.closable,.resizable,.utilityWindow],backing: .buffered,defer: false)
-        panel.title = JarasLocalization.string("Teleprompter settings")
-        panel.contentMinSize = NSSize(width: 500,height: 520)
-        panel.isReleasedWhenClosed = false; panel.isFloatingPanel = false; panel.hidesOnDeactivate = true
-        panel.level = .normal; panel.delegate = self
-        let host = NSHostingView(rootView: LocalizedTeleprompterConfig(initialSlot: initialSlot, close: { [weak panel] in panel?.close() }))
+        let panel = makeWorkspacePanel(title: JarasLocalization.string("Teleprompter settings"),
+            size: NSSize(width: 760, height: 700), minimum: NSSize(width: 500, height: 520))
+        panel.delegate = self
+        let host = NSHostingView(rootView: LocalizedTeleprompterConfig(initialSlot: initialSlot, close: { [weak panel] in panel?.close() }).interfaceScaled())
         if #available(macOS 13, *) { host.sizingOptions = [] }
         panel.contentView = host
-        configuration = panel; panel.center(); panel.makeKeyAndOrderFront(nil)
+        InterfaceScaling.shared.register(panel)
+        configuration = panel; panel.center(); ProjectionWindow.presentWorkspaceWindow(panel)
     }
     func configureRemote(show: ShowController, directory: URL?) {
         self.show = show
@@ -443,13 +649,14 @@ private struct LocalizedTeleprompterConfig: View {
     }
     func showRemote(show: ShowController, directory: URL?) {
         configureRemote(show: show, directory: directory)
-        if let remoteConfiguration { remoteConfiguration.makeKeyAndOrderFront(nil); return }
+        if let remoteConfiguration { ProjectionWindow.presentWorkspaceWindow(remoteConfiguration); return }
         let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 420, height: 420), styleMask: [.titled, .closable], backing: .buffered, defer: false)
         panel.title = JarasLocalization.string("TP Remoto"); panel.isReleasedWhenClosed = false
-        panel.level = NSWindow.Level(rawValue: NSWindow.Level.floating.rawValue + 1)
-        panel.hidesOnDeactivate = true; panel.delegate = self
-        panel.contentView = NSHostingView(rootView: TeleprompterRemoteView(close: { [weak panel] in panel?.close() }, remote: TeleprompterRemote.panel(index)))
-        remoteConfiguration = panel; panel.center(); panel.makeKeyAndOrderFront(nil)
+        panel.level = .normal
+        panel.hidesOnDeactivate = false; panel.delegate = self
+        panel.contentView = NSHostingView(rootView: TeleprompterRemoteView(close: { [weak panel] in panel?.close() }, remote: TeleprompterRemote.panel(index)).interfaceScaled())
+        InterfaceScaling.shared.register(panel)
+        remoteConfiguration = panel; panel.center(); ProjectionWindow.presentWorkspaceWindow(panel)
     }
     func windowDidResize(_ notification: Notification) {
         guard let window, notification.object as? NSWindow === window else { return }
@@ -458,18 +665,24 @@ private struct LocalizedTeleprompterConfig: View {
     func windowWillClose(_ notification: Notification) {
         guard let closed = notification.object as? NSWindow else { return }
         if closed === window {
-            minimizedWithMain = false
-            visible = false; window?.contentView = nil; window = nil
-            video.setProjectionEnabled(false)
+            visible = false; window = nil
             cachedPreview = []; cachedRevision = nil
             if !TeleprompterRemote.panel(index).enabled { show = nil }
-        } else if closed === configuration { configuration?.contentView = nil; configuration = nil }
-        else if closed === remoteConfiguration { remoteConfiguration?.contentView = nil; remoteConfiguration = nil }
+            DispatchQueue.main.async { [weak self] in
+                closed.contentView = nil
+                if let self, self.window == nil { self.video.setProjectionEnabled(false) }
+            }
+        } else if closed === configuration {
+            configuration = nil
+            DispatchQueue.main.async { closed.contentView = nil }
+        } else if closed === remoteConfiguration {
+            remoteConfiguration = nil
+            DispatchQueue.main.async { closed.contentView = nil }
+        }
     }
 }
 
 struct TeleprompterToggleButton: View {
-    @Environment(\.transportControlWidth) private var buttonWidth
     let show: ShowController
     var directory: URL? = nil
     let index: Int
@@ -482,46 +695,28 @@ struct TeleprompterToggleButton: View {
     }
     var body: some View {
         Button { controller.toggle(show: show) } label: {
-            Label("TP-\(index)",systemImage: "text.alignleft").font(.system(size: TransportControlMetrics.font,weight: .semibold))
-                    .lineLimit(1).minimumScaleFactor(0.8)
-                    .frame(width: buttonWidth, height: TransportControlMetrics.height)
-                .foregroundStyle(controller.visible ? Color.black : JarasTheme.text)
-                .background(RoundedRectangle(cornerRadius: 5).fill(controller.visible ? JarasTheme.green : Color(hex: 0xc44545)))
-                .overlay(RoundedRectangle(cornerRadius: 5).stroke(controller.visible ? JarasTheme.green : Color(hex: 0xc44545)))
-                .contentShape(Rectangle())
+            DesktopToolbarLabel(title: "TP-\(index)", systemImage: "teleprompter\(index)", tone: controller.visible ? .live : .neutral, showsTitle: true)
         }.buttonStyle(.plain)
             .contextMenu {
                 Button("Configurações") { controller.showSettings() }
                 Button("TP Remoto") { controller.showRemote(show: show, directory: directory) }
             }
-            .jarasHelp(index == 1 ? ControlMappings.shared.shortcutHelp(.toggleTeleprompter) : "Teleprompter 2")
-            .accessibilityLabel("Teleprompter \(index)")
+            .accessibilityLabel("Teleprompter \(index)").help(Text(verbatim: "TP\(index)"))
     }
 }
 struct TeleprompterPreviewButton: View {
-    @Environment(\.transportControlWidth) private var buttonWidth
     @ObservedObject private var controller = TeleprompterWindow.shared
     @State private var choosingPage = false
     var body: some View {
         Button { controller.togglePreview() } label: {
-            Text("Preview").font(.system(size: TransportControlMetrics.font,weight: .semibold))
-                .frame(width: buttonWidth, height: TransportControlMetrics.height)
-                .foregroundStyle(controller.previewActive ? Color.black : JarasTheme.text)
-                .background(RoundedRectangle(cornerRadius: 5).fill(controller.previewActive ? JarasTheme.green : Color(hex: 0xc44545)))
-                .overlay(RoundedRectangle(cornerRadius: 5).stroke(controller.previewActive ? JarasTheme.green : Color(hex: 0xc44545)))
-                .contentShape(Rectangle())
-        }.buttonStyle(.plain).jarasHelp("Show blocks in the teleprompter")
+            Text(verbatim: "PRW")
+                .foregroundStyle(controller.previewActive ? JarasTheme.green : JarasTheme.liveOffRed)
+                .modifier(DesktopToolbarChrome(tone: controller.previewActive ? .live : .neutral))
+                .accessibilityLabel("Preview")
+        }.buttonStyle(.plain)
             .overlay(TeleprompterRightClick(action: { choosingPage = true }))
-            .popover(isPresented: $choosingPage) {
-                VStack(alignment: .leading,spacing: 12) {
-                    Text("Preview").font(.headline)
-                    Picker("Blocks",selection: Binding(get: { controller.previewPage },set: { controller.selectPreviewPage($0) })) {
-                        ForEach(0..<6) { page in
-                            Text("Blocks \(page * 4 + 1)–\(page * 4 + 4)").tag(page)
-                        }
-                    }.pickerStyle(.segmented).labelsHidden()
-                }.padding(16).frame(width: 660)
-            }
+            .help(Text("Preview"))
+            .popover(isPresented: $choosingPage) { TeleprompterPreviewSlotMenu(controller: controller) }
     }
 }
 private struct TeleprompterRightClick: NSViewRepresentable {
@@ -532,36 +727,92 @@ private struct TeleprompterRightClick: NSViewRepresentable {
 private final class TeleprompterRightClickView: RightClickTargetView { override var priority: Int { 100 } }
 
 private struct TeleprompterProjectionView: View {
+    @ObservedObject private var blockTextColor = AppearanceColor.shared("jaras.setlist.blockTextColor", default: 0x69ed91)
+    @ObservedObject private var allRegionsTextColor = AppearanceColor.shared("jaras.setlist.allRegionsTextColor", default: 0xffffff)
+    @ObservedObject private var playlistTextColor = AppearanceColor.shared("jaras.setlist.playlistTextColor", default: 0x00ff9a)
+    @ObservedObject private var unifiedTextColor = AppearanceColor.shared("jaras.setlist.unifiedTextColor", default: 0xffeb3b)
     let index: Int
     @ObservedObject var display: TPProjectionDisplay
     @ObservedObject var preferences: TeleprompterPreferences
     @ObservedObject var video: VideoPlayback
+    @ObservedObject private var notice = TPNoticeController.shared
     @ObservedObject private var timer = TeleprompterTimerController.shared
     @AppStorage("jaras.language") private var language = "en"
     private var content: DAWRemoteTeleprompter {
         let data = display.data, settings = preferences.settings
-        let blocks = Array(data.preview.dropFirst(display.previewPage * 4).prefix(4)).map { block in
+        let range = display.previewBlocks
+        let blocks = data.preview.dropFirst(range.lowerBound).prefix(range.count).map { block in
             DAWRemoteTeleprompter.Block(id: UUID(uuidString: block.id)!, name: block.name, color: block.color, rows: block.songs.map { song in
-                .init(id: song.id, name: song.name, color: song.id == data.currentRegion ? settings.highlightColor : song.id == data.queuedRegion ? settings.queueNameColor : song.color, duration: song.duration)
-            })
+                .init(id: song.id, name: song.name, color: data.previewColor(song, settings: settings), duration: song.duration, liveExecuted: song.liveExecuted,
+                    playing: data.previewPlayback.playingEntry == song.id, queued: data.previewPlayback.queuedEntry == song.id,
+                    playbackProgress: data.previewPlayback.progress(for: song.id))
+            }, nameColor: UInt32(blockTextColor.value))
         }
         return .init(index: index, text: data.text, chords: data.chords, song: data.song, queued: data.queued,
-                     progress: data.progress, style: .init(), preview: display.previewActive, blocks: blocks, settings: settings)
+                     progress: data.progress, style: .init(), preview: display.previewActive, blocks: blocks, settings: settings, loopActive: data.loopActive)
     }
     var body: some View {
-        TeleprompterProjectionLayout(content: content, fullscreen: display.fullscreen,
-            timerValue: { (timer.displayText(spaced: true), timer.displayOpacity(), timer.expired()) },
-            media: { ProjectionMediaSurface(controller: video) })
-            .overlay { if !preferences.settings.isClear { TPNoticeOverlay(index: index) } }.environment(\.locale, Locale(identifier: language))
+        TeleprompterNoticeStage(settings: preferences.settings, preview: display.previewActive,
+            noticeActive: notice.active && (index == 1 ? notice.appearance.window1 : notice.appearance.window2)) {
+                TeleprompterProjectionLayout(content: content, fullscreen: display.fullscreen,
+                    timerValue: { (timer.displayText(spaced: true), timer.displayOpacity(), timer.expired()) },
+                    media: { ProjectionMediaSurface(controller: video) })
+            } notice: {
+                TPNoticeOverlay(index: index)
+            }.environment(\.locale, Locale(identifier: language))
     }
 }
 #else
 @MainActor final class TeleprompterWindow: ObservableObject {
     static let shared = TeleprompterWindow()
+    @Published var previewActive = false
+    @Published private(set) var previewSlots = TeleprompterPreviewSlots.load()
+    var previewPage: Int { previewSlots.selected }
+    func togglePreview() { previewActive.toggle() }
+    func selectPreviewPage(_ page: Int) {
+        previewSlots.selected = min(TeleprompterPreviewSlots.slotCount - 1, max(0, page))
+        previewSlots.save()
+    }
+    func advancePreviewSlot(_ slot: Int) {
+        previewSlots.advance(slot)
+        previewSlots.save()
+    }
     func invalidatePreview() {}
-    func update(_ snapshot: ShowSnapshot,revision: UInt64 = 0) { TeleprompterTimerController.shared.observePlayback(snapshot) }
+    func update(_ snapshot: ShowSnapshot,revision: UInt64 = 0) {
+        TeleprompterTimerController.shared.observePlayback(snapshot)
+        TPNoticeController.shared.observeTransport(playing: snapshot.transport.playing || snapshot.transport.subPlay.playing)
+    }
 }
 #endif
+
+struct TeleprompterPreviewSlotMenu: View {
+    @ObservedObject var controller: TeleprompterWindow
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Preview").font(.jarasHeadline)
+            HStack(spacing: 4) {
+                ForEach(0..<TeleprompterPreviewSlots.slotCount, id: \.self) { slot in
+                    let selected = controller.previewPage == slot
+                    let button = Button { controller.selectPreviewPage(slot) } label: {
+                        Text(verbatim: controller.previewSlots.label(slot))
+                            .frame(maxWidth: .infinity).frame(height: 28)
+                            .background(selected ? JarasTheme.display : Color.clear, in: RoundedRectangle(cornerRadius: 5))
+                            .contentShape(Rectangle())
+                    }
+                    #if os(macOS)
+                    button.buttonStyle(.plain)
+                        .overlay(TeleprompterRightClick(action: { controller.advancePreviewSlot(slot) }))
+                        .accessibilityAddTraits(selected ? .isSelected : [])
+                    #else
+                    button.buttonStyle(IpadTapHoldButtonStyle(hold: { controller.advancePreviewSlot(slot) }))
+                        .accessibilityAddTraits(selected ? .isSelected : [])
+                    #endif
+                }
+            }.padding(2).background(JarasTheme.panel, in: RoundedRectangle(cornerRadius: 6))
+        }.padding(16).frame(width: 430)
+    }
+}
 
 #if os(macOS)
 struct TPNoticeAppearance: Codable {
@@ -570,6 +821,10 @@ struct TPNoticeAppearance: Codable {
     var scale = 100.0
     var text: UInt32 = 0xffffff, background: UInt32 = 0x000000, flash: UInt32 = 0xffdc52
 }
+@MainActor final class TPNoticeEditorPresentation: ObservableObject {
+    @Published fileprivate(set) var isOpen = false
+}
+
 @MainActor final class TPNoticeController: NSObject, ObservableObject, NSWindowDelegate {
     static let shared = TPNoticeController()
     @Published var appearance: TPNoticeAppearance { didSet { persist() } }
@@ -580,6 +835,34 @@ struct TPNoticeAppearance: Codable {
     @Published private(set) var message = ""
     @Published private(set) var image: NSImage?
     @Published private(set) var pinned = false
+    @Published private(set) var pinWhenStopped = false
+    private(set) var stoppedNoticeActive = false
+    private var playbackRunning = false
+    private var stoppedText = ""
+    private var stoppedSlot = -1
+    func setPinWhenStopped(_ enabled: Bool, text: String? = nil, selectedSlot: Int? = nil) {
+        pinWhenStopped = enabled
+        if enabled {
+            stoppedText = String((text ?? draft).prefix(500)); stoppedSlot = selectedSlot ?? slot
+            if !playbackRunning { presentStoppedNotice() }
+        } else if stoppedNoticeActive { clear() }
+    }
+    func observeTransport(playing: Bool) {
+        guard playing != playbackRunning else { return }
+        playbackRunning = playing
+        if playing { if stoppedNoticeActive { clear() } }
+        else if pinWhenStopped && !active { presentStoppedNotice() }
+    }
+    private func presentStoppedNotice() {
+        let previousDraft = draft, previousSlot = slot
+        draft = stoppedText; slot = stoppedSlot
+        defer { draft = previousDraft; slot = previousSlot }
+        if send() {
+            stoppedNoticeActive = true; pinned = true
+            schedule(seconds: 20)
+        }
+    }
+
     @Published private(set) var flashing = false
     private var flashTask: Task<Void, Never>?
     private(set) var remoteImage: String?
@@ -588,6 +871,7 @@ struct TPNoticeAppearance: Codable {
     private var pausedRemaining = 20.0
     private var expiry: Task<Void, Never>?
     private var panel: NSWindow?
+    let editorPresentation = TPNoticeEditorPresentation()
     private var globalDraft = ""
     private let defaults: UserDefaults
     init(defaults: UserDefaults = .standard) {
@@ -622,6 +906,8 @@ struct TPNoticeAppearance: Codable {
         let value = String(draft.trimmingCharacters(in: .whitespacesAndNewlines).prefix(500))
         let selectedImage = slot >= 0 ? images[slot].flatMap(NSImage.init(data:)) : nil
         guard !value.isEmpty || selectedImage != nil else { return false }
+        if stoppedNoticeActive { pinned = false }
+        stoppedNoticeActive = false
         message = value; image = selectedImage; sentAt = Date(); pausedRemaining = 20
         remoteImage = slot >= 0 ? images[slot].map { "data:image/jpeg;base64," + $0.base64EncodedString() } : nil
         flashing = true; flashTask?.cancel()
@@ -645,7 +931,19 @@ struct TPNoticeAppearance: Codable {
         pinned.toggle(); pausedRemaining = seconds
         if active { schedule(seconds: seconds) }
     }
-    func clear() { expiry?.cancel(); expiry = nil; flashTask?.cancel(); flashing = false; message = ""; image = nil; remoteImage = nil; deadline = nil; pinned = false }
+    func clear() {
+        let restore = active && !stoppedNoticeActive && pinWhenStopped && !playbackRunning
+        stoppedNoticeActive = false
+        expiry?.cancel(); expiry = nil
+        flashTask?.cancel(); flashTask = nil
+        if flashing { flashing = false }
+        if !message.isEmpty { message = "" }
+        if image != nil { image = nil }
+        remoteImage = nil
+        if deadline != nil { deadline = nil }
+        if pinned { pinned = false }
+        if restore { presentStoppedNotice() }
+    }
     func chooseImage(for index: Int? = nil) {
         let imageSlot = index ?? slot
         guard images.indices.contains(imageSlot) else { return }
@@ -661,34 +959,68 @@ struct TPNoticeAppearance: Codable {
         }
     }
     func open() {
-        if let panel { panel.makeKeyAndOrderFront(nil); return }
-        let window = NSWindow(contentRect: NSRect(x: 0,y: 0,width: 520,height: 430),styleMask: [.titled,.closable,.resizable],backing: .buffered,defer: false)
+        if let panel {
+            panel.title = JarasLocalization.string("Messages")
+            panel.contentView?.isHidden = false
+            ProjectionWindow.presentWorkspaceWindow(panel, activates: false)
+            if !editorPresentation.isOpen { editorPresentation.isOpen = true }
+            return
+        }
+        let window = NSPanel(contentRect: NSRect(x: 0,y: 0,width: 700,height: 430),styleMask: [.titled,.closable,.nonactivatingPanel],backing: .buffered,defer: false)
+        window.becomesKeyOnlyIfNeeded = true
+        ProjectionWindow.followWorkspaceWindow(window)
         window.title = JarasLocalization.string("Messages"); window.isReleasedWhenClosed = false
         window.delegate = self
-        window.contentMinSize = NSSize(width: 420,height: 360)
-        let host = NSHostingView(rootView: TPNoticeEditor(model: self))
+        window.contentMinSize = NSSize(width: 660,height: 360)
+        let host = NSHostingView(rootView: TPNoticeEditor(model: self).interfaceScaled())
         if #available(macOS 13, *) { host.sizingOptions = [] }
         window.contentView = host
-        window.center(); window.makeKeyAndOrderFront(nil); panel = window
+        InterfaceScaling.shared.register(window)
+        window.center(); ProjectionWindow.presentWorkspaceWindow(window, activates: false); panel = window
+        editorPresentation.isOpen = true
     }
     func windowWillClose(_ notification: Notification) {
         guard let window = notification.object as? NSWindow, window === panel else { return }
-        clear()
-        panel = nil
+        if !stoppedNoticeActive { clear() }
+        DispatchQueue.main.async { [weak window] in
+            if let window, !window.isVisible { window.contentView?.isHidden = true }
+        }
+        editorPresentation.isOpen = false
     }
 }
-struct TPNoticeButton: View {
-    @Environment(\.transportControlWidth) private var buttonWidth
-    var body: some View {
-        Button { TPNoticeController.shared.open() } label: {
-            HStack(spacing: 3) {
-                Image(systemName: "text.bubble")
-                Text("Messages")
+// Keep SwiftUI's editor and its selection/focus intact; only make its native
+// background transparent so the notice field stays visibly darker on macOS 12.
+private struct NoticeEditorBackground: NSViewRepresentable {
+    func makeNSView(context: Context) -> Surface { Surface() }
+    func updateNSView(_ view: Surface, context: Context) { view.refresh() }
+    final class Surface: NSView {
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+        override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); refresh() }
+        func refresh() {
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.window != nil else { return }
+                var ancestor = self.superview
+                while let container = ancestor {
+                    if let editor = self.textEditor(in: container) {
+                        editor.drawsBackground = false
+                        editor.enclosingScrollView?.drawsBackground = false
+                        editor.enclosingScrollView?.contentView.drawsBackground = false
+                        return
+                    }
+                    ancestor = container.superview
+                }
             }
         }
-            .buttonStyle(TransportButtonStyle(color: JarasTheme.yellow, active: false, fontSize: TransportControlMetrics.font, width: buttonWidth, height: TransportControlMetrics.height))
+        private func textEditor(in view: NSView) -> NSTextView? {
+            if let editor = view as? NSTextView { return editor }
+            for child in view.subviews {
+                if let editor = textEditor(in: child) { return editor }
+            }
+            return nil
+        }
     }
 }
+
 private struct TPNoticeEditor: View {
     @AppStorage("jaras.language") private var language = "en"
     @ObservedObject var model: TPNoticeController
@@ -704,6 +1036,9 @@ private struct TPNoticeEditor: View {
                     .keyboardShortcut(.return, modifiers: .command)
                 Button("Withdraw message") { model.clear() }.disabled(!model.active)
                 Toggle("Pin", isOn: Binding(get: { model.pinned },set: { _ in model.togglePin() })).toggleStyle(.button)
+                Toggle(isOn: Binding(get: { model.pinWhenStopped }, set: { model.setPinWhenStopped($0) })) {
+                    Text("Pin while transport is stopped").font(.jarasSystem(size: 12)).lineLimit(2).frame(maxWidth: 190)
+                }.toggleStyle(.button)
                 Spacer()
                 TimelineView(.animation(minimumInterval: 0.25, paused: !model.active || model.pinned)) { context in Text("\(Int(ceil(model.remaining(at: context.date))))s").monospacedDigit() }
             }
@@ -712,9 +1047,19 @@ private struct TPNoticeEditor: View {
                 Text("Global").tag(-1)
                 ForEach(0..<3) { index in Text("Message \(index + 1)").tag(index) }
             }.pickerStyle(.segmented)
-            TextEditor(text: $model.draft).font(.system(size: 18)).onChange(of: model.draft) { value in
-                if value.count > 500 { model.draft = String(value.prefix(500)) }
-            }
+            Group {
+                if #available(macOS 13, *) {
+                    TextEditor(text: $model.draft).scrollContentBackground(.hidden)
+                } else {
+                    TextEditor(text: $model.draft).background(NoticeEditorBackground())
+                }
+            }.font(.jarasSystem(size: 18))
+                .padding(8).background(Color(hex: 0x101010))
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.white.opacity(0.14), lineWidth: 1).allowsHitTesting(false))
+                .onChange(of: model.draft) { value in
+                    if value.count > 500 { model.draft = String(value.prefix(500)) }
+                }
             HStack {
                 Text("\(model.draft.count) / 500").foregroundStyle(.secondary)
                 Spacer()
@@ -726,31 +1071,6 @@ private struct TPNoticeEditor: View {
             }
         }.padding(16).background(JarasTheme.panel).foregroundStyle(JarasTheme.text).environment(\.locale, Locale(identifier: language))
             .onDisappear { sendFeedback.reset() }
-    }
-}
-struct TPNoticeSettingsView: View {
-    @ObservedObject private var model = TPNoticeController.shared
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Toggle("Show on TP-1", isOn: $model.appearance.window1)
-            Toggle("Show on TP-2", isOn: $model.appearance.window2)
-            Picker("Font", selection: $model.appearance.font) {
-                ForEach(Array(Set(["Arial","Segoe UI","Verdana","Tahoma","Georgia","Trebuchet MS","Menlo","Impact",model.appearance.font])).sorted(), id: \.self) { Text($0).tag($0) }
-            }
-            Text("Text scale: \(Int(model.appearance.scale))%")
-            Slider(value: $model.appearance.scale, in: 50...100)
-            color("Text color", path: \.text); color("Background color", path: \.background); color("Flash color", path: \.flash)
-            Toggle("Show emoji", isOn: $model.appearance.emojiEnabled)
-            TextField("Emoji", text: $model.appearance.emoji).onChange(of: model.appearance.emoji) { value in
-                if value.count > 8 { model.appearance.emoji = String(value.prefix(8)) }
-            }
-            Toggle("Hide content while showing a message", isOn: $model.appearance.cleanDisplay)
-        }.padding(16)
-    }
-    private func color(_ label: String, path: WritableKeyPath<TPNoticeAppearance, UInt32>) -> some View {
-        ColorPicker(LocalizedStringKey(label), selection: Binding(get: { Color(hex: model.appearance[keyPath: path]) }, set: { value in
-            if let rgb = NSColor(value).usingColorSpace(.deviceRGB) { model.appearance[keyPath: path] = UInt32((rgb.redComponent * 255).rounded()) << 16 | UInt32((rgb.greenComponent * 255).rounded()) << 8 | UInt32((rgb.blueComponent * 255).rounded()) }
-        }), supportsOpacity: false)
     }
 }
 private struct TPNoticeOverlay: View {
@@ -771,12 +1091,42 @@ private struct TPNoticeOverlay: View {
                                 .font(tpNoticeFont(appearance.font,size: min(72,max(24,geometry.size.width * 0.078)) * appearance.scale / 100))
                                 .foregroundStyle(Color(hex: appearance.text)).multilineTextAlignment(.center).minimumScaleFactor(0.3)
                         }
-                    }.padding(24).frame(maxWidth: .infinity,maxHeight: appearance.cleanDisplay ? .infinity : nil)
+                    }.padding(24).frame(width: geometry.size.width, height: geometry.size.height, alignment: .center)
                         .background(Color(hex: flash ? appearance.flash : appearance.background))
-                        .frame(maxWidth: .infinity,maxHeight: .infinity,alignment: .top)
+                        .clipped()
                 }
             }.allowsHitTesting(false)
         }
     }
 }
 #endif
+
+struct TPNoticeSettingsView: View {
+    @ObservedObject private var model = TPNoticeController.shared
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Toggle("Show on TP-1", isOn: $model.appearance.window1)
+            Toggle("Show on TP-2", isOn: $model.appearance.window2)
+            Picker("Font", selection: $model.appearance.font) {
+                ForEach(Array(Set(["Arial","Segoe UI","Verdana","Tahoma","Georgia","Trebuchet MS","Menlo","Impact",model.appearance.font])).sorted(), id: \.self) { Text($0).tag($0) }
+            }
+            Text("Text scale: \(Int(model.appearance.scale))%")
+            Slider(value: $model.appearance.scale, in: 50...100)
+            color("Text color", path: \.text); color("Background color", path: \.background); color("Flash color", path: \.flash)
+            Toggle("Show emoji", isOn: $model.appearance.emojiEnabled)
+            TextField("Emoji", text: $model.appearance.emoji).onChange(of: model.appearance.emoji) { value in
+                if value.count > 8 { model.appearance.emoji = String(value.prefix(8)) }
+            }
+        }.padding(16)
+    }
+    private func color(_ label: String, path: WritableKeyPath<TPNoticeAppearance, UInt32>) -> some View {
+        ColorPicker(LocalizedStringKey(label), selection: Binding(get: { Color(hex: model.appearance[keyPath: path]) }, set: { value in
+            #if os(macOS)
+            if let rgb = NSColor(value).usingColorSpace(.deviceRGB) { model.appearance[keyPath: path] = UInt32((rgb.redComponent * 255).rounded()) << 16 | UInt32((rgb.greenComponent * 255).rounded()) << 8 | UInt32((rgb.blueComponent * 255).rounded()) }
+            #else
+            var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+            if UIColor(value).getRed(&r, green: &g, blue: &b, alpha: &a) { model.appearance[keyPath: path] = UInt32((r * 255).rounded()) << 16 | UInt32((g * 255).rounded()) << 8 | UInt32((b * 255).rounded()) }
+            #endif
+        }), supportsOpacity: false)
+    }
+}

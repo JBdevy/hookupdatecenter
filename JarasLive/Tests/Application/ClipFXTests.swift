@@ -94,12 +94,13 @@ final class ClipFXTests: XCTestCase {
         project.songs[0].tracks[0].clips[0].fx = settings
         let decoded = try ProjectDocumentCodec.decode(ProjectDocumentCodec.encode(project))
         XCTAssertEqual(decoded.songs[0].tracks[0].clips[0].fx, settings)
-        var invalid = NativeFXSettings()
-        invalid.appendNative("Instruments", instrument: "piano")
-        invalid.appendNative("Instruments", instrument: "organ")
-        invalid.inserted.removeAll { $0 == "Instruments" }
-        invalid.instrumentID = nil; invalid.instrumentParameters = nil; invalid.instrumentBypassed = nil
-        XCTAssertThrowsError(try invalid.validateForClip(), "native instruments cannot enter an item through a repeated instance")
+        var instruments = NativeFXSettings()
+        instruments.appendNative("Instruments", instrument: "piano")
+        instruments.appendNative("Instruments", instrument: "organ")
+        try instruments.validateForClip()
+        project.songs[0].tracks[0].clips[0].fx = instruments
+        let reloaded = try ProjectDocumentCodec.decode(ProjectDocumentCodec.encode(project))
+        XCTAssertEqual(reloaded.songs[0].tracks[0].clips[0].fx, instruments)
     }
     func testItemManagerShowsFixedNativeStagesBeforeRepeatedAndExternalInsertsWithoutRewritingOrder() throws {
         var settings = NativeFXSettings()
@@ -114,7 +115,38 @@ final class ClipFXTests: XCTestCase {
         XCTAssertEqual(settings.effectKeys, stored, "track managers retain their reorderable insertion order")
         try settings.validateForClip()
     }
-    func testItemEffectsRejectInstrumentsUnknownEffectsAndSpecialTracks() throws {
+    func testExplicitItemReorderPromotesLegacyStagesPreservesSettingsAndRoundTrips() throws {
+        var value = NativeFXSettings()
+        value.appendNative("Delay"); value.delayTime = 0.875; value.delayEnabled = false
+        value.appendNative("EQ"); value.bands[1].gain = 7
+        let plugin = ExternalPlugin(classID: String(repeating: "A", count: 32), name: "External", path: "/tmp/Fixture.vst3")
+        value.externalPlugins = [plugin]; value.inserted.append(plugin.effectKey)
+        let repeated = value.appendNative("Delay")
+        var repeatedSettings = value.settings(for: repeated); repeatedSettings.delayTime = 0.375
+        value = value.merging(effect: repeated, from: repeatedSettings)
+        let original = value
+        XCTAssertNil(value.reorderClipEffect("EQ", before: "EQ"))
+        XCTAssertNil(value.reorderClipEffect("missing", before: nil))
+        XCTAssertNil(value.reorderClipEffect("EQ", before: "missing"))
+        XCTAssertNil(value.reorderClipEffect("EQ", before: "Delay"))
+        XCTAssertEqual(value, original, "No-op/invalid drops must not promote stages or modify the project")
+        let movedEQ = try XCTUnwrap(value.reorderClipEffect("EQ", before: repeated))
+        XCTAssertEqual(value.clipEffectKeys.map { value.kind(of: $0) }, ["Delay", plugin.effectKey, "EQ", "Delay"])
+        XCTAssertEqual(value.settings(for: movedEQ).bands, original.bands)
+        let promotedDelay = value.clipEffectKeys[0]
+        XCTAssertEqual(value.settings(for: promotedDelay).delayTime, 0.875)
+        XCTAssertFalse(value.isEnabled(promotedDelay))
+        XCTAssertEqual(value.settings(for: repeated).delayTime, 0.375)
+        XCTAssertEqual(value.externalPlugins, original.externalPlugins)
+        XCTAssertFalse(value.eqEnabled); XCTAssertFalse(value.delayEnabled)
+        let instances = value.instances
+        XCTAssertEqual(value.reorderClipEffect(repeated, before: promotedDelay), repeated)
+        XCTAssertEqual(value.instances, instances, "Subsequent moves retain plugin/instance identities")
+        try value.validateForClip()
+        var project = fixture(); project.songs[0].tracks[0].clips[0].fx = value
+        XCTAssertEqual(try ProjectDocumentCodec.decode(ProjectDocumentCodec.encode(project)), project)
+    }
+    func testItemEffectsRejectIncompleteInstrumentsUnknownEffectsAndSpecialTracks() throws {
         var project = fixture()
         var effects = NativeFXSettings()
         for invalid in ["Instruments", "External"] {

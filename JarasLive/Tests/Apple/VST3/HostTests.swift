@@ -18,7 +18,13 @@ let source = AVAudioSourceNode(format: format) { silent, _, frames, list in
 let plugin = JarasVST3.makeNode(); engine.attach(source); engine.attach(plugin)
 engine.connect(plugin, to: engine.mainMixerNode, format: format); engine.connect(source, to: plugin, format: format)
 var spec: [String: Any] = ["id": "fixture", "classID": catalog[0]["classID"]!, "path": path, "bypassed": false]
+precondition(!JarasVST3.isPluginLoaded(plugin, identifier: "fixture"), "An empty AU wrapper is not a loaded plugin")
+var missingSpec = spec; missingSpec["path"] = path + "/does-not-exist.vst3"
+do { try JarasVST3.configure(plugin, plugins: [missingSpec]); preconditionFailure("Missing module must fail") } catch { }
+precondition(!JarasVST3.isPluginLoaded(plugin, identifier: "fixture"))
+precondition(JarasVST3.state(plugin, identifier: "fixture") == nil)
 try JarasVST3.configure(plugin, plugins: [spec])
+precondition(JarasVST3.isPluginLoaded(plugin, identifier: "fixture"))
 let editor = JarasVST3.editor(plugin, identifier: "fixture")!
 precondition(editor.window == nil && editor.frame.size == NSSize(width: 32, height: 32), "the plugin must wait for its actual Cocoa parent window")
 let editorWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 32, height: 32), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
@@ -70,6 +76,37 @@ JarasVST3.silence(plugin); try check(0)
 sourceLevels = [0.2, 0.2]; try check(0.1)
 precondition(inputSilenceMask() == 0, "resuming input clears the silence flags immediately")
 print("VST3_CHANNEL_SILENCE_FLAGS_AND_MIDI_DURING_SILENCE_OK")
+// A Windows .jl must resolve the same processor locally and restore its state.
+let savedPaths = UserDefaults.standard.object(forKey: "jaras.plugins.paths")
+let savedCatalog = UserDefaults.standard.object(forKey: "jaras.plugins.catalog")
+UserDefaults.standard.set([URL(fileURLWithPath: path).deletingLastPathComponent().path], forKey: "jaras.plugins.paths")
+UserDefaults.standard.removeObject(forKey: "jaras.plugins.catalog")
+do {
+    defer {
+        if let savedPaths { UserDefaults.standard.set(savedPaths, forKey: "jaras.plugins.paths") } else { UserDefaults.standard.removeObject(forKey: "jaras.plugins.paths") }
+        if let savedCatalog { UserDefaults.standard.set(savedCatalog, forKey: "jaras.plugins.catalog") } else { UserDefaults.standard.removeObject(forKey: "jaras.plugins.catalog") }
+    }
+    let portableNode = JarasVST3.makeNode()
+    var portableSpec = spec
+    portableSpec["path"] = "C:\\Program Files\\Common Files\\VST3\\GainFixture.vst3"
+    let state = JarasVST3.state(plugin, identifier: "fixture")!
+    for (key,value) in state { portableSpec[key as! String] = value }
+    try JarasVST3.configure(portableNode, plugins: [portableSpec])
+    precondition(JarasVST3.isPluginLoaded(portableNode, identifier: "fixture"))
+    precondition(JarasVST3.state(portableNode, identifier: "fixture")?["componentState"] as? String == state["componentState"] as? String)
+    var mismatch = portableSpec; mismatch["classID"] = String(repeating: "0", count: 32)
+    let wrongNode = JarasVST3.makeNode()
+    do { try JarasVST3.configure(wrongNode, plugins: [mismatch]); preconditionFailure("A matching filename cannot substitute a different plugin class") } catch { }
+    precondition(!JarasVST3.isPluginLoaded(wrongNode, identifier: "fixture"))
+    // The indexed class also resolves renamed or nested bundles.
+    let entry: [String: String] = ["classID": spec["classID"] as! String, "path": path]
+    UserDefaults.standard.set(try JSONSerialization.data(withJSONObject: [entry]), forKey: "jaras.plugins.catalog")
+    portableSpec["path"] = "D:\\Old Computer\\RenamedPlugin.vst3"
+    let indexedNode = JarasVST3.makeNode()
+    try JarasVST3.configure(indexedNode, plugins: [portableSpec])
+    precondition(JarasVST3.isPluginLoaded(indexedNode, identifier: "fixture"))
+}
+print("VST3_WINDOWS_PROJECT_LOCAL_CLASS_RESOLUTION_PRESET_PRESERVATION_AND_MISMATCH_REJECTION_OK")
 let original = JarasVST3.state(plugin, identifier: "fixture")!
 JarasVST3.setParameter(plugin, identifier: "fixture", parameter: 0, value: 0.25)
 try check(0.05)

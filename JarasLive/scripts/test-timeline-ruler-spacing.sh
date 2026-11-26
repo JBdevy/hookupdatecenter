@@ -10,6 +10,9 @@ trap 'rm -rf "$test_dir"' EXIT
 python3 - "$test_dir/main.swift" <<'PY'
 from pathlib import Path
 import sys
+fonts = Path('Apple/Shared/Theme.swift').read_text()
+fonts = fonts[fonts.index('private enum CatLiveTypeface {'):fonts.index('\n#endif', fonts.index('private enum CatLiveTypeface {'))]
+Path(sys.argv[1]).with_name('Fonts.swift').write_text('import SwiftUI\nimport AppKit\nimport CoreText\n' + fonts)
 source = Path('Application/Project/TimelineTempo.swift').read_text()
 parts = ['import SwiftUI\nimport AppKit\n']
 for begin, end in [
@@ -23,5 +26,5 @@ parts.append(source[source.index('public enum TimelineTimeRuler {'):])
 parts.append(Path('Tests/Apple/TimelineRulerSpacingTests.swift').read_text())
 Path(sys.argv[1]).write_text('\n'.join(parts))
 PY
-swiftc -O -swift-version 5 Apple/Shared/TimelineStaticText.swift "$test_dir/main.swift" -o "$test_dir/test"
+swiftc -O -swift-version 5 "$test_dir/Fonts.swift" Apple/Shared/TimelineStaticText.swift "$test_dir/main.swift" -o "$test_dir/test"
 "$test_dir/test"

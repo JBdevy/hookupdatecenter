@@ -1,0 +1,64 @@
+#pragma once
+#include "Common.h"
+namespace catlive {
+inline double timelineZoomPosition(const jaras::TransportState &state, bool anchorAtEditCursor = false) {
+    const double position = anchorAtEditCursor ? state.editPosition : state.subPlay.playing ? state.subPlay.position
+                          : state.playing ? state.position : state.editPosition;
+    return std::isfinite(position) ? std::max(0., position) : 0.;
+}
+inline double timelineAnchoredZoomOffset(double position, double scale, double contentWidth, double viewportWidth, double screenAnchor) {
+    return jlimit(0., std::max(0., contentWidth - viewportWidth), position * scale - screenAnchor);
+}
+inline double timelineCenteredZoomOffset(double position, double scale, double contentWidth, double viewportWidth) {
+    return timelineAnchoredZoomOffset(position,scale,contentWidth,viewportWidth,viewportWidth/2);
+}
+// Mirrors TimelinePlaybackFollowPolicy.swift, including SubPlay handoffs and
+// backward jumps. Only the presentation scrolls; the transport is never changed.
+struct TimelinePlaybackFollowPolicy {
+    std::optional<double> previousPosition;
+    String previousSource;
+    std::optional<jaras::TransportState> manualPause;
+    double resumeAt = std::numeric_limits<double>::infinity();
+    void pause(const jaras::TransportState &state, double seconds = std::numeric_limits<double>::infinity(),
+               double now = Time::getMillisecondCounterHiRes()/1000) { manualPause=state;resumeAt=now+seconds;reset(); }
+    bool isPaused(const jaras::TransportState &state, double now = Time::getMillisecondCounterHiRes()/1000) {
+        if(!manualPause)return false;
+        if(now>=resumeAt){manualPause.reset();return false;}
+        const auto &before=*manualPause;
+        if(before.playing!=state.playing || before.subPlay.playing!=state.subPlay.playing || before.songId!=state.songId ||
+           (state.playing && before.regionId!=state.regionId) ||
+           (state.subPlay.playing && before.subPlaybackStartRegionId!=state.subPlaybackStartRegionId))manualPause.reset();
+        return manualPause.has_value();
+    }
+    void reset() {
+        previousPosition.reset();
+        previousSource.clear();
+    }
+    std::optional<double> destination(std::optional<double> position, double pixelsPerSecond,
+                                      double contentWidth, double origin, double width,
+                                      const String &source, double backingScale, double firstOffset = 0.) {
+        if (!position) {
+            reset();
+            return {};
+        }
+        if (!std::isfinite(*position) || !std::isfinite(pixelsPerSecond) || pixelsPerSecond <= 0 ||
+            !std::isfinite(contentWidth) || contentWidth <= 0 || !std::isfinite(origin) ||
+            !std::isfinite(width) || width <= 0)
+            return {};
+        const auto x = std::max(0., *position) * pixelsPerSecond;
+        if (!std::isfinite(x))
+            return {};
+        const bool changed = previousPosition && previousSource != source;
+        const bool backward = previousPosition && *position < *previousPosition - .000001;
+        previousPosition = position;
+        previousSource = source;
+        if (!changed && !backward && x >= origin && x <= origin + width / 2)
+            return {};
+        const auto limit = std::max(firstOffset, contentWidth - width);
+        auto next = jlimit(firstOffset, limit, x - width / 2);
+        if (std::isfinite(backingScale) && backingScale > 0)
+            next = jlimit(firstOffset, limit, std::round(next * backingScale) / backingScale);
+        return std::abs(next - origin) > .0000001 ? std::optional<double>{next} : std::nullopt;
+    }
+};
+} // namespace catlive

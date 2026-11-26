@@ -23,17 +23,17 @@ private final class ShortcutHost: NSView, NativeTimelineBodyInputHost {
     }
     let first = rows[0], second = rows[1]
     let firstControls = descendants(first.controls, of: TrackControlSelectionExclusionView.self)
-    expect(firstControls.count == 2, "fixture must mount the real button and fader exclusion regions")
+    expect(firstControls.count == 4, "fixture must mount the button strip, fader, gain label and phase input regions")
     func pointInParent(_ view: NSView, _ point: NSPoint) -> NSPoint { view.superview?.convert(point, from: nil) ?? point }
     func hit(_ point: NSPoint, enabled: Bool) -> NSView? {
         NativeTimelineControlInputRegistration.testEnabled = enabled
         return root.hitTest(pointInParent(root, point))
     }
     func buttonPoint(_ row: TrackMixerNativeControlView) -> NSPoint {
-        let area = descendants(row.controls, of: TrackControlSelectionExclusionView.self).min {
-            $0.convert($0.bounds, to: row.controls).minY < $1.convert($1.bounds, to: row.controls).minY
-        }!
-        return area.convert(NSPoint(x: 17, y: area.bounds.midY), to: nil)
+        let host = descendants(row.controls, of: TrackMixerControlHost.self).first { $0.frame.width > 50 }!
+        // FX remains visible in both compact and expanded strips.
+        let x: CGFloat = host.frame.height >= 24 ? 79 : 11
+        return host.convert(NSPoint(x: x, y: host.bounds.midY), to: nil)
     }
     func sameTarget(_ point: NSPoint, shortcut: Bool, _ message: String) {
         let ordinary = hit(point, enabled: false)
@@ -45,7 +45,7 @@ private final class ShortcutHost: NSView, NativeTimelineBodyInputHost {
     func verifyCursorRects(_ row: TrackMixerNativeControlView) {
         for area in descendants(row, of: TrackControlSelectionExclusionView.self) {
             area.discardCursorRects(); area.resetCursorRects()
-            expect(area.recordedCursorRects.count == (area.bounds.intersection(area.visibleRect).isEmpty ? 0 : 1), "cursor rect covers only visible control pixels")
+            expect(area.recordedCursorRects.count == (area.isHiddenOrHasHiddenAncestor || area.bounds.intersection(area.visibleRect).isEmpty ? 0 : 1), "cursor rect covers only visible control pixels")
             if let (rect, cursor) = area.recordedCursorRects.first {
                 expect(rect == area.bounds.intersection(area.visibleRect) && cursor === NSCursor.arrow, "control preserves the existing standard arrow")
             }
@@ -60,6 +60,22 @@ private final class ShortcutHost: NSView, NativeTimelineBodyInputHost {
     let title = descendants(first, of: TrackDragTitleView.self).first!
     sameTarget(title.convert(NSPoint(x: title.bounds.midX, y: title.bounds.midY), to: nil), shortcut: false, "name/title native drag source")
     sameTarget(first.convert(NSPoint(x: 5, y: 80), to: nil), shortcut: false, "blank row background")
+    let emptyPoint = root.convert(first.convert(NSPoint(x: 5, y: 80), to: nil), from: nil)
+    expect(NativeTimelineControlInputRegistration.hit(at: emptyPoint, in: root,
+        mouseButtons: 0, modifiers: [.command], eventType: .scrollWheel) === first,
+        "Command-wheel height input must resolve a visible row without walking its button graph")
+    let wheelTarget = NativeTimelineControlInputRegistration.hit(at: emptyPoint, in: root,
+        mouseButtons: 0, modifiers: [], eventType: .scrollWheel)
+    expect(wheelTarget === first && wheelTarget?.enclosingScrollView === scroll,
+        "Unmodified wheel input must retain the same enclosing scroll destination")
+    expect(NativeTimelineControlInputRegistration.hit(at: emptyPoint, in: root,
+        mouseButtons: 0, modifiers: [.command], eventType: .leftMouseDown) == nil,
+        "Command-click on empty row space must retain selection routing")
+    NativeTimelineInputGate.shared.setBlocked(true, for: fixture.window)
+    expect(NativeTimelineControlInputRegistration.hit(at: emptyPoint, in: root,
+        mouseButtons: 0, modifiers: [.command], eventType: .scrollWheel) == nil,
+        "Modal input blocking must also block the wheel shortcut")
+    NativeTimelineInputGate.shared.setBlocked(false, for: fixture.window)
     sameTarget(first.convert(NSPoint(x: 240, y: 95), to: nil), shortcut: false, "row resize border")
     for buttons in [1, 2, 4] {
         expect(NativeTimelineControlInputRegistration.hit(at: root.convert(fx, from: nil), in: root,
@@ -175,8 +191,8 @@ private final class ShortcutHost: NSView, NativeTimelineBodyInputHost {
     document.addSubview(wrapperA); document.addSubview(wrapperB)
     func addNativeRow(to parent: NSView) -> TrackMixerNativeControlView {
         let row = TrackMixerNativeControlView(frame: parent.bounds)
-        row.controls.rootView = AnyView(Button("Probe") {}.frame(width: 60, height: 24)
-            .background(TrackControlSelectionExclusion()).frame(width: 248, height: 64, alignment: .topLeading))
+        row.controls.update(TrackMixerNativeContent(controls: AnyView(Button("Probe") {}.frame(width: 60, height: 24)
+            .background(TrackControlSelectionExclusion()).frame(width: 248, height: 64, alignment: .topLeading))), meterWidth: 52, enabled: true)
         parent.addSubview(row); row.place(); return row
     }
     let nativeA = addNativeRow(to: wrapperA), nativeB = addNativeRow(to: wrapperB)

@@ -4,10 +4,11 @@ void Workspace::performAction(const String &action, float value, int trackNumber
     const auto *song = session.song();
     if (!song)
         return;
+    const jaras::Track *target = nullptr;
     ID track;
     for (const auto &definition : actionDefinitions())
         if (action == definition.id && definition.track) {
-            const auto *target = actionTrack(*song, selectedTrack, trackNumber);
+            target = actionTrack(*song, selectedTrack, trackNumber);
             if (!target)
                 throw std::runtime_error("Pista indisponível para esta ação.");
             track = target->id;
@@ -16,7 +17,17 @@ void Workspace::performAction(const String &action, float value, int trackNumber
     auto command = [&](jaras::CommandKind kind, const ID &id = ID{}, double number = 0) {
         session.command(kind, id, number);
     };
-    if (action == "selectTrack") {
+    if (const int number = setlistBlockActionNumber(action); number > 0) {
+        if (value > 0) setlist->focusBlock(number);
+    } else if (action == "previousProjectTab" || action == "nextProjectTab") {
+        if (value > 0 && navigateProjectTab) navigateProjectTab(action == "previousProjectTab" ? -1 : 1);
+    } else if (action == "saveProject") {
+        if (value > 0) chooseSave(false);
+    } else if (action == "toggleFullscreen") {
+        if (value > 0 && toggleWorkspaceFullscreen) toggleWorkspaceFullscreen();
+    } else if (action == "transportFadeout") {
+        triggerTransportFadeout();
+    } else if (action == "selectTrack") {
         selectedTrack = track;
         repaint();
     } else if (action == "muteTrack")
@@ -33,6 +44,12 @@ void Workspace::performAction(const String &action, float value, int trackNumber
         command(jaras::CommandKind::volume, {}, midiFaderGain(value));
     else if (action == "panTrack")
         command(jaras::CommandKind::pan, track, value * 2 - 1);
+    else if (action == "trackVolumeDown" || action == "trackVolumeUp") {
+        const auto decibels = 20.0 * std::log10(std::max(0.000001, (double)target->volume));
+        const auto gain = std::pow(10.0, std::min(12.0, decibels + (action == "trackVolumeUp" ? 1 : -1)) / 20.0);
+        command(jaras::CommandKind::volume, track, gain);
+    } else if (action == "trackPanLeft" || action == "trackPanRight")
+        command(jaras::CommandKind::pan, track, std::clamp(target->pan + (action == "trackPanRight" ? 0.05 : -0.05), -1.0, 1.0));
     else if (action == "playStop")
         command(session.transport().playing ? jaras::CommandKind::stop : jaras::CommandKind::play);
     else if (action == "play")
@@ -50,59 +67,32 @@ void Workspace::performAction(const String &action, float value, int trackNumber
         command(jaras::CommandKind::toggleLoop);
     else if (action == "toggleMultiLoopBypass")
         command(jaras::CommandKind::toggleMultiLoopBypass);
+    else if (action == "cancelSection")
+        command(jaras::CommandKind::cancelSection);
     else if (action == "ignoreNext")
         command(jaras::CommandKind::ignoreNext);
-    else if (action == "tempoDown" || action == "tempoUp")
-        session.configureTiming(jlimit(60., 300., song->bpm + (action == "tempoUp" ? 1 : -1)),
-                                song->beatsPerBar, song->beatUnit,
-                                song->timeSettings.value_or(jaras::ProjectTimeSettings{}));
-    else if (action == "tapTempo") {
-        const double now = Time::getMillisecondCounterHiRes() / 1000, interval = now - lastTap;
-        lastTap = now;
-        if (interval < .2 || interval > 2) {
-            tapIntervals.clear();
-            return;
-        }
-        tapIntervals.push_back(interval);
-        if (tapIntervals.size() > 6)
-            tapIntervals.erase(tapIntervals.begin());
-        double sum = 0;
-        for (auto x : tapIntervals)
-            sum += x;
-        session.configureTiming(jlimit(60., 300., 60 * tapIntervals.size() / sum),
-                                song->beatsPerBar, song->beatUnit,
-                                song->timeSettings.value_or(jaras::ProjectTimeSettings{}));
+    else if (action == "tempoDown" || action == "tempoUp") {
+        session.resetTapTempo();
+        session.setTempo(jlimit(60., 300., session.tempoBPM() + (action == "tempoUp" ? 1 : -1)));
+    } else if (action == "tapTempo") {
+        if (value > 0) session.tapTempo(actions.eventTime());
     } else if (action == "tunerDown" || action == "tunerUp") {
         if (!tuner->region())
             return;
         const auto region = tuner->region()->id;
-        const auto songID = song->id;
         const int delta = action == "tunerUp" ? 1 : -1;
-        session.edit([&](jaras::Project &p) {
-            jaras::Engine edit;
-            edit.loadProject(p);
-            edit.execute({jaras::CommandKind::select, songID});
-            int current = 0;
-            for (const auto &part : edit.currentSong()->parts)
-                if (part.id == region)
-                    current = part.pitchSemitones.value_or(0);
-            const auto &parts = edit.currentSong()->parts;
-            auto selected = std::find_if(parts.begin(), parts.end(),
-                                         [&](const auto &p) { return p.id == region; });
-            auto tracks =
-                selected->pitchTrackIDs.value_or(regionPitch::defaults(*edit.currentSong(), false));
-            auto groups =
-                selected->pitchGroupIDs.value_or(regionPitch::defaults(*edit.currentSong(), true));
-            edit.setRegionPitch(region, jlimit(-12, 12, current + delta), std::move(tracks),
-                                std::move(groups));
-            p = edit.project();
-        });
+        const auto *selected = tuner->region();
+        session.setRegionPitch(region, jlimit(-12, 12, selected->pitchSemitones.value_or(0) + delta),
+            selected->pitchTrackIDs.value_or(regionPitch::defaults(*song, false)),
+            selected->pitchGroupIDs.value_or(regionPitch::defaults(*song, true)));
     } else if (action == "addTrack")
         createTrack();
-    else if (action == "projectStart" || action == "projectEnd")
+    else if (action == "projectStart" || action == "projectEnd") {
         command(jaras::CommandKind::editSeek, {}, action == "projectStart" ? 0 : song->duration);
-    else if (action == "nextRegion" || action == "previousRegion" || action == "setlistUp" ||
-             action == "setlistDown" || action == "partsUp" || action == "partsDown") {
+        timeline->revealEditPosition(true);
+    } else if (action == "setlistUp" || action == "setlistDown") {
+        setlist->stepSelection(action == "setlistDown" ? 1 : -1);
+    } else if (action == "nextRegion" || action == "previousRegion" || action == "partsUp" || action == "partsDown") {
         std::vector<const jaras::Part *> parts;
         const bool child = action.startsWith("parts");
         for (const auto &part : song->parts)
@@ -148,7 +138,7 @@ void Workspace::performAction(const String &action, float value, int trackNumber
         }
         if (song->markers)
             for (const auto &marker : *song->markers)
-                points.push_back(marker.position);
+                if (!marker.tempoBPM) points.push_back(marker.position);
         std::sort(points.begin(), points.end());
         const auto at = session.transport().editPosition;
         double dest = at;
@@ -163,17 +153,46 @@ void Workspace::performAction(const String &action, float value, int trackNumber
                 if (point < at - .0001)
                     dest = point;
         command(jaras::CommandKind::editSeek, {}, dest);
+        timeline->revealEditPosition(true);
     } else if (action == "toggleAuto") {
         auto state = session.project().regionSetlist.value_or(jaras::RegionSetlist{});
         state.autoAdvance = !state.autoAdvance;
         session.configureSetlist(state);
+    } else if (action == "toggleFocus") {
+        toggleFocus();
+    } else if (action == "toggleLibrary") {
+        if (auto *button = controls["library"]; button && button->onClick) button->onClick();
+    } else if (action == "toggleSelectedInputMonitor" || action == "toggleSelectedStripFXBypass") {
+        const auto *selected = actionTrack(*song, selectedTrack, 0);
+        if (!selected) throw std::runtime_error("Pista indisponível para esta ação.");
+        if (action == "toggleSelectedInputMonitor") session.setTrackInputMonitoring(selected->id, !selected->inputMonitoring.value_or(false));
+        else fxchain::toggleStripBypass(session, selected->id, false);
+    } else if (action == "toggleSessionFXBypass") {
+        fxchain::toggleStripBypass(session, {}, true);
     } else if (action == "toggleTracks")
         showMixer();
-    else if (action == "toggleSetlist") {
+    else if (action == "toggleBarMixer") {
+        if (auto button = controls["railMixer"]; button && button->onClick) button->onClick();
+    } else if (action == "toggleSetlist") {
         setlistVisible = !setlistVisible;
         resized();
+    } else if (action == "parts1" || action == "parts2") {
+        const bool secondary = action == "parts2";
+        partsLeft->selectTab(secondary);
+        partsSidebar->selectTab(secondary);
+        if (!partsLeft->isShowing()) {
+            setlistVisible = true;
+            if (!partsRightVisible) toggleRightParts();
+            if (setlistWindow && setlistPlacement == SetlistPlacement::detached) {
+                setlistWindow->setVisible(true);
+                setlistWindow->toFront(false);
+            }
+            resized();
+        }
     } else if (action == "toggleParts")
         setlist->toggleParts();
+    else if (action == "togglePreview")
+        stage.preview = !stage.preview;
     else if (action == "toggleVideo" || action == "toggleTeleprompter") {
         const String name = action == "toggleVideo" ? "Video" : "Teleprompter 1";
         auto it = floatingWindows.find(name);
@@ -184,30 +203,52 @@ void Workspace::performAction(const String &action, float value, int trackNumber
         else
             showTeleprompter();
     } else if (action == "splitItems") {
-        const auto songID = song->id, chosen = selectedClip;
-        const auto at = session.transport().editPosition;
-        session.edit([&](jaras::Project &p) {
-            for (auto &s : p.songs)
-                if (s.id == songID)
-                    clipEditing::split(s, chosen, at);
-        });
-    } else if (action == "normalizeItems") {
-        if (selectedClip.empty())
-            return;
-        ModalSheet::open(*this, "Normalizar",
-                         std::make_unique<NormalizationPanel>(session, appearance, selectedClip),
-                         360, 230);
-    } else if (action == "createTempoMarker") {
+        auto selection = selectedClips;
+        if (selection.empty() && !selectedClip.empty()) selection.insert(selectedClip);
+        const auto rightItems = session.splitClips(selection, session.transport().editPosition);
+        if (!rightItems.empty()) {
+            selectedClips = rightItems; selectedClip = *rightItems.begin(); updateState();
+        }
+    } else if (action == "normalizeItems" || action == "reRenderItems" || action == "unifyAudioItems") {
+        auto anchor = selectedClip;
+        if (!selectedClips.empty() && !selectedClips.count(anchor)) anchor = *selectedClips.begin();
+        if (anchor.empty() || session.busy) return;
+        // Reuse the menu callback so keyboard and mouse share the full selection,
+        // progress, cancellation and single-transaction Undo behavior.
+        clipMenuAction(anchor)(action == "normalizeItems" ? 11 : action == "reRenderItems" ? 13 : 14);
+    } else if (action == "createRegionsFromItems") {
+        if (const auto range = session.selectedTimeRange()) {
+            session.addRegion({}, range->first, range->second);
+        } else {
+            auto anchor = selectedClip;
+            if (!selectedClips.empty() && !selectedClips.count(anchor)) anchor = *selectedClips.begin();
+            if (!anchor.empty() && !session.busy) clipMenuAction(anchor)(9);
+        }
+    } else if (action == "insertElasticPoint") {
+        if (timelineGrid::itemsLocked(session.project()) || session.busy || session.audio.isRecording()) return;
+        const auto *song = session.song();
+        if (!song || selectedClips.empty()) return;
         const auto songID = song->id;
-        const double at = session.transport().editPosition;
-        session.edit([&](jaras::Project &p) {
-            jaras::Engine edit;
-            edit.loadProject(p);
-            edit.execute({jaras::CommandKind::select, songID});
-            edit.setMarker(uuid(), "TEMPO", at, 0x999999, song->bpm, song->beatsPerBar,
-                           song->beatUnit, std::string("global"));
-            p = edit.project();
+        const auto cursor = session.transport().editPosition;
+        std::map<ID, std::vector<jaras::ElasticPoint>> changes;
+        for (const auto &track : song->tracks) for (const auto &clip : track.clips) {
+            if (!selectedClips.count(clip.id) || clip.midi || clip.text || clipEditing::projection(clip) ||
+                !(clip.audioFile || track.audioFile) || !jaras::fixedTrackName(track.role).empty() ||
+                cursor <= clip.startTime || cursor >= clip.startTime + clip.duration) continue;
+            const ClipTempo timing(clip, song);
+            if (timing.unwarpedSourceLength <= 0) continue;
+            auto points = clip.elasticPoints;
+            if (jaras::elastic::insert(points, {(cursor - clip.startTime) / clip.duration,
+                    (timing.sourceAt(cursor) - clip.sourceOffset) / (timing.unwarpedSourceLength * clip.elasticSourceScale)}))
+                changes.emplace(clip.id, std::move(points));
+        }
+        if (!changes.empty()) session.editTimeline([&](jaras::Project &project) {
+            for (auto &current : project.songs) if (current.id == songID)
+                for (auto &track : current.tracks) for (auto &clip : track.clips)
+                    if (const auto point = changes.find(clip.id); point != changes.end()) clip.elasticPoints = point->second;
         });
+    } else if (action == "createTempoMarker") {
+        editTempoMarker({},session.transport().editPosition);
     }
 }
 } // namespace catlive

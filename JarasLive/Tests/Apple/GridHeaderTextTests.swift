@@ -5,7 +5,7 @@ enum GridHeaderRasterProbe { static var count = 0 }
 func oldAttributes(centered: Bool? = nil, color: NSColor = .white, fontSize: CGFloat = GridSelectionItem.headerFontSize) -> [NSAttributedString.Key: Any] {
     let paragraph = NSMutableParagraphStyle(); paragraph.lineBreakMode = .byTruncatingTail
     if let centered { paragraph.alignment = centered ? .center : .left }
-    return [.font: NSFont.systemFont(ofSize: fontSize, weight: .semibold),
+    return [.font: NSFont.jarasSystemFont(ofSize: fontSize, weight: .semibold),
             .foregroundColor: color, .paragraphStyle: paragraph]
 }
 struct HeaderRaster {
@@ -105,7 +105,7 @@ for name in names {
 }
 let labels: [(String, GridSelectionHeaderText.Title, Bool, NSColor)] = [
     ("M", GridSelectionHeaderText.mute, true, .white), ("FX", GridSelectionHeaderText.fx, true, .white),
-    ("FX", GridSelectionHeaderText.activeFX, true, .systemGreen), ("Edit", GridSelectionHeaderText.edit, true, .white),
+    ("Edit", GridSelectionHeaderText.edit, true, .white),
     ("−∞ dB", GridSelectionHeaderText.gain("−∞ dB"), false, .white), ("+3.5 dB", GridSelectionHeaderText.gain("+3.5 dB"), false, .white),
     ("Center", GridSelectionHeaderText.gain("Center"), false, .white), ("R-100%", GridSelectionHeaderText.gain("R-100%"), false, .white),
     ("-60.0 dB", GridSelectionHeaderText.gain("-60.0 dB"), false, .white), ("+24.0 dB", GridSelectionHeaderText.gain("+24.0 dB"), false, .white),
@@ -121,25 +121,12 @@ for (label, cached, centered, color) in labels {
             "control labels retain exact AppKit pixels: \(label)")
     } } }
 }
-// Readouts must fit completely in their compact reservations, including their
-// one-point drawing inset, without moving the controls or reducing title text.
-var compactItem = GridSelectionItem(id: UUID(), rect: CGRect(x: 0, y: 0, width: 240, height: 50))
-precondition(GridSelectionItem.headerReadoutFontSize < GridSelectionItem.headerFontSize)
-precondition(compactItem.rect.width - compactItem.titleInset >= 40,
-    "a 240-point audio item leaves useful title space after all controls and readouts")
-precondition(compactItem.gainKnobRect!.minX - compactItem.panLabelRect!.maxX <= 1,
-    "the volume knob sits immediately after the complete pan readout")
-for percent in -100...100 {
-    compactItem.pan = Double(percent) / 100
-    precondition(GridSelectionHeaderText.gain(compactItem.panLabel).width <= compactItem.panLabelRect!.width - 2,
-        "every pan percentage fits without truncation")
-}
-for gain in [0.0] + (-600...240).map({ pow(10, Double($0) / 200) }) {
-    compactItem.gain = gain
-    precondition(GridSelectionHeaderText.gain(compactItem.gainLabel).width <= compactItem.gainLabelRect!.width - 2,
-        "every selectable gain, including silence and the range endpoints, fits without truncation")
-}
-print("GRID_HEADER_COMPACT_READOUTS_OK: all pan/gain values fit, title space retained, title/control fonts unchanged")
+// Current desktop headers keep readouts in tooltips, preserving title space.
+let compactItem = GridSelectionItem(id: UUID(), rect: CGRect(x: 0, y: 0, width: 240, height: 50))
+precondition(compactItem.gainLabelRect == nil && compactItem.panLabelRect == nil && compactItem.phaseRect == nil)
+precondition(compactItem.muteRect != nil && compactItem.fxRect != nil && compactItem.gainKnobRect != nil && compactItem.panKnobRect != nil)
+precondition(compactItem.rect.width - compactItem.titleInset >= 40)
+print("GRID_HEADER_COMPACT_CONTROLS_AND_TOOLTIP_READOUTS_OK")
 for scale in [1, 2] { for flipped in [false, true] {
     let cached = GridSelectionHeaderText.title("Repeated Coração 🎸")
     let naturalWidth = ceil(cached.width) + 4
@@ -194,3 +181,55 @@ for scale in [1, 2, 3] { for flipped in [false, true] {
     precondition(GridHeaderRasterProbe.count == count + 1, "new visible glyphs replace the raster immediately")
 } }
 print("GRID_HEADER_GLYPH_CACHE_OK: 360 changing widths, fresh-pixel equivalence and glyph-boundary invalidation at 1x/2x/3x")
+
+// Zooming out sheds controls in priority order, never orphaning readouts.
+var priorityItem = GridSelectionItem(id: UUID(), rect: CGRect(x: 0, y: 0, width: 600, height: 50))
+var previous = [true, true, true, true]
+var transitions: [Int] = []
+for width in stride(from: 600, through: 1, by: -1) {
+    priorityItem.rect.size.width = CGFloat(width)
+    let current = [priorityItem.panKnobRect != nil, priorityItem.fxRect != nil, priorityItem.gainKnobRect != nil, priorityItem.muteRect != nil]
+    for index in current.indices {
+        precondition(!current[index] || previous[index], "hidden controls stay hidden while zooming out")
+        if previous[index] && !current[index] { transitions.append(index) }
+    }
+    precondition(priorityItem.gainLabelRect == nil || priorityItem.gainKnobRect != nil)
+    precondition(priorityItem.panLabelRect == nil && priorityItem.phaseRect == nil)
+    previous = current
+}
+precondition(transitions == [0, 1, 2, 3], "hide pan, FX, gain, then M")
+priorityItem.rect.size.width = 30
+precondition(priorityItem.muteRect != nil && priorityItem.rect.width - priorityItem.titleInset - 8 < 10,
+             "M survives after the title becomes too narrow")
+print("GRID_HEADER_ZOOM_PRIORITY_OK: pan, FX, volume, name, M")
+
+var namedPriority = GridSelectionItem(id: UUID(), rect: CGRect(x: 0, y: 0, width: 300, height: 50), name: "CLICK-ESCUDO - REGÊNCIA FINAL.wav")
+let fullNameWidth = GridSelectionHeaderText.title(namedPriority.name!).width
+for width in 40...600 {
+    namedPriority.rect.size.width = CGFloat(width)
+    let item = namedPriority.visibleLeftHeader(in: CGRect(x: 0, y: 0, width: 800, height: 200), titleWidth: fullNameWidth)
+    if item.gainKnobRect != nil {
+        precondition(item.headerRect.width - item.titleInset - 8 >= fullNameWidth,
+                     "additional controls must not truncate a name that can fit without them")
+    }
+}
+print("GRID_HEADER_FULL_NAME_PRIORITY_OK")
+
+var compactVolume = GridSelectionItem(id: UUID(), rect: CGRect(x: 0, y: 0, width: 205, height: 50), name: "Click-EU SOU DE JESUS.mp3")
+let compactNameWidth = GridSelectionHeaderText.title(compactVolume.name!).width
+compactVolume.rect.size.width = compactNameWidth + 60
+let compactHeader = compactVolume.visibleLeftHeader(in: CGRect(x: 0, y: 0, width: 800, height: 200), titleWidth: compactNameWidth)
+precondition(compactHeader.gainKnobRect != nil && compactHeader.gainLabelRect == nil,
+             "retain the volume knob when the name and knob fit but the dB value does not")
+precondition(compactHeader.headerRect.width - compactHeader.titleInset - 8 >= compactNameWidth)
+print("GRID_HEADER_COMPACT_VOLUME_KNOB_OK")
+
+let normalTitle = GridSelectionHeaderText.title("Selected item")
+let blackTitle = GridSelectionHeaderText.title("Selected item", black: true)
+precondition(normalTitle !== blackTitle && blackTitle === GridSelectionHeaderText.title("Selected item", black: true))
+precondition(normalTitle.width == blackTitle.width, "Contrast color must not change item layout")
+let normalRaster = bitmap(scale: 2, flipped: true) { normalTitle.draw(in: CGRect(x: 4, y: 7, width: 300, height: 17)) }
+let blackRaster = bitmap(scale: 2, flipped: true) { blackTitle.draw(in: CGRect(x: 4, y: 7, width: 300, height: 17)) }
+precondition(normalRaster.bytes != blackRaster.bytes && normalRaster.extent == blackRaster.extent,
+    "Item names must change ink without changing glyph geometry")
+print("GRID_HEADER_CONTRAST_COLOR_AND_METRICS_OK")

@@ -7,7 +7,7 @@ python3 - "$test_dir/main.swift" <<'PY'
 from pathlib import Path
 import sys
 source = Path('Apple/Shared/AppContainer.swift').read_text()
-start = source.index('    private func handleMobileAudioEvent(')
+start = source.index('    func handleMobileAudioEvent(')
 methods = source[start:source.index('    #endif\n    func start()', start)]
 fixture = Path('Tests/Apple/IpadRouteRecoveryTests.swift').read_text()
 recording = Path('Apple/Shared/TrackRecording.swift').read_text()

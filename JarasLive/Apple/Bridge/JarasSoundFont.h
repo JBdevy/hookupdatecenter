@@ -3,6 +3,8 @@ NS_ASSUME_NONNULL_BEGIN
 @interface JarasSoundFont : NSObject
 @property(nonatomic, readonly) AVAudioSourceNode *node;
 - (nullable instancetype)initWithURL:(NSURL *)url sampleRate:(double)sampleRate error:(NSError **)error;
++ (nullable AVAudioPCMBuffer *)libraryPreviewAtURL:(NSURL *)url error:(NSError **)error NS_SWIFT_NAME(libraryPreview(at:));
++ (nullable AVAudioPCMBuffer *)libraryPreviewAtURL:(NSURL *)url drums:(BOOL)drums error:(NSError **)error NS_SWIFT_NAME(libraryPreview(at:drums:));
 - (void)setSequenceNotes:(NSArray<NSDictionary *> *)notes;
 - (void)sequenceHead:(int)head position:(double)position clock:(double)clock running:(BOOL)running loopStart:(double)start loopEnd:(double)end;
 - (void)sendStatus:(uint8_t)status data1:(uint8_t)data1 data2:(uint8_t)data2;

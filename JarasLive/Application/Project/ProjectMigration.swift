@@ -1,5 +1,5 @@
 import Foundation
-#if os(macOS)
+
 
 /// Shared destination and media handling for DAW migrations.
 public enum ProjectMigration {
@@ -13,19 +13,34 @@ public enum ProjectMigration {
         public let source: URL?
     }
     private static func invalid(_ detail: String) -> ProjectError { .invalid(detail) }
+    /// Translate diagnostic text separately from user-owned filenames and IDs.
+    public static func errorDescription(_ error: Error, localize: (String) -> String) -> String {
+        var message = error.localizedDescription
+        var source = ""
+        for prefix in ["REAPER: ", "Logic: "] where message.hasPrefix(prefix) {
+            source = prefix
+            message = String(message.dropFirst(prefix.count))
+            break
+        }
+        // Translate the diagnostic, retaining filenames and plugin parameter IDs
+        // verbatim. These values cannot be part of a localization lookup key.
+        let parameterPrefix = "Invalid VST3 automation parameter identity: "
+        if message.hasPrefix(parameterPrefix) {
+            return source + localize(parameterPrefix) + message.dropFirst(parameterPrefix.count)
+        }
+        let midiPrefix = "Missing MIDI source: "
+        let midiSuffix = ". Locate it before importing the project."
+        if message.hasPrefix(midiPrefix), message.hasSuffix(midiSuffix) {
+            let filename = message.dropFirst(midiPrefix.count).dropLast(midiSuffix.count)
+            return source + localize(midiPrefix) + filename + localize(midiSuffix)
+        }
+        return source + localize(message)
+    }
+
     /// Every import gets a new directory, including repeated imports of the
     /// same source. Existing REAPER/Logic documents and CatLive sessions stay intact.
     public static func isolatedDestination(for selection: URL) -> URL {
-        let document = selection.pathExtension.lowercased() == "jl" ? selection : selection.appendingPathExtension("jl")
-        let parent = document.deletingLastPathComponent()
-        let name = document.deletingPathExtension().lastPathComponent
-        var folder = parent.appendingPathComponent(name, isDirectory: true)
-        var index = 1
-        while FileManager.default.fileExists(atPath: folder.path) {
-            folder = parent.appendingPathComponent(name + String(format: "-%03d", index), isDirectory: true)
-            index += 1
-        }
-        return folder.appendingPathComponent(document.lastPathComponent)
+        ProjectDirectoryPolicy.newProjectDestination(for: selection, reuseEmptySelectedFolder: false)
     }
     /// Creates a separate CatLive document. An absent source is intentional, not a
     /// copy failure: its clip and path are saved and recovered by the normal UI.
@@ -56,4 +71,3 @@ public enum ProjectMigration {
         }
     }
 }
-#endif

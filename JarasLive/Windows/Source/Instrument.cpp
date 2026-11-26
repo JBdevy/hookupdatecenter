@@ -1,72 +1,27 @@
 #include "Instrument.h"
+#include "../../Core/Audio/LibraryDrumPreview.hpp"
 #define TSF_IMPLEMENTATION
 #include "../../Core/ThirdParty/TinySoundFont/tsf.h"
 namespace catlive {
 #include "SoundFontRenderer.h"
-namespace {
-struct PianoSound final : SynthesiserSound {
-    bool appliesToNote(int) override { return true; }
-    bool appliesToChannel(int) override { return true; }
-};
-struct PianoVoice final : SynthesiserVoice {
-    double phase = 0, step = 0, age = 0;
-    float level = 0;
-    ADSR envelope;
-    bool canPlaySound(SynthesiserSound *sound) override {
-        return dynamic_cast<PianoSound *>(sound) != nullptr;
-    }
-    void startNote(int note, float velocity, SynthesiserSound *, int) override {
-        phase = age = 0;
-        level = velocity * .12f;
-        step =
-            MathConstants<double>::twoPi * MidiMessage::getMidiNoteInHertz(note) / getSampleRate();
-        envelope.setSampleRate(getSampleRate());
-        envelope.setParameters({.003f, .4f, .12f, .35f});
-        envelope.noteOn();
-    }
-    void stopNote(float, bool tail) override {
-        envelope.noteOff();
-        if (!tail) {
-            envelope.reset();
-            clearCurrentNote();
-        }
-    }
-    void pitchWheelMoved(int) override {}
-    void controllerMoved(int, int) override {}
-    void renderNextBlock(AudioBuffer<float> &output, int start, int count) override {
-        for (int n = 0; n < count; ++n) {
-            float sample =
-                (float)(std::sin(phase) + .33 * std::sin(2 * phase) * std::exp(-age * 3) +
-                        .1 * std::sin(3 * phase) * std::exp(-age * 5)) *
-                level * envelope.getNextSample();
-            phase += step;
-            age += 1 / getSampleRate();
-            for (int ch = 0; ch < output.getNumChannels(); ++ch)
-                output.addSample(ch, start + n, sample);
-        }
-        if (!envelope.isActive())
-            clearCurrentNote();
-    }
-};
-} // namespace
 struct Instrument::Impl {
-    Synthesiser synth;
     SoundFontRenderer sf;
     double rate = 48000;
     var parameters;
     bool drums = false;
 };
-Instrument::Instrument() : impl(std::make_unique<Impl>()) {
-    for (int i = 0; i < 24; ++i)
-        impl->synth.addVoice(new PianoVoice());
-    impl->synth.addSound(new PianoSound());
-    impl->synth.setNoteStealingEnabled(true);
-    prepare(48000);
-}
+Instrument::Instrument() : impl(std::make_unique<Impl>()) {}
 Instrument::~Instrument() = default;
+void Instrument::swap(Instrument& other)noexcept {impl.swap(other.impl);name.swapWith(other.name);}
+std::unique_ptr<Instrument> Instrument::prepareSoundFont(const File& file)const {
+    auto result=std::make_unique<Instrument>();
+    result->prepare(impl->rate);
+    result->configure(impl->parameters,impl->drums);
+    result->loadSoundFont(file);
+    return result;
+}
 void Instrument::prepare(double rate) {
     impl->rate = rate;
-    impl->synth.setCurrentPlaybackSampleRate(rate);
     if (impl->sf.font)
         tsf_set_output(impl->sf.font, TSF_STEREO_INTERLEAVED, (int)rate, 0);
 }
@@ -126,7 +81,7 @@ void Instrument::configure(const var &parameters, bool drums) {
     sf.hold = (float)jlimit(0., 10., num(parameters, "hold", 10));
     sf.decay = (float)jlimit(.001, 10., num(parameters, "decay", 10));
     sf.sustain = (float)jlimit(0., 1., num(parameters, "sustain", 1));
-    sf.release = (float)jlimit(.001, 20., num(parameters, "release", drums ? 20 : .3));
+    sf.release = (float)jlimit(.001, 20., num(parameters, "release", drums ? 20 : .16));
     sf.drums = drums;
     sf.monophonic = flag(controllers, "monophonic");
     const auto curve = str(velocity, "curve", "medium");
@@ -142,8 +97,34 @@ void Instrument::configure(const var &parameters, bool drums) {
     sf.filterRelease = (float)jlimit(.001, 20., num(cutoff, "release", .3));
     sf.filterDepth = (float)jlimit(0., 10., num(cutoff, "depth"));
 }
+AudioBuffer<float> Instrument::renderLibraryPreview(const File &file, bool drums) {
+    constexpr int heldFrames = previewSampleRate * 6 / 5;
+    const int frames = drums ? jaras::audio::libraryDrumPreview::length(previewSampleRate) : previewSampleRate * 2;
+    // The CatLive Keyboard labels MIDI note 60 as C3.
+    constexpr std::array<int, 4> chord{60, 64, 67, 71};
+    Instrument instrument;
+    instrument.prepare(previewSampleRate);
+    auto parameters = object();
+    put(parameters, "gain", -12.);
+    instrument.configure(parameters, drums);
+    instrument.loadSoundFont(file);
+    MidiBuffer midi;
+    if (drums) {
+        auto &preset = instrument.impl->sf.font->presets[0];
+        for (int i = 0; i < preset.regionNum; ++i) preset.regions[i].loop_mode = TSF_LOOPMODE_NONE;
+        jaras::audio::libraryDrumPreview::hits(previewSampleRate, [&](int offset, int pitch, int channel, int velocity) {
+            midi.addEvent(MidiMessage::noteOn(channel, pitch, uint8(velocity)), offset);
+        });
+    } else for (const auto note : chord) {
+        midi.addEvent(MidiMessage::noteOn(1, note, uint8(90)), 0);
+        midi.addEvent(MidiMessage::noteOff(1, note), heldFrames);
+    }
+    AudioBuffer<float> output(2, frames);
+    output.clear();
+    instrument.render(output, midi, frames);
+    return output;
+}
 void Instrument::stop() {
-    impl->synth.allNotesOff(0, false);
     auto &sf = impl->sf;
     if (sf.font) {
         for (int i = 0; i < sf.font->voiceNum; ++i)
@@ -160,12 +141,9 @@ void Instrument::stop() {
 }
 void Instrument::render(AudioBuffer<float> &output, const MidiBuffer &midi, int samples,
                         int outputStart) {
-    if (!impl->sf.font) {
-        AudioBuffer<float> view(output.getArrayOfWritePointers(), output.getNumChannels(),
-                                outputStart, samples);
-        impl->synth.renderNextBlock(view, midi, 0, samples);
-        return;
-    }
+    // MIDI alone is not an instrument. Sound starts only after an explicit
+    // SoundFont load (or an inserted external instrument in the FX chain).
+    if (!impl->sf.font) return;
     auto &sf = impl->sf;
     sf.envelope();
     const bool mono = sf.monophonic.load();

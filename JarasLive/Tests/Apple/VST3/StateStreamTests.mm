@@ -16,20 +16,89 @@ static void pauseModuleExit(){
 }
 
 int main(int argc,char **argv) { @autoreleasepool {
+    // ASan's image-global registrations may retain poisoned shadow addresses
+    // when a fully instrumented bundle is unloaded/reloaded across threads.
+    // Pin only that fixture in the fully instrumented pass. A second pass
+    // exercises real unloads with the host sanitized and a normal plugin.
+    void *sanitizedFixture=nullptr;
+    if(argc>1 && getenv("CATLIVE_PIN_SANITIZED_FIXTURE")) {
+        NSString *binary=[@(argv[1]) stringByAppendingPathComponent:@"Contents/MacOS/GainFixture"];
+        sanitizedFixture=dlopen(binary.UTF8String,RTLD_NOW|RTLD_LOCAL);assert(sanitizedFixture);
+    }
+    // Intel/macOS 12 and ARM must both flush subnormal DSP tails, including
+    // nested source/effect calls, and restore the caller's exact control word.
+#if defined(__x86_64__)
+    const auto initialFloatingPointMode=_mm_getcsr();
+    _mm_setcsr(initialFloatingPointMode & ~0x8040u);
+    {
+        jaras::ScopedAudioDenormals outer;
+        assert((_mm_getcsr() & 0x8040u)==0x8040u);
+        { jaras::ScopedAudioDenormals inner;assert((_mm_getcsr() & 0x8040u)==0x8040u); }
+        assert((_mm_getcsr() & 0x8040u)==0x8040u);
+    }
+    assert(_mm_getcsr()==(initialFloatingPointMode & ~0x8040u));
+    const auto inheritedFlushMode=initialFloatingPointMode | 0x8040u;
+    _mm_setcsr(inheritedFlushMode);
+    {
+        jaras::ScopedAudioDenormals outer;
+        {
+            jaras::ScopedAudioDenormals inner;
+            _mm_setcsr((inheritedFlushMode & ~0x8040u) ^ 0x2000u);
+        }
+        assert(_mm_getcsr()==inheritedFlushMode);
+        _mm_setcsr((inheritedFlushMode & ~0x8040u) ^ 0x4000u);
+    }
+    assert(_mm_getcsr()==inheritedFlushMode);
+    _mm_setcsr(initialFloatingPointMode);
+#elif defined(__aarch64__)
+    uint64_t initialFloatingPointMode=0,observedFloatingPointMode=0;
+    asm volatile("mrs %0, fpcr" : "=r"(initialFloatingPointMode));
+    const auto withoutFlush=initialFloatingPointMode & ~(uint64_t(1)<<24);
+    asm volatile("msr fpcr, %0" :: "r"(withoutFlush));
+    {
+        jaras::ScopedAudioDenormals outer;
+        asm volatile("mrs %0, fpcr" : "=r"(observedFloatingPointMode));
+        assert(observedFloatingPointMode==(withoutFlush|(uint64_t(1)<<24)));
+        { jaras::ScopedAudioDenormals inner; }
+        asm volatile("mrs %0, fpcr" : "=r"(observedFloatingPointMode));
+        assert(observedFloatingPointMode==(withoutFlush|(uint64_t(1)<<24)));
+    }
+    asm volatile("mrs %0, fpcr" : "=r"(observedFloatingPointMode));
+    assert(observedFloatingPointMode==withoutFlush);
+    const auto inheritedFlushMode=initialFloatingPointMode | (uint64_t(1)<<24);
+    asm volatile("msr fpcr, %0" :: "r"(inheritedFlushMode));
+    {
+        jaras::ScopedAudioDenormals outer;
+        {
+            jaras::ScopedAudioDenormals inner;
+            const auto changed=(inheritedFlushMode & ~(uint64_t(1)<<24)) ^ (uint64_t(1)<<22);
+            asm volatile("msr fpcr, %0" :: "r"(changed));
+        }
+        asm volatile("mrs %0, fpcr" : "=r"(observedFloatingPointMode));
+        assert(observedFloatingPointMode==inheritedFlushMode);
+        const auto changed=(inheritedFlushMode & ~(uint64_t(1)<<24)) ^ (uint64_t(1)<<23);
+        asm volatile("msr fpcr, %0" :: "r"(changed));
+    }
+    asm volatile("mrs %0, fpcr" : "=r"(observedFloatingPointMode));
+    assert(observedFloatingPointMode==inheritedFlushMode);
+    asm volatile("msr fpcr, %0" :: "r"(initialFloatingPointMode));
+#endif
+    std::puts("APPLE_AUDIO_NESTED_DENORMAL_GUARDS_RESTORE_INTEL_ARM_ENVIRONMENT_OK");
+
     Stream stream;
     uint8 original[]{1,2,3,4};int32 count=-1;
     assert(stream.write(original,4,&count)==kResultOk&&count==4);
     int64 position=-1;
     assert(stream.seek(-2,IBStream::kIBSeekEnd,&position)==kResultOk&&position==2);
     uint8 output[]{9,9,9,9};
-    assert(stream.read(output,4,&count)==kResultFalse&&count==2);
+    assert(stream.read(output,4,&count)==kResultOk&&count==2);
     assert(output[0]==3&&output[1]==4&&output[2]==9&&output[3]==9);
-    assert(stream.read(output,1,&count)==kResultFalse&&count==0);
+    assert(stream.read(output,1,&count)==kResultOk&&count==0);
     assert(stream.tell(&position)==kResultOk&&position==4);
 
     // Legal sparse seek/write round-trips plugin state, including zero fill.
     assert(stream.seek(8,IBStream::kIBSeekSet,nullptr)==kResultOk);
-    assert(stream.read(output,1,&count)==kResultFalse&&count==0&&stream.position==8);
+    assert(stream.read(output,1,&count)==kResultOk&&count==0&&stream.position==8);
     assert(stream.write(original,2,&count)==kResultOk&&count==2);
     assert(stream.bytes.size()==10&&stream.bytes[4]==0&&stream.bytes[7]==0);
     assert(stream.seek(-2,IBStream::kIBSeekCur,nullptr)==kResultOk);
@@ -67,7 +136,7 @@ int main(int argc,char **argv) { @autoreleasepool {
     for(size_t length=0;length<4;++length) {
         Stream truncated([NSData dataWithBytes:original length:length]);
         std::fill(std::begin(output),std::end(output),uint8(99));
-        assert(truncated.read(output,4,&count)==kResultFalse&&count==length);
+        assert(truncated.read(output,4,&count)==kResultOk&&count==length);
         for(size_t i=0;i<4;++i)assert(output[i]==(i<length?original[i]:99));
     }
 
@@ -93,6 +162,49 @@ int main(int argc,char **argv) { @autoreleasepool {
     assert(argc==2);
     NSDictionary *spec=@{@"id":@"lifetime",@"path":@(argv[1]),
         @"classID":@"1234123456785678ABCDEF0012345678",@"bypassed":@NO};
+    {
+        // Exercise a sampler-sized preset through the production callback,
+        // with nonsequential IDs and a coalesced edit before its first block.
+        // No machine-speed timing threshold: verify every value and the next
+        // clean block rather than relying on a benchmark's wall-clock result.
+        Instance manyParameters(spec,48000,false);
+        constexpr int parameterCount=32768;
+        manyParameters.paramCount=parameterCount;
+        manyParameters.params=std::make_unique<Param[]>(parameterCount);
+        manyParameters.changes.capacity=parameterCount;
+        manyParameters.changes.queues=std::make_unique<Queue[]>(parameterCount);
+        for(int i=0;i<parameterCount;++i){
+            auto& parameter=manyParameters.params[i];
+            parameter.id=100000u+unsigned(parameterCount-i)*3u;
+            parameter.pending=double(i)/parameterCount;parameter.dirty=true;
+        }
+        manyParameters.prepareParameterIndex();manyParameters.hasChanges=true;
+        const auto editedID=manyParameters.params[parameterCount-1].id;
+        assert(manyParameters.queueParameter(editedID,.125)==kResultOk);
+        assert(manyParameters.queueParameter(editedID,.375)==kResultOk);
+        assert(manyParameters.queueParameter(99999,.5)==kInvalidArgument);
+        std::array<float,64> left{},right{};
+        struct Buffers { AudioBufferList list;AudioBuffer second; } buffers{};
+        buffers.list.mNumberBuffers=2;
+        buffers.list.mBuffers[0]={1,sizeof(left),left.data()};
+        buffers.second={1,sizeof(right),right.data()};
+        manyParameters.process(&buffers.list,64,jaras::PluginTransport{},nullptr,0);
+        assert(manyParameters.changes.getParameterCount()==parameterCount);
+        for(int i=0;i<parameterCount;++i){
+            auto queue=manyParameters.changes.getParameterData(i);
+            int32 offset=-1;double value=-1;
+            assert(queue&&queue->getParameterId()==manyParameters.params[i].id);
+            assert(queue->getPoint(0,offset,value)==kResultOk&&offset==0);
+            assert(value==(i==parameterCount-1?.375:double(i)/parameterCount));
+        }
+        manyParameters.process(&buffers.list,64,jaras::PluginTransport{},nullptr,0);
+        assert(manyParameters.changes.getParameterCount()==0);
+        assert(manyParameters.queueParameter(editedID,.625)==kResultOk);
+        manyParameters.process(&buffers.list,64,jaras::PluginTransport{},nullptr,0);
+        assert(manyParameters.changes.getParameterCount()==1);
+        assert(manyParameters.changes.getParameterData(0)->getParameterId()==editedID);
+    }
+    std::puts("VST3_LARGE_PRESET_PARAMETER_IDS_COALESCING_AND_NEXT_BLOCK_OK");
     Kernel kernel;
     std::atomic<bool> running{true};std::atomic<unsigned> renders{0};
     auto first=std::make_unique<Chain>();

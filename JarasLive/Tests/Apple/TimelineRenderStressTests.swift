@@ -11,7 +11,7 @@
             let track = Track(id: UUID(), name: "Media", role: TrackRole(rawValue: role))
             let area = CGRect(x: 0, y: 0, width: 240, height: 64)
             let canvas = Canvas { context, _ in
-                drawTimelineItem(clip, track: track, rect: area, selected: false, silenced: false,
+                drawTimelineItem(clip, track: track, title: clip.name, rect: area, selected: false, silenced: false,
                     scale: 40, tile: area, context: &context)
             }.frame(width: 240, height: 64)
             let renderer = ImageRenderer(content: canvas); renderer.scale = 1

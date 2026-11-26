@@ -47,7 +47,10 @@ final class ReaperAutomationImportTests: XCTestCase {
         for parameter in [":", "\"\"", "0:", "::", "0:invalid", "0:1:2", "-1", "invalid"] {
             let (folder, file) = try fixture("<TRACK\nNAME FX\n<FXCHAIN\n\(vst(parameter))\n>\n>")
             defer { try? FileManager.default.removeItem(at: folder) }
-            XCTAssertThrowsError(try ReaperProjectImporter.read(file, resolveVST3: resolved), parameter)
+            let recovered = try ReaperProjectImporter.read(file, resolveVST3: resolved)
+            XCTAssertTrue(recovered.warnings.contains { $0.contains("FX ignored") }, parameter)
+            XCTAssertEqual(recovered.project.songs[0].tracks.count, 1)
+            try recovered.project.validate()
         }
     }
     func testTrackAndMasterFXStateAutomationAndUnsupportedFormats() throws {
@@ -258,7 +261,9 @@ final class ReaperAutomationImportTests: XCTestCase {
         XCTAssertEqual(clips[1].midi?.notes.count, 1)
         XCTAssertEqual(clips[1].sourceOffset, 0)
         XCTAssertEqual(clips[1].audioRate, 1)
-        XCTAssertEqual(TrackLanes(track: track).count, 2)
+        var separated = track
+        separated.stackedStems = false
+        XCTAssertEqual(TrackLanes(track: separated).count, 2)
         XCTAssertEqual(clips.compactMap { $0.fx?.externalPlugins?.first?.componentState }, [payload, payload])
         XCTAssertNotEqual(clips[0].fx?.externalPlugins?.first?.id, clips[1].fx?.externalPlugins?.first?.id)
         let envelope = try XCTUnwrap(clips[0].automation?.envelopes.first { $0.target.kind == .volume })
@@ -269,7 +274,7 @@ final class ReaperAutomationImportTests: XCTestCase {
         XCTAssertTrue(result.warnings.contains { $0.contains("no compatible VST3 instrument was inserted on this track") })
         XCTAssertTrue(result.warnings.contains { $0.contains("MIDI take automation") && $0.contains("shared track instrument") })
     }
-    func testMIDITakeAutomationClockFollowsFlattenedTakeRate() throws {
+    func testMIDITakeAutomationClockPreservesEditableTakeRate() throws {
         let (folder, file) = try fixture("""
         <TRACK
           NAME MIDI
@@ -301,13 +306,13 @@ final class ReaperAutomationImportTests: XCTestCase {
         let result = try ReaperProjectImporter.read(file, resolveVST3: resolved)
         let clip = result.project.songs[0].tracks[0].clips[0]
         XCTAssertEqual(clip.sourceOffset, 0)
-        XCTAssertEqual(clip.audioRate, 1)
+        XCTAssertEqual(clip.audioRate, 2)
         let automation = try XCTUnwrap(clip.automation)
         let volume = try XCTUnwrap(automation.envelopes.first { $0.target.kind == .volume })
-        XCTAssertEqual(volume.points.map(\.time), [0, 2])
+        XCTAssertEqual(volume.points.map(\.time), [0, 4])
         XCTAssertEqual(TrackEnvelope.gain(volume.value(at: clip.automationTime(at: 11))), 0.55, accuracy: 0.000001)
         let effect = try XCTUnwrap(automation.envelopes.first { $0.target.kind == .externalFX })
-        XCTAssertEqual(effect.points.map(\.time), [0, 2])
+        XCTAssertEqual(effect.points.map(\.time), [0, 4])
         XCTAssertEqual(effect.value(at: clip.automationTime(at: 11)), 0.52, accuracy: 0.000001)
         XCTAssertFalse(result.warnings.contains { $0.contains("MIDI take automation") || $0.contains("MIDI take VST3") || $0.contains("Choose an instrument") }, result.warnings.description)
     }
@@ -366,7 +371,9 @@ final class ReaperAutomationImportTests: XCTestCase {
         let result = try ReaperProjectImporter.read(file)
         let track = result.project.songs[0].tracks[0]
         XCTAssertEqual(track.clips.count, 2)
-        XCTAssertEqual(TrackLanes(track: track).count, 2)
+        var separated = track
+        separated.stackedStems = false
+        XCTAssertEqual(TrackLanes(track: separated).count, 2)
         XCTAssertNotNil(track.clips[0].midi)
         XCTAssertGreaterThan(track.clips[0].midi?.notes.count ?? 0, 5)
         XCTAssertNotNil(track.clips[1].audioFile)

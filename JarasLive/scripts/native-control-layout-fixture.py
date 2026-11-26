@@ -72,7 +72,7 @@ def balanced(src,a):
  return i
 transport=Path('Apple/Shared/TransportView.swift').read_text()
 parts=[]
-metronome = until(transport,'private struct MetronomeControl:','#if os(macOS)\nprivate struct NativeMetronomePulse<')
+metronome = until(transport,'private struct MetronomeControl:','struct MetronomeEditor:')
 a = metronome.index('    var body: some View {'); b = metronome.index('    private var control:', a)
 metronome = metronome[:a] + '    var body: some View { control }\n' + metronome[b:]
 parts.append(metronome.replace('MetronomeControl:', 'LegacyMetronomeControl:'))

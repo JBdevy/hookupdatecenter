@@ -1,7 +1,7 @@
-#import <TargetConditionals.h>
-#if TARGET_OS_OSX
 #import "JarasSoundFont.h"
 #include "CatMIDISequenceBridge.h"
+#include "../../Core/Audio/LibraryDrumPreview.hpp"
+#include "JarasRealtimeClock.hpp"
 #include <atomic>
 #include <array>
 #include <memory>
@@ -18,7 +18,7 @@ struct InstrumentRenderer {
     std::array<MIDIMessage,2048> messages{};
     std::atomic<unsigned> written{0}, read{0};
     std::atomic<bool> silenceRequested{false};
-    std::atomic<float> gain{1}, pan{0}, attack{0}, hold{10}, decay{10}, sustain{1}, release{.3};
+    std::atomic<float> gain{1}, pan{0}, attack{0}, hold{10}, decay{10}, sustain{1}, release{.16};
     std::atomic<bool> monophonic{false}, drums{false};
     std::atomic<int> velocityCurve{1};
     std::atomic<bool> modulationEnabled{false}, pitchVibratoEnabled{false};
@@ -133,8 +133,9 @@ struct InstrumentRenderer {
             if(active) tsf_voice_lowpass_setup(&filter,std::min(frequency/font->outSampleRate,.45f));
         }
     }
-    void render(AudioBufferList *output, unsigned frames, const AudioTimeStamp* time = nullptr) {
-        if(time) sequence.render(catMIDIClock(time,font->outSampleRate),font->outSampleRate,frames);
+    void render(AudioBufferList *output, unsigned frames, const AudioTimeStamp* time = nullptr, unsigned outputOffset = 0) {
+        jaras::ScopedAudioDenormals denormals;
+        if(time) catRenderMIDISequence(sequence,time,font->outSampleRate,frames);
         else sequence.count=0;
         const bool mono=monophonic.load();
         if(mono!=previousMono) {
@@ -192,12 +193,13 @@ struct InstrumentRenderer {
                 smoothGain+=(targetGain-smoothGain)*.005f; smoothPan+=(targetPan-smoothPan)*.005f;
                 const float left=buffer[i*2]*smoothGain*(smoothPan>0?1-smoothPan:1);
                 const float right=buffer[i*2+1]*smoothGain*(smoothPan<0?1+smoothPan:1);
+                const unsigned frame=outputOffset+offset+i;
                 if(output->mNumberBuffers>=2) {
-                    ((float*)output->mBuffers[0].mData)[offset+i]=left;
-                    ((float*)output->mBuffers[1].mData)[offset+i]=right;
+                    ((float*)output->mBuffers[0].mData)[frame]=left;
+                    ((float*)output->mBuffers[1].mData)[frame]=right;
                 } else if(output->mNumberBuffers==1 && output->mBuffers[0].mNumberChannels==2) {
-                    ((float*)output->mBuffers[0].mData)[(offset+i)*2]=left;
-                    ((float*)output->mBuffers[0].mData)[(offset+i)*2+1]=right;
+                    ((float*)output->mBuffers[0].mData)[frame*2]=left;
+                    ((float*)output->mBuffers[0].mData)[frame*2+1]=right;
                 }
             }
             offset+=count;
@@ -230,6 +232,43 @@ struct InstrumentRenderer {
     }
     return self;
 }
++ (AVAudioPCMBuffer *)libraryPreviewAtURL:(NSURL *)url error:(NSError **)error {
+    return [self libraryPreviewAtURL:url drums:NO error:error];
+}
++ (AVAudioPCMBuffer *)libraryPreviewAtURL:(NSURL *)url drums:(BOOL)drums error:(NSError **)error {
+    constexpr unsigned rate = 48000, heldFrames = rate * 6 / 5;
+    const unsigned frames = drums ? jaras::audio::libraryDrumPreview::length(rate) : rate * 2;
+    // The CatLive Keyboard labels MIDI note 60 as C3.
+    constexpr std::array<uint8_t, 4> chord{60, 64, 67, 71};
+    JarasSoundFont *sampler = [[JarasSoundFont alloc] initWithURL:url sampleRate:rate error:error];
+    if (!sampler) return nil;
+    AVAudioFormat *format = [[AVAudioFormat alloc] initStandardFormatWithSampleRate:rate channels:2];
+    AVAudioPCMBuffer *buffer = [[AVAudioPCMBuffer alloc] initWithPCMFormat:format frameCapacity:frames];
+    if (!buffer) {
+        if (error) *error = [NSError errorWithDomain:NSCocoaErrorDomain code:NSFileReadUnknownError userInfo:nil];
+        return nil;
+    }
+    buffer.frameLength = frames;
+    [sampler setGain:-12 pan:0];
+    if (drums) {
+        [sampler setPerformanceMonophonic:NO drums:YES velocityCurve:1];
+        auto &preset = sampler->_renderer->font->presets[0];
+        for (int i = 0; i < preset.regionNum; ++i) preset.regions[i].loop_mode = TSF_LOOPMODE_NONE;
+        unsigned cursor = 0;
+        jaras::audio::libraryDrumPreview::hits(rate, [&](unsigned frame, int pitch, int channel, int velocity) {
+            if (frame > cursor) sampler->_renderer->render(buffer.mutableAudioBufferList, frame-cursor, nullptr, cursor);
+            [sampler sendStatus:0x90 | (channel-1) data1:pitch data2:velocity];
+            cursor = frame;
+        });
+        sampler->_renderer->render(buffer.mutableAudioBufferList, frames-cursor, nullptr, cursor);
+        return buffer;
+    }
+    for (const auto note : chord) [sampler sendStatus:0x90 data1:note data2:90];
+    sampler->_renderer->render(buffer.mutableAudioBufferList, heldFrames);
+    for (const auto note : chord) [sampler sendStatus:0x80 data1:note data2:0];
+    sampler->_renderer->render(buffer.mutableAudioBufferList, frames - heldFrames, nullptr, heldFrames);
+    return buffer;
+}
 - (AVAudioSourceNode*)node { return _node; }
 - (void)setSequenceNotes:(NSArray<NSDictionary *> *)notes { _renderer->sequence.setNotes(catMIDINotes(notes)); }
 - (void)sequenceHead:(int)head position:(double)position clock:(double)clock running:(BOOL)running loopStart:(double)start loopEnd:(double)end { _renderer->sequence.configure(head,position,clock,running,start,end); }
@@ -256,5 +295,3 @@ struct InstrumentRenderer {
 }
 - (void)silence { _renderer->silenceRequested.store(true); }
 @end
-
-#endif

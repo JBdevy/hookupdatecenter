@@ -25,8 +25,9 @@ private final class ButtonsState: ObservableObject {
 private struct ButtonsFixture: View {
     @ObservedObject var state: ButtonsState
     let standard: Bool
-    private var widths: [CGFloat] { standard ? [34, 22, 22, 42, 22, 22] : [47, 22, 22] }
+    static func widths(standard: Bool) -> [CGFloat] { standard ? [34, 28, 22, 47, 22, 22, 22, 22] : [47, 22, 22] }
     var body: some View {
+        let widths = Self.widths(standard: standard)
         TrackMixerContinuousContainer(meterWidth: 12, standard: standard, lowerTitle: true) {
             Color.clear.jarasPlaced(at: 0)
             Color.clear.jarasPlaced(at: 1)
@@ -35,7 +36,9 @@ private struct ButtonsFixture: View {
                 ForEach(widths.indices, id: \.self) { index in
                     PlacedProbe(id: 100 + index).frame(width: widths[index]).jarasPlaced(at: index)
                 }
-            }.clipped().modifier(LegacyControlsWidth()).jarasPlaced(at: 3)
+            }
+            .environment(\.legacyMixerHeight, state.height >= 64 ? 64 : 24)
+            .clipped().modifier(LegacyControlsWidth()).jarasPlaced(at: 3)
             Color.clear.jarasPlaced(at: 4)
             Color.clear.jarasPlaced(at: 5)
             Color.clear.jarasPlaced(at: 6)
@@ -67,8 +70,7 @@ MainActor.assumeIsolated {
                 "controls retain exact positions, slot \(index) height \(height) actual \(actualRect) expected \(expected[index])")
         }
     }
-    // Exercise the complete nested six-control group. Widths are the explicit
-    // production widths of Patch, FX, REC, pan, M and S; visibility changes at 64.
+    // Exercise the complete nested group, including the compact volume knob.
     // Special tracks keep their independently sized HStack controls.
     for standard in [true, false] {
         let buttonState = ButtonsState()
@@ -82,7 +84,7 @@ MainActor.assumeIsolated {
             }
         }
         settleButtons()
-        let widths: [CGFloat] = standard ? [34, 22, 22, 42, 22, 22] : [47, 22, 22]
+        let widths = ButtonsFixture.widths(standard: standard)
         let identities = widths.indices.map { ObjectIdentifier(PlacementProbe.views[100 + $0]!) }
         for showsFader in [true, false] {
             buttonState.showsFader = showsFader
@@ -93,12 +95,13 @@ MainActor.assumeIsolated {
                 precondition(widths.indices.map { ObjectIdentifier(PlacementProbe.views[100 + $0]!) } == identities,
                     "compact/expanded mode and fader visibility preserve every native button")
                 let expanded = height >= 64
-                let visible = widths.indices.filter { !standard || !($0 == 3 && !expanded) && !($0 == 1 && expanded && !showsFader) }
+                let order = standard ? [0, 1, 7, 2, 3, 4, 5, 6] : Array(widths.indices)
+                let visible = order.filter { !standard || ($0 == 7 ? !expanded : expanded || $0 >= 2) }
                 let groupWidth = visible.reduce(CGFloat(0)) { $0 + widths[$1] } + CGFloat(visible.count - 1) * 3
                 let group = TrackMixerHeightGeometry.frames(width: 260, height: height, meterWidth: 12,
                     standard: standard, lowerTitle: true, controlsWidth: groupWidth)[3]
                 var expectedX = group.minX
-                for index in widths.indices {
+                for index in order {
                     let probe = PlacementProbe.views[100 + index]!
                     let actual = probe.convert(probe.bounds, to: buttonHost)
                     if visible.contains(index) {
@@ -109,12 +112,27 @@ MainActor.assumeIsolated {
                             "control height/position remains identical: standard=\(standard), height=\(height), slot=\(index), actual=\(actual), group=\(group)")
                         expectedX += widths[index] + 3
                     } else {
-                        precondition(!actual.intersects(buttonHost.bounds), "hidden controls remain mounted outside the row")
+                        precondition(!actual.intersects(buttonHost.bounds), "hidden controls remain mounted outside the row: standard=\(standard), height=\(height), slot=\(index), actual=\(actual)")
                     }
                 }
             }
         }
     }
+    let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 260, height: 300))
+    let document = NSView(frame: NSRect(x: 0, y: 0, width: 260, height: 2000))
+    scroll.documentView = document
+    window.contentView = scroll; scroll.tile()
+    let row = TrackMixerNativeControlView(frame: NSRect(x: 0, y: scroll.contentView.bounds.minY + 10, width: 260, height: 64))
+    document.addSubview(row)
+    row.refreshViewportVisibility()
+    let hosts = row.subviews.map(ObjectIdentifier.init)
+    TrackMixerRegistrationProbe.calls = 0
+    for _ in 0..<120 { row.refreshViewportVisibility() }
+    precondition(TrackMixerRegistrationProbe.calls == 0, "Unchanged rows must not walk their ancestor tree again on every scroll pixel")
+    precondition(row.subviews.map(ObjectIdentifier.init) == hosts, "Scrolling retains existing controls")
+    row.removeFromSuperview(); document.addSubview(row)
+    precondition(TrackMixerRegistrationProbe.calls > 0, "Reparenting must refresh native input registration")
+    print("MIXER_SCROLL_REUSES_NATIVE_REGISTRATION_AND_REPARENTS_CORRECTLY_OK")
     window.orderOut(nil)
-    print("MACOS12_STABLE_NATIVE_CONTROLS_SIX_BUTTON_METRICS_AND_LAYOUT_GEOMETRY_OK forceLegacy=\(JarasDrawingCompatibility.forceLegacy)")
+    print("MACOS12_STABLE_NATIVE_CONTROLS_SEVEN_BUTTON_METRICS_AND_LAYOUT_GEOMETRY_OK forceLegacy=\(JarasDrawingCompatibility.forceLegacy)")
 }

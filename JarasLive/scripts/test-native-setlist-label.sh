@@ -16,11 +16,14 @@ row=code[code.index('private struct RegionSetlistRow:'):code.index('#if os(macOS
 # The retained iPad label is also the visual baseline for native macOS drawing.
 original=re.sub(r'#if os\(macOS\).*?#else\n(.*?)#endif',r'\1',row,flags=re.S).replace('RegionSetlistRow','OriginalRegionSetlistRow')
 theme=Path('Apple/Shared/Theme.swift').read_text()
+typography='// App-owned typography.'+theme.split('// App-owned typography.',1)[1]
 colors=theme[:theme.index('    static func track(')]+'}\n'+theme[theme.index('extension Color {'):theme.index('struct StageButtonStyle')]
 blink=theme[theme.index('/// Blink only'):theme.index('/// A color drag')]
 footer=source[source.index('struct SetlistFooterControls:'):source.index('private struct PlaylistNameEditor:')]
 drawer=source[source.index('private func setlistVisibleRegionID('):source.index('@MainActor private final class SetlistEntryCache')]
-Path(sys.argv[1]).write_text(colors+'\n'+blink+'\n'+footer+'\n'+drawer+'\n'+code+'\n'+original+'\n'+Path('Tests/Apple/NativeSetlistLabelTests.swift').read_text())
+localization='enum JarasLocalization { static func string(_ key: String) -> String { key } }'
+Path(sys.argv[1]).write_text(colors+'\n'+typography+'\n'+blink+'\n'+localization+'\n'+footer+'\n'+drawer+'\n'+code+'\n'+original+'\n'+Path('Tests/Apple/NativeSetlistLabelTests.swift').read_text())
 PY
 swiftc -suppress-warnings -swift-version 5 "$test_dir/main.swift" -o "$test_dir/test"
+cp -R Resources/Fonts/Inter "$test_dir/Inter"
 "$test_dir/test"

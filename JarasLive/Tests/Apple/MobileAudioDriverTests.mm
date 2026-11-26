@@ -5,7 +5,82 @@
 #include <cmath>
 #include <vector>
 
+@interface ShortInputEngine : AVAudioEngine
+@end
+@implementation ShortInputEngine
+- (AVAudioEngineManualRenderingBlock)manualRenderingBlock {
+    return ^AVAudioEngineManualRenderingStatus(AVAudioFrameCount frames, AudioBufferList *out, OSStatus *status) {
+        for (unsigned ch = 0; ch < out->mNumberBuffers; ++ch) {
+            auto *samples = static_cast<float *>(out->mBuffers[ch].mData);
+            std::fill_n(samples, 96, ch ? -.25f : .25f);
+            out->mBuffers[ch].mDataByteSize = 96 * sizeof(float);
+        }
+        *status = noErr;
+        return AVAudioEngineManualRenderingStatusInsufficientDataFromInputNode;
+    };
+}
+@end
+
+static void verifyShortInputKeepsPlayback() {
+    auto engine = [ShortInputEngine new];
+    NSError *error = nil;
+    auto existing = [[AVAudioFormat alloc] initStandardFormatWithSampleRate:48000 channels:2];
+    assert([engine enableManualRenderingMode:AVAudioEngineManualRenderingModeRealtime
+                                      format:existing maximumFrameCount:4096 error:&error]);
+    auto driver = [[JarasMobileAudioOutput alloc] initWithEngine:engine];
+    assert(![driver startAndReturnError:&error] && error);
+    error = nil;
+    auto format = [driver configureWithSampleRate:48000 channels:2 error:&error];
+    assert(format && [driver startAndReturnError:&error]);
+    auto pcm = [[AVAudioPCMBuffer alloc] initWithPCMFormat:format frameCapacity:256];
+    pcm.frameLength = 256;
+    auto *buffers = pcm.mutableAudioBufferList;
+    for (unsigned ch = 0; ch < 2; ++ch) {
+        std::fill_n(static_cast<float *>(buffers->mBuffers[ch].mData), 256, .9f);
+    }
+    AudioTimeStamp time{};
+    AudioUnitRenderActionFlags flags = 0;
+    assert([driver renderFrames:256 time:&time flags:&flags buffers:buffers] == noErr);
+    assert(!(flags & kAudioUnitRenderAction_OutputIsSilence));
+    for (unsigned ch = 0; ch < 2; ++ch) {
+        const auto &channel = buffers->mBuffers[ch];
+        assert(channel.mDataByteSize == 256 * sizeof(float));
+        const auto *samples = static_cast<const float *>(channel.mData);
+        for (unsigned n=0; n<256; ++n) assert(samples[n] == (n < 96 ? (ch ? -.25f : .25f) : 0));
+    }
+    struct { UInt32 count; AudioBuffer buffers[2]; } borrowed{2, {{1, 0, nullptr}, {1, 0, nullptr}}};
+    flags = 0;
+    assert([driver renderFrames:256 time:&time flags:&flags buffers:reinterpret_cast<AudioBufferList *>(&borrowed)] == noErr);
+    for (const auto &channel : borrowed.buffers) {
+        assert(channel.mData && channel.mDataByteSize == 256 * sizeof(float));
+        const auto *samples = static_cast<const float *>(channel.mData);
+        assert(std::abs(samples[95]) == .25f && samples[96] == 0);
+    }
+    [driver stop];
+    puts("MOBILE_SHORT_INPUT_PRESERVES_PLAYBACK_AND_PADS_OUTPUT_OK");
+}
+
+static void verifyManualGraphFormat(AVAudioEngineManualRenderingMode mode, AVAudioFormat *previous,
+                                    AVAudioFrameCount maximumFrames) {
+    AVAudioEngine *engine = [AVAudioEngine new];
+    NSError *error = nil;
+    assert([engine enableManualRenderingMode:mode format:previous maximumFrameCount:maximumFrames error:&error]);
+    auto driver = [[JarasMobileAudioOutput alloc] initWithEngine:engine];
+    auto format = [driver configureWithSampleRate:48000 channels:2 error:&error];
+    assert(format && [format isEqual:engine.manualRenderingFormat]);
+    assert(engine.manualRenderingMode == AVAudioEngineManualRenderingModeRealtime);
+    assert(format.commonFormat == AVAudioPCMFormatFloat32 && !format.isInterleaved);
+    assert(engine.manualRenderingMaximumFrameCount >= 4096);
+}
+
 int main() { @autoreleasepool {
+    auto interleaved = [[AVAudioFormat alloc] initWithCommonFormat:AVAudioPCMFormatInt16 sampleRate:48000 channels:2 interleaved:YES];
+    auto planar = [[AVAudioFormat alloc] initStandardFormatWithSampleRate:48000 channels:2];
+    verifyManualGraphFormat(AVAudioEngineManualRenderingModeRealtime, interleaved, 4096);
+    verifyManualGraphFormat(AVAudioEngineManualRenderingModeOffline, planar, 4096);
+    verifyManualGraphFormat(AVAudioEngineManualRenderingModeRealtime, planar, 256);
+    puts("MOBILE_REUSED_ENGINE_MATCHES_HARDWARE_RENDER_CONTRACT_OK");
+    verifyShortInputKeepsPlayback();
     mach_timebase_info_data_t base; mach_timebase_info(&base);
     const double ticks = 1e9 * base.denom / base.numer;
     for (double rate : {44100., 48000.}) {
@@ -16,7 +91,21 @@ int main() { @autoreleasepool {
             auto format = [driver configureWithSampleRate:rate channels:channels error:&error];
             assert(format && !error && engine.isInManualRenderingMode);
             auto stereo = [[AVAudioFormat alloc] initStandardFormatWithSampleRate:rate channels:2];
-            auto player = [AVAudioPlayerNode new];
+            // This fixture advances a synthetic hardware clock without waiting
+            // for wall time. A looping AVAudioPlayerNode has its own asynchronous
+            // start/refill scheduling, which can starve when these callbacks run
+            // faster than realtime. Supply PCM synchronously so this test isolates
+            // the output driver, channel mapping and reconnects. Player/streaming
+            // continuity is covered by PreparedClipAudioTests and the audio suites.
+            auto player = [[AVAudioSourceNode alloc] initWithFormat:stereo renderBlock:
+                ^OSStatus(BOOL *silent, const AudioTimeStamp *, AVAudioFrameCount frames, AudioBufferList *buffers) {
+                    *silent = NO;
+                    for (UInt32 ch = 0; ch < buffers->mNumberBuffers; ++ch) {
+                        auto samples = static_cast<float *>(buffers->mBuffers[ch].mData);
+                        for (AVAudioFrameCount n = 0; n < frames; ++n) samples[n] = ch == 0 ? .1f : .2f;
+                    }
+                    return noErr;
+                }];
             auto controls = [JarasEqualizer makeNode];
             auto router = [JarasChannelRouter makeNode];
             [engine attachNode:player]; [engine attachNode:controls]; [engine attachNode:router];
@@ -25,13 +114,9 @@ int main() { @autoreleasepool {
             [engine connect:router to:engine.mainMixerNode format:format];
             [JarasChannelRouter configure:router first:channels > 2 ? channels - 1 : 1 count:2];
             assert([JarasAudioOutputConnection connectEngine:engine error:&error] && !error);
-            auto source = [[AVAudioPCMBuffer alloc] initWithPCMFormat:stereo frameCapacity:512];
-            source.frameLength = 512;
-            for (unsigned n = 0; n < 512; ++n) { source.floatChannelData[0][n] = .1; source.floatChannelData[1][n] = .2; }
-            [player scheduleBuffer:source atTime:nil options:AVAudioPlayerNodeBufferLoops completionHandler:nil];
             assert([engine startAndReturnError:&error]);
             assert([driver startAndReturnError:&error]);
-            [player play];
+            const auto failuresBefore = [driver.diagnostics[@"failureCount"] unsignedLongLongValue];
             auto output = [[AVAudioPCMBuffer alloc] initWithPCMFormat:format frameCapacity:512];
             output.frameLength = 512;
             const auto epoch = mach_absolute_time();
@@ -48,6 +133,7 @@ int main() { @autoreleasepool {
                     if (std::abs(static_cast<float *>(output.mutableAudioBufferList->mBuffers[ch].mData)[128] - expected) >= .00001) { fprintf(stderr, "PCM rate=%g channels=%u block=%u ch=%u actual=%g expected=%g\n", rate, channels, block, ch, static_cast<float *>(output.mutableAudioBufferList->mBuffers[ch].mData)[128], expected); abort(); }
                 }
             }
+            assert([driver.diagnostics[@"failureCount"] unsignedLongLongValue] == failuresBefore);
             auto clock = driver.renderTime;
             assert(clock.isSampleTimeValid && clock.isHostTimeValid && clock.sampleTime == 30 * 512);
             assert(std::abs(double(clock.hostTime - epoch) / ticks - 30 * 512 / rate) < 1e-6);
@@ -60,13 +146,25 @@ int main() { @autoreleasepool {
             assert(physical.mFlags & kAudioTimeStampHostTimeValid);
             assert(std::abs(double(physical.mHostTime - epoch) / ticks - 100 / rate) < 1e-6);
             jaras::realtimeClock = {};
+            if (rate == 44100 && channels == 2) {
+                assert(!driver.hasStalled);
+                [NSThread sleepForTimeInterval:1.6];
+                assert(driver.hasStalled);
+                AudioTimeStamp time = {};
+                AudioUnitRenderActionFlags flags = 0;
+                assert([driver renderFrames:512 time:&time flags:&flags buffers:output.mutableAudioBufferList] == noErr);
+                assert(!driver.hasStalled);
+                [NSThread sleepForTimeInterval:1.6];
+                assert(driver.hasStalled);
+            }
             // Gate immediately, before touching the output unit or graph.
             [driver gate];
+            assert(!driver.hasStalled);
             AudioTimeStamp time = {}; AudioUnitRenderActionFlags flags = 0;
             assert([driver renderFrames:512 time:&time flags:&flags buffers:output.mutableAudioBufferList] == noErr);
             assert(flags & kAudioUnitRenderAction_OutputIsSilence);
             for (unsigned ch = 0; ch < channels; ++ch) for (unsigned f = 0; f < 512; ++f) assert(static_cast<float *>(output.mutableAudioBufferList->mBuffers[ch].mData)[f] == 0);
-            [driver stop]; [engine stop]; [player stop];
+            [driver stop]; [engine stop];
             [engine detachNode:player]; [engine detachNode:controls]; [engine detachNode:router];
             printf("MOBILE_DRIVER_PCM_DISCRETE_CHANNELS_CLOCK_GATE_RECONNECT_OK rate=%.0f channels=%u\n", rate, channels);
         }

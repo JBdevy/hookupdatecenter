@@ -19,11 +19,12 @@ import AppKit
     }
     #if os(macOS)
     private var configuration: NSPanel?
+    @Published private(set) var configurationOpen = false
     #endif
     init(defaults: UserDefaults = .standard, now: @escaping () -> Double = { ProcessInfo.processInfo.systemUptime }) {
         self.defaults = defaults; self.now = now
         if let data = defaults.data(forKey: Self.preferenceKey), let saved = try? JSONDecoder().decode(Preferences.self,from: data) {
-            state = TeleprompterTimer(mode: .countdown,targetSeconds: saved.targetSeconds,initAutoEnabled: saved.initAutoEnabled)
+            state = TeleprompterTimer(mode: saved.mode,targetSeconds: saved.targetSeconds,initAutoEnabled: saved.initAutoEnabled)
         } else { state = TeleprompterTimer(mode: .countdown) }
         super.init()
     }
@@ -35,7 +36,7 @@ import AppKit
     func displayText(spaced: Bool = false) -> String {
         let seconds = state.displaySeconds(at: now())
         let safe = seconds.isFinite ? max(-Double(Int.max / 2), min(Double(Int.max / 2), seconds)) : 0
-        return TeleprompterTimer.formatted(Int(ceil(safe)), spaced: spaced)
+        return TeleprompterTimer.formatted(Int(mode == .progressive ? floor(safe) : ceil(safe)), spaced: spaced)
     }
     func displayOpacity() -> Double {
         expired() && Int(now() * 2) % 2 != 0 ? 0.25 : 1
@@ -44,10 +45,13 @@ import AppKit
     @discardableResult func setTargetText(_ text: String) -> Bool {
         guard !running, let seconds = TeleprompterTimer.targetSeconds(from: text) else { return false }
         change { value in
-            value.setMode(.countdown,at: now())
             value.setTarget(seconds: seconds,at: now())
         }
         return true
+    }
+    func setMode(_ mode: TeleprompterTimerMode) {
+        guard !running else { return }
+        change { $0.setMode(mode,at: now()) }
     }
     func setInitAutoEnabled(_ enabled: Bool) { change { $0.setInitAutoEnabled(enabled) } }
     func start() { change { $0.start(at: now()) } }
@@ -71,13 +75,21 @@ import AppKit
     }
     func showConfiguration() {
         #if os(macOS)
-        if let configuration { configuration.makeKeyAndOrderFront(nil); return }
-        let panel = NSPanel(contentRect: NSRect(x: 0,y: 0,width: 380,height: 405),styleMask: [.titled,.closable,.resizable],backing: .buffered,defer: false)
+        if let configuration {
+            configuration.title = JarasLocalization.string("Timer")
+            configuration.contentView?.isHidden = false
+            ProjectionWindow.presentWorkspaceWindow(configuration, activates: false)
+            if !configurationOpen { configurationOpen = true }
+            return
+        }
+        let panel = NSPanel(contentRect: NSRect(x: 0,y: 0,width: 380,height: 445),styleMask: [.titled,.closable],backing: .buffered,defer: false)
         panel.title = JarasLocalization.string("Timer")
         panel.contentMinSize = NSSize(width: 340,height: 240); panel.level = .normal; panel.isReleasedWhenClosed = false
         panel.delegate = self
-        panel.contentView = NSHostingView(rootView: LocalizedTeleprompterTimer(controller: self,close: { [weak panel] in panel?.close() }))
-        configuration = panel; panel.center(); panel.makeKeyAndOrderFront(nil)
+        panel.contentView = NSHostingView(rootView: LocalizedTeleprompterTimer(controller: self))
+        configuration = panel; panel.center()
+        ProjectionWindow.presentWorkspaceWindow(panel, activates: false)
+        configurationOpen = true
         #endif
     }
 }
@@ -86,24 +98,25 @@ import AppKit
 extension TeleprompterTimerController: NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
         guard notification.object as? NSWindow === configuration else { return }
-        configuration?.contentView = nil; configuration = nil
+        DispatchQueue.main.async { [weak configuration] in
+            if let configuration, !configuration.isVisible { configuration.contentView?.isHidden = true }
+        }
+        configurationOpen = false
     }
 }
 #endif
 
 private struct LocalizedTeleprompterTimer: View {
     let controller: TeleprompterTimerController
-    let close: () -> Void
     @AppStorage("jaras.language") private var language = "en"
     var body: some View {
-        TeleprompterTimerConfiguration(controller: controller,close: close)
+        TeleprompterTimerConfiguration(controller: controller)
             .environment(\.locale,Locale(identifier: language)).preferredColorScheme(.dark)
     }
 }
 
 struct TeleprompterTimerConfiguration: View {
     @ObservedObject var controller: TeleprompterTimerController
-    let close: () -> Void
     @State private var digits = ["00","00","00"]
     @State private var field = 0
     @State private var caret = 0
@@ -111,32 +124,34 @@ struct TeleprompterTimerConfiguration: View {
     @State private var stopRunID: UUID?
     var body: some View {
         VStack(spacing: 12) {
+            Picker("Timer", selection: Binding(get: { controller.mode }, set: { controller.setMode($0) })) {
+                Text("Progressive").tag(TeleprompterTimerMode.progressive)
+                Text("Countdown").tag(TeleprompterTimerMode.countdown)
+            }.pickerStyle(.segmented).disabled(controller.running)
             TimelineView(.periodic(from: .now,by: 0.5)) { _ in
-                Text(controller.displayText()).font(.system(size: 30,weight: .bold,design: .monospaced))
+                Text(controller.displayText()).font(.jarasSystem(size: 30,weight: .bold,design: .monospaced))
                     .foregroundStyle(controller.expired() ? Color.red : JarasTheme.green)
                     .opacity(controller.displayOpacity())
                     .frame(maxWidth: .infinity,minHeight: 48).background(JarasTheme.display).cornerRadius(6)
                     .overlay(RoundedRectangle(cornerRadius: 6).stroke(JarasTheme.green))
             }
+            if controller.mode == .countdown {
             VStack(spacing: 8) {
                 HStack(spacing: 8) {
                     ForEach(0..<3,id: \.self) { index in
                         Button { field = index; caret = 0 } label: {
                             VStack(spacing: 4) {
-                                Text(LocalizedStringKey(["Hours","Minutes","Seconds"][index])).font(.caption)
-                                Text(digits[index]).font(.system(size: 24,weight: .semibold,design: .monospaced))
+                                Text(LocalizedStringKey(["Hours","Minutes","Seconds"][index])).font(.jarasCaption)
+                                Text(digits[index]).font(.jarasSystem(size: 24,weight: .semibold,design: .monospaced))
                             }.frame(maxWidth: .infinity,minHeight: 52).contentShape(Rectangle())
                         }.buttonStyle(.plain).padding(4).background(JarasTheme.display).cornerRadius(6)
                             .overlay(RoundedRectangle(cornerRadius: 6).stroke(field == index ? JarasTheme.yellow : JarasTheme.line))
                     }
                 }
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(),spacing: 5),count: 3),spacing: 5) {
-                    ForEach(["1","2","3","4","5","6","7","8","9","Clear","0","⌫"],id: \.self) { key in
-                        Button { edit(key) } label: { Text(LocalizedStringKey(key)).frame(maxWidth: .infinity,minHeight: 26).contentShape(Rectangle()) }.buttonStyle(.bordered)
-                    }
-                }
+                TimerNumberPad(edit: edit)
             }
             .disabled(controller.running)
+            }
             HStack(spacing: 10) {
                 Button(controller.running ? "Stop" : "Start") {
                     if controller.running { stopRunID = controller.runID; confirmStop = true } else { controller.start() }
@@ -145,7 +160,6 @@ struct TeleprompterTimerConfiguration: View {
                     .buttonStyle(.bordered).tint(controller.initAutoEnabled ? JarasTheme.green : JarasTheme.secondary)
                     .jarasHelp("Start timer automatically when a song starts")
                 Spacer(minLength: 0)
-                Button("Close",action: close).keyboardShortcut(.cancelAction)
             }
         }.padding(16).background(JarasTheme.panel).foregroundStyle(JarasTheme.text)
             .onAppear { synchronizeDigits() }
@@ -171,5 +185,19 @@ struct TeleprompterTimerConfiguration: View {
         }
         digits[field] = String(format: "%02d",min(field == 0 ? 99 : 59,Int(String(chars)) ?? 0))
         controller.setTargetText(digits.joined(separator: ":"))
+    }
+}
+
+struct TimerNumberPad: View {
+    let edit: (String) -> Void
+
+    var body: some View {
+        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 5), count: 3), spacing: 5) {
+            ForEach(["1", "2", "3", "4", "5", "6", "7", "8", "9", "Clear", "0", "⌫"], id: \.self) { key in
+                Button { edit(key) } label: {
+                    Text(LocalizedStringKey(key)).frame(maxWidth: .infinity, minHeight: 26).contentShape(Rectangle())
+                }.buttonStyle(.bordered)
+            }
+        }
     }
 }

@@ -20,12 +20,12 @@ enum NormalizationTargetPreferences {
 enum ItemNormalization {
     /// Read bounded chunks on a worker. Analyse the item's source interval,
     /// independent of transport and mixer effects. Never rewrite the source.
-    static func measure(_ clip: AudioClip, directory: URL, mode: NormalizationMode) throws -> Double {
+    static func measure(_ clip: AudioClip, directory: URL, mode: NormalizationMode, progress: (Double) -> Void = { _ in }) throws -> Double {
         guard let source = clip.audioFile else { throw ProjectError.invalid("Item has no audio file.") }
         let file = try AVAudioFile(forReading: directory.appendingPathComponent(source.path))
         let rate = file.processingFormat.sampleRate, channels = Int(file.processingFormat.channelCount)
         let loopFirst = max(0, AVAudioFramePosition((clip.loopStart ?? 0) * rate))
-        let loopEnd = min(file.length, loopFirst + AVAudioFramePosition((clip.loopLength ?? Double(file.length) / rate) * rate))
+        var loopEnd = min(file.length, loopFirst + AVAudioFramePosition((clip.loopLength ?? Double(file.length) / rate) * rate))
         let looping = clip.loopLength != nil
         let rawFirst = AVAudioFramePosition(clip.sourceOffset * rate)
         let first = looping && loopEnd > loopFirst ? loopFirst + ((rawFirst - loopFirst) % (loopEnd - loopFirst) + (loopEnd - loopFirst)) % (loopEnd - loopFirst) : min(file.length, rawFirst)
@@ -36,14 +36,20 @@ enum ItemNormalization {
             throw ProjectError.invalid("Could not analyze this audio item.")
         }
         defer { var owned: UnsafeMutablePointer<ebur128_state>? = meter; ebur128_destroy(&owned) }
+        var sourceEnd = file.length
         file.framePosition = first
         var interleaved = [Float](repeating: 0, count: 16384 * channels)
         var squareSum = 0.0, frames = 0
+        var lastProgress = -1.0
+        progress(0)
         while frames < wanted {
             try Task.checkCancellation()
             if looping && file.framePosition >= loopEnd { file.framePosition = loopFirst }
-            let available = (looping ? loopEnd : file.length) - file.framePosition
-            try file.read(into: buffer, frameCount: AVAudioFrameCount(min(16384, available, wanted - Int64(frames))))
+            let available = (looping ? loopEnd : sourceEnd) - file.framePosition
+            guard available > 0 else { break }
+            let requested = AVAudioFrameCount(min(16384, available, wanted - Int64(frames)))
+            buffer.frameLength = 0
+            try file.read(into: buffer, frameCount: requested)
             let count = Int(buffer.frameLength)
             guard count > 0, let data = buffer.floatChannelData else { break }
             for channel in 0..<channels {
@@ -55,9 +61,21 @@ enum ItemNormalization {
                 throw ProjectError.invalid("Could not measure audio level.")
             }
             frames += count
+            // Compressed headers can overestimate the decoded tail. A short
+            // read ends the source; asking again may throw EOF (-39). Keep
+            // all returned samples, and use the actual end for repeated items.
+            if count < requested {
+                sourceEnd = min(sourceEnd, file.framePosition)
+                loopEnd = min(loopEnd, sourceEnd)
+                if looping && loopEnd <= loopFirst { break }
+            }
+            let fraction = Double(frames) / Double(wanted)
+            if fraction >= 1 || fraction-lastProgress >= 0.005 { progress(fraction); lastProgress = fraction }
         }
+        guard frames > 0 else { throw ProjectError.invalid("Could not analyze this audio item.") }
+        progress(1)
         switch mode {
-        case .rms: return 10 * log10(max(1e-20, squareSum / Double(max(1, frames * channels))))
+        case .rms: return 10 * log10(squareSum / Double(max(1, frames * channels)))
         case .lufs:
             // A short item still needs one complete 400 ms integration block.
             if Double(frames) / rate < 0.4 {
@@ -80,12 +98,13 @@ enum ItemNormalization {
                 else { _ = ebur128_true_peak(meter, UInt32(channel), &value) }
                 peak = max(peak, value)
             }
-            return 20 * log10(max(1e-20, peak))
+            return 20 * log10(peak)
         }
     }
     static func gain(measured: Double, target: Double) -> Double {
-        guard measured.isFinite, measured > -150 else { return 1 }
-        return pow(10, min(24, max(-120, target - measured)) / 20)
+        guard measured.isFinite, target.isFinite else { return 1 }
+        let gain = pow(10, (target - measured) / 20)
+        return gain.isFinite ? gain : 1
     }
 }
 
@@ -100,32 +119,52 @@ struct ItemNormalizationEditor: View {
     @State private var invalid = false
     @State private var shake = 0.0
     @State private var progress = ""
+    @State private var progressItems: [AudioClip] = []
+    @State private var itemProgress: [UUID: Double] = [:]
+    @State private var progressJob: UUID?
     @State private var error = ""
     @State private var worker: Task<Void, Never>?
     private func finish() { if let close { close() } else { dismiss() } }
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Normalize").font(.headline)
-            Picker("Mode", selection: $mode) { ForEach(NormalizationMode.allCases, id: \.self) { Text($0.rawValue).tag($0) } }
+            Text("Normalize").font(.jarasHeadline)
+            Picker("Mode", selection: $mode) { ForEach(NormalizationMode.allCases, id: \.self) { Text($0.rawValue).tag($0) } }.disabled(worker != nil)
             HStack {
                 Text("Target")
                 TextField("dB", text: $target).textFieldStyle(.roundedBorder).onSubmit(apply)
                     .overlay(RoundedRectangle(cornerRadius: 4).stroke(invalid ? Color.red : .clear))
-                    .modifier(NormalizeShake(value: shake))
+                    .modifier(NormalizeShake(value: shake)).disabled(worker != nil)
                 Text(mode == .lufs ? "LUFS" : mode == .truePeak ? "dBTP" : "dB")
             }
-            Text("Independent normalization gain: up to +24 dB").font(.caption).foregroundStyle(JarasTheme.secondary)
-            if !progress.isEmpty { HStack { ProgressView().controlSize(.small); Text(progress).font(.caption).lineLimit(1) } }
-            if !error.isEmpty { Text(error).foregroundStyle(.red).font(.caption) }
+            Text("Independent normalization gain").font(.jarasCaption).foregroundStyle(JarasTheme.secondary)
+            if !progressItems.isEmpty {
+                ScrollViewReader { reader in
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 12) {
+                            ForEach(progressItems) { clip in
+                                VStack(alignment: .leading, spacing: 5) {
+                                    Text(verbatim: clip.name).font(.jarasCaption).lineLimit(1)
+                                    ProgressView(value: itemProgress[clip.id] ?? 0).progressViewStyle(JarasProgressBarStyle()).accessibilityLabel(Text(verbatim: clip.name))
+                                }.id(clip.id)
+                            }
+                        }
+                    }.frame(height: min(200, CGFloat(progressItems.count) * 36))
+                        .onChange(of: progress) { _ in
+                            if let current = progressItems.first(where: { (itemProgress[$0.id] ?? 0) < 1 }) { reader.scrollTo(current.id, anchor: .center) }
+                        }
+                }
+                if !progress.isEmpty { Text(verbatim: progress).font(.jarasCaption).lineLimit(2) }
+            }
+            if !error.isEmpty { Text(error).foregroundStyle(.red).font(.jarasCaption) }
             HStack {
-                Button("Cancel") { worker?.cancel(); finish() }.keyboardShortcut(.cancelAction)
+                Button("Cancel") { progressJob = nil; worker?.cancel(); finish() }.keyboardShortcut(.cancelAction)
                 Spacer()
                 Button("Normalize", action: apply).keyboardShortcut(.defaultAction).disabled(worker != nil)
             }
         }.padding(22).frame(width: 360).background(JarasTheme.panel)
             .onAppear { restoreTarget() }
             .onChange(of: mode) { _ in restoreTarget() }
-            .onDisappear { worker?.cancel() }
+            .onDisappear { progressJob = nil; worker?.cancel() }
     }
     private func restoreTarget() {
         target = NormalizationTargetPreferences.formatted(NormalizationTargetPreferences.target(for: mode))
@@ -145,14 +184,22 @@ struct ItemNormalizationEditor: View {
         let project = show.snapshot.project.id
         let clips = show.snapshot.project.songs.flatMap(\.tracks).filter { $0.kind == .standard }.flatMap(\.clips).filter { items.contains($0.id) && $0.audioFile != nil }
         guard !clips.isEmpty else { error = "No audio items selected."; return }
-        let selectedMode = mode
+        let selectedMode = mode, job = UUID()
+        progressJob = job; progressItems = clips; itemProgress = [:]
         worker = Task {
             do {
                 var gains: [UUID: Double] = [:]
                 for (index, clip) in clips.enumerated() {
                     try Task.checkCancellation(); progress = "\(index + 1)/\(clips.count) · \(clip.name)"
-                    let analysis = Task.detached(priority: .utility) { try ItemNormalization.measure(clip, directory: directory, mode: selectedMode) }
+                    let analysis = Task.detached(priority: .utility) {
+                        try ItemNormalization.measure(clip, directory: directory, mode: selectedMode) { value in
+                            Task { @MainActor in
+                                if progressJob == job && worker != nil { itemProgress[clip.id] = max(itemProgress[clip.id] ?? 0, value) }
+                            }
+                        }
+                    }
                     let level = try await withTaskCancellationHandler { try await analysis.value } onCancel: { analysis.cancel() }
+                    itemProgress[clip.id] = 1
                     gains[clip.id] = ItemNormalization.gain(measured: level, target: value)
                 }
                 try Task.checkCancellation()
@@ -160,8 +207,10 @@ struct ItemNormalizationEditor: View {
                     NormalizationTargetPreferences.remember(value,for: selectedMode)
                     finish()
                 }
-            } catch is CancellationError {} catch { self.error = error.localizedDescription }
-            progress = ""; worker = nil
+            } catch is CancellationError {} catch {
+                self.error = (progress.isEmpty ? "" : progress + "\n") + error.localizedDescription
+            }
+            progressJob = nil; progress = ""; worker = nil
         }
     }
 }

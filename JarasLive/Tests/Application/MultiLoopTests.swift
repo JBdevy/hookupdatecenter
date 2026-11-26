@@ -2,6 +2,7 @@ import XCTest
 @testable import JarasApplication
 @MainActor private final class MultiLoopTestExecutor: CommandExecutor {
     var project = Project.empty(name: "Loops")
+    var normalizesDefaults = false
     func load(_ project: Project) throws { self.project = project }
     func snapshot() throws -> ShowSnapshot {
         ShowSnapshot(project: project, transport: TransportState(playing: false, songId: project.songs[0].id, position: 0,
@@ -12,9 +13,30 @@ import XCTest
     func addTrack(id: UUID, name: String, role: TrackRole) throws {}
     func advance(_ elapsed: Double) {}
     func finishCurrentSong(_ enabled: Bool) {}
-    func applyProjectEdit(_ project: Project) throws { try project.validate(); self.project = project }
+    func applyProjectEdit(_ project: Project) throws {
+        try project.validate(); self.project = project
+        if normalizesDefaults {
+            for s in self.project.songs.indices { for p in self.project.songs[s].parts.indices {
+                for l in (self.project.songs[s].parts[p].multiLoops ?? []).indices {
+                    self.project.songs[s].parts[p].multiLoops?[l].enabled = true
+                }
+            } }
+        }
+    }
 }
 final class MultiLoopTests: XCTestCase {
+    @MainActor func testSaveSucceedsWhenEngineNormalizesDefaultFields() throws {
+        var project = Project.empty(name: "Save")
+        let region = Part(id: UUID(), name: "Song", startTime: 0, endTime: 20)
+        let a = TimelineMarker(id: UUID(), name: "A", position: 2, color: 0, section: true, loopSection: true)
+        let b = TimelineMarker(id: UUID(), name: "B", position: 10, color: 0, section: true, loopSection: true)
+        project.songs[0].duration = 20; project.songs[0].parts = [region]; project.songs[0].markers = [a,b]
+        let executor = MultiLoopTestExecutor(); executor.normalizesDefaults = true
+        let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)
+        let loop = MultiLoop(name: "Loop", marker1: a.id, marker2: b.id)
+        XCTAssertTrue(show.setMultiLoops([loop], region: region.id))
+        XCTAssertEqual(show.current?.parts.first?.multiLoops?.first?.enabled, true)
+    }
     @MainActor func testImportedOverlappingPairsAndSharedDrawerAnchorRemainEditable() throws {
         var project = Project.empty(name: "VS Hook slots")
         let parent = Part(id: UUID(), name: "Special", startTime: 0, endTime: 30)
@@ -57,7 +79,7 @@ final class MultiLoopTests: XCTestCase {
         loop.enabled = false; loop.mixerEnabled = false
         let saved = try JSONDecoder().decode(MultiLoop.self, from: JSONEncoder().encode(loop))
         XCTAssertFalse(saved.isEnabled)
-        XCTAssertFalse(saved.usesMixer)
+        XCTAssertTrue(saved.usesMixer, "The retired global switch cannot disable per-track M/S")
         XCTAssertEqual(saved.tracks, [rule], "disabled loops retain their saved mixer presets")
         loop.enabled = true; loop.mixerEnabled = true
         let enabled = try JSONDecoder().decode(MultiLoop.self, from: JSONEncoder().encode(loop))

@@ -14,7 +14,7 @@ struct SidebarView: View {
     private func navigation(_ title: String, icon: String, active: Bool, action: @escaping () -> Void) -> some View {
         Button { close(); action() } label: {
             Label(LocalizedStringKey(title), systemImage: icon)
-                .font(.system(size: 11, weight: .medium))
+                .font(.jarasSystem(size: 11, weight: .medium))
                 .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 12).frame(height: 38)
                 .background(active ? JarasTheme.accent.opacity(0.12) : .clear)
                 .foregroundStyle(active ? JarasTheme.accent : JarasTheme.secondary)

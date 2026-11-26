@@ -6,10 +6,14 @@ trap 'rm -rf "$test_dir"' EXIT
 python3 - "$test_dir/main.swift" <<'PY'
 from pathlib import Path
 import sys
-source = Path('Apple/Shared/DAWRemoteView.swift').read_text()
-start = source.index('private final class IpadStereoMeterLayers')
-end = source.index('/// Meter samples update two layer masks', start)
-Path(sys.argv[1]).write_text('import Foundation\nimport QuartzCore\n' + source[start:end] + '\n' + Path('Tests/Apple/IpadStereoMeterTests.swift').read_text())
+audio = Path('Apple/Shared/StemAudioPlayback.swift').read_text()
+style = audio[audio.index('enum HorizontalTrackFaderScale {'):audio.index('struct MixerFaderMeter:')]
+theme = Path('Apple/Shared/Theme.swift').read_text()
+display = '; '.join(line.strip() for line in theme.splitlines() if any(key in line for key in
+    ('static let displayHex:', 'static let lightDarkBackgroundHex:', 'static let workspaceToolbar =')))
+interface = theme[theme.index('enum JarasInterfaceTheme:'):theme.index('enum JarasTheme {')]
+color = theme[theme.index('extension Color {'):theme.index('#if os(macOS)\nenum DesktopToolbarTone')]
+Path(sys.argv[1]).write_text('import SwiftUI\nimport QuartzCore\nenum JarasTheme { ' + display + ' }\n' + interface + color + style + '\n' + Path('Tests/Apple/IpadStereoMeterTests.swift').read_text())
 PY
 swiftc -O -swift-version 5 "$test_dir/main.swift" -o "$test_dir/test"
 "$test_dir/test"

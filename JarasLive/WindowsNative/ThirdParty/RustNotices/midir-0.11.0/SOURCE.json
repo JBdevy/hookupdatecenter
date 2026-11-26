@@ -1,0 +1,7 @@
+﻿{
+    "license":  "MIT",
+    "source":  "registry+https://github.com/rust-lang/crates.io-index",
+    "name":  "midir",
+    "version":  "0.11.0",
+    "repository":  "https://github.com/Boddlnagg/midir"
+}

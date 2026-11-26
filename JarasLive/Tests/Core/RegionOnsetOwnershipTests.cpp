@@ -29,6 +29,7 @@ static Project fixture(bool initialized = true) {
     Project project; project.id = "onset-project"; project.name = "Onset ownership";
     Song song; song.id = "song"; song.name = "Show"; song.duration = 100;
     song.regionOwnershipInitialized = initialized;
+    song.regionOwnershipVersion = initialized ? 4 : 0;
     song.parts = {{"a", "A", 0, 16}, {"b", "B", 10, 30}, {"group", "Unified", 0, 30}};
     song.parts[0].parentRegionID = "group"; song.parts[1].parentRegionID = "group";
     song.tracks = {Track{"track", "Audio", {"other"}}};
@@ -42,7 +43,7 @@ static const AudioClip& clip(const Engine& engine, const ID& id) {
 }
 static void crossingOwner(const Engine& engine, const ID& id, const char* message) {
     const auto& item = clip(engine, id);
-    expect(item.regionOwnerID == "a", message);
+    expect(item.regionOwnerID == "b", message);
     near(item.startTime, 8, "ownership acquisition preserves the item onset");
     near(item.duration, 30, "ownership acquisition preserves the tail beyond both songs and their parent");
     near(item.sourceOffset, 2, "ownership acquisition preserves source trim");
@@ -54,7 +55,7 @@ int main() {
             auto project = fixture(false);
             project.songs[0].tracks[0].clips = {audio("legacy", 8, 30)};
             Engine engine; engine.loadProject(project);
-            crossingOwner(engine, "legacy", "legacy initialization assigns a crossing tail from its onset inside A");
+            crossingOwner(engine, "legacy", "legacy initialization assigns media to the unified child covering most of it");
             expect(engine.currentSong()->regionOwnershipInitialized, "legacy initialization records that membership was established");
             engine.moveRegion("group", 40);
             near(clip(engine, "legacy").startTime, 48, "the complete crossing item follows its assigned unified song");
@@ -65,14 +66,14 @@ int main() {
             auto next = engine.project();
             next.songs[0].tracks[0].clips.push_back(audio("created", 8, 30));
             engine.applyProjectEdit(next);
-            crossingOwner(engine, "created", "new project-edit items acquire A despite their tail crossing B and the parent end");
+            crossingOwner(engine, "created", "new project-edit items follow the dominant unified child");
         }
         {
             Engine engine; engine.loadProject(fixture());
             Track imported{"imported", "Imported audio", {"other"}};
             imported.clips = {audio("imported-tail", 8, 30)};
             engine.insertAudioTracks("song", {imported});
-            crossingOwner(engine, "imported-tail", "audio import acquires its onset song instead of requiring full containment");
+            crossingOwner(engine, "imported-tail", "audio import follows the dominant unified child");
         }
         for (bool viaProjectEdit : {false, true}) {
             auto project = fixture();
@@ -82,7 +83,7 @@ int main() {
                 auto next = engine.project(); next.songs[0].tracks[0].clips[0].startTime = 8;
                 engine.applyProjectEdit(next);
             } else engine.moveClip("moved", 8);
-            crossingOwner(engine, "moved", "explicit item movement acquires the song at the new onset");
+            crossingOwner(engine, "moved", "explicit item movement follows the dominant unified child");
             engine.moveClip("moved", 50);
             expect(!clip(engine, "moved").regionOwnerID, "explicit movement back outside all regions detaches the item");
         }
@@ -94,13 +95,13 @@ int main() {
             expect(!clip(engine, "loose").regionOwnerID, "initialized reload preserves an intentionally loose crossing item");
             engine.moveRegion("group", 40);
             near(clip(engine, "owned").startTime, 48, "persisted foreign membership still follows its unified group");
-            near(clip(engine, "loose").startTime, 9, "moving a region leaves its loose item stationary");
+            near(clip(engine, "loose").startTime, 49, "moving a region carries loose items covered by its source area");
             engine.loadProject(engine.project());
             engine.moveRegion("group", 0);
             auto next = engine.project(); next.name = "Unrelated project edit";
             engine.applyProjectEdit(next);
-            expect(!clip(engine, "loose").regionOwnerID, "moving a region over a loose onset, reloading, and unrelated edits never recapture it");
-            near(clip(engine, "loose").startTime, 9, "loose audio remains stationary after the region returns");
+            expect(clip(engine, "loose").regionOwnerID == "group", "the region carrying loose material records its ownership through reload");
+            near(clip(engine, "loose").startTime, 9, "carried audio returns with its region");
             auto resized = engine.project(); resized.songs[0].tracks[0].clips[0].duration = 40;
             engine.applyProjectEdit(resized);
             expect(clip(engine, "owned").regionOwnerID == "b", "resizing an item without moving its onset preserves its explicit owner");
@@ -119,7 +120,7 @@ int main() {
         {
             Engine engine; engine.loadProject(fixture());
             engine.addRecordedClip("track", audio("recorded-audio", 8, 30));
-            crossingOwner(engine, "recorded-audio", "recorded audio acquires its onset song when finalized across the next song");
+            crossingOwner(engine, "recorded-audio", "recorded audio follows the dominant unified child");
         }
         {
             Engine engine; engine.loadProject(fixture());
@@ -142,8 +143,34 @@ int main() {
             engine.addRecordedClip("track", captured);
             expect(!clip(engine, "captured-loose").regionOwnerID, "MIDI finalization preserves frozen nil when a region moves over the capture onset");
             engine.loadProject(engine.project()); engine.moveRegion("group", 0);
-            expect(!clip(engine, "captured-loose").regionOwnerID, "captured nil remains loose after reload and region departure");
-            near(clip(engine, "captured-loose").startTime, 48, "a region passing over a MIDI take never transports it");
+            expect(clip(engine, "captured-loose").regionOwnerID == "group", "a later region drag acquires MIDI currently covered by its source area");
+            near(clip(engine, "captured-loose").startTime, 8, "covered MIDI follows the region on its next drag");
+        }
+        {
+            auto project = fixture();
+            project.songs[0].tracks[0].clips = {audio("long-tail", 8, 30, "a"), midi("midi-tail", 8, 30, "a")};
+            Engine engine; engine.loadProject(project); engine.moveRegion("group", 200);
+            near(clip(engine, "long-tail").startTime, 208, "moving past the end carries audio tails");
+            near(clip(engine, "midi-tail").startTime, 208, "moving past the end carries MIDI tails");
+            near(engine.currentSong()->duration, 238, "project extent includes the full moved item, not only region end");
+            engine.loadProject(engine.project()); engine.moveRegion("group", 0);
+            near(clip(engine, "long-tail").startTime, 8, "reloaded tail remains attached for return movement");
+        }
+        {
+            auto project = fixture();
+            TimelineMarker marker{"song-marker", "A", 0, 0x123456};
+            marker.unifiedRegionID = "group"; marker.sourceRegionID = "a";
+            project.songs[0].markers = std::vector<TimelineMarker>{marker};
+            Engine engine; engine.loadProject(project);
+            engine.editRegion("a", "New song name", 0x654321, false);
+            expect(engine.currentSong()->markers->front().name == "New song name", "region edits rename the linked marker");
+            expect(engine.currentSong()->markers->front().color == 0x654321, "region edits recolor the linked marker");
+            engine.setMarker("song-marker", "From marker", 0, 0xabcdef);
+            expect(engine.currentSong()->parts[0].name == "From marker", "marker edits rename the source region");
+            expect(engine.currentSong()->parts[0].color == 0xabcdef, "marker edits recolor the source region");
+            expect(!engine.currentSong()->parts[0].uppercaseName.value_or(true), "marker editing preserves the region case setting");
+            engine.loadProject(engine.project());
+            expect(engine.currentSong()->markers->front().name == engine.currentSong()->parts[0].name, "names stay synchronized after reload");
         }
         for (bool batch : {false, true}) {
             auto project = fixture();

@@ -19,7 +19,8 @@ for role in ['header','details','ok']:
 localization=Path('Apple/Shared/NativeTooltips.swift').read_text()
 localization=localization[localization.index('enum JarasLocalization {'):localization.index('extension View {')]
 colors='enum JarasTheme { static let background = Color.black, panel = Color.gray, secondary = Color.gray, yellow = Color.yellow }\n'
-(folder/'main.swift').write_text('import AppKit\nimport SwiftUI\n'+colors+localization+notice+Path('Tests/Apple/ProjectMigrationNoticeTests.swift').read_text())
+typography = '// App-owned typography.' + Path('Apple/Shared/Theme.swift').read_text().split('// App-owned typography.', 1)[1]
+(folder/'main.swift').write_text('import AppKit\nimport SwiftUI\n'+colors+typography+localization+notice+Path('Tests/Apple/ProjectMigrationNoticeTests.swift').read_text())
 PY
 swiftc -swift-version 5 -target "$(uname -m)-apple-macos12.0" "$notice_test_dir/main.swift" -o "$notice_test_dir/Notice.app/Contents/MacOS/Notice"
 "$notice_test_dir/Notice.app/Contents/MacOS/Notice"

@@ -110,17 +110,17 @@ let initial = ready(0, 512 / rate, rate)
 let gate = DispatchSemaphore(value: 0)
 worker.suspend()
 owner.beginFrame()
-let pinned = owner.blocks(cache: cache, url: url, header: header, start: 0, end: 1024 / rate, scale: rate, key: "progressive")
+let pinned = owner.blocks(cache: cache, url: url, header: header, start: 0, end: 1024 / rate, scale: rate, key: .named("progressive"))
 owner.endFrame()
 precondition(pinned.count == 1 && pinned[0] === initial.blocks[0])
 worker.async { gate.wait() }
 owner.beginFrame()
-_ = owner.blocks(cache: cache, url: url, header: header, start: 0, end: 2048 / rate, scale: rate, key: "progressive")
+_ = owner.blocks(cache: cache, url: url, header: header, start: 0, end: 2048 / rate, scale: rate, key: .named("progressive"))
 owner.endFrame()
 worker.resume()
 _ = ready(512 / rate, 1024 / rate, rate)
 owner.beginFrame()
-let expanding = owner.blocks(cache: cache, url: url, header: header, start: 0, end: 2048 / rate, scale: rate, key: "progressive")
+let expanding = owner.blocks(cache: cache, url: url, header: header, start: 0, end: 2048 / rate, scale: rate, key: .named("progressive"))
 owner.endFrame()
 gate.signal()
 precondition(expanding.count == 2 && expanding[0] === initial.blocks[0] && expanding[1].start == 512,
@@ -143,6 +143,53 @@ func audioStrokes(_ frame: MetalWaveformFrame) -> [MetalWaveformStroke] {
 _ = ready(0, 4, scale)
 let stereo = scene(clip)
 let stereoAudio = audioStrokes(stereo)
+var overlappingClip = clip
+overlappingClip.id = UUID()
+let lower = TimelineWaveformItem(clip: clip, fragments: [clip], url: url, rect: rect, gray: 0.3)
+var upper = TimelineWaveformItem(clip: overlappingClip, fragments: [overlappingClip], url: url, rect: rect, gray: 0.8)
+let beforeGain = audioStrokes(TimelineMetalWaveformFrameBuilder.make(items: [lower, upper],
+    viewport: viewport, scale: scale, cache: cache, owner: owner))
+upper.gainPreview = 0.25
+let duringGain = audioStrokes(TimelineMetalWaveformFrameBuilder.make(items: [lower, upper],
+    viewport: viewport, scale: scale, cache: cache, owner: owner))
+let lowerBefore = beforeGain.filter { $0.color.x == lower.gray }
+let lowerDuring = duringGain.filter { $0.color.x == lower.gray }
+let upperBefore = beforeGain.filter { $0.color.x == upper.gray }
+let upperDuring = duringGain.filter { $0.color.x == upper.gray }
+precondition(!lowerBefore.isEmpty && !upperBefore.isEmpty)
+precondition(lowerDuring.map(\.scale) == lowerBefore.map(\.scale),
+             "the lower overlapping waveform must remain in the scene during an upper item's gain drag")
+precondition(upperDuring.map { $0.scale.y } == upperBefore.map { $0.scale.y * 0.25 },
+             "the preview must scale only the adjusted item")
+print("METAL_OVERLAPPING_ITEM_GAIN_PREVIEW_PRESERVES_BOTH_WAVEFORMS_OK")
+MainActor.assumeIsolated {
+    var track = Track(id: UUID(), name: "Mixed overlap components", role: .other)
+    var pair = clip; pair.id = UUID(); pair.startTime = 30
+    var pairB = pair; pairB.id = UUID(); pairB.startTime += 0.5
+    var triple = pair; triple.id = UUID(); triple.startTime = 50
+    var tripleB = triple; tripleB.id = UUID(); tripleB.startTime += 0.2
+    var tripleC = triple; tripleC.id = UUID(); tripleC.startTime += 0.4
+    track.clips = [clip, pair, pairB, triple, tripleB, tripleC]
+    let rows = TrackRowLayout(tracks: [track], baseHeight: 90)
+    let localOwner = TimelineWaveformVertexOwner()
+    for (item, localCount) in [(clip, 1), (pair, 2), (tripleC, 3)] {
+        let h = rows.itemLaneHeight(item.id, track: 0)
+        precondition(abs(h - rows.audioHeights[0] / CGFloat(localCount)) < 1e-9)
+        let bounds = CGRect(x: item.startTime * scale + 1, y: 50 + rows.itemLaneOffset(item.id, track: 0) + 3,
+                            width: 2 * scale, height: h - 6)
+        let window = CGRect(x: item.startTime * scale - 20, y: 0, width: 800, height: 400)
+        let frame = TimelineMetalWaveformFrameBuilder.make(items: [TimelineWaveformItem(clip: item,
+            fragments: [item], url: url, rect: bounds, gray: 0.7)], viewport: window, scale: scale,
+            cache: cache, owner: localOwner)
+        let strokes = audioStrokes(frame)
+        precondition(!strokes.isEmpty, "local-height audio items must retain visible waveforms")
+        for stroke in strokes {
+            precondition(stroke.clip.minY >= bounds.minY && stroke.clip.maxY <= bounds.maxY,
+                         "Metal waveform clipping follows the same local item height as drawing and selection")
+        }
+    }
+    print("METAL_LOCAL_OVERLAP_HEIGHTS_SINGLE_PAIR_TRIPLE_CLIPPING_OK")
+}
 precondition(!stereoAudio.isEmpty && Set(stereoAudio.map(\.channel)) == Set([0, 1]))
 for stroke in stereoAudio {
     precondition(viewport.size.width >= stroke.clip.maxX && stroke.clip.minX >= 0)
@@ -156,7 +203,20 @@ clip.gain = pow(10, 24.0 / 20)
 let louder = audioStrokes(scene(clip))
 precondition(abs(louder[0].scale.y / stereoAudio[0].scale.y - Float(pow(10, 24.0 / 20))) < 0.0001,
              "waveform gain must continue scaling above 0 dB up to +24 dB")
-clip.gain = 1
+clip.gain = 0.5; clip.normalizationGain = 4
+let normalized = scene(clip), normalizedAudio = audioStrokes(normalized)
+precondition(abs(normalizedAudio[0].scale.y / stereoAudio[0].scale.y - 2) < 0.0001,
+             "normalization must multiply item gain in the real timeline builder")
+precondition(!stereo.hasSameContent(as: normalized), "normalization must invalidate waveform presentation")
+clip.phaseInverted = true
+let inverted = audioStrokes(scene(clip))
+precondition(inverted[0].scale.y == -normalizedAudio[0].scale.y && inverted[0].block === normalizedAudio[0].block,
+             "phase inversion reflects waveform without rewriting or decoding source data")
+clip.gain = 1; clip.normalizationGain = nil; clip.phaseInverted = nil; clip.channelMode = 4
+let swapped = audioStrokes(scene(clip))
+precondition(swapped.count == stereoAudio.count && zip(swapped, stereoAudio).allSatisfy { $0.channel == 1 - $1.channel && $0.translation == $1.translation },
+             "LR swap keeps stereo lanes and exchanges source channels")
+clip.channelMode = 0
 for mode in [1, 2, 3] {
     clip.channelMode = mode
     let strokes = audioStrokes(scene(clip))
@@ -208,11 +268,11 @@ print("METAL_SCENE_TEMPO_FRAGMENTS_AND_OFFSCREEN_CULLING_OK")
 _ = ready(0, 4, 20) // Prepare the full-source zoom-out pyramid before exercising cached zoom.
 let expandingOwner = TimelineWaveformVertexOwner()
 expandingOwner.beginFrame()
-_ = expandingOwner.blocks(cache: cache, url: url, header: header, start: 0, end: 512 / rate, scale: rate, key: "warm-zoom")
+_ = expandingOwner.blocks(cache: cache, url: url, header: header, start: 0, end: 512 / rate, scale: rate, key: .named("warm-zoom"))
 expandingOwner.endFrame()
 worker.suspend()
 expandingOwner.beginFrame()
-let completeOverview = expandingOwner.blocks(cache: cache, url: url, header: header, start: 0, end: 4, scale: 20, key: "warm-zoom")
+let completeOverview = expandingOwner.blocks(cache: cache, url: url, header: header, start: 0, end: 4, scale: 20, key: .named("warm-zoom"))
 expandingOwner.endFrame()
 worker.resume()
 precondition(completeOverview.first?.start == 0 && completeOverview.last?.end == header.frames &&
@@ -245,11 +305,16 @@ shortLoop.loopStart = 0.123
 shortLoop.loopLength = 1 / rate
 shortLoop.sourceOffset = shortLoop.loopStart!
 let tinyLoop = scene(shortLoop)
-precondition(tinyLoop.strokes.count == 2 && tinyLoop.strokes.allSatisfy { $0.lineWidth > 30 },
-             "a loop contained inside a peak interval must retain both channels' extrema instead of a flat line")
+// The fixture peaks at ±0.5. Preserve that amplitude against the same 0 dB
+// channel boundary used by ordinary items, rather than magnifying tiny loops.
+let tinyLoopChannelHeight = (rect.height - GridSelectionItem.bodyInset - 2) / 2
+let expectedTinyLoopSpan = (tinyLoopChannelHeight - 1) * 0.5
+precondition(tinyLoop.strokes.count == 2 && tinyLoop.strokes.allSatisfy {
+    $0.block.isPeakEnvelope && abs(CGFloat($0.scale.y * 2) - expectedTinyLoopSpan) < 0.01
+}, "a sub-bucket loop must preserve both channels' real extrema and calibrated 0 dB scale")
 shortLoop.channelMode = 3
 let cancellingLoop = scene(shortLoop)
-precondition(cancellingLoop.strokes.count == 1 && cancellingLoop.strokes[0].lineWidth == 0.5,
+precondition(cancellingLoop.strokes.count == 1 && cancellingLoop.strokes[0].scale.y * 2 == 0.5,
              "a truly phase-cancelled loop must retain the silent centerline")
 print("METAL_SCENE_SUBBUCKET_REPETITION_PRESERVES_REAL_PEAKS_AND_MONO_CANCELLATION_OK")
 
@@ -299,7 +364,7 @@ let completeFrame: MetalWaveformFrame = awaitValue {
     return !audio.isEmpty && audio.allSatisfy({ !$0.block.isPeakEnvelope && $0.block.step == 1 }) ? frame : nil
 }
 let completeAudio = audioStrokes(completeFrame)
-precondition(completeAudio.allSatisfy { $0.lineWidth == 1 }, "sample detail draws a thin connected contour")
+precondition(completeAudio.allSatisfy { $0.lineWidth == 0.5 }, "sample detail draws a thin connected contour")
 for stroke in completeAudio {
     let expected = (detailClip.startTime + (Double(stroke.block.start) / rate - detailClip.sourceOffset)) * detailScale - detailViewport.minX
     precondition(abs(Double(stroke.translation.x) - expected) < 0.0001,
@@ -315,7 +380,7 @@ print("METAL_PRELOADED_DETAIL_RETAINS_ENVELOPE_UNTIL_COMPLETE_THEN_DRAWS_ALIGNED
 // Detail levels 3 and 6 have nonnested 512/768-frame block boundaries. A
 // partially ready replacement must never overlap the retained complete curve.
 let transitionOwner = TimelineWaveformVertexOwner()
-func transition(_ first: Double, _ last: Double, step: Int, key: String = "detail-transition") -> [TimelineAudioWaveform.VertexBlock] {
+func transition(_ first: Double, _ last: Double, step: Int, key: TimelineWaveformVertexOwner.Key = .named("detail-transition")) -> [TimelineAudioWaveform.VertexBlock] {
     transitionOwner.beginFrame()
     let blocks = transitionOwner.blocks(cache: detailCache, url: url, header: detailHeader,
         start: first / rate, end: last / rate, scale: rate / Double(step * 2), key: key)
@@ -374,7 +439,7 @@ let coldPan = transition(panFirst, panLast, step: 6)
 precondition(!coldPan.isEmpty && coldPan.allSatisfy { $0.step == 6 && !$0.isPeakEnvelope } &&
     zip(coldPan, coldPan.dropFirst()).allSatisfy { $0.end == $1.start },
     "a pan into adjacent cold blocks must retain fine detail instead of flashing a prepared envelope")
-let coldDuplicate = transition(panFirst + 20_000, panLast + 20_000, step: 6, key: "new-fragment")
+let coldDuplicate = transition(panFirst + 20_000, panLast + 20_000, step: 6, key: .named("new-fragment"))
 precondition(coldDuplicate.allSatisfy { !$0.isPeakEnvelope },
     "new loop/fragment presentation keys must not undo the source's established fine detail")
 detailWorker.resume()
@@ -442,7 +507,7 @@ let reserveOwner = TimelineWaveformVertexOwner()
 func reserveView(_ first: Double, _ last: Double, step: Int = 8) -> [TimelineAudioWaveform.VertexBlock] {
     reserveOwner.beginFrame()
     let blocks = reserveOwner.blocks(cache: reserveCache, url: url, header: reserveHeader,
-        start: first / rate, end: last / rate, scale: rate / Double(step * 2), key: "reserve")
+        start: first / rate, end: last / rate, scale: rate / Double(step * 2), key: .named("reserve"))
     reserveOwner.endFrame()
     return blocks
 }
@@ -531,7 +596,7 @@ let coarseOwner = TimelineWaveformVertexOwner()
 func coarseView(first: Double = 512, last: Double = 100_000, step: Int = 256) -> [TimelineAudioWaveform.VertexBlock] {
     coarseOwner.beginFrame()
     let result = coarseOwner.blocks(cache: coarseCache, url: url, header: coarseHeader,
-        start: first / rate, end: last / rate, scale: rate / Double(step * 2), key: "coarse")
+        start: first / rate, end: last / rate, scale: rate / Double(step * 2), key: .named("coarse"))
     coarseOwner.endFrame()
     return result
 }

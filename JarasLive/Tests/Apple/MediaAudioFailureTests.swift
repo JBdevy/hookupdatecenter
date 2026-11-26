@@ -40,6 +40,27 @@ import AVFoundation
     }
     for rate in [44100.0, 48000.0] {
         let format = AVAudioFormat(standardFormatWithSampleRate: rate, channels: 2)!
+        // Subplay primes the next region while the primary head is elsewhere.
+        // A valid silent movie at the destination is still a visual item.
+        do {
+            let engine = AVAudioEngine()
+            let driver = JarasMobileAudioOutput(engine: engine)
+            _ = try driver.configure(withSampleRate: rate, channels: 2)
+            let audio = StemAudioPlayback(engine: engine, realtime: true, mobileOutput: driver)
+            defer { driver.stop(); audio.prepareForClosing() }
+            var value = project("Videos/Silent.mov")
+            value.songs[0].tracks[0].clips[0].startTime = 5; value.songs[0].duration = 6
+            var state = snapshot(value, playing: true); state.transport.subPlay.position = 5
+            var errors: [Error] = []
+            audio.onError = { errors.append($0) }
+            audio.open(directory: root)
+            try audio.update(state, revision: 1)
+            let preparation = audio.pendingSubplayPreparation(state, revision: 1)
+            precondition(preparation != nil)
+            await preparation?.value
+            precondition(errors.isEmpty, "A silent movie must not report a missing audio source when priming Subplay")
+            print("SUBPLAY_SILENT_MOVIE_OK", rate)
+        }
         let tone = root.appendingPathComponent("tone-\(Int(rate)).wav")
         do {
             let data = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(rate * 2))!

@@ -18,7 +18,13 @@ out = Path(sys.argv[1])
 fx = (repo/'Apple/Shared/FXEditor.swift').read_text()
 text = (repo/'Apple/Shared/TextItemEditor.swift').read_text()
 region = (repo/'Apple/Shared/RegionEditor.swift').read_text()
-(out/'environment.swift').write_text(fx[:fx.index('enum FXModelLookup')] + text[:text.index('/// The draft')] + region[region.index('/// Immutable menu target:'):])
+samples = (repo/'Apple/Shared/VinhetasPanel.swift').read_text()
+theme = (repo/'Apple/Shared/Theme.swift').read_text()
+(out/'environment.swift').write_text('import UniformTypeIdentifiers\n' + fx[:fx.index('enum FXModelLookup')] +
+    text[:text.index('/// The draft')] + region[region.index('/// Immutable menu target:'):] +
+    samples[samples.index('enum LibrarySamplerTransfer {'):samples.index('enum PadAudioBuffer {')] +
+    theme[theme.index('enum JarasInterfaceTheme:'):theme.index('\nenum JarasTheme {')] +
+    theme[theme.index('enum TimelineAppearanceDefaults {'):theme.index('enum TimelineThemeColor:')])
 s = (repo/'Apple/Shared/TimelineGridView.swift').read_text()
 a = s.index('struct MixerResizeHandle:')
 (out/'divider.swift').write_text('import SwiftUI\nimport AppKit\n' + s[a:s.index('\n#endif', a)])
@@ -34,5 +40,9 @@ x = x.replace('    @objc private func workspaceWindowBecameKey(_ notification: N
 
 (out/'main.swift').write_text((repo/'Tests/Apple/WorkspaceCursorPriorityTests.swift').read_text())
 PYFIXTURE
-swiftc -O -swift-version 5 -target "$(uname -m)-apple-macos12.0"     Apple/Shared/NativeTimelineInputGate.swift "$test_dir/GridScrollView.swift"     "$test_dir/environment.swift" "$test_dir/divider.swift" "$test_dir/main.swift" -o "$test_dir/test"
+python3 scripts/track-height-test-geometry.py "$test_dir/TrackHeightGeometry.swift"
+swiftc -O -swift-version 5 -target "$(uname -m)-apple-macos12.0" \
+    Apple/Shared/NativeTimelineInputGate.swift Apple/Shared/RightClickRouting.swift \
+    "$test_dir/TrackHeightGeometry.swift" "$test_dir/GridScrollView.swift" "$test_dir/environment.swift" \
+    "$test_dir/divider.swift" "$test_dir/main.swift" -o "$test_dir/test"
 "$test_dir/test" "$@"

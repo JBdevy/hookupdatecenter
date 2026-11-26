@@ -4,39 +4,82 @@
 #include <vector>
 #include <algorithm>
 #include <thread>
+#include <memory>
+#include <cmath>
+#include <mach/mach_time.h>
+#include "JarasMacAudioInput.inc"
 #include "../../Core/ThirdParty/Lame/lame.h"
+
+// Store encoder priming and padding in the standard Xing/LAME frame so that
+// AVAudioFile and the Windows gapless reader expose the same original timeline.
+static bool JarasWriteMP3GaplessTag(lame_t encoder, FILE *output,
+                                    unsigned char *buffer, size_t capacity) {
+    const auto bytes = lame_get_lametag_frame(encoder, buffer, capacity);
+    return bytes > 0 && bytes <= capacity && fseek(output, 0, SEEK_SET) == 0 &&
+           fwrite(buffer, 1, bytes, output) == bytes;
+}
 @implementation JarasCaptureRing {
     std::vector<float> _samples;
+    std::unique_ptr<std::atomic<float>[]> _inputPeaks;
     NSUInteger _channels, _capacity;
-    std::atomic<uint64_t> _read, _write, _dropped;
+    std::atomic<uint64_t> _read, _write, _dropped, _inputBlockFrames, _startHost;
     // Bit 0 accepts input; bit 1 belongs to the single realtime producer.
     std::atomic<unsigned> _captureState;
 }
 - (instancetype)initWithChannels:(NSUInteger)channels capacity:(NSUInteger)frames {
-    if ((self = [super init])) { _channels=channels; _capacity=frames; _samples.resize(channels*frames); _read=0; _write=0; _dropped=0; _captureState=1; }
+    if ((self = [super init])) { _channels=channels; _capacity=frames; _samples.resize(channels*frames); _read=0; _write=0; _dropped=0; _inputBlockFrames=0; _startHost=0; _captureState=1; _inputPeaks=std::make_unique<std::atomic<float>[]>(channels); for(NSUInteger c=0;c<channels;++c) _inputPeaks[c]=0; }
     return self;
 }
-- (void)beginCapture {
+- (void)beginCapture { [self beginCaptureAtHostTime:0]; }
+- (void)beginCaptureAtHostTime:(uint64_t)hostTime {
     // The preceding writer has finished before a ring can be reused.
     [self endCapture]; [self waitForPendingCapture];
-    _read=0; _write=0; _dropped=0;
+    _read=0; _write=0; _dropped=0; _inputBlockFrames=0;
+    _startHost.store(hostTime, std::memory_order_relaxed);
     _captureState.store(1, std::memory_order_release);
 }
 - (void)endCapture { _captureState.fetch_and(~1u, std::memory_order_acq_rel); }
 - (void)waitForPendingCapture {
     while (_captureState.load(std::memory_order_acquire) & 2u) std::this_thread::yield();
 }
-- (void)pushBuffer:(AVAudioPCMBuffer *)buffer {
-    if (!buffer.floatChannelData || buffer.format.channelCount != _channels || !_capacity) return;
+- (void)pushBuffer:(AVAudioPCMBuffer *)buffer { [self pushBuffer:buffer hostTime:0]; }
+- (void)pushBuffer:(AVAudioPCMBuffer *)buffer hostTime:(uint64_t)hostTime {
+    const auto channels = buffer.floatChannelData;
+    if (!channels || buffer.format.channelCount != _channels || !_capacity) return;
+    const NSUInteger frameCount = buffer.frameLength;
+    const NSUInteger stride = buffer.stride;
+    // Input indication is independent of recording and monitor audibility.
+    for (NSUInteger c = 0; c < _channels; ++c) {
+        const float *input = channels[c];
+        float peak = 0;
+        for (NSUInteger f = 0; f < frameCount; ++f) peak = std::max(peak, std::abs(input[f * stride]));
+        auto previous=_inputPeaks[c].load(std::memory_order_relaxed);
+        while(peak>previous && !_inputPeaks[c].compare_exchange_weak(previous,peak,std::memory_order_relaxed)) {}
+    }
     unsigned accepting = 1;
     if (!_captureState.compare_exchange_strong(accepting, 3, std::memory_order_acquire)) return;
+    // The input tap may batch far more frames than its requested buffer size.
+    // Publish the actual producer quantum before publishing the corresponding PCM.
+    _inputBlockFrames.store(std::max<uint64_t>(_inputBlockFrames.load(std::memory_order_relaxed), frameCount), std::memory_order_relaxed);
+    uint64_t skipped=0;
+    const auto startHost=_startHost.load(std::memory_order_relaxed);
+    if(startHost) {
+        const auto firstHost=hostTime ? hostTime : mach_absolute_time();
+        if(startHost>firstHost) {
+            const auto frames=[AVAudioTime secondsForHostTime:startHost-firstHost]*buffer.format.sampleRate;
+            skipped=uint64_t(std::min(double(frameCount),std::ceil(frames-1e-8)));
+        }
+    }
+    const auto available=frameCount-skipped;
     auto write=_write.load(std::memory_order_relaxed), read=_read.load(std::memory_order_acquire);
-    auto count=std::min<uint64_t>(buffer.frameLength, _capacity-(write-read));
-    auto channels=buffer.floatChannelData;
-    for(uint64_t f=0;f<count;++f) for(NSUInteger c=0;c<_channels;++c)
-        _samples[((write+f)%_capacity)*_channels+c]=channels[c][f*buffer.stride];
+    auto count=std::min<uint64_t>(available, _capacity-(write-read));
+    for (uint64_t f = 0; f < count; ++f) {
+        float *output = _samples.data() + ((write + f) % _capacity) * _channels;
+        const auto offset = (f + skipped) * stride;
+        for (NSUInteger c = 0; c < _channels; ++c) output[c] = channels[c][offset];
+    }
     _write.store(write+count,std::memory_order_release);
-    _dropped.fetch_add(buffer.frameLength-count,std::memory_order_relaxed);
+    _dropped.fetch_add(available-count,std::memory_order_relaxed);
     _captureState.fetch_and(~2u, std::memory_order_release);
 }
 - (NSUInteger)readFrames:(float *)destination maximum:(NSUInteger)frames {
@@ -47,11 +90,26 @@
 }
 - (AVAudioSourceNode *)monitorSourceWithSampleRate:(double)rate firstChannel:(NSUInteger)first channelCount:(NSUInteger)count {
     AVAudioFormat *format = [[AVAudioFormat alloc] initStandardFormatWithSampleRate:rate channels:(AVAudioChannelCount)count];
+    __block bool primed = false;
+    __block uint64_t previousDropped = 0;
     return [[AVAudioSourceNode alloc] initWithFormat:format renderBlock:^OSStatus(BOOL *silent, const AudioTimeStamp *time, AVAudioFrameCount frames, AudioBufferList *output) {
         auto read=self->_read.load(std::memory_order_relaxed), write=self->_write.load(std::memory_order_acquire);
-        // Bound latency after a device pause; never replay stale live input.
-        if (write-read > std::max<uint64_t>(4096, frames*4)) read=write-std::min<uint64_t>(write-read,frames*2);
-        auto available=std::min<uint64_t>(frames,write-read);
+        const auto inputBlock = self->_inputBlockFrames.load(std::memory_order_relaxed);
+        const auto reserve = std::min<uint64_t>(self->_capacity, std::max<uint64_t>(inputBlock, frames) + frames);
+        const auto dropped = self->_dropped.load(std::memory_order_relaxed);
+        // Bound latency after an output pause, relative to BOTH callback sizes.
+        // A normal large input batch is not stale: trimming every such batch to
+        // two output callbacks used to discard most of the microphone signal.
+        const auto backlogLimit = std::max<uint64_t>(4096, inputBlock * 3 + uint64_t(frames) * 4);
+        if (write-read > backlogLimit || dropped > previousDropped)
+            read=write-std::min<uint64_t>(write-read,reserve);
+        previousDropped = dropped;
+        // Independent input/output callbacks need a small scheduling reserve.
+        // Accumulate it before starting, and after a real input interruption,
+        // instead of repeatedly alternating partial input and zero-filled gaps.
+        if (!primed && write-read >= reserve && reserve > 0) primed = true;
+        auto available=primed ? std::min<uint64_t>(frames,write-read) : 0;
+        if (available < frames) primed = false;
         *silent=available==0;
         for (NSUInteger c=0; c<output->mNumberBuffers; ++c) {
             auto *samples=(float *)output->mBuffers[c].mData;
@@ -63,20 +121,28 @@
         return noErr;
     }];
 }
+- (float)takeInputPeak:(NSUInteger)channel { return channel<_channels ? _inputPeaks[channel].exchange(0,std::memory_order_relaxed) : 0; }
 - (NSUInteger)droppedFrames { return _dropped.load(std::memory_order_relaxed); }
 @end
 @implementation JarasMP3Encoder
 + (BOOL)encodeWav:(NSURL *)source to:(NSURL *)destination error:(NSError **)error {
     AVAudioFile *file=[[AVAudioFile alloc] initForReading:source error:error]; if(!file) return NO;
     const int channels=(int)file.processingFormat.channelCount;
+    if(channels<1 || channels>2 || file.length<=0) {
+        if(error) *error=[NSError errorWithDomain:@"JarasRecording" code:1 userInfo:@{NSLocalizedDescriptionKey:@"MP3 conversion requires a nonempty mono or stereo audio file."}];
+        return NO;
+    }
+    const int inputRate=(int)std::lround(file.processingFormat.sampleRate);
+    const int outputRate=inputRate==32000 || inputRate==44100 ? inputRate : 48000;
     lame_t encoder=lame_init(); if(!encoder) return NO;
-    lame_set_in_samplerate(encoder,(int)file.processingFormat.sampleRate);
-    lame_set_out_samplerate(encoder,(int)file.processingFormat.sampleRate);
-    lame_set_num_channels(encoder,channels); lame_set_brate(encoder,320); lame_set_quality(encoder,0);
+    lame_set_in_samplerate(encoder,inputRate);
+    lame_set_out_samplerate(encoder,outputRate);
+    lame_set_num_channels(encoder,channels); lame_set_VBR(encoder,vbr_off); lame_set_brate(encoder,320); lame_set_quality(encoder,0);
     lame_set_mode(encoder,channels==1 ? MONO : JOINT_STEREO);
-    lame_set_bWriteVbrTag(encoder,0);
+    lame_set_bWriteVbrTag(encoder,1);
+    lame_set_write_id3tag_automatic(encoder,0);
     FILE *output=nullptr;
-    BOOL ok=lame_init_params(encoder)>=0;
+    BOOL ok=lame_init_params(encoder)>=0 && lame_get_brate(encoder)==320 && lame_get_out_samplerate(encoder)==outputRate;
     if(ok) { output=fopen(destination.fileSystemRepresentation,"wb"); ok=output!=nullptr; }
     AVAudioPCMBuffer *buffer=[[AVAudioPCMBuffer alloc] initWithPCMFormat:file.processingFormat frameCapacity:4096];
     unsigned char encoded[16384];
@@ -87,9 +153,10 @@
         if(bytes<0 || fwrite(encoded,1,bytes,output)!=(size_t)bytes) { ok=NO; break; }
     }
     if(ok) { int bytes=lame_encode_flush(encoder,encoded,sizeof(encoded)); ok=bytes>=0 && fwrite(encoded,1,bytes,output)==(size_t)bytes; }
+    if(ok) ok=JarasWriteMP3GaplessTag(encoder,output,encoded,sizeof(encoded));
     if(output && fclose(output)!=0) ok=NO;
     lame_close(encoder);
-    if(!ok && error && !*error) *error=[NSError errorWithDomain:@"JarasRecording" code:1 userInfo:@{NSLocalizedDescriptionKey:@"MP3 export failed. The 24-bit WAV recording has been preserved."}];
+    if(!ok && error && !*error) *error=[NSError errorWithDomain:@"JarasRecording" code:1 userInfo:@{NSLocalizedDescriptionKey:@"Could not encode this source at 320 kbps."}];
     return ok;
 }
 @end
@@ -105,7 +172,8 @@
         if(!_encoder) return nil;
         lame_set_in_samplerate(_encoder,int(rate)); lame_set_out_samplerate(_encoder,int(rate));
         lame_set_num_channels(_encoder,_channels); lame_set_brate(_encoder,int(bitRate)); lame_set_quality(_encoder,0);
-        lame_set_mode(_encoder,_channels==1 ? MONO : JOINT_STEREO); lame_set_bWriteVbrTag(_encoder,0);
+        lame_set_mode(_encoder,_channels==1 ? MONO : JOINT_STEREO); lame_set_bWriteVbrTag(_encoder,1);
+        lame_set_write_id3tag_automatic(_encoder,0);
         if(lame_init_params(_encoder)<0 || !(_output=fopen(url.fileSystemRepresentation,"wb"))) {
             if(error) *error=[NSError errorWithDomain:@"JarasExport" code:1 userInfo:@{NSLocalizedDescriptionKey:@"Could not create the MP3 output."}];
             return nil;
@@ -124,6 +192,7 @@
     if(!_encoder || !_output) return NO;
     int bytes=lame_encode_flush(_encoder,_encoded,sizeof(_encoded));
     BOOL ok=bytes>=0 && fwrite(_encoded,1,bytes,_output)==size_t(bytes);
+    if(ok) ok=JarasWriteMP3GaplessTag(_encoder,_output,_encoded,sizeof(_encoded));
     if(fclose(_output)!=0) ok=NO; _output=nullptr;
     lame_close(_encoder); _encoder=nullptr;
     if(!ok && error) *error=[NSError errorWithDomain:@"JarasExport" code:3 userInfo:@{NSLocalizedDescriptionKey:@"Could not finish the MP3 output."}];

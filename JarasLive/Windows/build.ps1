@@ -1,7 +1,9 @@
 ﻿param(
     [ValidateSet('Debug','Release')][string]$Configuration='Release',
-    [ValidatePattern('^[0-9]+\.[0-9]{2}$')][string]$Version='1.01',
+    [ValidatePattern('^[0-9]+\.[0-9]{2}$')][string]$Version='2.00',
     [string]$BuildDirectory=(Join-Path $env:LOCALAPPDATA 'CatLiveBuild/windows'),
+    [string]$OfflineDependencies,
+    [string]$OfflineStemRuntime,
     [switch]$SkipTests,
     [switch]$Installer,
     [switch]$Run
@@ -17,27 +19,173 @@ elseif (Test-Path $vswhere) {
 }
 if (-not $catCmake -or -not (Test-Path $catCmake)) { throw 'Instale Visual Studio 2022/2026 com Desenvolvimento para desktop com C++ e CMake.' }
 $cmakeArgs=@('-S',$sourceDirectory,'-B',$BuildDirectory,'-A','x64',"-DCATLIVE_VERSION=$Version")
-$juceCache=Join-Path $env:LOCALAPPDATA 'CatLiveBuild/JUCE-8.0.15'
-if (Test-Path (Join-Path $juceCache 'CMakeLists.txt')) { $cmakeArgs+="-DCATLIVE_JUCE_SOURCE=$juceCache" }
+if ($OfflineDependencies) {
+    $localDependencies=(Resolve-Path -LiteralPath $OfflineDependencies).ProviderPath
+    $juce=Join-Path $localDependencies 'JUCE'
+    $quickjs=Join-Path $localDependencies 'QuickJS'
+    $ffmpegHeaders=Join-Path $localDependencies 'FFmpegHeaders'
+    $ffmpegRuntime=Join-Path $localDependencies 'FFmpegRuntime'
+    foreach ($required in @('JUCE/CMakeLists.txt','QuickJS/CMakeLists.txt','FFmpegHeaders/libavcodec/avcodec.h','ImGui/imgui.cpp','WebView2/build/native/include/WebView2.h','WebView2/build/native/x64/WebView2LoaderStatic.lib','FFmpegRuntime/avutil-60.dll','FFmpegRuntime/swresample-6.dll','FFmpegRuntime/avcodec-62.dll','FFmpegRuntime/avformat-62.dll','FFmpegRuntime/swscale-9.dll')) {
+        if (-not (Test-Path -LiteralPath (Join-Path $localDependencies $required) -PathType Leaf)) {
+            throw "Dependência offline ausente: $required"
+        }
+    }
+    $imgui=Join-Path $localDependencies 'ImGui'
+    $webview=Join-Path $localDependencies 'WebView2'
+    $cmakeArgs+=@("-DCATLIVE_JUCE_SOURCE=$juce","-DFETCHCONTENT_SOURCE_DIR_CATLIVE_QUICKJS=$quickjs",
+                  "-DFETCHCONTENT_SOURCE_DIR_CATLIVE_IMGUI=$imgui","-DCATLIVE_WEBVIEW2_SDK=$webview",
+                  "-DCATLIVE_FFMPEG_INCLUDE_DIR=$ffmpegHeaders",'-DFETCHCONTENT_FULLY_DISCONNECTED=ON')
+} else {
+    $juceCache=Join-Path $env:LOCALAPPDATA 'CatLiveBuild/JUCE-8.0.15'
+    if (Test-Path (Join-Path $juceCache 'CMakeLists.txt')) { $cmakeArgs+="-DCATLIVE_JUCE_SOURCE=$juceCache" }
+}
 & $catCmake @cmakeArgs
 if ($LASTEXITCODE) { throw 'Falha na configuração do CMake.' }
 & $catCmake --build $BuildDirectory --config $Configuration --parallel 4
 if ($LASTEXITCODE) { throw 'Falha na compilação do CatLive.' }
+$binary=Join-Path $BuildDirectory "CatLive_artefacts/$Configuration/CatLive.exe"
+if ($Configuration -eq 'Release') {
+    $applicationOutput=(Get-Content -LiteralPath (Join-Path $BuildDirectory 'CMakeCache.txt') |
+        Where-Object { $_ -match '^CATLIVE_APP_OUTPUT_DIRECTORY:[^=]*=' } |
+        Select-Object -First 1) -replace '^[^=]*=',''
+    if ($applicationOutput) {
+        if (-not [IO.Path]::IsPathRooted($applicationOutput)) { $applicationOutput=Join-Path $BuildDirectory $applicationOutput }
+        $binary=Join-Path $applicationOutput 'CatLive.exe'
+    }
+}
+$runtimeDirectory=Split-Path -Parent $binary
+# The projection regression loads the shipped DLLs relative to CatLive.exe.
+# Prepare them before CTest, including on a clean GitHub runner.
+& (Join-Path $sourceDirectory 'scripts/prepare-ffmpeg-runtime.ps1') -BuildDirectory $BuildDirectory -PackageDirectory $runtimeDirectory -SourceDirectory $sourceDirectory -OfflineRuntime $ffmpegRuntime
+if($LASTEXITCODE){throw 'Falha ao preparar o runtime FFmpeg do vídeo.'}
 if (-not $SkipTests) {
     $catCtest=Join-Path (Split-Path $catCmake) 'ctest.exe'
     & $catCtest --test-dir $BuildDirectory -C $Configuration --output-on-failure
-    if ($LASTEXITCODE) { throw 'Os testes falharam. O pacote não foi gerado.' }
+    if ($LASTEXITCODE) {
+        $reportPath=Join-Path $BuildDirectory 'test-results/results.json'
+        if (Test-Path -LiteralPath $reportPath) {
+            $report=Get-Content -Raw -LiteralPath $reportPath | ConvertFrom-Json
+            if ($report.failed) { Write-Host $report.failed }
+        }
+        throw 'Os testes falharam. O pacote não foi gerado.'
+    }
 }
-$binary=Join-Path $BuildDirectory "CatLive_artefacts/$Configuration/CatLive.exe"
+if ($OfflineDependencies) {
+    if (-not $OfflineStemRuntime) {
+        $bundledStemRuntime=Join-Path $localDependencies 'CatStemRuntime'
+        if (Test-Path -LiteralPath (Join-Path $bundledStemRuntime 'runtime.json') -PathType Leaf) {
+            $OfflineStemRuntime=$bundledStemRuntime
+        }
+    }
+    if (-not $OfflineStemRuntime) {
+        if ($Installer) { throw 'O instalador offline precisa do CatStemRuntime preparado em Windows x64. Informe -OfflineStemRuntime.' }
+        Write-Host "Executável: $binary"
+        Write-Host 'Compilação offline concluída. Para montar o ZIP com separação de áudio, informe -OfflineStemRuntime.'
+        if ($Run) { Start-Process -FilePath $binary -WindowStyle Normal }
+        return
+    }
+    $OfflineStemRuntime=(Resolve-Path -LiteralPath $OfflineStemRuntime).ProviderPath
+}
 $packageDirectory=Join-Path $BuildDirectory "package/CatLive-Windows-x64"
 New-Item -ItemType Directory -Force $packageDirectory | Out-Null
 Copy-Item -LiteralPath $binary -Destination (Join-Path $packageDirectory 'CatLive.exe') -Force
+# The encoder is a replaceable shared library. Package the runtime and its
+# complete rebuild materials from the same tested build output as CatLive.exe.
+$requiredRuntimeFiles=@(
+    'CatLiveLame.dll',
+    'CatLiveVST3Probe.exe',
+    'VST3-LICENSE.txt',
+    'Licenses/LAME/COPYING',
+    'Licenses/LAME/lame-3.100-source.tar.gz',
+    'Licenses/LAME/config.h',
+    'Licenses/LAME/BUILD.txt',
+    'Licenses/dr_libs/LICENSE',
+    'SMK37Tools/M-Flasher.exe',
+    'SMK37/SMK37-CatLive.fwsc',
+    'SMK37/manifest.json',
+    'SMK37/Firmware-LICENSE.md',
+    'SMK37/Firmware-THIRD_PARTY.md',
+    'SMK37/SMK37-CatLive-Source.zip',
+    'SMK37/M-Flasher-LICENSE.txt',
+    'SMK37/M-Flasher-Source.zip'
+)
+# Ship the exact artwork validated alongside the executable, including clean CI builds.
+foreach ($category in @('pianos','upright','electric','keyboard','organ','strings','guitar','bass','synth','synthPad','lead','acordeon','brass','mallets','drum')) {
+    $requiredRuntimeFiles += "InstrumentInterfaces/$category.png"
+}
+foreach ($folder in @('NativeSamples','TrackIcons','ControlIcons','MIDIChords')) {
+    $assetDirectory=Join-Path $runtimeDirectory $folder
+    if (-not (Test-Path -LiteralPath $assetDirectory -PathType Container)) {
+        throw "Runtime incompleto: $assetDirectory. O pacote nao foi gerado."
+    }
+    Copy-Item -LiteralPath $assetDirectory -Destination $packageDirectory -Recurse -Force
+}
+foreach ($relativePath in $requiredRuntimeFiles) {
+    $runtimeFile=Join-Path $runtimeDirectory $relativePath
+    if (-not (Test-Path -LiteralPath $runtimeFile -PathType Leaf) -or (Get-Item -LiteralPath $runtimeFile).Length -eq 0) {
+        throw "Runtime incompleto: $runtimeFile. O pacote nao foi gerado."
+    }
+    $packageFile=Join-Path $packageDirectory $relativePath
+    New-Item -ItemType Directory -Force (Split-Path -Parent $packageFile) | Out-Null
+    Copy-Item -LiteralPath $runtimeFile -Destination $packageFile -Force
+}
+$ffmpegPackage=Join-Path $packageDirectory 'CatLiveRuntime/FFmpeg'
+New-Item -ItemType Directory -Force (Split-Path -Parent $ffmpegPackage) | Out-Null
+if(Test-Path -LiteralPath $ffmpegPackage){Remove-Item -LiteralPath $ffmpegPackage -Recurse -Force}
+Copy-Item -LiteralPath (Join-Path $runtimeDirectory 'CatLiveRuntime/FFmpeg') -Destination $ffmpegPackage -Recurse -Force
+$ffmpegLicense=Join-Path $packageDirectory 'Licenses/FFmpeg'
+New-Item -ItemType Directory -Force $ffmpegLicense | Out-Null
+Copy-Item -LiteralPath (Join-Path $runtimeDirectory 'Licenses/FFmpeg/COPYING.LGPLv2.1') -Destination $ffmpegLicense -Force
+# This payload is mandatory for both ZIP and installer. Preparation is isolated
+# in the build directory and verifies the same pinned checkpoint used on Mac.
+$stemPreparation=Join-Path $sourceDirectory '../WindowsNative/StemSeparation/prepare.py'
+$stemLock=Join-Path $sourceDirectory '../WindowsNative/StemSeparation/requirements.lock'
+$stemVersion=(Get-FileHash -LiteralPath $stemLock -Algorithm SHA256).Hash.Substring(0,12).ToLowerInvariant()
+$stemRuntime=Join-Path $BuildDirectory ("catstem-runtime-"+$stemVersion)
+if ($OfflineStemRuntime) {
+    $stemRuntime=$OfflineStemRuntime
+    $stemVerifier=Join-Path $stemRuntime 'python/python.exe'
+    if (-not (Test-Path -LiteralPath $stemVerifier -PathType Leaf)) { throw 'O CatStemRuntime offline não contém python/python.exe.' }
+    & $stemVerifier -I -B $stemPreparation --output $stemRuntime --verify
+    if ($LASTEXITCODE) { throw 'O CatStemRuntime offline não passou na verificação.' }
+} else {
+    $pythonCommand=Get-Command python -ErrorAction SilentlyContinue
+    if(-not $pythonCommand){throw 'Python 3.11+ é necessário para preparar o pacote CatStem durante o build.'}
+    $stemVerifier=$pythonCommand.Source
+    if(-not $SkipTests) {
+        & $stemVerifier (Join-Path $sourceDirectory '../WindowsNative/StemSeparation/test_runtime_dependencies.py')
+        if($LASTEXITCODE){throw 'Falha na validação das dependências nativas do separador.'}
+    }
+    & $stemVerifier $stemPreparation --output $stemRuntime
+    if($LASTEXITCODE){throw 'Falha ao preparar o CatStem. O pacote não foi gerado.'}
+}
+$stemPackage=Join-Path $packageDirectory 'StemSeparationRuntime'
+if(Test-Path -LiteralPath $stemPackage){Remove-Item -LiteralPath $stemPackage -Recurse -Force}
+Copy-Item -LiteralPath $stemRuntime -Destination $stemPackage -Recurse -Force
+& $stemVerifier -I -B $stemPreparation --output $stemPackage --verify
+if($LASTEXITCODE){throw 'O runtime CatStem do pacote falhou na verificação.'}
+if(-not $SkipTests) {
+    & (Join-Path $stemRuntime 'python/python.exe') -I -B (Join-Path $sourceDirectory '../WindowsNative/StemSeparation/test_backend.py')
+    if($LASTEXITCODE){throw 'Falha na equivalência numérica do CatStemSeparation.'}
+    $stemProcessTest=Join-Path $BuildDirectory "$Configuration/CatStemProcessTests.exe"
+    if(-not (Test-Path -LiteralPath $stemProcessTest -PathType Leaf)) {
+        $stemProcessTest=Join-Path $BuildDirectory 'CatStemProcessTests.exe'
+    }
+    & (Join-Path $sourceDirectory 'scripts/test-catstem-runtime.ps1') `
+        -Executable (Join-Path $packageDirectory 'CatLive.exe') `
+        -ProcessTestExecutable $stemProcessTest -RuntimeDirectory $stemPackage `
+        -ResultsDirectory (Join-Path $BuildDirectory 'test-results/catstem-runtime') `
+        -SourceDirectory $sourceDirectory
+}
 Copy-Item -LiteralPath (Join-Path $sourceDirectory 'README.txt') -Destination $packageDirectory -Force
 Copy-Item -LiteralPath (Join-Path $sourceDirectory 'THIRD-PARTY-NOTICES.txt') -Destination $packageDirectory -Force
-Copy-Item -LiteralPath (Join-Path $sourceDirectory 'Assets/Fonts/Figtree-LICENSE.txt') -Destination (Join-Path $packageDirectory 'Figtree-LICENSE.txt') -Force
+Remove-Item -LiteralPath (Join-Path $packageDirectory 'Figtree-LICENSE.txt') -ErrorAction SilentlyContinue
+foreach($obsoleteFont in @('SourceSans3-LICENSE.txt','JetBrainsMono-LICENSE.txt')) { Remove-Item -LiteralPath (Join-Path $packageDirectory $obsoleteFont) -Force -ErrorAction SilentlyContinue }
+Copy-Item -LiteralPath (Join-Path $sourceDirectory '../Resources/Fonts/Inter/LICENSE.txt') -Destination (Join-Path $packageDirectory 'Inter-LICENSE.txt') -Force
 Copy-Item -LiteralPath (Join-Path $sourceDirectory 'ThirdParty/Signalsmith/LICENSE-stretch.txt') -Destination (Join-Path $packageDirectory 'Signalsmith-Stretch-LICENSE.txt') -Force
 Copy-Item -LiteralPath (Join-Path $sourceDirectory 'ThirdParty/Signalsmith/LICENSE-linear.txt') -Destination (Join-Path $packageDirectory 'Signalsmith-Linear-LICENSE.txt') -Force
 Copy-Item -LiteralPath (Join-Path $sourceDirectory 'ThirdParty/Monocypher/LICENCE.md') -Destination (Join-Path $packageDirectory 'Monocypher-LICENSE.md') -Force
+Copy-Item -LiteralPath (Join-Path $sourceDirectory 'ThirdParty/QRCode/LICENSE.txt') -Destination (Join-Path $packageDirectory 'QRCode-LICENSE.txt') -Force
 Copy-Item -LiteralPath (Join-Path $sourceDirectory '../Core/ThirdParty/TinySoundFont/TinySoundFont-LICENSE.txt') -Destination (Join-Path $packageDirectory 'TinySoundFont-LICENSE.txt') -Force
 Copy-Item -LiteralPath (Join-Path $sourceDirectory '../Core/ThirdParty/EBUR128/EBUR128-LICENSE.txt') -Destination (Join-Path $packageDirectory 'EBUR128-LICENSE.txt') -Force
 Copy-Item -LiteralPath (Join-Path $sourceDirectory 'ThirdParty/EBUR128-QUEUE-LICENSE.txt') -Destination $packageDirectory -Force

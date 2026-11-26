@@ -1,21 +1,37 @@
 #pragma once
 #include "InstrumentAssets.h"
 #include "Localization.h"
+#include "VST3Catalog.h"
 namespace catlive {
 class EffectInsertPanel final : public Component, private ListBoxModel, private Timer {
   public:
     EffectInsertPanel(File directory, std::function<bool(String, String)> insert,
-                      std::function<void()> close)
+                      std::function<void()> close, bool allowInstruments = true, bool allowStemSeparator = true,
+                      bool vinhetasOnly = false)
         : projectDirectory(std::move(directory)), apply(std::move(insert)),
-          dismiss(std::move(close)), list("Instrument catalog", this) {
+          dismiss(std::move(close)), list("Instrument catalog", this), allowsInstruments(allowInstruments && !vinhetasOnly) {
         setComponentID("effectInsertPanel");
-        addAndMakeVisible(effect);
-        effect.addItemList({"EQ", "Compressor", "Pitch", "Delay", "Reverb", "Limiter",
-                            String::fromUTF8("Instrumentos")},
-                           1);
+        addAndMakeVisible(effect); effect.setComponentID("effectKind");
+        effect.addItem(localization::translate("Externo (VST3)"), 8);
+        if (allowsInstruments) effect.addItem(localization::translate(String::fromUTF8("Instrumentos")), 7);
+        if (vinhetasOnly) {
+            effect.addItem("Reverb", 5);
+            effect.addItem("EQ", 1);
+            effect.addItem("Delay", 4);
+            effect.addItem("CatLive Limiter", 6);
+        } else {
+            effect.addItemList({"EQ", "Compressor", "Pitch", "Delay", "Reverb", "CatLive Limiter"}, 1);
+            effect.addItem("CatLive Trigger", 10);
+            effect.addItem("Cat Gate", 11);
+        }
+        (void)allowStemSeparator; // Separation is an offline item action.
         effect.setSelectedId(1, dontSendNotification);
-        effect.onChange = [this] { updateLayout(); };
-        const StringArray names{String::fromUTF8("Piano de cauda"),
+        effect.onChange = [this] {
+            selected.clear();
+            if (external()) { chooseExternal(); return; }
+            refresh(); updateLayout();
+        };
+        const StringArray names{"User", String::fromUTF8("Piano de cauda"),
                                 "Piano vertical",
                                 String::fromUTF8("Pianos elétricos"),
                                 "Teclado",
@@ -48,7 +64,7 @@ class EffectInsertPanel final : public Component, private ListBoxModel, private 
         list.setColour(ListBox::backgroundColourId, theme::panel);
         list.setOutlineThickness(0);
         addAndMakeVisible(cancel);
-        addAndMakeVisible(confirm);
+        addAndMakeVisible(confirm); confirm.setComponentID("effectInsertApply");
         addAndMakeVisible(status);
         status.setFont(theme::font(10));
         status.setColour(Label::textColourId, theme::yellow);
@@ -59,7 +75,7 @@ class EffectInsertPanel final : public Component, private ListBoxModel, private 
         confirm.setColour(TextButton::buttonColourId, Colour(0xff63b641));
         confirm.onClick = [this] {
             const StringArray kinds{"EQ",     "Compressor", "Pitch",      "Delay",
-                                    "Reverb", "Limiter",    "Instruments"};
+                                    "Reverb", "Limiter",    "Instruments", "External", "CatStemSeparation 5", "CatLive Trigger", "Cat Gate"};
             if (apply(kinds[effect.getSelectedId() - 1], selected))
                 dismiss();
         };
@@ -67,25 +83,25 @@ class EffectInsertPanel final : public Component, private ListBoxModel, private 
         startTimerHz(8);
     }
     ~EffectInsertPanel() override {
-        if (job)
+        if (job && job.use_count() <= 2)
             job->cancel = true;
     }
     void paint(Graphics &g) override {
         g.fillAll(theme::panel);
         g.setColour(Colours::white);
         g.setFont(theme::semiboldFont(14));
-        g.drawText("Inserir efeito", 28, instruments() ? 22 : 48, getWidth() - 56, 24,
+        g.drawText(localization::translate("Inserir efeito"), 28, catalog() ? 22 : 48, getWidth() - 56, 24,
                    Justification::centredLeft);
         g.setFont(theme::font(13));
-        g.drawText("Efeito", 28, instruments() ? 56 : 82, 44, 26, Justification::centredLeft);
+        g.drawText(localization::translate("Efeito"), 28, catalog() ? 56 : 82, 44, 26, Justification::centredLeft);
     }
     void resized() override {
-        effect.setBounds(72, instruments() ? 56 : 82, 178, 26);
+        effect.setBounds(72, catalog() ? 56 : 82, 230, 26);
         const int cell = (getWidth() - 56) / 4;
         for (int i = 0; i < categories.size(); ++i)
             categories[i]->setBounds(28 + i % 4 * cell, 96 + i / 4 * 33, cell - 5, 28);
         list.setBounds(28, 233, getWidth() - 56, std::max(40, getHeight() - 300));
-        const int bottom = getHeight() - (instruments() ? 40 : 58);
+        const int bottom = getHeight() - (catalog() ? 40 : 58);
         cancel.setBounds(28, bottom, 80, 25);
         confirm.setBounds(getWidth() - 94, bottom, 66, 25);
         status.setBounds(28, getHeight() - 65, getWidth() - 56, 20);
@@ -94,32 +110,17 @@ class EffectInsertPanel final : public Component, private ListBoxModel, private 
         const bool show = instruments();
         for (auto *b : categories)
             b->setVisible(show);
-        list.setVisible(show);
-        status.setVisible(show);
-        setSize(460, show ? 500 : 214);
+        list.setVisible(instruments());
+        status.setVisible(catalog());
+        setSize(460, instruments() ? 500 : 214);
         if (auto *window = findParentComponentOfClass<DocumentWindow>())
-            window->setContentComponentSize(460, show ? 500 : 214);
+            window->setContentComponentSize(460, instruments() ? 500 : 214);
         resized();
         updateConfirm();
         repaint();
     }
 
   private:
-    struct Download {
-        std::atomic<bool> cancel{false};
-        std::atomic<int> state{0};
-        std::atomic<double> progress{0};
-        String error, id;
-        File target, temp;
-        ~Download() {
-            if (temp.existsAsFile())
-                temp.deleteFile();
-        }
-    };
-    static ThreadPool &workers() {
-        static ThreadPool pool(1);
-        return pool;
-    }
     File projectDirectory;
     std::function<bool(String, String)> apply;
     std::function<void()> dismiss;
@@ -127,21 +128,63 @@ class EffectInsertPanel final : public Component, private ListBoxModel, private 
     OwnedArray<TextButton> categories;
     ListBox list;
     Label status;
-    TextButton cancel{"Cancelar"}, confirm{"Aplicar"};
+    TextButton cancel{localization::translate("Cancelar")}, confirm{localization::translate("Aplicar")};
+    class BrowserWindow final : public DocumentWindow {
+      public:
+        explicit BrowserWindow(std::function<void()> close) : DocumentWindow("Externo (VST3)", theme::panel, DocumentWindow::closeButton), dismiss(std::move(close)) { setUsingNativeTitleBar(false); setResizable(true,true); setResizeLimits(620,390,1400,1000); setComponentID("externalPluginBrowserWindow"); }
+        void closeButtonPressed() override { dismiss(); }
+      private:
+        std::function<void()> dismiss;
+    };
+    std::unique_ptr<BrowserWindow> browser;
+    bool insertingExternal = false;
     std::vector<var> items;
-    int category = 0;
+    int category = 1;
+    bool allowsInstruments=true;
     String selected;
-    std::shared_ptr<Download> job;
+    std::shared_ptr<instrumentAssets::Download> job;
     bool instruments() const { return effect.getSelectedId() == 7; }
+    bool external() const { return effect.getSelectedId() == 8; }
+    bool catalog() const { return instruments(); }
+    void chooseExternal() {
+        if (browser && browser->isVisible()) { browser->toFront(true); return; }
+        auto safe = SafePointer<EffectInsertPanel>(this);
+        auto close = [safe] {
+            if (!safe || safe->insertingExternal) return;
+            if (safe->browser) safe->browser->setVisible(false);
+            auto dismiss = safe->dismiss;
+            dismiss();
+        };
+        browser = std::make_unique<BrowserWindow>(close); browser->setLookAndFeel(&getLookAndFeel());
+        auto *content = new ExternalPluginBrowser([safe](var plugin) {
+            if (!safe || safe->insertingExternal) return;
+            safe->insertingExternal = true;
+            // Selection is the insertion action. The EffectsPanel callback also
+            // opens the plugin editor; keep the catalog available if it fails.
+            auto insert = safe->apply;
+            const bool inserted = insert("External", JSON::toString(plugin,true));
+            if (!safe) return;
+            if (!inserted) { safe->insertingExternal = false; return; }
+            if (safe->browser) safe->browser->setVisible(false);
+            auto dismiss = safe->dismiss;
+            dismiss();
+        }, close, allowsInstruments);
+        browser->setContentOwned(content,true); browser->setContentComponentSize(680,VST3Catalog::shared().scanning?482:422);
+        browser->centreAroundComponent(getTopLevelComponent(),browser->getWidth(),browser->getHeight());
+        // Replace the insertion chooser instead of leaving an extra Apply window.
+        if (auto *window = findParentComponentOfClass<DocumentWindow>()) window->setVisible(false);
+        browser->setVisible(true); browser->toFront(true);
+    }
     static String categoryID(int index) {
-        const StringArray keys{"pianos",  "upright",  "electric", "keyboard", "organ",
+        const StringArray keys{"user", "pianos",  "upright",  "electric", "keyboard", "organ",
                                "strings", "guitar",   "bass",     "synth",    "synthPad",
                                "lead",    "acordeon", "brass",    "mallets",  "drum"};
         return keys[index];
     }
     void refresh() {
         items.clear();
-        for (auto item : instrumentAssets::catalog())
+        if(external()) {list.updateContent();updateConfirm();return;}
+        for (auto item : instrumentAssets::availableCatalog(projectDirectory))
             if (str(item, "category") == categoryID(category))
                 items.push_back(item);
         for (int i = 0; i < categories.size(); ++i)
@@ -169,24 +212,21 @@ class EffectInsertPanel final : public Component, private ListBoxModel, private 
         g.fillRoundedRectangle(0, 1, (float)width, height - 5.f, 5);
         g.setColour(available ? Colours::white : theme::secondary);
         g.setFont(theme::semiboldFont(12));
-        g.drawFittedText(str(item, "name"), 34, 0, width - 112, height - 4,
+        g.drawFittedText(str(item, "name"), 34, 0, width - 144, height - 4,
                          Justification::centredLeft, 1);
         for (int i = 0; i < 5; ++i) {
             g.setColour(theme::secondary);
             g.fillRect(13 + i * 3, 14, 2, 10);
         }
-        if (!available) {
+        {
+            const bool installed=instrumentAssets::installedFile(id).existsAsFile();
             g.setColour(Colour(0xff505050));
-            g.fillRoundedRectangle(width - 72.f, 8, 62, 24, 5);
+            g.fillRoundedRectangle(width - 102.f, 8, 92, 24, 5);
             g.setColour(Colours::white);
             g.setFont(theme::semiboldFont(11));
             g.drawText(job && job->id == id ? String(job->progress.load() * 100, 0) + "%"
-                                            : "Baixar",
-                       width - 72, 8, 62, 24, Justification::centred);
-        } else if (chosen) {
-            g.setColour(theme::green);
-            g.setFont(theme::font(16));
-            g.drawText(String::fromUTF8("✓"), width - 32, 0, 24, height, Justification::centred);
+                                            : localization::translate(installed?"Delete instrument":"Download"),
+                       width - 102, 8, 92, 24, Justification::centred);
         }
     }
     void listBoxItemClicked(int row, const MouseEvent &e) override {
@@ -194,75 +234,29 @@ class EffectInsertPanel final : public Component, private ListBoxModel, private 
             return;
         const auto item = items[(size_t)row];
         const auto id = str(item, "id");
-        if (instrumentAssets::resolve(id, projectDirectory).existsAsFile()) {
+        const int rowWidth=list.getViewport()->getViewWidth();
+        if(e.x>=rowWidth-102 && e.x<rowWidth-10 && e.y>=8 && e.y<32){
+            if(job&&job->id==id)return;
+            if(instrumentAssets::installedFile(id).existsAsFile()) {
+                try {
+                    instrumentAssets::uninstall(id);
+                    if(selected==id&&!instrumentAssets::resolve(id,projectDirectory).existsAsFile())selected.clear();
+                    status.setText({},dontSendNotification);
+                }catch(const std::exception &error){status.setText(localization::translate(String::fromUTF8(error.what())),dontSendNotification);}
+                list.repaint();updateConfirm();
+            }else download(item);
+        }else if (instrumentAssets::resolve(id, projectDirectory).existsAsFile()) {
             selected = id;
             list.repaint();
             updateConfirm();
-        } else if (e.x > list.getWidth() - 82)
-            download(item);
+        }
     }
     void download(var item) {
         if (job && job->state.load() == 0)
             return;
-        auto current = std::make_shared<Download>();
-        current->id = str(item, "id");
-        current->target = instrumentAssets::library().getChildFile(current->id + ".sf2");
-        current->target.getParentDirectory().createDirectory();
-        current->temp =
-            current->target.getSiblingFile(current->id + "-" + text(uuid()) + ".download");
-        job = current;
+        job = instrumentAssets::startDownload(item);
         status.setText(String::fromUTF8("Baixando ") + str(item, "name") + String::fromUTF8("…"),
                        dontSendNotification);
-        workers().addJob([current, item] {
-            try {
-                const auto path = URL::addEscapeChars(str(item, "folder"), true) + "/" +
-                                  URL::addEscapeChars(str(item, "name") + ".sf2", true);
-                auto stream = std::make_unique<WebInputStream>(
-                    URL("https://pub-1b271ca25cc347ce82f835a8125d6d93.r2.dev/" + path), false);
-                stream->withConnectionTimeout(5000);
-                stream->withNumRedirectsToFollow(3);
-                if (!stream->connect(nullptr) || stream->getStatusCode() < 200 ||
-                    stream->getStatusCode() >= 300)
-                    throw std::runtime_error("Download failed.");
-                const auto length = stream->getTotalLength();
-                if (length > 512LL * 1024 * 1024)
-                    throw std::runtime_error("The instrument exceeds 512 MB.");
-                {
-                    FileOutputStream output(current->temp);
-                    if (!output.openedOk())
-                        throw std::runtime_error("Could not save the instrument.");
-                    std::array<char, 65536> buffer{};
-                    int64 total = 0;
-                    while (!stream->isExhausted()) {
-                        if (current->cancel.load()) {
-                            stream->cancel();
-                            throw std::runtime_error("Download cancelled.");
-                        }
-                        const int count = stream->read(buffer.data(), (int)buffer.size());
-                        if (count <= 0)
-                            break;
-                        total += count;
-                        if (total > 512LL * 1024 * 1024 ||
-                            !output.write(buffer.data(), (size_t)count))
-                            throw std::runtime_error("Could not save the instrument.");
-                        current->progress = length > 0 ? total / (double)length : 0;
-                    }
-                    output.flush();
-                    if (output.getStatus().failed() || length >= 0 && total != length ||
-                        stream->isError())
-                        throw std::runtime_error("Incomplete instrument download.");
-                }
-                if (!instrumentAssets::validBank(current->temp))
-                    throw std::runtime_error("The downloaded file is not an SF2 bank.");
-                if (!current->temp.moveFileTo(current->target))
-                    throw std::runtime_error("Could not install the instrument.");
-                current->progress = 1;
-                current->state.store(1, std::memory_order_release);
-            } catch (const std::exception &e) {
-                current->error = String::fromUTF8(e.what());
-                current->state.store(-1, std::memory_order_release);
-            }
-        });
     }
     void timerCallback() override {
         if (!job)

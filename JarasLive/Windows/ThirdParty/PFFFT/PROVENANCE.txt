@@ -1,0 +1,8 @@
+PFFFT, single precision C implementation
+https://github.com/marton78/pffft
+Commit efc1dd2de6c3562fc464f905d37d9281f08a20dd
+
+Unmodified source subset: pffft.c, pffft_common.c, pffft_priv_impl.h,
+pffft.h and SIMD headers. Linked statically with PFFFT_STATIC_DEFINE.
+Windows x64 uses SSE; no AVX or AVX2 requirement is added.
+See LICENSE.txt for the FFTPACK/BSD redistribution terms.

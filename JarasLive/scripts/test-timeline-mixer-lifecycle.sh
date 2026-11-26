@@ -19,5 +19,6 @@ start = source.index('private final class TimelineScrollPosition')
 end = source.index('/// Move the existing header surface',start)
 (folder/'main.swift').write_text('import SwiftUI\n' + source[start:end] + '\n' + Path('Tests/Apple/TimelineMixerLifecycleTests.swift').read_text())
 PY
-swiftc -swift-version 5 Apple/Shared/JarasLegacyLayout.swift Apple/Shared/GridScrollView.swift "$test_dir/environment.swift" "$test_dir/divider.swift" "$test_dir/main.swift" -o "$test_dir/test"
+python3 scripts/track-height-test-geometry.py "$test_dir/TrackHeightGeometry.swift"
+swiftc "$test_dir/TrackHeightGeometry.swift" -swift-version 5 Apple/Shared/JarasLegacyLayout.swift Apple/Shared/GridScrollView.swift "$test_dir/environment.swift" "$test_dir/divider.swift" "$test_dir/main.swift" -o "$test_dir/test"
 "$test_dir/test"

@@ -1,5 +1,6 @@
 #pragma once
 #include "Common.h"
+#include "ClipTempo.h"
 namespace catlive::midiEditing {
 constexpr double minimum = 1. / 960.;
 inline double step(const jaras::MIDIItem &midi) {
@@ -90,11 +91,16 @@ inline void replace(jaras::Project &project, const ID &id, const jaras::MIDIItem
                         previous.emplace(note.id, note);
                     for (const auto &note : next.notes) {
                         auto old = previous.find(note.id);
-                        if (old == previous.end() || !equal(old->second, note))
-                            clip.duration = std::max(
-                                clip.duration, ((note.start + note.length) * 60. / next.sourceBPM -
-                                                clip.sourceOffset) /
-                                                   clip.playbackRate);
+                        if (old == previous.end() || !equal(old->second, note)) {
+                            const double end = (note.start + note.length) * 60. / next.sourceBPM;
+                            auto probe = clip;
+                            // Tempo references and markers are bounded to 60...300 BPM.
+                            // Include later sections when a note extends past the old trim.
+                            probe.duration = std::max(clip.duration,
+                                (end - clip.sourceOffset) / clip.playbackRate * 5);
+                            const ClipTempo timing(probe, &song);
+                            clip.duration = std::max(clip.duration, timing.timeAt(end, false) - clip.startTime);
+                        }
                     }
                     clip.midi = next;
                     song.duration = std::max(song.duration, clip.startTime + clip.duration);

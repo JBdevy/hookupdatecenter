@@ -109,23 +109,6 @@ static NSDictionary* timecodeJSON(const TimecodeSettings& tc) { return @{@"mode"
 static TimecodeSettings readTimecode(id value) { NSDictionary* d=object(value); return {str(d[@"mode"]),number(d[@"frameRate"]),number(d[@"offset"]),bool([d[@"regionRelative"] boolValue]),(int)number(d[@"midiDestination"])}; }
 static std::string readClipFX(id value) {
     NSDictionary* settings = object(value);
-    for (NSString* key in @[@"instrumentID", @"instrumentParameters", @"instrumentBypassed"])
-        if (settings[key]) throw std::invalid_argument("Items cannot contain instruments");
-    NSMutableSet* effects = [NSMutableSet setWithArray:@[@"EQ", @"Compressor", @"Pitch", @"Delay", @"Reverb", @"Limiter", @"CatStemSeparation 5"]];
-    for (id raw in array(settings[@"externalPlugins"] ?: @[])) {
-        NSDictionary* plugin = object(raw);
-        NSString* identifier = plugin[@"id"];
-        if (![identifier isKindOfClass:NSString.class] || identifier.length == 0 ||
-            ![plugin[@"path"] isKindOfClass:NSString.class] || [plugin[@"path"] length] == 0)
-            throw std::invalid_argument("Invalid item VST3 effect");
-        [effects addObject:[@"External:" stringByAppendingString:identifier]];
-    }
-    NSMutableSet* inserted = [NSMutableSet new];
-    for (id effect in array(settings[@"inserted"])) {
-        if (![effect isKindOfClass:NSString.class] || ![effects containsObject:effect] || [inserted containsObject:effect])
-            throw std::invalid_argument("Invalid item FX selection");
-        [inserted addObject:effect];
-    }
     NSData* data = [NSJSONSerialization dataWithJSONObject:settings options:0 error:nil];
     if (!data) throw std::invalid_argument("Invalid item FX data");
     auto json = str([[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding]);
@@ -135,18 +118,46 @@ static TrackRouting readRouting(id value) {
     NSDictionary *d=object(value);TrackRouting r;r.receives.clear();r.transmitters.clear();
     for(id raw in array(d[@"receives"]))r.receives.push_back(raw==NSNull.null?std::nullopt:std::optional<ID>(str(raw)));
     for(id raw in array(d[@"transmitters"]))r.transmitters.push_back(raw==NSNull.null?std::nullopt:std::optional<ID>(str(raw)));
+    NSDictionary *taps = [d[@"sendTaps"] isKindOfClass:NSDictionary.class] ? d[@"sendTaps"] : nil;
+    for (NSString *key in taps) {
+        const auto value = str(taps[key]);
+        for (const auto tap : {TrackSendTap::preFX, TrackSendTap::postFX, TrackSendTap::preFader})
+            if (value == sendTapID(tap)) r.sendTaps[str(key)] = tap;
+    }
+    NSDictionary *gains = [d[@"sendGains"] isKindOfClass:NSDictionary.class] ? d[@"sendGains"] : nil;
+    for (NSString *key in gains)
+        if ([gains[key] isKindOfClass:NSNumber.class]) r.setSendGain(str(key), [gains[key] doubleValue]);
+    if (d[@"mainReceiveSlot"] && d[@"mainReceiveSlot"] != NSNull.null) r.mainReceiveSlot=[d[@"mainReceiveSlot"] intValue];
+    if (d[@"mainSendOrder"] && d[@"mainSendOrder"] != NSNull.null) r.mainSendOrder=[d[@"mainSendOrder"] intValue];
     return r;
 }
 static NSDictionary *routingJSON(const TrackRouting& r) {
     NSMutableArray *receives=[NSMutableArray new],*transmitters=[NSMutableArray new];
     for(const auto& id:r.receives)[receives addObject:optionalID(id)];
     for(const auto& id:r.transmitters)[transmitters addObject:optionalID(id)];
-    return @{@"receives":receives,@"transmitters":transmitters};
+    NSMutableDictionary *result=[@{@"receives":receives,@"transmitters":transmitters} mutableCopy];
+    NSMutableDictionary *taps = [NSMutableDictionary new], *gains = [NSMutableDictionary new];
+    for (const auto &target : r.transmitters) {
+        if (!target) continue;
+        const auto tap = r.sendTap(*target);
+        const auto gain = r.sendGain(*target);
+        if (gain != 1) gains[text(*target)] = @(gain);
+        if (tap != TrackSendTap::postFader)
+            taps[[NSString stringWithUTF8String:target->c_str()]] = [NSString stringWithUTF8String:sendTapID(tap)];
+    }
+    if (taps.count) result[@"sendTaps"] = taps;
+    if (gains.count) result[@"sendGains"] = gains;
+    if(r.mainReceiveSlot) result[@"mainReceiveSlot"]=@(*r.mainReceiveSlot);
+    if(r.mainSendOrder) result[@"mainSendOrder"]=@(*r.mainSendOrder);
+    return result;
 }
 static NSDictionary* trackJSON(const Track& t, bool includeWaveforms = true) {
     NSMutableDictionary* d = [@{@"id":text(t.id), @"name":text(t.name), @"role":text(t.role.id), @"volume":@(t.volume), @"pan":@(t.pan), @"mute":@(t.mute), @"solo":@(t.solo), @"output":@(t.output)} mutableCopy];
     if(t.phaseInverted) d[@"phaseInverted"]=@(*t.phaseInverted);
+    if(t.stackedStems) d[@"stackedStems"]=@(*t.stackedStems);
+    if(t.hiddenMixerComponents) d[@"hiddenMixerComponents"]=@(*t.hiddenMixerComponents);
     if(t.heightScale) d[@"heightScale"]=@(*t.heightScale);
+    if(t.instrumentIcon) d[@"instrumentIcon"]=text(*t.instrumentIcon);
     NSMutableArray* clips=[NSMutableArray new];
     for (const auto& clip:t.clips) {
         NSMutableArray* peaks=[NSMutableArray new];
@@ -166,14 +177,27 @@ static NSDictionary* trackJSON(const Track& t, bool includeWaveforms = true) {
         if(clip.midi) item[@"midi"]=midiItemJSON(*clip.midi);
         if(clip.frozenMIDI) item[@"frozenMIDI"]=@(*clip.frozenMIDI);
         if(clip.renderedTiming) item[@"renderedTiming"]=@(*clip.renderedTiming);
-        if(clip.renderedTempo) item[@"renderedTempo"]=@(*clip.renderedTempo);
+        if(clip.clickDouble) item[@"clickDouble"]=@(*clip.clickDouble); if(clip.renderedTempo) item[@"renderedTempo"]=@(*clip.renderedTempo);
         if(clip.tempoBasePlaybackRate) item[@"tempoBasePlaybackRate"]=@(*clip.tempoBasePlaybackRate);
+        if (clip.elasticSourceScale != 1) item[@"elasticSourceScale"] = @(clip.elasticSourceScale);
+        if (!clip.elasticPoints.empty()) {
+            NSMutableArray* points = [NSMutableArray new];
+            for (const auto& point : clip.elasticPoints) {
+                NSMutableDictionary* value = [@{@"position":@(point.position),@"source":@(point.source)} mutableCopy];
+                if (point.slopeBefore != 0) value[@"slopeBefore"] = @(point.slopeBefore);
+                if (point.slopeAfter != 0) value[@"slopeAfter"] = @(point.slopeAfter);
+                [points addObject:value];
+            }
+            item[@"elasticPoints"] = points;
+        }
+        if(!clip.tempoRateReferences.empty()){NSMutableArray* refs=[NSMutableArray new];for(const auto& r:clip.tempoRateReferences)[refs addObject:@{@"markerID":text(r.markerID),@"rate":@(r.rate)}];item[@"tempoRateReferences"]=refs;}
         if(clip.pitchSemitones) item[@"pitchSemitones"]=@(*clip.pitchSemitones);
         if(clip.gain) item[@"gain"]=@(*clip.gain);
         if(clip.phaseInverted) item[@"phaseInverted"]=@(*clip.phaseInverted);
         if(clip.pan) item[@"pan"]=@(*clip.pan);
         if(clip.channelMode) item[@"channelMode"]=@(*clip.channelMode);
-        if(clip.fadeIn) item[@"fadeIn"]=@(*clip.fadeIn); if(clip.fadeOut) item[@"fadeOut"]=@(*clip.fadeOut);
+        if(clip.fadeControlsEnabled) item[@"fadeControlsEnabled"]=@(*clip.fadeControlsEnabled);
+        if(clip.fadeIn) item[@"fadeIn"]=@(*clip.fadeIn); if(clip.fadeOut) item[@"fadeOut"]=@(*clip.fadeOut); if(clip.fadeOutSCurve) item[@"fadeOutSCurve"]=@(*clip.fadeOutSCurve); if(clip.fadeOutCurve) item[@"fadeOutCurve"]=@(*clip.fadeOutCurve); if(clip.fadeInSCurve) item[@"fadeInSCurve"]=@(*clip.fadeInSCurve); if(clip.fadeInCurve) item[@"fadeInCurve"]=@(*clip.fadeInCurve);
         if(clip.normalizationGain) item[@"normalizationGain"]=@(*clip.normalizationGain);
         if(clip.fxBypassed) item[@"fxBypassed"]=@(*clip.fxBypassed);
         if(clip.timecode) item[@"timecode"]=timecodeJSON(*clip.timecode);
@@ -195,6 +219,18 @@ static NSDictionary* trackJSON(const Track& t, bool includeWaveforms = true) {
     if(t.parentTrackID) d[@"parentTrackID"]=text(*t.parentTrackID);
     if(t.midiInput) d[@"midiInput"]=@(*t.midiInput);
     if(t.midiChannel) d[@"midiChannel"]=@(*t.midiChannel);
+    if(t.midiOutput) d[@"midiOutput"]=@(*t.midiOutput);
+    if(!t.programChanges.empty()) {
+        NSMutableArray* cues=[NSMutableArray array];
+        for(const auto& cue:t.programChanges) [cues addObject:@{@"id":text(cue.id),@"position":@(cue.position),@"program":@(cue.program),@"channel":@(cue.channel),@"name":text(cue.name),@"output":cue.output ? @(*cue.output) : [NSNull null]}];
+        d[@"programChanges"]=cues;
+    }
+    if(!t.chordMarkers.empty()) {
+        NSMutableArray* cues=[NSMutableArray array];
+        for(const auto& cue:t.chordMarkers)
+            [cues addObject:@{@"id":text(cue.id),@"regionID":text(cue.regionID),@"offset":@(cue.offset),@"name":text(cue.name)}];
+        d[@"chordMarkers"]=cues;
+    }
     if(t.inputPatch) d[@"inputPatch"]=patchJSON(*t.inputPatch);
     if(t.importedTimecodeItems) d[@"importedTimecodeItems"]=@YES;
     if(t.timecode) d[@"timecode"]=timecodeJSON(*t.timecode);
@@ -203,6 +239,9 @@ static NSDictionary* trackJSON(const Track& t, bool includeWaveforms = true) {
     if(t.inputMonitoring) d[@"inputMonitoring"]=@(*t.inputMonitoring);
     if(t.recordingChannels) d[@"recordingChannels"]=@(*t.recordingChannels);
     if(t.recordingFormat) d[@"recordingFormat"]=text(*t.recordingFormat);
+    if(t.recordingPostFader) d[@"recordingPostFader"]=@(*t.recordingPostFader);
+    if(t.recordingPostFX) d[@"recordingPostFX"]=@(*t.recordingPostFX);
+    if(t.recordingOutput) d[@"recordingOutput"]=@(*t.recordingOutput);
     if(t.color) d[@"color"]=@(*t.color);
     if(t.patch) d[@"patch"]=patchJSON(*t.patch);
     if(t.routing) d[@"routing"]=routingJSON(*t.routing);
@@ -216,7 +255,13 @@ static NSDictionary* regionSetlistJSON(const RegionSetlist& state) {
     NSMutableArray* lists=[NSMutableArray new];
     for(const auto& list:state.playlists) {
         NSMutableArray* ids=[NSMutableArray new]; for(const auto& id:list.regionIds) [ids addObject:text(id)];
-        [lists addObject:@{@"id":text(list.id),@"name":text(list.name),@"songId":text(list.songId),@"regionIds":ids}];
+        NSMutableDictionary* value=[@{@"id":text(list.id),@"name":text(list.name),@"songId":text(list.songId),@"regionIds":ids} mutableCopy];
+        if(list.duplicates) {
+            NSMutableArray* duplicates=[NSMutableArray new];
+            for(const auto& duplicate:*list.duplicates) [duplicates addObject:@{@"id":text(duplicate.id),@"regionId":text(duplicate.regionId)}];
+            value[@"duplicates"]=duplicates;
+        }
+        [lists addObject:value];
     }
     NSMutableDictionary* result=[@{@"playlists":lists,@"autoAdvance":@(state.autoAdvance)} mutableCopy];
     if(state.autoUntilBlockEnd) result[@"autoUntilBlockEnd"]=@YES;
@@ -225,8 +270,11 @@ static NSDictionary* regionSetlistJSON(const RegionSetlist& state) {
         NSMutableArray* ids=[NSMutableArray new]; for(const auto& id:*state.playedLiveRegionIDs) [ids addObject:text(id)];
         result[@"playedLiveRegionIDs"]=ids;
     }
+    if(state.subplayExclusiveTrackIDs) { NSMutableArray* ids=[NSMutableArray new]; for(const auto& id:*state.subplayExclusiveTrackIDs) [ids addObject:text(id)]; result[@"subplayExclusiveTrackIDs"]=ids; }
     if(state.automaticSubplay) result[@"automaticSubplay"]=@(*state.automaticSubplay);
     if(state.automaticSubplaySeconds) result[@"automaticSubplaySeconds"]=@(*state.automaticSubplaySeconds);
+    if(state.automaticSubplayBars) result[@"automaticSubplayBars"]=@(*state.automaticSubplayBars);
+    if(state.automaticSubplayNext) result[@"automaticSubplayNext"]=@(*state.automaticSubplayNext);
     if(state.prepareWithoutPlayback) result[@"prepareWithoutPlayback"]=@(*state.prepareWithoutPlayback);
     if(state.stopAtRegionEnd) result[@"stopAtRegionEnd"]=@(*state.stopAtRegionEnd);
     if(state.selectedId) result[@"selectedId"]=text(*state.selectedId);
@@ -251,8 +299,11 @@ static RegionSetlist readRegionSetlist(NSDictionary* d) {
         state.playedLiveRegionIDs=std::vector<ID>{};
         for(id value in array(d[@"playedLiveRegionIDs"])) state.playedLiveRegionIDs->push_back(str(value));
     }
+    if(d[@"subplayExclusiveTrackIDs"] && d[@"subplayExclusiveTrackIDs"]!=NSNull.null) { state.subplayExclusiveTrackIDs=std::vector<ID>{}; for(id value in array(d[@"subplayExclusiveTrackIDs"])) state.subplayExclusiveTrackIDs->push_back(str(value)); }
     if(d[@"automaticSubplay"] && d[@"automaticSubplay"]!=NSNull.null) state.automaticSubplay=clipFXBypass(d[@"automaticSubplay"]);
     if(d[@"automaticSubplaySeconds"] && d[@"automaticSubplaySeconds"]!=NSNull.null) state.automaticSubplaySeconds=std::clamp(number(d[@"automaticSubplaySeconds"]),1.0,5.0);
+    if(d[@"automaticSubplayBars"] && d[@"automaticSubplayBars"]!=NSNull.null) state.automaticSubplayBars=std::clamp(int(number(d[@"automaticSubplayBars"])),1,5);
+    if(d[@"automaticSubplayNext"] && d[@"automaticSubplayNext"]!=NSNull.null) state.automaticSubplayNext=clipFXBypass(d[@"automaticSubplayNext"]);
     if(d[@"prepareWithoutPlayback"] && d[@"prepareWithoutPlayback"]!=NSNull.null) state.prepareWithoutPlayback=clipFXBypass(d[@"prepareWithoutPlayback"]);
     if(d[@"stopAtRegionEnd"] && d[@"stopAtRegionEnd"]!=NSNull.null) state.stopAtRegionEnd=clipFXBypass(d[@"stopAtRegionEnd"]);
     if(d[@"blocks"] && d[@"blocks"]!=NSNull.null) {
@@ -270,6 +321,13 @@ static RegionSetlist readRegionSetlist(NSDictionary* d) {
     for(id raw in array(d[@"playlists"])) {
         NSDictionary* p=object(raw); RegionPlaylist list; list.id=str(p[@"id"]); list.name=str(p[@"name"]); list.songId=str(p[@"songId"]);
         for(id region in array(p[@"regionIds"])) list.regionIds.push_back(str(region));
+        if(p[@"duplicates"] && p[@"duplicates"] != NSNull.null) {
+            list.duplicates=std::vector<RegionPlaylistDuplicate>{};
+            for(id rawDuplicate in array(p[@"duplicates"])) {
+                NSDictionary* duplicate=object(rawDuplicate);
+                list.duplicates->push_back({str(duplicate[@"id"]),str(duplicate[@"regionId"])});
+            }
+        }
         state.playlists.push_back(std::move(list));
     }
     return state;
@@ -283,6 +341,8 @@ static NSDictionary* projectJSON(const Project& p, bool includeWaveforms = true)
             NSMutableDictionary* region = [@{@"id":text(part.id),@"name":text(part.name),@"startTime":@(part.startTime),@"endTime":@(part.endTime)} mutableCopy];
             if (part.color) region[@"color"] = @(*part.color);
             if (part.uppercaseName) region[@"uppercaseName"] = @(*part.uppercaseName);
+            if (part.subplayInitSeconds) region[@"subplayInitSeconds"] = @(*part.subplayInitSeconds);
+            if (part.subplayInitBars) region[@"subplayInitBars"] = @(*part.subplayInitBars);
             if (part.parentRegionID) region[@"parentRegionID"] = text(*part.parentRegionID);
             if (part.pitchSemitones) region[@"pitchSemitones"] = @(*part.pitchSemitones);
             if (part.pitchTrackIDs) { NSMutableArray* ids = [NSMutableArray new]; for (const auto& id : *part.pitchTrackIDs) [ids addObject:text(id)]; region[@"pitchTrackIDs"] = ids; }
@@ -303,12 +363,15 @@ static NSDictionary* projectJSON(const Project& p, bool includeWaveforms = true)
                 if (marker.unifiedRegionID) value[@"unifiedRegionID"] = text(*marker.unifiedRegionID);
                 if (marker.section) value[@"section"] = @(*marker.section);
                 if (marker.loopSection) value[@"loopSection"] = @(*marker.loopSection);
+                if (marker.automaticSectionTargetID) value[@"automaticSectionTargetID"] = text(*marker.automaticSectionTargetID);
+                if (marker.automaticSectionRepeatCount) value[@"automaticSectionRepeatCount"] = @(*marker.automaticSectionRepeatCount);
                 if (marker.sourceRegionID) value[@"sourceRegionID"] = text(*marker.sourceRegionID);
                 if (marker.tempoBPM) value[@"tempoBPM"] = @(*marker.tempoBPM);
                 if (marker.tempoBeats) value[@"tempoBeats"] = @(*marker.tempoBeats);
                 if (marker.tempoUnit) value[@"tempoUnit"] = @(*marker.tempoUnit);
                 if (marker.tempoTimebase) value[@"tempoTimebase"] = text(*marker.tempoTimebase);
-                if (marker.tempoReferenceBPM) value[@"tempoReferenceBPM"] = @(*marker.tempoReferenceBPM);
+                if (marker.tempoReferenceBPM) value[@"tempoReferenceBPM"] = @(*marker.tempoReferenceBPM); if(marker.tempoPlaybackRate) value[@"tempoPlaybackRate"]=@(*marker.tempoPlaybackRate);
+                if (marker.regionTempoAnchor) value[@"regionTempoAnchor"] = @(*marker.regionTempoAnchor);
                 [markers addObject:value];
             }
             song[@"markers"]=markers;
@@ -317,7 +380,12 @@ static NSDictionary* projectJSON(const Project& p, bool includeWaveforms = true)
     }
     for (const auto& s : p.setlists) { NSMutableArray* ids = [NSMutableArray new]; for (const auto& id : s.songIds) [ids addObject:text(id)]; [setlists addObject:@{@"id":text(s.id),@"name":text(s.name),@"songIds":ids}]; }
     NSMutableDictionary* result=[@{@"id":text(p.id),@"name":text(p.name),@"projectFormatVersion":@(p.projectFormatVersion),@"minimumJarasVersion":text(p.minimumJarasVersion),@"createdAt":text(p.createdAt),@"updatedAt":text(p.updatedAt),@"songs":songs,@"setlists":setlists} mutableCopy];
+    if(p.importedTimeline) result[@"importedTimeline"]=@(*p.importedTimeline);
+    if(p.timelineMovementLocked) result[@"timelineMovementLocked"]=@(*p.timelineMovementLocked);
+    if(p.timelineLockOptions) result[@"timelineLockOptions"]=@(*p.timelineLockOptions);
     if(p.savedCursor) result[@"savedCursor"]=@{@"songID":text(p.savedCursor->songID), @"position":@(p.savedCursor->position)};
+    if(p.projectSyncID) result[@"projectSyncID"]=text(*p.projectSyncID);
+    if(p.partialImportIDs) { NSMutableArray* ids = [NSMutableArray new]; for(const auto& id : *p.partialImportIDs) [ids addObject:text(id)]; result[@"partialImportIDs"] = ids; }
     if(p.masterPan != 0) result[@"masterPan"]=@(p.masterPan);
     if(p.masterVolume != 1) result[@"masterVolume"]=@(p.masterVolume);
     if(p.masterMute) result[@"masterMute"]=@YES;
@@ -326,6 +394,7 @@ static NSDictionary* projectJSON(const Project& p, bool includeWaveforms = true)
     if(p.masterSolo) result[@"masterSolo"]=@YES;
     if(p.masterColor) result[@"masterColor"]=@(*p.masterColor);
     if(p.masterAutomationJSON) result[@"masterAutomation"]=[NSJSONSerialization JSONObjectWithData:[text(*p.masterAutomationJSON) dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil];
+    if(p.reductionDraftJSON) result[@"reductionDraft"]=[NSJSONSerialization JSONObjectWithData:[text(*p.reductionDraftJSON) dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil];
     if(p.resolumeJSON) result[@"resolume"]=[NSJSONSerialization JSONObjectWithData:[text(*p.resolumeJSON) dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil];
     if(p.masterFXJSON) result[@"masterFX"]=[NSJSONSerialization JSONObjectWithData:[text(*p.masterFXJSON) dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil];
     if(p.masterPatch) result[@"masterPatch"]=patchJSON(*p.masterPatch);
@@ -336,10 +405,13 @@ static NSDictionary* projectJSON(const Project& p, bool includeWaveforms = true)
 }
 static Track readTrack(NSDictionary* td) {
  Track t; if(td[@"phaseInverted"] && td[@"phaseInverted"]!=NSNull.null)t.phaseInverted=[td[@"phaseInverted"] boolValue]; if(td[@"routing"] && td[@"routing"]!=NSNull.null)t.routing=readRouting(td[@"routing"]);t.id=str(td[@"id"]); t.name=str(td[@"name"]); t.role={str(td[@"role"])}; t.volume=number(td[@"volume"]); t.pan=number(td[@"pan"]); t.mute=number(td[@"mute"])!=0; t.solo=number(td[@"solo"])!=0; t.output=number(td[@"output"]);
+ if([td[@"stackedStems"] isKindOfClass:NSNumber.class])t.stackedStems=[td[@"stackedStems"] boolValue];
+ if([td[@"hiddenMixerComponents"] isKindOfClass:NSNumber.class])t.hiddenMixerComponents=[td[@"hiddenMixerComponents"] intValue];
  if(td[@"heightScale"] && td[@"heightScale"]!=NSNull.null)t.heightScale=number(td[@"heightScale"]);
+ if([td[@"instrumentIcon"] isKindOfClass:NSString.class])t.instrumentIcon=str(td[@"instrumentIcon"]); else t.instrumentIcon.reset();
             if (td[@"clickSound"] && td[@"clickSound"] != NSNull.null) { NSDictionary* f=object(td[@"clickSound"]); AudioFile file; file.path=str(f[@"path"]); if(f[@"sha256"] && f[@"sha256"]!=NSNull.null) file.sha256=str(f[@"sha256"]); t.clickSound=file; }
             if (td[@"audioFile"] && td[@"audioFile"] != NSNull.null) { NSDictionary* f=object(td[@"audioFile"]); AudioFile file; file.path=str(f[@"path"]); if (f[@"sha256"] && f[@"sha256"]!=NSNull.null) file.sha256=str(f[@"sha256"]); t.audioFile=file; }
-            for (id rawClip in array(td[@"clips"])) { NSDictionary* cd=object(rawClip); AudioClip clip; clip.id=str(cd[@"id"]); if(cd[@"regionOwnerID"] && cd[@"regionOwnerID"]!=NSNull.null) clip.regionOwnerID=str(cd[@"regionOwnerID"]); for(id stem in array(cd[@"separatedStemTracks"] ?: @[])) clip.separatedStemTracks.push_back(str(stem)); clip.name=str(cd[@"name"]); clip.startTime=number(cd[@"startTime"]); clip.duration=number(cd[@"duration"]); clip.sourceOffset=number(cd[@"sourceOffset"]); clip.playbackRate=cd[@"playbackRate"] && cd[@"playbackRate"]!=NSNull.null ? number(cd[@"playbackRate"]) : 1; for(id peak in array(cd[@"waveform"])) clip.waveform.push_back(number(peak)); if(cd[@"audioFile"] && cd[@"audioFile"]!=NSNull.null) { NSDictionary* f=object(cd[@"audioFile"]); AudioFile file; file.path=str(f[@"path"]); if(f[@"sha256"] && f[@"sha256"]!=NSNull.null) file.sha256=str(f[@"sha256"]); clip.audioFile=file; } if(cd[@"text"] && cd[@"text"]!=NSNull.null) clip.text=readClipText(cd[@"text"]); if(cd[@"midi"] && cd[@"midi"]!=NSNull.null) clip.midi=readMIDIItem(cd[@"midi"]); if(cd[@"frozenMIDI"] && cd[@"frozenMIDI"]!=NSNull.null) clip.frozenMIDI=clipFXBypass(cd[@"frozenMIDI"]); if(cd[@"renderedTiming"] && cd[@"renderedTiming"]!=NSNull.null) clip.renderedTiming=clipFXBypass(cd[@"renderedTiming"]); if(cd[@"renderedTempo"] && cd[@"renderedTempo"]!=NSNull.null) clip.renderedTempo=clipFXBypass(cd[@"renderedTempo"]); if(cd[@"tempoBasePlaybackRate"] && cd[@"tempoBasePlaybackRate"]!=NSNull.null) clip.tempoBasePlaybackRate=number(cd[@"tempoBasePlaybackRate"]); if(cd[@"pitchSemitones"] && cd[@"pitchSemitones"]!=NSNull.null) clip.pitchSemitones=number(cd[@"pitchSemitones"]); if(cd[@"gain"] && cd[@"gain"]!=NSNull.null) clip.gain=number(cd[@"gain"]); if(cd[@"phaseInverted"] && cd[@"phaseInverted"]!=NSNull.null) clip.phaseInverted=clipFXBypass(cd[@"phaseInverted"]); if(cd[@"pan"] && cd[@"pan"]!=NSNull.null) clip.pan=number(cd[@"pan"]); if(cd[@"fadeIn"] && cd[@"fadeIn"]!=NSNull.null) clip.fadeIn=number(cd[@"fadeIn"]); if(cd[@"fadeOut"] && cd[@"fadeOut"]!=NSNull.null) clip.fadeOut=number(cd[@"fadeOut"]); if(cd[@"normalizationGain"] && cd[@"normalizationGain"]!=NSNull.null) clip.normalizationGain=number(cd[@"normalizationGain"]); if(cd[@"channelMode"] && cd[@"channelMode"]!=NSNull.null) clip.channelMode=(int)number(cd[@"channelMode"]); if(cd[@"fxBypassed"] && cd[@"fxBypassed"]!=NSNull.null) clip.fxBypassed=clipFXBypass(cd[@"fxBypassed"]); if(cd[@"timecode"] && cd[@"timecode"]!=NSNull.null) clip.timecode=readTimecode(cd[@"timecode"]); if(cd[@"timecodeStartOffset"] && cd[@"timecodeStartOffset"]!=NSNull.null) clip.timecodeStartOffset=number(cd[@"timecodeStartOffset"]); if(cd[@"timecodeEndOffset"] && cd[@"timecodeEndOffset"]!=NSNull.null) clip.timecodeEndOffset=number(cd[@"timecodeEndOffset"]); if(cd[@"fx"] && cd[@"fx"]!=NSNull.null) clip.fxJSON=readClipFX(cd[@"fx"]); if(cd[@"automation"] && cd[@"automation"]!=NSNull.null) clip.automationJSON=str([[NSString alloc] initWithData:[NSJSONSerialization dataWithJSONObject:object(cd[@"automation"]) options:0 error:nil] encoding:NSUTF8StringEncoding]); for(id channel in array(cd[@"waveformChannels"] ?: @[])) { std::vector<double> values; for(id peak in array(channel)) values.push_back(number(peak)); clip.waveformChannels.push_back(std::move(values)); } if(cd[@"loopStart"] && cd[@"loopStart"]!=NSNull.null) clip.loopStart=number(cd[@"loopStart"]); if(cd[@"loopLength"] && cd[@"loopLength"]!=NSNull.null) clip.loopLength=number(cd[@"loopLength"]); if(cd[@"recordingLane"] && cd[@"recordingLane"]!=NSNull.null) clip.recordingLane=(int)number(cd[@"recordingLane"]); clip.muted=[cd[@"muted"] respondsToSelector:@selector(boolValue)] && [cd[@"muted"] boolValue]; t.clips.push_back(std::move(clip)); }
+            for (id rawClip in array(td[@"clips"])) { NSDictionary* cd=object(rawClip); AudioClip clip; clip.id=str(cd[@"id"]); if(cd[@"regionOwnerID"] && cd[@"regionOwnerID"]!=NSNull.null) clip.regionOwnerID=str(cd[@"regionOwnerID"]); for(id stem in array(cd[@"separatedStemTracks"] ?: @[])) clip.separatedStemTracks.push_back(str(stem)); clip.name=str(cd[@"name"]); clip.startTime=number(cd[@"startTime"]); clip.duration=number(cd[@"duration"]); clip.sourceOffset=number(cd[@"sourceOffset"]); clip.playbackRate=cd[@"playbackRate"] && cd[@"playbackRate"]!=NSNull.null ? number(cd[@"playbackRate"]) : 1; for(id peak in array(cd[@"waveform"])) clip.waveform.push_back(number(peak)); if(cd[@"audioFile"] && cd[@"audioFile"]!=NSNull.null) { NSDictionary* f=object(cd[@"audioFile"]); AudioFile file; file.path=str(f[@"path"]); if(f[@"sha256"] && f[@"sha256"]!=NSNull.null) file.sha256=str(f[@"sha256"]); clip.audioFile=file; } if(cd[@"text"] && cd[@"text"]!=NSNull.null) clip.text=readClipText(cd[@"text"]); if(cd[@"midi"] && cd[@"midi"]!=NSNull.null) clip.midi=readMIDIItem(cd[@"midi"]); if(cd[@"frozenMIDI"] && cd[@"frozenMIDI"]!=NSNull.null) clip.frozenMIDI=clipFXBypass(cd[@"frozenMIDI"]); if(cd[@"renderedTiming"] && cd[@"renderedTiming"]!=NSNull.null) clip.renderedTiming=clipFXBypass(cd[@"renderedTiming"]); if(cd[@"clickDouble"] && cd[@"clickDouble"]!=NSNull.null) clip.clickDouble=clipFXBypass(cd[@"clickDouble"]); if(cd[@"renderedTempo"] && cd[@"renderedTempo"]!=NSNull.null) clip.renderedTempo=clipFXBypass(cd[@"renderedTempo"]); if(cd[@"tempoBasePlaybackRate"] && cd[@"tempoBasePlaybackRate"]!=NSNull.null) clip.tempoBasePlaybackRate=number(cd[@"tempoBasePlaybackRate"]); clip.elasticSourceScale=number(cd[@"elasticSourceScale"] ?: @1); for(id rawPoint in array(cd[@"elasticPoints"] ?: @[])){NSDictionary* point=object(rawPoint);clip.elasticPoints.push_back({number(point[@"position"]),number(point[@"source"]),number(point[@"slopeBefore"] ?: @0),number(point[@"slopeAfter"] ?: @0)});} for(id rawReference in array(cd[@"tempoRateReferences"] ?: @[])){NSDictionary* reference=object(rawReference);clip.tempoRateReferences.push_back({str(reference[@"markerID"]),number(reference[@"rate"])});} if(cd[@"pitchSemitones"] && cd[@"pitchSemitones"]!=NSNull.null) clip.pitchSemitones=number(cd[@"pitchSemitones"]); if(cd[@"gain"] && cd[@"gain"]!=NSNull.null) clip.gain=number(cd[@"gain"]); if(cd[@"phaseInverted"] && cd[@"phaseInverted"]!=NSNull.null) clip.phaseInverted=clipFXBypass(cd[@"phaseInverted"]); if(cd[@"pan"] && cd[@"pan"]!=NSNull.null) clip.pan=number(cd[@"pan"]); if(cd[@"fadeControlsEnabled"] && cd[@"fadeControlsEnabled"]!=NSNull.null) clip.fadeControlsEnabled=clipFXBypass(cd[@"fadeControlsEnabled"]); if(cd[@"fadeIn"] && cd[@"fadeIn"]!=NSNull.null) clip.fadeIn=number(cd[@"fadeIn"]); if(cd[@"fadeOut"] && cd[@"fadeOut"]!=NSNull.null) clip.fadeOut=number(cd[@"fadeOut"]); if(cd[@"fadeOutSCurve"] && cd[@"fadeOutSCurve"]!=NSNull.null) clip.fadeOutSCurve=number(cd[@"fadeOutSCurve"]); if(cd[@"fadeOutCurve"] && cd[@"fadeOutCurve"]!=NSNull.null) clip.fadeOutCurve=number(cd[@"fadeOutCurve"]); if(cd[@"fadeInSCurve"] && cd[@"fadeInSCurve"]!=NSNull.null) clip.fadeInSCurve=number(cd[@"fadeInSCurve"]); if(cd[@"fadeInCurve"] && cd[@"fadeInCurve"]!=NSNull.null) clip.fadeInCurve=number(cd[@"fadeInCurve"]); if(cd[@"normalizationGain"] && cd[@"normalizationGain"]!=NSNull.null) clip.normalizationGain=number(cd[@"normalizationGain"]); if(cd[@"channelMode"] && cd[@"channelMode"]!=NSNull.null) clip.channelMode=(int)number(cd[@"channelMode"]); if(cd[@"fxBypassed"] && cd[@"fxBypassed"]!=NSNull.null) clip.fxBypassed=clipFXBypass(cd[@"fxBypassed"]); if(cd[@"timecode"] && cd[@"timecode"]!=NSNull.null) clip.timecode=readTimecode(cd[@"timecode"]); if(cd[@"timecodeStartOffset"] && cd[@"timecodeStartOffset"]!=NSNull.null) clip.timecodeStartOffset=number(cd[@"timecodeStartOffset"]); if(cd[@"timecodeEndOffset"] && cd[@"timecodeEndOffset"]!=NSNull.null) clip.timecodeEndOffset=number(cd[@"timecodeEndOffset"]); if(cd[@"fx"] && cd[@"fx"]!=NSNull.null) clip.fxJSON=readClipFX(cd[@"fx"]); if(cd[@"automation"] && cd[@"automation"]!=NSNull.null) clip.automationJSON=str([[NSString alloc] initWithData:[NSJSONSerialization dataWithJSONObject:object(cd[@"automation"]) options:0 error:nil] encoding:NSUTF8StringEncoding]); for(id channel in array(cd[@"waveformChannels"] ?: @[])) { std::vector<double> values; for(id peak in array(channel)) values.push_back(number(peak)); clip.waveformChannels.push_back(std::move(values)); } if(cd[@"loopStart"] && cd[@"loopStart"]!=NSNull.null) clip.loopStart=number(cd[@"loopStart"]); if(cd[@"loopLength"] && cd[@"loopLength"]!=NSNull.null) clip.loopLength=number(cd[@"loopLength"]); if(cd[@"recordingLane"] && cd[@"recordingLane"]!=NSNull.null) clip.recordingLane=(int)number(cd[@"recordingLane"]); clip.muted=[cd[@"muted"] respondsToSelector:@selector(boolValue)] && [cd[@"muted"] boolValue]; t.clips.push_back(std::move(clip)); }
             t.importedTimecodeItems=[td[@"importedTimecodeItems"] boolValue];
             if(td[@"timecode"] && td[@"timecode"]!=NSNull.null) t.timecode=readTimecode(td[@"timecode"]);
             if(td[@"automation"] && td[@"automation"]!=NSNull.null) t.automationJSON=str([[NSString alloc] initWithData:[NSJSONSerialization dataWithJSONObject:object(td[@"automation"]) options:0 error:nil] encoding:NSUTF8StringEncoding]);
@@ -353,10 +425,17 @@ static Track readTrack(NSDictionary* td) {
             if(td[@"inputMonitoring"] && td[@"inputMonitoring"] != NSNull.null) t.inputMonitoring=[td[@"inputMonitoring"] boolValue];
             if(td[@"recordingChannels"] && td[@"recordingChannels"] != NSNull.null) t.recordingChannels=[td[@"recordingChannels"] intValue];
             if(td[@"recordingFormat"] && td[@"recordingFormat"] != NSNull.null) t.recordingFormat=str(td[@"recordingFormat"]);
+            if(td[@"recordingPostFader"] && td[@"recordingPostFader"] != NSNull.null) t.recordingPostFader=[td[@"recordingPostFader"] boolValue];
+            if(td[@"recordingPostFX"] && td[@"recordingPostFX"] != NSNull.null) t.recordingPostFX=[td[@"recordingPostFX"] boolValue];
+            if(td[@"recordingOutput"] && td[@"recordingOutput"] != NSNull.null) t.recordingOutput=[td[@"recordingOutput"] boolValue];
             if(td[@"color"] && td[@"color"] != NSNull.null) t.color=(unsigned)number(td[@"color"]);
             if(td[@"parentTrackID"] && td[@"parentTrackID"] != NSNull.null) t.parentTrackID=str(td[@"parentTrackID"]);
             if(td[@"midiInput"] && td[@"midiInput"] != NSNull.null) t.midiInput=int(number(td[@"midiInput"]));
             if(td[@"midiChannel"] && td[@"midiChannel"] != NSNull.null) t.midiChannel=int(number(td[@"midiChannel"]));
+            if(td[@"midiOutput"] && td[@"midiOutput"] != NSNull.null) t.midiOutput=int(number(td[@"midiOutput"]));
+            for(NSDictionary* cue in array(td[@"programChanges"] ?: @[])) t.programChanges.push_back({str(cue[@"id"]),number(cue[@"position"]),(int)number(cue[@"program"]),(int)number(cue[@"channel"]),str(cue[@"name"] ?: @""), cue[@"output"] && cue[@"output"] != [NSNull null] ? std::optional<int>((int)number(cue[@"output"])) : std::nullopt});
+            for(NSDictionary* cue in array(td[@"chordMarkers"] ?: @[]))
+                t.chordMarkers.push_back({str(cue[@"id"]),str(cue[@"regionID"]),number(cue[@"offset"]),str(cue[@"name"])});
             if(td[@"secondaryPatch"] && td[@"secondaryPatch"]!=NSNull.null) t.secondaryPatch=readPatch(td[@"secondaryPatch"]);
             if(td[@"patch"] && td[@"patch"] != NSNull.null) t.patch=readPatch(td[@"patch"]);
             if(td[@"outputs"] && td[@"outputs"] != NSNull.null) t.outputs=readPatches(td[@"outputs"]);
@@ -364,6 +443,11 @@ static Track readTrack(NSDictionary* td) {
 }
 static Project readProject(NSDictionary* d) {
     Project p; p.id=str(d[@"id"]); p.name=str(d[@"name"]); p.projectFormatVersion=number(d[@"projectFormatVersion"]); p.minimumJarasVersion=str(d[@"minimumJarasVersion"]); p.createdAt=str(d[@"createdAt"]); p.updatedAt=str(d[@"updatedAt"]);
+    if(d[@"projectSyncID"] && d[@"projectSyncID"] != NSNull.null) p.projectSyncID=str(d[@"projectSyncID"]);
+    if(d[@"partialImportIDs"] && d[@"partialImportIDs"] != NSNull.null) { p.partialImportIDs.emplace(); for(id value in array(d[@"partialImportIDs"])) p.partialImportIDs->push_back(str(value)); }
+    if(d[@"importedTimeline"] && d[@"importedTimeline"] != NSNull.null) p.importedTimeline=number(d[@"importedTimeline"])!=0;
+    if(d[@"timelineMovementLocked"] && d[@"timelineMovementLocked"] != NSNull.null) p.timelineMovementLocked=number(d[@"timelineMovementLocked"])!=0;
+    if(d[@"timelineLockOptions"] && d[@"timelineLockOptions"] != NSNull.null) p.timelineLockOptions=jaras::TimelineLocks::normalize((int)number(d[@"timelineLockOptions"]));
     if(d[@"savedCursor"] && d[@"savedCursor"] != NSNull.null) {
         NSDictionary* cursor=object(d[@"savedCursor"]);
         p.savedCursor=SavedProjectCursor{str(cursor[@"songID"]), number(cursor[@"position"])};
@@ -378,7 +462,7 @@ static Project readProject(NSDictionary* d) {
         }
         if (sd[@"timeSettings"] && sd[@"timeSettings"] != NSNull.null) s.timeSettings = readTimeSettings(object(sd[@"timeSettings"]));
         for (id rawTrack in array(sd[@"tracks"])) s.tracks.push_back(readTrack(object(rawTrack)));
-        for (id rawPart in array(sd[@"parts"])) { NSDictionary* part=object(rawPart); s.parts.push_back({str(part[@"id"]),str(part[@"name"]),number(part[@"startTime"]),number(part[@"endTime"])}); if (part[@"multiLoops"] && part[@"multiLoops"] != NSNull.null) s.parts.back().multiLoops = readMultiLoops(part[@"multiLoops"]); if (part[@"totalLoop"] && part[@"totalLoop"] != NSNull.null) s.parts.back().totalLoop = [part[@"totalLoop"] boolValue]; if (part[@"color"] && part[@"color"] != NSNull.null) { double color = number(part[@"color"]); if (color < 0 || color > 0xFFFFFF || color != (unsigned)color) throw std::invalid_argument("Invalid region color"); s.parts.back().color = (unsigned)color; } if (part[@"uppercaseName"] && part[@"uppercaseName"] != NSNull.null) s.parts.back().uppercaseName = [part[@"uppercaseName"] boolValue]; if (part[@"parentRegionID"] && part[@"parentRegionID"] != NSNull.null) s.parts.back().parentRegionID = str(part[@"parentRegionID"]); if (part[@"pitchSemitones"] && part[@"pitchSemitones"] != NSNull.null) { double value = number(part[@"pitchSemitones"]); if (value != std::round(value) || value < -12 || value > 12) throw std::invalid_argument("Invalid region pitch"); s.parts.back().pitchSemitones = (int)value; } for (NSString* key in @[@"pitchTrackIDs", @"pitchGroupIDs"]) if (part[key] && part[key] != NSNull.null) { std::vector<ID> ids; for (id value in array(part[key])) ids.push_back(str(value)); if ([key isEqualToString:@"pitchTrackIDs"]) s.parts.back().pitchTrackIDs = std::move(ids); else s.parts.back().pitchGroupIDs = std::move(ids); } }
+        for (id rawPart in array(sd[@"parts"])) { NSDictionary* part=object(rawPart); s.parts.push_back({str(part[@"id"]),str(part[@"name"]),number(part[@"startTime"]),number(part[@"endTime"])}); if (part[@"subplayInitSeconds"] && part[@"subplayInitSeconds"] != NSNull.null) s.parts.back().subplayInitSeconds = number(part[@"subplayInitSeconds"]); if (part[@"subplayInitBars"] && part[@"subplayInitBars"] != NSNull.null) s.parts.back().subplayInitBars = int(number(part[@"subplayInitBars"])); if (part[@"multiLoops"] && part[@"multiLoops"] != NSNull.null) s.parts.back().multiLoops = readMultiLoops(part[@"multiLoops"]); if (part[@"totalLoop"] && part[@"totalLoop"] != NSNull.null) s.parts.back().totalLoop = [part[@"totalLoop"] boolValue]; if (part[@"color"] && part[@"color"] != NSNull.null) { double color = number(part[@"color"]); if (color < 0 || color > 0xFFFFFF || color != (unsigned)color) throw std::invalid_argument("Invalid region color"); s.parts.back().color = (unsigned)color; } if (part[@"uppercaseName"] && part[@"uppercaseName"] != NSNull.null) s.parts.back().uppercaseName = [part[@"uppercaseName"] boolValue]; if (part[@"parentRegionID"] && part[@"parentRegionID"] != NSNull.null) s.parts.back().parentRegionID = str(part[@"parentRegionID"]); if (part[@"pitchSemitones"] && part[@"pitchSemitones"] != NSNull.null) { double value = number(part[@"pitchSemitones"]); if (value != std::round(value) || value < -12 || value > 12) throw std::invalid_argument("Invalid region pitch"); s.parts.back().pitchSemitones = (int)value; } for (NSString* key in @[@"pitchTrackIDs", @"pitchGroupIDs"]) if (part[key] && part[key] != NSNull.null) { std::vector<ID> ids; for (id value in array(part[key])) ids.push_back(str(value)); if ([key isEqualToString:@"pitchTrackIDs"]) s.parts.back().pitchTrackIDs = std::move(ids); else s.parts.back().pitchGroupIDs = std::move(ids); } }
         if (sd[@"markers"] && sd[@"markers"] != NSNull.null) {
             s.markers.emplace();
             for (id raw in array(sd[@"markers"])) {
@@ -390,9 +474,16 @@ static Project readProject(NSDictionary* d) {
                 if (marker[@"tempoBeats"] && marker[@"tempoBeats"] != NSNull.null) { double n = number(marker[@"tempoBeats"]); if (n != std::round(n) || n < 1 || n > 32) throw std::invalid_argument("Invalid tempo meter"); s.markers->back().tempoBeats = (int)n; }
                 if (marker[@"tempoUnit"] && marker[@"tempoUnit"] != NSNull.null) { double n = number(marker[@"tempoUnit"]); if (n != std::round(n) || n < 1 || n > 64) throw std::invalid_argument("Invalid tempo meter"); s.markers->back().tempoUnit = (int)n; }
                 if (marker[@"tempoTimebase"] && marker[@"tempoTimebase"] != NSNull.null) s.markers->back().tempoTimebase = str(marker[@"tempoTimebase"]);
-                if (marker[@"tempoReferenceBPM"] && marker[@"tempoReferenceBPM"] != NSNull.null) s.markers->back().tempoReferenceBPM = number(marker[@"tempoReferenceBPM"]);
+                if (marker[@"tempoReferenceBPM"] && marker[@"tempoReferenceBPM"] != NSNull.null) s.markers->back().tempoReferenceBPM = number(marker[@"tempoReferenceBPM"]); if(marker[@"tempoPlaybackRate"] && marker[@"tempoPlaybackRate"]!=NSNull.null) s.markers->back().tempoPlaybackRate=number(marker[@"tempoPlaybackRate"]);
+                if ([marker[@"regionTempoAnchor"] isKindOfClass:NSNumber.class]) s.markers->back().regionTempoAnchor = [marker[@"regionTempoAnchor"] boolValue];
                 if (marker[@"section"] && marker[@"section"] != NSNull.null) s.markers->back().section = [marker[@"section"] boolValue];
                 if (marker[@"loopSection"] && marker[@"loopSection"] != NSNull.null) s.markers->back().loopSection = [marker[@"loopSection"] boolValue];
+                if (marker[@"automaticSectionTargetID"] && marker[@"automaticSectionTargetID"] != NSNull.null) s.markers->back().automaticSectionTargetID = str(marker[@"automaticSectionTargetID"]);
+                if (marker[@"automaticSectionRepeatCount"] && marker[@"automaticSectionRepeatCount"] != NSNull.null) {
+                    const double count = number(marker[@"automaticSectionRepeatCount"]);
+                    if (count < 1 || count > 20 || count != std::floor(count)) throw std::invalid_argument("Invalid automatic section repeat count");
+                    s.markers->back().automaticSectionRepeatCount = int(count);
+                }
                 if (marker[@"sourceRegionID"] && marker[@"sourceRegionID"] != NSNull.null) s.markers->back().sourceRegionID = str(marker[@"sourceRegionID"]);
             }
         }
@@ -411,6 +502,7 @@ static Project readProject(NSDictionary* d) {
         p.masterColor=(unsigned)color;
     }
     if(d[@"masterAutomation"] && d[@"masterAutomation"]!=NSNull.null) p.masterAutomationJSON=str([[NSString alloc] initWithData:[NSJSONSerialization dataWithJSONObject:object(d[@"masterAutomation"]) options:0 error:nil] encoding:NSUTF8StringEncoding]);
+    if(d[@"reductionDraft"] && d[@"reductionDraft"]!=NSNull.null) p.reductionDraftJSON=str([[NSString alloc] initWithData:[NSJSONSerialization dataWithJSONObject:object(d[@"reductionDraft"]) options:0 error:nil] encoding:NSUTF8StringEncoding]);
     if(d[@"resolume"] && d[@"resolume"]!=NSNull.null) p.resolumeJSON=str([[NSString alloc] initWithData:[NSJSONSerialization dataWithJSONObject:object(d[@"resolume"]) options:0 error:nil] encoding:NSUTF8StringEncoding]);
     if(d[@"masterFX"] && d[@"masterFX"]!=NSNull.null) p.masterFXJSON=str([[NSString alloc] initWithData:[NSJSONSerialization dataWithJSONObject:object(d[@"masterFX"]) options:0 error:nil] encoding:NSUTF8StringEncoding]);
     if(d[@"masterPatch"] && d[@"masterPatch"] != NSNull.null) p.masterPatch=readPatch(d[@"masterPatch"]);
@@ -420,7 +512,11 @@ static Project readProject(NSDictionary* d) {
     return p;
 }
 static void report(NSError** error, const std::exception& e) { if (error) *error = [NSError errorWithDomain:@"JarasLiveCore" code:1 userInfo:@{NSLocalizedDescriptionKey:text(e.what())}]; }
-@implementation JarasCoreBridge { std::unique_ptr<Engine> _engine; TrackTaxonomy _taxonomy; }
+@implementation JarasCoreBridge {
+    std::unique_ptr<Engine> _engine; TrackTaxonomy _taxonomy;
+    NSDictionary<NSString*,NSDictionary<NSString*,NSDictionary*>*>* _snapshotTracks;
+    uint64_t _snapshotRevision;
+}
 - (instancetype)init { if ((self=[super init])) _engine=std::make_unique<Engine>(); return self; }
 - (BOOL)applyProjectEditData:(NSData*)data error:(NSError**)error {
     id decoded=[NSJSONSerialization JSONObjectWithData:data options:0 error:error]; if (!decoded) return NO;
@@ -447,12 +543,116 @@ static void report(NSError** error, const std::exception& e) { if (error) *error
         _engine->applyProjectEdit(std::move(project)); return YES;
     } catch(const std::exception& e) { report(error,e); return NO; }
 }
+- (BOOL)applyTrackStructureEditData:(NSData*)data trackOrders:(NSDictionary<NSString*,NSArray<NSString*>*>*)orders preservingWaveforms:(NSDictionary<NSString*,NSString*>*)identifiers error:(NSError**)error {
+    id decoded=[NSJSONSerialization JSONObjectWithData:data options:0 error:error]; if(!decoded) return NO;
+    try {
+        Project project=readProject(object(decoded));
+        if(orders.count!=project.songs.size()) throw std::invalid_argument("Incomplete track order");
+        for(auto& song:project.songs) {
+            NSArray* order=orders[text(song.id)];
+            if(![order isKindOfClass:NSArray.class]) throw std::invalid_argument("Missing track order");
+            const auto& songs=_engine->project().songs;
+            const auto previous=std::find_if(songs.begin(),songs.end(),[&](const Song& old){ return old.id==song.id; });
+            std::map<ID,const Track*> unchanged;
+            if(previous!=songs.end()) for(const auto& track:previous->tracks) unchanged.emplace(track.id,&track);
+            std::map<ID,Track> changed;
+            for(auto& track:song.tracks) if(!changed.emplace(track.id,std::move(track)).second) throw std::invalid_argument("Duplicate changed track");
+            std::vector<Track> tracks; tracks.reserve(order.count);
+            std::set<ID> seen;
+            for(id identifier:order) {
+                const auto key=str(identifier);
+                if(!seen.insert(key).second) throw std::invalid_argument("Duplicate track order ID");
+                const auto edited=changed.find(key);
+                if(edited!=changed.end()) { tracks.push_back(std::move(edited->second)); changed.erase(edited); }
+                else {
+                    const auto kept=unchanged.find(key);
+                    if(kept==unchanged.end()) throw std::invalid_argument("Unknown retained track");
+                    tracks.push_back(*kept->second);
+                }
+            }
+            if(!changed.empty()) throw std::invalid_argument("Changed track missing from order");
+            song.tracks=std::move(tracks);
+        }
+        std::map<ID,const AudioClip*> existing;
+        for(const auto& song:_engine->project().songs) for(const auto& track:song.tracks) for(const auto& clip:track.clips) existing.emplace(clip.id,&clip);
+        std::map<ID,ID> pending;
+        for(id identifier in identifiers) {
+            const auto key=str(identifier), source=str(identifiers[identifier]);
+            if(!pending.emplace(key,source).second || existing.find(source)==existing.end()) throw std::invalid_argument("Unknown or duplicate preserved waveform ID");
+        }
+        for(auto& song:project.songs) for(auto& track:song.tracks) for(auto& clip:track.clips) {
+            const auto found=pending.find(clip.id);
+            if(found==pending.end()) continue;
+            if(!clip.waveform.empty() || !clip.waveformChannels.empty()) throw std::invalid_argument("Preserved waveform data must be omitted");
+            const auto previous=existing.at(found->second);
+            clip.waveform=previous->waveform; clip.waveformChannels=previous->waveformChannels;
+            pending.erase(found);
+        }
+        if(!pending.empty()) throw std::invalid_argument("Preserved waveform item is missing from the edit");
+        _engine->applyProjectEdit(std::move(project)); return YES;
+    } catch(const std::exception& e) { report(error,e); return NO; }
+}
 - (BOOL)loadProjectData:(NSData*)data error:(NSError**)error {
     id decoded=[NSJSONSerialization JSONObjectWithData:data options:0 error:error]; if (!decoded) return NO;
     try { _engine->loadProject(readProject(object(decoded))); return YES; } catch(const std::exception& e) { report(error,e); return NO; }
 }
+// This bridge is in-process: both sides use the host's native IEEE Double
+// representation. Validate the entire detached project before replacing it.
+- (BOOL)loadProjectData:(NSData*)data waveforms:(NSDictionary<NSString*,NSArray<NSData*>*>*)waveforms error:(NSError**)error {
+    id decoded=[NSJSONSerialization JSONObjectWithData:data options:0 error:error]; if(!decoded) return NO;
+    try {
+        auto project=readProject(object(decoded));
+        std::set<std::string> pending;
+        for(NSString* key in object(waveforms)) pending.insert(str(key));
+        auto readPeaks=[](id raw) {
+            if(![raw isKindOfClass:NSData.class]) throw std::invalid_argument("Expected waveform bytes");
+            NSData* bytes=raw;
+            if(bytes.length % sizeof(double)) throw std::invalid_argument("Invalid waveform byte length");
+            std::vector<double> values(bytes.length/sizeof(double));
+            if(bytes.length) [bytes getBytes:values.data() length:bytes.length];
+            return values;
+        };
+        for(auto& song:project.songs) for(auto& track:song.tracks) for(auto& clip:track.clips) {
+            if(!pending.erase(clip.id)) throw std::invalid_argument("Missing or duplicate waveform item");
+            if(!clip.waveform.empty() || !clip.waveformChannels.empty()) throw std::invalid_argument("Inline waveform data must be omitted");
+            NSArray* channels=array(waveforms[text(clip.id)]);
+            if(channels.count==0) throw std::invalid_argument("Missing waveform channel buffer");
+            clip.waveform=readPeaks(channels[0]);
+            for(NSUInteger index=1;index<channels.count;++index) clip.waveformChannels.push_back(readPeaks(channels[index]));
+        }
+        if(!pending.empty()) throw std::invalid_argument("Unknown waveform item");
+        _engine->loadProject(std::move(project)); return YES;
+    } catch(const std::exception& e) { report(error,e); return NO; }
+}
++ (void)setProjectSyncFollowing:(BOOL)following { projectSync::following=following; }
+- (void)setProjectSyncID:(NSString*)identifier { _engine->setProjectSyncID(str(identifier)); }
+- (NSData*)projectSyncFrameWithError:(NSError**)error {
+    try { auto bytes=projectSync::encode(_engine->projectSyncFrame()); return [NSData dataWithBytes:bytes.data() length:bytes.size()]; }
+    catch(const std::exception& e) { report(error,e); return nil; }
+}
+- (NSData*)applyProjectSyncData:(NSData*)data elapsed:(double)elapsed first:(BOOL)first error:(NSError**)error {
+    try {
+        auto frame=projectSync::decode(data.bytes,data.length);
+        bool mixerChanged=false;
+        _engine->applyProjectSync(frame,elapsed,first,&mixerChanged);
+        NSData* playback=[self playbackSnapshotWithError:error]; if(!playback) return nil;
+        NSMutableDictionary* result=[[NSJSONSerialization JSONObjectWithData:playback options:0 error:error] mutableCopy];
+        if(frame.setlist) result[@"syncSetlist"]=regionSetlistJSON(*frame.setlist);
+        if(mixerChanged || first) {
+            const auto &m=frame.mixer; NSMutableArray *tracks=[NSMutableArray array];
+            for(const auto &t:m.tracks) [tracks addObject:@{@"id":text(t.id),@"volume":@(t.volume),@"pan":@(t.pan),@"mute":@(t.mute),@"solo":@(t.solo)}];
+            result[@"syncMixer"]=@{@"masterVolume":@(m.masterVolume),@"masterPan":@(m.masterPan),@"masterMute":@(m.masterMute),@"masterSolo":@(m.masterSolo),@"tracks":tracks};
+        }
+        return [NSJSONSerialization dataWithJSONObject:result options:0 error:error];
+    } catch(const std::exception& e) { report(error,e); return nil; }
+}
+- (BOOL)executeAutomation:(NSString*)command target:(NSString*)target value:(double)value error:(NSError**)error {
+    projectSync::Internal internal;
+    return [self executeCommand:command target:target value:value error:error];
+}
+- (double)subplayPreparationPosition { return _engine->subplayPreparationPosition(); }
 - (BOOL)executeCommand:(NSString*)command target:(NSString*)target value:(double)value error:(NSError**)error {
-    static const std::map<std::string,CommandKind> commands={{"toggleMultiLoopBypass",CommandKind::toggleMultiLoopBypass},{"queueSection",CommandKind::queueSection},{"cancelSection",CommandKind::cancelSection},{"clipFadeIn",CommandKind::clipFadeIn},{"clipFadeOut",CommandKind::clipFadeOut},{"phase",CommandKind::phase},{"loopStart",CommandKind::loopStart},{"loopEnd",CommandKind::loopEnd},{"escape",CommandKind::escape},{"masterMono",CommandKind::masterMono},{"ignoreNext",CommandKind::ignoreNext},{"tempo",CommandKind::tempo},{"beatsPerBar",CommandKind::beatsPerBar},{"beatUnit",CommandKind::beatUnit},{"selectRegion",CommandKind::selectRegion},{"queueRegion",CommandKind::queueRegion},{"clipMute",CommandKind::clipMute},{"clipGain",CommandKind::clipGain},{"clipPhase",CommandKind::clipPhase},{"clipPan",CommandKind::clipPan},{"clipChannelMode",CommandKind::clipChannelMode},{"clipNormalization",CommandKind::clipNormalization},{"clipPitch",CommandKind::clipPitch},{"pause",CommandKind::pause},{"play",CommandKind::play},{"stop",CommandKind::stop},{"next",CommandKind::next},{"previous",CommandKind::previous},{"queue",CommandKind::queue},{"select",CommandKind::select},{"toggleLoop",CommandKind::toggleLoop},{"seek",CommandKind::seek},{"editSeek",CommandKind::editSeek},{"subPlay",CommandKind::subPlay},{"subStop",CommandKind::subStop},{"subSeek",CommandKind::subSeek},{"stopAll",CommandKind::stopAll},{"volume",CommandKind::volume},{"pan",CommandKind::pan},{"mute",CommandKind::mute},{"solo",CommandKind::solo}};
+    static const std::map<std::string,CommandKind> commands={{"toggleMultiLoopBypass",CommandKind::toggleMultiLoopBypass},{"queueSection",CommandKind::queueSection},{"cancelSection",CommandKind::cancelSection},{"clipFadeIn",CommandKind::clipFadeIn},{"clipFadeOut",CommandKind::clipFadeOut},{"clipFadeInCurve",CommandKind::clipFadeInCurve},{"clipFadeInSCurve",CommandKind::clipFadeInSCurve},{"clipFadeOutCurve",CommandKind::clipFadeOutCurve},{"clipFadeOutSCurve",CommandKind::clipFadeOutSCurve},{"phase",CommandKind::phase},{"loopStart",CommandKind::loopStart},{"loopEnd",CommandKind::loopEnd},{"escape",CommandKind::escape},{"masterMono",CommandKind::masterMono},{"ignoreNext",CommandKind::ignoreNext},{"tempo",CommandKind::tempo},{"beatsPerBar",CommandKind::beatsPerBar},{"beatUnit",CommandKind::beatUnit},{"selectRegion",CommandKind::selectRegion},{"queueRegion",CommandKind::queueRegion},{"clipMute",CommandKind::clipMute},{"clipGain",CommandKind::clipGain},{"clipPhase",CommandKind::clipPhase},{"clipPan",CommandKind::clipPan},{"clipChannelMode",CommandKind::clipChannelMode},{"clipNormalization",CommandKind::clipNormalization},{"clipPitch",CommandKind::clipPitch},{"pause",CommandKind::pause},{"play",CommandKind::play},{"stop",CommandKind::stop},{"next",CommandKind::next},{"previous",CommandKind::previous},{"queue",CommandKind::queue},{"select",CommandKind::select},{"toggleLoop",CommandKind::toggleLoop},{"seek",CommandKind::seek},{"editSeek",CommandKind::editSeek},{"queueBeatSeek",CommandKind::queueBeatSeek},{"queueBarSeek",CommandKind::queueBarSeek},{"queueMarkerSeek",CommandKind::queueMarkerSeek},{"queuePartSeek",CommandKind::queuePartSeek},{"cancelBeatSeek",CommandKind::cancelBeatSeek},{"subPlay",CommandKind::subPlay},{"subStop",CommandKind::subStop},{"subSeek",CommandKind::subSeek},{"stopAll",CommandKind::stopAll},{"volume",CommandKind::volume},{"pan",CommandKind::pan},{"mute",CommandKind::mute},{"solo",CommandKind::solo}};
     try { auto found=commands.find(str(command)); if(found==commands.end()) throw std::invalid_argument("Unknown command"); _engine->execute({found->second,target?str(target):"",value}); return YES; } catch(const std::exception& e) { report(error,e); return NO; }
 }
 - (NSData*)snapshotWithError:(NSError**)error {
@@ -467,10 +667,45 @@ static void report(NSError** error, const std::exception& e) { if (error) *error
     data[@"project"]=projectJSON(_engine->project(),false);
     return [NSJSONSerialization dataWithJSONObject:data options:0 error:error];
 }
+- (NSData*)trackMetadataSnapshotWithRevision:(uint64_t)revision error:(NSError**)error {
+    NSData* playback=[self playbackSnapshotWithError:error]; if(!playback) return nil;
+    NSMutableDictionary* data=[[NSJSONSerialization JSONObjectWithData:playback options:0 error:error] mutableCopy];
+    NSMutableDictionary* project=[projectJSON(_engine->project(),false) mutableCopy];
+    NSMutableArray* songs=[NSMutableArray new];
+    NSMutableDictionary* orders=[NSMutableDictionary new];
+    NSMutableDictionary* next=[NSMutableDictionary new];
+    const bool reuse=revision!=0 && revision==_snapshotRevision;
+    for(NSDictionary* original in project[@"songs"]) {
+        NSMutableDictionary* song=[original mutableCopy];
+        NSString* songID=song[@"id"];
+        NSDictionary* previous=reuse ? _snapshotTracks[songID] : nil;
+        NSMutableDictionary* retained=[NSMutableDictionary new];
+        NSMutableArray* changed=[NSMutableArray new];
+        NSMutableArray* order=[NSMutableArray new];
+        for(NSDictionary* track in song[@"tracks"]) {
+            NSString* trackID=track[@"id"];
+            [order addObject:trackID]; retained[trackID]=track;
+            // Compare the complete canonical metadata, including changes made
+            // by native normalization. Never infer sameness from UI revisions.
+            if(![track isEqualToDictionary:previous[trackID]]) [changed addObject:track];
+        }
+        song[@"tracks"]=changed; [songs addObject:song];
+        orders[songID]=order; next[songID]=retained;
+    }
+    project[@"songs"]=songs; data[@"project"]=project;
+    const uint64_t nextRevision=_snapshotRevision==UINT64_MAX ? 1 : _snapshotRevision+1;
+    NSData* result=[NSJSONSerialization dataWithJSONObject:@{@"snapshot":data,@"trackOrders":orders,@"revision":@(nextRevision)} options:0 error:error];
+    // A stale caller token falls back to a full read. A failed serialization
+    // does not advance either cache, so retries cannot omit unseen tracks.
+    if(result) { _snapshotTracks=next; _snapshotRevision=nextRevision; }
+    return result;
+}
 - (NSData*)playbackSnapshotWithError:(NSError**)error {
     const auto& t=_engine->transport();
-    NSDictionary* transport=@{@"playbackStartRegionId":optionalID(t.playbackStartRegionId),@"subPlaybackStartRegionId":optionalID(t.subPlaybackStartRegionId),@"multiLoopsBypassed":@(t.multiLoopsBypassed),@"queuedSectionMarkerId":optionalID(t.queuedSectionMarkerId),@"sectionQueueStartedAt":@(t.sectionQueueStartedAt),@"sectionJumpSerial":@(t.sectionJumpSerial),@"multiLoop":multiLoopPlaybackJSON(t.multiLoop),@"ignoreNextAfter":t.ignoreNextAfter ? (id)@(*t.ignoreNextAfter) : NSNull.null,@"ignoreNextEnd":t.ignoreNextEnd ? (id)@(*t.ignoreNextEnd) : NSNull.null,@"ignoreNextRegionId":optionalID(t.ignoreNextRegionId),@"subPlayPromotion":@(t.subPlayPromotion),@"regionId":optionalID(t.regionId),@"queuedRegionId":optionalID(t.queuedRegionId),@"queueStartedAt":@(t.queueStartedAt),@"paused":@(t.paused),@"playing":@(t.playing),@"songId":optionalID(t.songId),@"position":@(t.position),@"editPosition":@(t.editPosition),@"queue":@{@"songId":optionalID(t.queue.songId)},@"loop":@{@"enabled":@(t.loop.enabled),@"start":t.loop.start ? (id)@(*t.loop.start) : NSNull.null,@"end":t.loop.end ? (id)@(*t.loop.end) : NSNull.null},@"subPlay":@{@"playing":@(t.subPlay.playing),@"position":@(t.subPlay.position)}};
-    return [NSJSONSerialization dataWithJSONObject:@{@"transport":transport,@"nextSongId":optionalID(_engine->nextSongId())} options:0 error:error];
+    NSDictionary* transport=@{@"exclusivePlaybackRegionId":optionalID(t.exclusivePlaybackRegionId),@"subExclusivePlaybackRegionId":optionalID(t.subExclusivePlaybackRegionId),@"playbackStartRegionId":optionalID(t.playbackStartRegionId),@"subPlaybackStartRegionId":optionalID(t.subPlaybackStartRegionId),@"multiLoopsBypassed":@(t.multiLoopsBypassed),@"queuedSectionMarkerId":optionalID(t.queuedSectionMarkerId),@"automaticSectionTriggerId":optionalID(t.automaticSectionTriggerId),@"sectionQueueStartedAt":@(t.sectionQueueStartedAt),@"sectionJumpSerial":@(t.sectionJumpSerial),@"repeatWrapSerial":@(t.repeatWrapSerial),@"beatSeek":(t.beatSeek ? (id)@{@"boundary":@(t.beatSeek->boundary),@"destination":@(t.beatSeek->destination)} : NSNull.null),@"multiLoop":multiLoopPlaybackJSON(t.multiLoop),@"ignoreNextAfter":t.ignoreNextAfter ? (id)@(*t.ignoreNextAfter) : NSNull.null,@"ignoreNextEnd":t.ignoreNextEnd ? (id)@(*t.ignoreNextEnd) : NSNull.null,@"ignoreNextRegionId":optionalID(t.ignoreNextRegionId),@"subPlayPromotion":@(t.subPlayPromotion),@"regionId":optionalID(t.regionId),@"queuedRegionId":optionalID(t.queuedRegionId),@"playlistEntryId":optionalID(t.playlistEntryId),@"queuedPlaylistEntryId":optionalID(t.queuedPlaylistEntryId),@"queueStartedAt":@(t.queueStartedAt),@"paused":@(t.paused),@"playing":@(t.playing),@"songId":optionalID(t.songId),@"position":@(t.position),@"editPosition":@(t.editPosition),@"queue":@{@"songId":optionalID(t.queue.songId)},@"loop":@{@"enabled":@(t.loop.enabled),@"start":t.loop.start ? (id)@(*t.loop.start) : NSNull.null,@"end":t.loop.end ? (id)@(*t.loop.end) : NSNull.null},@"subPlay":@{@"playing":@(t.subPlay.playing),@"position":@(t.subPlay.position)}};
+    NSMutableDictionary* presentedTransport = [transport mutableCopy];
+    if (t.automaticSectionNotice) presentedTransport[@"automaticSectionNotice"] = text(*t.automaticSectionNotice);
+    return [NSJSONSerialization dataWithJSONObject:@{@"transport":presentedTransport,@"nextSongId":optionalID(_engine->nextSongId())} options:0 error:error];
 }
 - (BOOL)configureRegionSetlistData:(NSData*)data error:(NSError**)error {
     id decoded=[NSJSONSerialization JSONObjectWithData:data options:0 error:error]; if(!decoded) return NO;
@@ -498,6 +733,9 @@ static void report(NSError** error, const std::exception& e) { if (error) *error
 }
 - (BOOL)setClipFXBypass:(NSString *)clip bypassed:(BOOL)bypassed error:(NSError **)error {
     try { _engine->setClipFXBypass(str(clip), bypassed); return YES; } catch(const std::exception& e) { report(error,e); return NO; }
+}
+- (BOOL)setClipName:(NSString *)clip name:(NSString *)value error:(NSError **)error {
+    try { _engine->setClipName(str(clip), str(value)); return YES; } catch(const std::exception& e) { report(error,e); return NO; }
 }
 - (BOOL)setClipText:(NSString *)clip text:(NSString *)value error:(NSError **)error {
     try { _engine->setClipText(str(clip), readClipText(value)); return YES; } catch(const std::exception& e) { report(error,e); return NO; }
@@ -545,8 +783,8 @@ static void report(NSError** error, const std::exception& e) { if (error) *error
         for(id stem in array(d[@"separatedStemTracks"] ?: @[])) clip.separatedStemTracks.push_back(str(stem));
         if(d[@"text"] && d[@"text"]!=NSNull.null) clip.text=readClipText(d[@"text"]);
         if(d[@"midi"] && d[@"midi"]!=NSNull.null) clip.midi=readMIDIItem(d[@"midi"]);
-        if(d[@"frozenMIDI"] && d[@"frozenMIDI"]!=NSNull.null) clip.frozenMIDI=clipFXBypass(d[@"frozenMIDI"]); if(d[@"renderedTiming"] && d[@"renderedTiming"]!=NSNull.null) clip.renderedTiming=clipFXBypass(d[@"renderedTiming"]); if(d[@"renderedTempo"] && d[@"renderedTempo"]!=NSNull.null) clip.renderedTempo=clipFXBypass(d[@"renderedTempo"]); if(d[@"tempoBasePlaybackRate"] && d[@"tempoBasePlaybackRate"]!=NSNull.null) clip.tempoBasePlaybackRate=number(d[@"tempoBasePlaybackRate"]); if(d[@"pitchSemitones"] && d[@"pitchSemitones"]!=NSNull.null) clip.pitchSemitones=number(d[@"pitchSemitones"]);
-        if(d[@"gain"] && d[@"gain"]!=NSNull.null) clip.gain=number(d[@"gain"]); if(d[@"fadeIn"] && d[@"fadeIn"]!=NSNull.null) clip.fadeIn=number(d[@"fadeIn"]); if(d[@"fadeOut"] && d[@"fadeOut"]!=NSNull.null) clip.fadeOut=number(d[@"fadeOut"]); if(d[@"normalizationGain"] && d[@"normalizationGain"]!=NSNull.null) clip.normalizationGain=number(d[@"normalizationGain"]); if(d[@"channelMode"] && d[@"channelMode"]!=NSNull.null) clip.channelMode=(int)number(d[@"channelMode"]);
+        if(d[@"frozenMIDI"] && d[@"frozenMIDI"]!=NSNull.null) clip.frozenMIDI=clipFXBypass(d[@"frozenMIDI"]); if(d[@"renderedTiming"] && d[@"renderedTiming"]!=NSNull.null) clip.renderedTiming=clipFXBypass(d[@"renderedTiming"]); if(d[@"clickDouble"] && d[@"clickDouble"]!=NSNull.null) clip.clickDouble=clipFXBypass(d[@"clickDouble"]); if(d[@"renderedTempo"] && d[@"renderedTempo"]!=NSNull.null) clip.renderedTempo=clipFXBypass(d[@"renderedTempo"]); if(d[@"tempoBasePlaybackRate"] && d[@"tempoBasePlaybackRate"]!=NSNull.null) clip.tempoBasePlaybackRate=number(d[@"tempoBasePlaybackRate"]); clip.elasticSourceScale=number(d[@"elasticSourceScale"] ?: @1); for(id rawPoint in array(d[@"elasticPoints"] ?: @[])){NSDictionary* point=object(rawPoint);clip.elasticPoints.push_back({number(point[@"position"]),number(point[@"source"]),number(point[@"slopeBefore"] ?: @0),number(point[@"slopeAfter"] ?: @0)});} for(id rawReference in array(d[@"tempoRateReferences"] ?: @[])){NSDictionary* reference=object(rawReference);clip.tempoRateReferences.push_back({str(reference[@"markerID"]),number(reference[@"rate"])});} if(d[@"pitchSemitones"] && d[@"pitchSemitones"]!=NSNull.null) clip.pitchSemitones=number(d[@"pitchSemitones"]);
+        if(d[@"gain"] && d[@"gain"]!=NSNull.null) clip.gain=number(d[@"gain"]); if(d[@"fadeControlsEnabled"] && d[@"fadeControlsEnabled"]!=NSNull.null) clip.fadeControlsEnabled=clipFXBypass(d[@"fadeControlsEnabled"]); if(d[@"fadeIn"] && d[@"fadeIn"]!=NSNull.null) clip.fadeIn=number(d[@"fadeIn"]); if(d[@"fadeOut"] && d[@"fadeOut"]!=NSNull.null) clip.fadeOut=number(d[@"fadeOut"]); if(d[@"fadeOutSCurve"] && d[@"fadeOutSCurve"]!=NSNull.null) clip.fadeOutSCurve=number(d[@"fadeOutSCurve"]); if(d[@"fadeOutCurve"] && d[@"fadeOutCurve"]!=NSNull.null) clip.fadeOutCurve=number(d[@"fadeOutCurve"]); if(d[@"fadeInSCurve"] && d[@"fadeInSCurve"]!=NSNull.null) clip.fadeInSCurve=number(d[@"fadeInSCurve"]); if(d[@"fadeInCurve"] && d[@"fadeInCurve"]!=NSNull.null) clip.fadeInCurve=number(d[@"fadeInCurve"]); if(d[@"normalizationGain"] && d[@"normalizationGain"]!=NSNull.null) clip.normalizationGain=number(d[@"normalizationGain"]); if(d[@"channelMode"] && d[@"channelMode"]!=NSNull.null) clip.channelMode=(int)number(d[@"channelMode"]);
         if(d[@"fxBypassed"] && d[@"fxBypassed"]!=NSNull.null) clip.fxBypassed=clipFXBypass(d[@"fxBypassed"]);
         if(d[@"timecode"] && d[@"timecode"]!=NSNull.null) clip.timecode=readTimecode(d[@"timecode"]);
         if(d[@"timecodeStartOffset"] && d[@"timecodeStartOffset"]!=NSNull.null) clip.timecodeStartOffset=number(d[@"timecodeStartOffset"]);
@@ -571,8 +809,8 @@ static void report(NSError** error, const std::exception& e) { if (error) *error
         for(id stem in array(d[@"separatedStemTracks"] ?: @[])) clip.separatedStemTracks.push_back(str(stem));
         if(d[@"text"] && d[@"text"]!=NSNull.null) clip.text=readClipText(d[@"text"]);
         if(d[@"midi"] && d[@"midi"]!=NSNull.null) clip.midi=readMIDIItem(d[@"midi"]);
-        if(d[@"frozenMIDI"] && d[@"frozenMIDI"]!=NSNull.null) clip.frozenMIDI=clipFXBypass(d[@"frozenMIDI"]); if(d[@"renderedTiming"] && d[@"renderedTiming"]!=NSNull.null) clip.renderedTiming=clipFXBypass(d[@"renderedTiming"]); if(d[@"renderedTempo"] && d[@"renderedTempo"]!=NSNull.null) clip.renderedTempo=clipFXBypass(d[@"renderedTempo"]); if(d[@"tempoBasePlaybackRate"] && d[@"tempoBasePlaybackRate"]!=NSNull.null) clip.tempoBasePlaybackRate=number(d[@"tempoBasePlaybackRate"]); if(d[@"pitchSemitones"] && d[@"pitchSemitones"]!=NSNull.null) clip.pitchSemitones=number(d[@"pitchSemitones"]);
-        if(d[@"gain"] && d[@"gain"]!=NSNull.null) clip.gain=number(d[@"gain"]); if(d[@"fadeIn"] && d[@"fadeIn"]!=NSNull.null) clip.fadeIn=number(d[@"fadeIn"]); if(d[@"fadeOut"] && d[@"fadeOut"]!=NSNull.null) clip.fadeOut=number(d[@"fadeOut"]); if(d[@"normalizationGain"] && d[@"normalizationGain"]!=NSNull.null) clip.normalizationGain=number(d[@"normalizationGain"]); if(d[@"channelMode"] && d[@"channelMode"]!=NSNull.null) clip.channelMode=(int)number(d[@"channelMode"]);
+        if(d[@"frozenMIDI"] && d[@"frozenMIDI"]!=NSNull.null) clip.frozenMIDI=clipFXBypass(d[@"frozenMIDI"]); if(d[@"renderedTiming"] && d[@"renderedTiming"]!=NSNull.null) clip.renderedTiming=clipFXBypass(d[@"renderedTiming"]); if(d[@"clickDouble"] && d[@"clickDouble"]!=NSNull.null) clip.clickDouble=clipFXBypass(d[@"clickDouble"]); if(d[@"renderedTempo"] && d[@"renderedTempo"]!=NSNull.null) clip.renderedTempo=clipFXBypass(d[@"renderedTempo"]); if(d[@"tempoBasePlaybackRate"] && d[@"tempoBasePlaybackRate"]!=NSNull.null) clip.tempoBasePlaybackRate=number(d[@"tempoBasePlaybackRate"]); clip.elasticSourceScale=number(d[@"elasticSourceScale"] ?: @1); for(id rawPoint in array(d[@"elasticPoints"] ?: @[])){NSDictionary* point=object(rawPoint);clip.elasticPoints.push_back({number(point[@"position"]),number(point[@"source"]),number(point[@"slopeBefore"] ?: @0),number(point[@"slopeAfter"] ?: @0)});} for(id rawReference in array(d[@"tempoRateReferences"] ?: @[])){NSDictionary* reference=object(rawReference);clip.tempoRateReferences.push_back({str(reference[@"markerID"]),number(reference[@"rate"])});} if(d[@"pitchSemitones"] && d[@"pitchSemitones"]!=NSNull.null) clip.pitchSemitones=number(d[@"pitchSemitones"]);
+        if(d[@"gain"] && d[@"gain"]!=NSNull.null) clip.gain=number(d[@"gain"]); if(d[@"fadeControlsEnabled"] && d[@"fadeControlsEnabled"]!=NSNull.null) clip.fadeControlsEnabled=clipFXBypass(d[@"fadeControlsEnabled"]); if(d[@"fadeIn"] && d[@"fadeIn"]!=NSNull.null) clip.fadeIn=number(d[@"fadeIn"]); if(d[@"fadeOut"] && d[@"fadeOut"]!=NSNull.null) clip.fadeOut=number(d[@"fadeOut"]); if(d[@"fadeOutSCurve"] && d[@"fadeOutSCurve"]!=NSNull.null) clip.fadeOutSCurve=number(d[@"fadeOutSCurve"]); if(d[@"fadeOutCurve"] && d[@"fadeOutCurve"]!=NSNull.null) clip.fadeOutCurve=number(d[@"fadeOutCurve"]); if(d[@"fadeInSCurve"] && d[@"fadeInSCurve"]!=NSNull.null) clip.fadeInSCurve=number(d[@"fadeInSCurve"]); if(d[@"fadeInCurve"] && d[@"fadeInCurve"]!=NSNull.null) clip.fadeInCurve=number(d[@"fadeInCurve"]); if(d[@"normalizationGain"] && d[@"normalizationGain"]!=NSNull.null) clip.normalizationGain=number(d[@"normalizationGain"]); if(d[@"channelMode"] && d[@"channelMode"]!=NSNull.null) clip.channelMode=(int)number(d[@"channelMode"]);
         if(d[@"fxBypassed"] && d[@"fxBypassed"]!=NSNull.null) clip.fxBypassed=clipFXBypass(d[@"fxBypassed"]);
         if(d[@"timecode"] && d[@"timecode"]!=NSNull.null) clip.timecode=readTimecode(d[@"timecode"]);
         if(d[@"timecodeStartOffset"] && d[@"timecodeStartOffset"]!=NSNull.null) clip.timecodeStartOffset=number(d[@"timecodeStartOffset"]);
@@ -585,11 +823,28 @@ static void report(NSError** error, const std::exception& e) { if (error) *error
         _engine->addRecordedClip(str(track), std::move(clip), true); return YES;
     } catch(const std::exception& e) { report(error,e); return NO; }
 }
+- (BOOL)setTrackMixerComponents:(NSString*)song masks:(NSDictionary<NSString*, NSNumber*>*)masks error:(NSError**)error {
+    try {
+        std::map<ID, int> values;
+        for (NSString* track in masks) values.emplace(str(track), masks[track].intValue);
+        _engine->setTrackMixerComponents(str(song), values);
+        return YES;
+    } catch (const std::exception& e) { report(error,e); return NO; }
+}
 - (BOOL)editMasterColor:(unsigned int)color error:(NSError**)error {
     try { _engine->editMasterColor(color); return YES; } catch(const std::exception& e) { report(error,e); return NO; }
 }
 - (BOOL)editTrack:(NSString*)identifier name:(NSString*)name color:(unsigned int)color error:(NSError**)error {
     try { _engine->editTrack(str(identifier), str(name), color); return YES; } catch(const std::exception& e) { report(error,e); return NO; }
+}
+- (BOOL)renameTrack:(NSString*)identifier name:(NSString*)name error:(NSError**)error {
+    try { _engine->editTrack(str(identifier), str(name), std::nullopt); return YES; } catch(const std::exception& e) { report(error,e); return NO; }
+}
+- (BOOL)soloTrackExclusively:(NSString*)identifier error:(NSError**)error {
+    try { _engine->soloTrackExclusively(str(identifier)); return YES; } catch (const std::exception& e) { report(error,e); return NO; }
+}
+- (BOOL)setRegionInit:(NSString*)identifier count:(int)count bars:(BOOL)bars error:(NSError**)error {
+    try { _engine->setRegionInit(str(identifier), count, bars); return YES; } catch(const std::exception& e) { report(error,e); return NO; }
 }
 - (BOOL)setRegionPitch:(NSString*)identifier semitones:(int)semitones tracks:(NSArray<NSString*>*)tracks groups:(NSArray<NSString*>*)groups error:(NSError**)error {
     try { std::vector<ID> t, g; for (NSString* id in tracks) t.push_back(str(id)); for (NSString* id in groups) g.push_back(str(id)); _engine->setRegionPitch(str(identifier), semitones, std::move(t), std::move(g)); return YES; } catch(const std::exception& e) { report(error,e); return NO; }
@@ -627,7 +882,8 @@ static void report(NSError** error, const std::exception& e) { if (error) *error
             TimelineMarker marker{str(d[@"id"]), "TEMPO", number(d[@"position"]), 0x999999};
             marker.tempoBPM = number(d[@"tempoBPM"]); marker.tempoBeats = (int)number(d[@"tempoBeats"]); marker.tempoUnit = (int)number(d[@"tempoUnit"]);
             marker.tempoTimebase = d[@"tempoTimebase"] ? str(d[@"tempoTimebase"]) : "global";
-            if (d[@"tempoReferenceBPM"] && d[@"tempoReferenceBPM"] != NSNull.null) marker.tempoReferenceBPM = number(d[@"tempoReferenceBPM"]);
+            if (d[@"tempoReferenceBPM"] && d[@"tempoReferenceBPM"] != NSNull.null) marker.tempoReferenceBPM = number(d[@"tempoReferenceBPM"]); if(d[@"tempoPlaybackRate"] && d[@"tempoPlaybackRate"]!=NSNull.null) marker.tempoPlaybackRate=number(d[@"tempoPlaybackRate"]);
+            if ([d[@"regionTempoAnchor"] isKindOfClass:NSNumber.class]) marker.regionTempoAnchor = [d[@"regionTempoAnchor"] boolValue];
             markers.push_back(std::move(marker));
         }
         std::vector<ID> removing;

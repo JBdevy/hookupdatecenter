@@ -1,6 +1,244 @@
 import XCTest
 @testable import JarasApplication
 final class TempoMarkerTests: XCTestCase {
+    func testMIDIAndSpecialItemsFollowLocalTempoWithoutAudioFiles() throws {
+        for kind in ["standard", "timecode", "generatedClick"] {
+            var song = Project.empty(name: "Special timing").songs[0]
+            song.bpm = 120; song.duration = 20; song.timeSettings = ProjectTimeSettings()
+            let region = Part(id: UUID(), name: "Song", startTime: 2, endTime: 18)
+            song.parts = [region]
+            var track = Track(id: UUID(), name: kind, role: TrackRole(rawValue: kind))
+            let id = kind == "timecode" ? Project.timecodeItemID(region.id) : UUID()
+            var clip = AudioClip(id: id, name: kind, startTime: 4, duration: 12, regionOwnerID: region.id)
+            if kind == "standard" { clip.midi = MIDIItem(notes: [.init(start: 2, length: 2, pitch: 60)]) }
+            if kind == "timecode" { clip.timecodeStartOffset = 2; clip.timecodeEndOffset = -2 }
+            track.clips = [clip]; song.tracks = [track]
+            let before = song
+            song.markers = [.init(id: UUID(), name: "Tempo", position: 2, color: 0, regionOwnerID: region.id,
+                                 tempoBPM: 240, tempoTimebase: .relative, tempoReferenceBPM: 120)]
+            TempoEditMap(before: before, after: song).apply(to: &song)
+            let result = song.tracks[0].clips[0]
+            XCTAssertEqual(result.startTime, 3); XCTAssertEqual(result.duration, 6, kind)
+            XCTAssertEqual(song.tempoAudioSegments(result).first?.audioRate, 2)
+            if kind == "timecode" { XCTAssertEqual(result.timecodeStartOffset, 1); XCTAssertEqual(result.timecodeEndOffset, -1) }
+        }
+    }
+    func testMIDISourceAloneEstablishesTempoEditCoverage() {
+        var song = Project.empty(name: "MIDI only").songs[0]; song.bpm = 120; song.duration = 20
+        var track = Track(id: UUID(), name: "MIDI", role: .other)
+        track.clips = [.init(id: UUID(), name: "Notes", startTime: 2, duration: 8, midi: MIDIItem())]
+        song.tracks = [track]; let before = song
+        song.markers = [.init(id: UUID(), name: "Tempo", position: 0, color: 0, tempoBPM: 240, tempoTimebase: .relative, tempoReferenceBPM: 120)]
+        TempoEditMap(before: before, after: song).apply(to: &song)
+        XCTAssertEqual(song.tracks[0].clips[0].startTime, 2)
+        XCTAssertEqual(song.tracks[0].clips[0].duration, 4)
+    }
+
+    func testAutomationAndProgramChangesAlwaysFollowLocalTempoWithLegacyOptionDisabled() throws {
+        var song = Project.empty(name: "Follow tempo").songs[0]
+        song.bpm = 120; song.duration = 20
+        song.timeSettings = ProjectTimeSettings(); song.timeSettings?.timebase = .relative
+        song.timeSettings?.affectsAutomationLength = false
+        song.parts = [.init(id: UUID(), name: "Song", startTime: 0, endTime: 20)]
+        var track = Track(id: UUID(), name: "Audio", role: .other)
+        track.clips = [.init(id: UUID(), name: "Audio", startTime: 0, duration: 20)]
+        var automation = TrackAutomation()
+        var envelope = TrackEnvelope(target: AutomationTarget(.volume), name: "Volume", defaultValue: 0.5)
+        envelope.points = [.init(time: 10, value: 0.3, shape: .smooth)]
+        automation.envelopes = [envelope]; track.automation = automation
+        var programs = Track(id: UUID(), name: "Program Change", role: .init(rawValue: "programChange"))
+        programs.programChanges = [.init(id: UUID(), position: 10, program: 7, channel: 1)]
+        song.tracks = [track,programs]
+        let before = song
+        song.markers = [.init(id: UUID(), name: "Tempo", position: 0, color: 0, tempoBPM: 240,
+                             tempoTimebase: .relative, tempoReferenceBPM: 120)]
+        TempoEditMap(before: before, after: song).apply(to: &song)
+        XCTAssertEqual(song.tracks[0].automation?.envelopes[0].points[0].time, 5)
+        XCTAssertEqual(song.tracks[0].automation?.envelopes[0].points[0].shape, .smooth)
+        XCTAssertEqual(song.tracks[1].programChanges?[0].position, 5)
+        try song.tracks[0].automation?.validate()
+    }
+    func testPrintedItemsFollowLaterTempoEditsAndRestoreTheirSourceSpan() throws {
+        for printedKind in 0..<3 {
+            var song = Project.empty(name: "Printed tempo").songs[0]
+            let owner = Part(id: UUID(), name: "Rendered song", startTime: 0, endTime: 12)
+            let next = Part(id: UUID(), name: "Next song", startTime: 10, endTime: 25)
+            song.parts = [owner, next]; song.duration = 25
+            song.markers = [
+                TimelineMarker(id: UUID(), name: "Tempo", position: 0, color: 0,
+                    regionOwnerID: owner.id, tempoBPM: 120, tempoTimebase: .relative, tempoReferenceBPM: 100),
+                TimelineMarker(id: UUID(), name: "Tempo", position: 10, color: 0,
+                    regionOwnerID: next.id, tempoBPM: 90, tempoTimebase: .relative, tempoReferenceBPM: 90)]
+            var printed = AudioClip(id: UUID(), name: "Printed", startTime: 0, duration: 12,
+                                    audioFile: AudioFile(path: "printed.wav"), playbackRate: 1, regionOwnerID: owner.id)
+            if printedKind == 0 { printed.renderedTempo = true }
+            if printedKind == 1 { printed.renderedTiming = true }
+            if printedKind == 2 { printed.frozenMIDI = true }
+            var other = AudioClip(id: UUID(), name: "Other", startTime: 10, duration: 15,
+                                  audioFile: AudioFile(path: "other.wav"), playbackRate: 1, regionOwnerID: next.id)
+            other.renderedTempo = true
+            var track = Track(id: UUID(), name: "Audio", role: .other); track.clips = [printed, other]
+            song.tracks = [track]
+            XCTAssertEqual(song.tempoAudioSegments(printed).first?.audioRate, 1, "The already printed BPM must not be applied twice")
+            for delta in [30.0, -30.0] {
+                let before = song
+                for marker in song.regionTempoChange(delta, region: song.parts[0]) {
+                    if let index = song.markers!.firstIndex(where: { $0.id == marker.id }) { song.markers![index] = marker }
+                    else { song.markers!.append(marker) }
+                }
+                TempoEditMap(before: before, after: song).apply(to: &song)
+                let clip = song.tracks[0].clips[0]
+                XCTAssertEqual(clip.duration * clip.audioRate, 12, accuracy: 0.000001, "No source audio may be cut off by a tempo edit")
+                XCTAssertEqual(clip.audioRate, delta > 0 ? 1.25 : 1, accuracy: 0.000001)
+                XCTAssertEqual(clip.tempoBasePlaybackRate, 1)
+                XCTAssertEqual(song.tempoAudioSegments(clip).first?.audioRate ?? 0, clip.audioRate, accuracy: 0.000001)
+                var programs = AudioTempoPrograms(song: song)
+                XCTAssertEqual(programs.fragments(for: clip), song.tempoAudioSegments(clip))
+                XCTAssertEqual(song.hasUnrenderedTempo(in: song.parts[0]), delta > 0)
+                XCTAssertEqual(song.tracks[0].clips[1].audioRate, 1, "A following song keeps its own speed")
+                XCTAssertNil(song.tracks[0].clips[1].tempoBasePlaybackRate)
+                song = try JSONDecoder().decode(Song.self, from: JSONEncoder().encode(song))
+            }
+            XCTAssertEqual(song.tracks[0].clips[0].duration, 12, accuracy: 0.000001)
+        }
+    }
+    func testUnifiedTempoRoundTripNeedsNoRestoreMarkerAndKeepsOwnedAudio() {
+        var song = resizeSong()
+        let parent = UUID()
+        song.parts[0].startTime = 0; song.parts[0].endTime = 12; song.parts[0].parentRegionID = parent
+        song.parts[1].startTime = 10; song.parts[1].endTime = 30; song.parts[1].parentRegionID = parent
+        song.parts.append(Part(id: parent, name: "Unified", startTime: 0, endTime: 30))
+        song.markers = [TimelineMarker(id: UUID(), name: "TEMPO", position: 0, color: 0,
+            regionOwnerID: song.parts[0].id, tempoBPM: 120, tempoTimebase: .relative, tempoReferenceBPM: 120),
+            TimelineMarker(id: UUID(), name: "TEMPO", position: 10.5, color: 0,
+            regionOwnerID: song.parts[1].id, tempoBPM: 160, tempoTimebase: .relative, tempoReferenceBPM: 160)]
+        for index in 0..<2 {
+            song.tracks[0].clips[index].startTime = song.parts[index].startTime
+            song.tracks[0].clips[index].duration = song.parts[index].endTime - song.parts[index].startTime
+            song.tracks[0].clips[index].regionOwnerID = song.parts[index].id
+        }
+        for step in 0..<20 {
+            let before = song, group = song.parts.first { $0.id == parent }!
+            for marker in song.regionTempoChange(step % 2 == 0 ? 1 : -1, region: group) {
+                if let index = song.markers!.firstIndex(where: { $0.id == marker.id }) { song.markers![index] = marker }
+                else { song.markers!.append(marker) }
+            }
+            TempoEditMap(before: before, after: song).apply(to: &song)
+            let currentGroup = song.parts.first { $0.id == parent }!
+            XCTAssertEqual(song.markers!.count, 2, "Repeated edits must not create restoring markers")
+            XCTAssertFalse(song.markers!.contains { abs($0.position-currentGroup.endTime)<1e-6 })
+            XCTAssertEqual(song.tempoSection(at: currentGroup.endTime+1).bpm, song.bpm)
+            XCTAssertEqual(song.hasUnrenderedTempo(in: currentGroup), step % 2 == 0,
+                "Returning the entire unified region to its original BPM must restore every effective rate")
+            if step % 2 == 1 {
+                XCTAssertEqual(currentGroup.endTime, 30, accuracy: 0.000001)
+                XCTAssertEqual(song.tracks[0].clips[1].duration, 20, accuracy: 0.000001)
+                XCTAssertEqual(song.markers![1].position, 10.5, accuracy: 0.000001)
+            }
+        }
+    }
+    func testCachedPlaybackProgramsMatchUncachedFragmentsForEveryOwnerAndPreview() {
+        var song = resizeSong()
+        let group = UUID()
+        song.parts.append(Part(id: group, name: "Unified", startTime: 0, endTime: song.duration))
+        song.parts[0].parentRegionID = group; song.parts[1].parentRegionID = group
+        for initialized in [false, true] {
+            song.regionOwnershipInitialized = initialized
+            var programs = AudioTempoPrograms(song: song)
+            let sections = song.tempoSections(until: song.duration)
+            for owner in [nil, song.parts[0].id, song.parts[1].id, group, UUID()] {
+                for start in [0.0, 1, 2, 8, 12, 18, 28] {
+                    for duration in [0.5, 3, 12, 40] {
+                        var clip = song.tracks[0].clips[0]
+                        clip.regionOwnerID = owner; clip.startTime = start; clip.duration = duration
+                        for rendered in [false, true] {
+                            clip.renderedTempo = rendered
+                            XCTAssertEqual(programs.fragments(for: clip), song.tempoAudioSegments(clip, sections: sections),
+                                "Caching must preserve source offsets, fades, gain, rate, tails and fragment identities")
+                        }
+                    }
+                }
+            }
+        }
+    }
+    func testRepeatedRegionTempoEditsDoNotCreateMarkersInOverlappingNextSong() {
+        var song = resizeSong()
+        let group = UUID(), a = UUID(), b = UUID()
+        song.parts = [Part(id: a, name: "Outgoing", startTime: 0, endTime: 16),
+                      Part(id: b, name: "Next", startTime: 10, endTime: 30),
+                      Part(id: group, name: "Unified", startTime: 0, endTime: 30)]
+        song.parts[0].parentRegionID = group; song.parts[1].parentRegionID = group
+        song.markers = [TimelineMarker(id: UUID(), name: "TEMPO", position: 0, color: 0,
+                           regionOwnerID: a, tempoBPM: 120, tempoTimebase: .relative, tempoReferenceBPM: 120),
+                        TimelineMarker(id: UUID(), name: "TEMPO", position: 10, color: 0,
+                           regionOwnerID: b, tempoBPM: 144, tempoTimebase: .relative, tempoReferenceBPM: 144)]
+        song.tracks[0].clips = [AudioClip(id: UUID(), name: "Tail", startTime: 0, duration: 16,
+                                        audioFile: AudioFile(path: "source.wav"), regionOwnerID: a)]
+        for step in 0..<100 {
+            let before = song
+            let region = song.parts.first { $0.id == a }!
+            XCTAssertEqual(song.tempoEditEnd(for: region), song.parts.first { $0.id == b }!.startTime)
+            for marker in song.regionTempoChange(step % 2 == 0 ? 1 : -1, region: region) {
+                if let i = song.markers!.firstIndex(where: { $0.id == marker.id }) { song.markers![i] = marker }
+                else { song.markers!.append(marker) }
+            }
+            TempoEditMap(before: before, after: song).apply(to: &song)
+            XCTAssertEqual(song.markers!.count, 2, "A tail crossing the next song must not create a new end marker at each edit")
+            XCTAssertEqual(song.markers!.first { $0.regionOwnerID == b }!.tempoBPM, 144)
+        }
+        XCTAssertEqual(song.parts[0].endTime, 16, accuracy: 0.000001)
+        XCTAssertEqual(song.tracks[0].clips[0].duration, 16, accuracy: 0.000001)
+    }
+    func testTempoIndicatorUsesEffectiveRateRatherThanHistoricalReference() {
+        var song = resizeSong(); song.markers = []
+        let part = song.parts[0]
+        var clip = AudioClip(id: UUID(), name: "Audio", startTime: part.startTime, duration: 1,
+                             audioFile: AudioFile(path: "source.wav"))
+        clip.regionOwnerID = part.id; clip.tempoBasePlaybackRate = 0.8; clip.playbackRate = 1
+        song.tracks[0].clips = [clip]
+        XCTAssertFalse(song.hasUnrenderedTempo(in: part), "Historical rate must not highlight unity-rate audio")
+        song.tracks[0].clips[0].tempoBasePlaybackRate = 1.25
+        song.tracks[0].clips[0].playbackRate = 1.25
+        XCTAssertTrue(song.hasUnrenderedTempo(in: part), "A changed rate is highlighted even when it matches its saved reference")
+    }
+    func testTempoIndicatorWaitsForEveryOwnedItemToBeRendered() {
+        var song = resizeSong()
+        let part = song.parts[0]
+        var clip = AudioClip(id: UUID(), name: "Audio", startTime: part.startTime, duration: 1,
+                             audioFile: AudioFile(path: "source.wav"))
+        clip.tempoBasePlaybackRate = 1; clip.playbackRate = 1.25; clip.regionOwnerID = part.id
+        song.markers = []; song.tracks[0].clips = [clip, clip]
+        song.tracks[0].clips[1].id = UUID()
+        XCTAssertTrue(song.hasUnrenderedTempo(in: part))
+        song.tracks[0].clips[0].playbackRate = 1
+        song.tracks[0].clips[0].tempoBasePlaybackRate = nil
+        song.tracks[0].clips[0].renderedTempo = true
+        XCTAssertTrue(song.hasUnrenderedTempo(in: part), "Partial render must stay yellow")
+        song.tracks[0].clips[1].playbackRate = 1
+        song.tracks[0].clips[1].tempoBasePlaybackRate = nil
+        song.tracks[0].clips[1].renderedTempo = true
+        XCTAssertFalse(song.hasUnrenderedTempo(in: part))
+        song.tracks[0].clips[1].playbackRate = 1.1; song.tracks[0].clips[1].tempoBasePlaybackRate = 1
+        XCTAssertTrue(song.hasUnrenderedTempo(in: part), "A new tempo change must show again")
+        song.tracks[0].clips[1].playbackRate = 1
+        XCTAssertFalse(song.hasUnrenderedTempo(in: part), "Returning to the reference clears the indicator")
+    }
+    func testEditCursorSnapsToItemBoundariesAndShiftBypassesThem() {
+        var song = resizeSong(); song.parts = []; song.markers = []
+        song.bpm = 120; song.beatsPerBar = 4; song.beatUnit = 4
+        song.tracks[0].clips = [AudioClip(id: UUID(), name: "Item", startTime: 4.19, duration: 1.68)]
+        for scale in [1.0, 20, 100, 1000] {
+            for edge in [4.19, 5.87] {
+                XCTAssertEqual(TimelineTempo.snap(edge + 0.001, song: song, pixelsPerSecond: scale,
+                    includeItemEdges: true), edge, accuracy: 0.000001)
+                XCTAssertEqual(TimelineTempo.snap(edge + 0.001, song: song, pixelsPerSecond: scale,
+                    enabled: false, includeItemEdges: true), edge + 0.001, accuracy: 0.000001)
+            }
+        }
+        XCTAssertEqual(TimelineTempo.snap(4.191, song: song, pixelsPerSecond: 100), 4, accuracy: 0.000001,
+            "Item movement does not acquire its own old edges as anchors")
+    }
+
     func testDenseTempoRampsLimitGridToScreenColumnsAndRetainMusicalCoordinates() {
         let sections = (0..<12000).map { index in
             TimelineTempoSection(start: Double(index) / 8, end: Double(index + 1) / 8,
@@ -57,13 +295,85 @@ final class TempoMarkerTests: XCTestCase {
             }
         }
     }
-    func testDistantGridRetainsExtraHalfwayLinesAndInvalidScaleIsRejected() {
+    func testRulerZoomAddsIntermediateLabelsWithoutReplacingExistingReferences() {
+        for beats in [3, 4, 7] {
+            for divisions in [4, 8, 16] {
+                let sections = [TimelineTempoSection(start: 0, end: 600, bpm: 123,
+                    beats: beats, unit: 4, timebase: .free)]
+                var previous: Set<Int64> = []
+                for step in 0...600 {
+                    let scale = 0.1 * pow(20_000, Double(step) / 600)
+                    let ticks = TimelineTimeRuler.ticks(in: sections, from: 0, to: 32,
+                        pixelsPerSecond: scale, divisions: divisions)
+                    let labels = ticks.filter { !$0.label.isEmpty }
+                    let current = Set(labels.map { Int64(($0.time * 1_000_000).rounded()) })
+                    XCTAssertTrue(previous.isSubset(of: current),
+                        "Zoom must add references, not swap them: meter=\(beats)/4 divisions=\(divisions) scale=\(scale)")
+                    for pair in zip(labels, labels.dropFirst()) {
+                        XCTAssertGreaterThanOrEqual((pair.1.time - pair.0.time) * scale, 130 - 1e-6)
+                    }
+                    previous = current
+                }
+            }
+        }
+    }
+    func testRulerReferencesRemainStableAcrossTempoBoundariesAndViewportEdges() {
+        let edges = [0.0, 17.3, 19.7, 54.11, 54.12, 140, 200, 280]
+        let sections = (0..<(edges.count - 1)).map { i in
+            TimelineTempoSection(start: edges[i], end: edges[i + 1], bpm: [123.0, 145, 164][i % 3],
+                beats: [4, 7, 3][i % 3], unit: 4, timebase: .free)
+        }
+        var previous: Set<Int64> = []
+        for step in 0...600 {
+            let scale = 0.01 * pow(200_000, Double(step) / 600)
+            let ticks = TimelineTimeRuler.ticks(in: sections, from: 0, to: 240, pixelsPerSecond: scale, divisions: 8)
+            let labels = ticks.filter { !$0.label.isEmpty }
+            let current = Set(labels.map { Int64(($0.time * 1_000_000).rounded()) })
+            XCTAssertTrue(previous.isSubset(of: current), "Tempo boundaries replaced visible references at scale \(scale)")
+            previous = current
+            let tile = TimelineTimeRuler.ticks(in: sections, from: 42.37, to: 173.19, pixelsPerSecond: scale, divisions: 8)
+            let expected = ticks.filter { $0.time >= 42.37 && $0.time <= 173.19 }
+            XCTAssertEqual(tile.map(\.time), expected.map(\.time))
+            XCTAssertEqual(tile.map(\.label), expected.map(\.label))
+            for pair in zip(labels, labels.dropFirst()) {
+                XCTAssertGreaterThanOrEqual((pair.1.time - pair.0.time) * scale,
+                    TimelineTimeRuler.labelSpacing(through: 280, pixelsPerSecond: scale) - 1e-6)
+            }
+        }
+    }
+    func testRulerAndGridRevealBarGroupsThenBeatGroupsAndSubdivisions() {
         let sections = [TimelineTempoSection(start: 0, end: 120, bpm: 120, beats: 4, unit: 4, timebase: .free)]
-        let marks = TimelineTimeRuler.ticks(in: sections, from: 0, to: 8, pixelsPerSecond: 8)
-        XCTAssertEqual(marks.map(\.time), Array(0...8).map(Double.init))
-        XCTAssertEqual(marks.filter { $0.primary }.map(\.time), [0, 2, 4, 6, 8])
-        XCTAssertEqual(marks.first?.label, "00:00:00")
+        for (scale, interval) in [(1.0, 8.0), (2, 4), (4, 2), (8, 2), (16, 1)] {
+            let marks = TimelineTimeRuler.ticks(in: sections, from: 0, to: 16, pixelsPerSecond: scale)
+            XCTAssertEqual(marks.map(\.time), Array(stride(from: 0.0, through: 16, by: interval)))
+            XCTAssertEqual(marks.filter(\.primary).map(\.time), Array(stride(from: 0.0, through: 16, by: max(2, interval))))
+            XCTAssertEqual(marks.first?.label, "00:00:00")
+            let grid = TimelineTimeRuler.ticks(in: sections, from: 0, to: 16, pixelsPerSecond: scale, labels: false)
+            XCTAssertEqual(marks.map(\.time), grid.map(\.time))
+        }
+        for (scale, divisions, interval) in [(32.0, 4, 0.5), (32, 8, 0.5), (64, 8, 0.25)] {
+            let marks = TimelineTimeRuler.ticks(in: sections, from: 0, to: 4, pixelsPerSecond: scale, divisions: divisions)
+            XCTAssertEqual(marks.map(\.time), Array(stride(from: 0.0, through: 4, by: interval)))
+            XCTAssertEqual(marks.filter(\.primary).map(\.time), [0, 2, 4])
+        }
         XCTAssertTrue(TimelineTimeRuler.ticks(in: sections, from: 0, to: 10, pixelsPerSecond: .nan).isEmpty)
+    }
+    func testBeatGroupsRevealIntermediateLinesOnMusicalBeatsInOddMeters() {
+        for beats in [3, 4, 7] {
+            for unit in [4, 8] {
+                let beat = 60.0 / 120 * 4 / Double(unit)
+                let bar = beat * Double(beats)
+                let section = TimelineTempoSection(start: 1.25, end: 100, bpm: 120, beats: beats, unit: unit, timebase: .free)
+                let far = TimelineTimeRuler.ticks(in: [section], from: section.start, to: section.start + bar,
+                    pixelsPerSecond: 15.9 / beat)
+                XCTAssertTrue(far.allSatisfy { abs(($0.time - section.start) / beat - (($0.time - section.start) / beat).rounded()) < 0.000001 })
+                XCTAssertGreaterThan(far.count, 2, "groups of beats appear before every beat fits")
+                let near = TimelineTimeRuler.ticks(in: [section], from: section.start, to: section.start + bar,
+                    pixelsPerSecond: 16.1 / beat)
+                XCTAssertEqual(near.map(\.time), (0...beats).map { section.start + Double($0) * beat })
+                XCTAssertEqual(near.filter { !$0.primary }.count, beats - 1)
+            }
+        }
     }
     func testMeasureNumbersFollowTempoSectionsAndKeepTheirOriginalCountWhenZoomedOut() {
         let sections = [TimelineTempoSection(start: 0, end: 6, bpm: 120, beats: 4, unit: 4, timebase: .free),
@@ -266,8 +576,13 @@ final class TempoMarkerTests: XCTestCase {
         let normal = TimelineMarker(id: UUID(), name: "Manual", position: 4, color: 0)
         XCTAssertEqual(song.markerDragPosition(normal, to: 4.23, pixelsPerSecond: 100, free: false), 4)
         XCTAssertEqual(song.markerDragPosition(normal, to: 4.23, pixelsPerSecond: 100, free: true), 4.23)
+        XCTAssertEqual(song.markerDragPosition(normal, to: 4.23, pixelsPerSecond: 100, free: false, cursor: 4.27), 4.27)
+        XCTAssertEqual(song.markerDragPosition(normal, to: 4.23, pixelsPerSecond: 100, free: true, cursor: 4.27), 4.23)
         var tempo = TimelineMarker(id: UUID(), name: "Tempo", position: 5, color: 0, tempoBPM: 120)
         XCTAssertEqual(song.markerDragPosition(tempo, to: 6.231, pixelsPerSecond: 100, free: false), 6.231)
+        XCTAssertEqual(song.markerDragPosition(tempo, to: 6.231, pixelsPerSecond: 100, free: false, cursor: 6.27), 6.27)
+        XCTAssertEqual(song.markerDragPosition(tempo, to: 6.231, pixelsPerSecond: 100, free: true, cursor: 6.27), 6.231)
+        XCTAssertEqual(song.markerDragPosition(tempo, to: 6.231, pixelsPerSecond: 100, free: false, cursor: 8), 6.231)
         XCTAssertLessThan(song.markerDragPosition(tempo, to: 15, pixelsPerSecond: 100, free: true), 10)
         tempo.position = 25
         XCTAssertEqual(song.markerDragPosition(tempo, to: 15, pixelsPerSecond: 100, free: false), 20)
@@ -342,7 +657,7 @@ final class TempoMarkerTests: XCTestCase {
         XCTAssertEqual(song.tempoSection(at: 7).bpm, 120)
         XCTAssertEqual(song.tempoSection(at: 8).barSeconds, 0.5)
         XCTAssertEqual(song.tempoSection(at: 16).barSeconds, 4)
-        XCTAssertEqual(TimelineTempo.snap(8.21, song: song, pixelsPerSecond: 500), 8 + 1.0/3, accuracy: 0.000001)
+        XCTAssertEqual(TimelineTempo.snap(8.21, song: song, pixelsPerSecond: 500), 8 + 1.0/6, accuracy: 0.000001)
         XCTAssertEqual(TimelineTempo.snap(8.213, song: song, pixelsPerSecond: 500, enabled: false), 8.213)
         XCTAssertTrue(TimelineNavigationPoints(song: song).points.isEmpty)
     }
@@ -419,4 +734,23 @@ final class TempoMarkerTests: XCTestCase {
         song.timeSettings = ProjectTimeSettings(); song.timeSettings?.timebase = .relative
         XCTAssertEqual(song.tempoSection(at: 9).timebase, .relative)
     }
+    func testEnabledGridQuantizesDropsBeyondEdgeRadiusAndFollowsOddMeterBars() {
+        var song = Project.empty(name: "Snap grid").songs[0]
+        song.bpm = 120; song.duration = 20; song.beatsPerBar = 4; song.beatUnit = 4
+        song.tracks = []; song.parts = []; song.markers = []
+        song.timeSettings = ProjectTimeSettings()
+        XCTAssertEqual(TimelineTempo.snap(1.24, song: song, pixelsPerSecond: 60,
+            maximumDistancePixels: 8), 1, accuracy: 0.000001)
+        XCTAssertEqual(TimelineTempo.snap(1.24, song: song, pixelsPerSecond: 60,
+            enabled: false, maximumDistancePixels: 8), 1.24, accuracy: 0.000001)
+        song.beatsPerBar = 7; song.beatUnit = 8; song.timeSettings?.divisions = 8
+        let sections = song.tempoSections(until: song.timelineScrollEnd)
+        let ticks = TimelineTimeRuler.ticks(in: sections, from: 0, to: 10, pixelsPerSecond: 40,
+            divisions: 8, labels: false, musical: .init(sections: sections)).map(\.time)
+        for time in stride(from: 0.01, through: 9.9, by: 0.037) {
+            let snapped = TimelineTempo.snap(time, song: song, pixelsPerSecond: 40, maximumDistancePixels: 8)
+            XCTAssertTrue(ticks.contains { abs($0 - snapped) < 0.000001 }, "item must land on a drawn line")
+        }
+    }
+
 }

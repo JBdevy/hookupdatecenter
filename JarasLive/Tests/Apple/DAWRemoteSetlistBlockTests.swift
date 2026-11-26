@@ -105,7 +105,220 @@ waitFor("observer still receives state after forbidden Live toggle") { blockClie
 require(blockCommands == 0 && blockClient.remoteState?.playedLiveRegionIDs == [],
     "Observer sees Live history but cannot enable/disable Live or restore cleared markings")
 print("REMOTE_OBSERVER_LIVE_CHILD_PARENT_COMPLETION_RESET_CACHED_ROWS_AND_READ_ONLY_OK")
+// Host keyboard/MIDI navigation publishes focus independently of playback and
+// queue. The same state provider serves desktop and native iPad hosts.
+let browsedSong = UUID()
+networkBlocks.regions.append(.init(id: browsedSong, name: "Browsing", start: 0, end: 10, color: 0x123456))
+networkBlocks.playing = true; networkBlocks.currentRegion = regionID
+networkBlocks.queuedRegion = plainRegion; networkBlocks.focusedRegion = browsedSong
+waitFor("observer sees browsing while another song plays and a third is queued") {
+    blockClient.remoteState?.focusedRegion == browsedSong && blockClient.remoteState?.playing == true
+}
+let browsingSnapshot = blockClient.remoteState!
+require(DAWRemoteSetlistPresentation.observerFocus(in: browsingSnapshot, expanded: []) == browsedSong &&
+        browsingSnapshot.setlistCurrentEntryId == regionID && browsingSnapshot.setlistQueuedEntryId == plainRegion,
+        "Blue browsing, red playback and orange queue have independent entry identities")
+networkBlocks.focusedRegion = drawerChild
+waitFor("focus-only packet reaches observer during playback") { blockClient.remoteState?.focusedRegion == drawerChild }
+require(DAWRemoteSetlistPresentation.observerFocus(in: blockClient.remoteState!, expanded: []) == regionID,
+        "A collapsed drawer reveals its focused child's parent")
+require(DAWRemoteSetlistPresentation.observerFocus(in: blockClient.remoteState!, expanded: [regionID]) == drawerChild,
+        "An expanded drawer selects only the child instead of two blue rows")
+networkBlocks.focusedRegion = browsedSong
+networkBlocks.subPlaying = true
+waitFor("observer browsing remains visible with SubPlay") { blockClient.remoteState?.subPlaying == true && blockClient.remoteState?.focusedRegion == browsedSong }
+require(DAWRemoteSetlistPresentation.observerFocus(in: blockClient.remoteState!, expanded: []) == browsedSong,
+        "SubPlay does not hide browsing")
+require(blockCommands == 0 && blockClient.remoteState?.currentRegion == regionID && blockClient.remoteState?.queuedRegion == plainRegion,
+        "Following focus neither controls the host nor replaces its playback/queue")
+networkBlocks.playing = false; networkBlocks.subPlaying = false; networkBlocks.focusedRegion = nil
+waitFor("clearing focus clears the observer highlight") { blockClient.remoteState?.focusedRegion == nil && blockClient.remoteState?.playing == false }
+require(DAWRemoteSetlistPresentation.observerFocus(in: blockClient.remoteState!, expanded: []) == nil,
+        "Empty focus does not invent a selected row")
+var duplicateFocus = browsingSnapshot
+let duplicateFocusID = UUID()
+var focusCopy = duplicateFocus.regions.first { $0.id == browsedSong }!
+focusCopy.id = duplicateFocusID; focusCopy.sourceRegionId = browsedSong
+duplicateFocus.regions.append(focusCopy); duplicateFocus.focusedRegion = duplicateFocusID
+require(DAWRemoteSetlistPresentation.observerFocus(in: duplicateFocus, expanded: []) == duplicateFocusID,
+        "A playlist copy keeps its own blue selection without highlighting the source")
+print("REMOTE_OBSERVER_BROWSING_PLAYING_QUEUED_DRAWERS_COPIES_AND_READ_ONLY_OK")
 blockClient.requestAccess(.notices)
 waitFor("notices-only role removes block metadata") { blockClient.accessMode == .notices && blockClient.remoteState?.setlistBlocks == nil }
 blockClient.stop(); blockHost.stop()
 print("REMOTE_SETLIST_BLOCKS_OBSERVER_WIRE_ORDER_DRAWERS_NUMBERS_SEARCH_CACHE_RENAME_PLAYLIST_AND_READ_ONLY_OK")
+
+// A playlist copy has a row identity while the audio/grid still use the original region.
+var repeatedFixture = drawerFixture
+let duplicateRowID = UUID(), repeatedPlaylistID = UUID()
+var copiedRow = repeatedFixture.regions[0]
+copiedRow.id = duplicateRowID; copiedRow.sourceRegionId = repeatedFixture.regions[0].id
+repeatedFixture.regions.insert(copiedRow, at: 1)
+repeatedFixture.selectedPlaylist = repeatedPlaylistID
+repeatedFixture.currentPlaylistEntryId = duplicateRowID
+repeatedFixture.currentRegion = copiedRow.sourceRegionId
+repeatedFixture.queuedPlaylistEntryId = duplicateRowID
+repeatedFixture.queuedRegion = copiedRow.sourceRegionId
+let repeatedRows = DAWRemoteSetlistPresentation.rows(in: repeatedFixture, expanded: [duplicateRowID], query: "")
+require(repeatedRows.map(\.id) == [regionID, duplicateRowID, plainRegion], "Playlist copy retains a unique row and does not repeat drawer children")
+require(repeatedFixture.timelineRegions == drawerFixture.timelineRegions, "Setlist copy does not create timeline regions")
+require(repeatedFixture.setlistCurrentEntryId == duplicateRowID && repeatedFixture.setlistQueuedEntryId == duplicateRowID, "Playback highlights the copy only")
+if case .state(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.state(repeatedFixture)) {
+    require(decoded.regions == repeatedFixture.regions && decoded.currentPlaylistEntryId == duplicateRowID && decoded.queuedPlaylistEntryId == duplicateRowID, "Duplicate metadata survives Remote serialization")
+} else { fatalError("duplicate state packet") }
+let duplicateCommand = DAWRemoteCommand(project: project, song: song, action: .duplicateRegion, target: regionID, playlist: repeatedPlaylistID)
+require(duplicateCommand.valid && DAWRemoteAccessRules.allows(duplicateCommand, mode: .director), "Director can duplicate a named playlist entry")
+require(!DAWRemoteAccessRules.allows(duplicateCommand, mode: .observer), "Observer cannot create copies")
+var allRegionsDuplicate = duplicateCommand; allRegionsDuplicate.playlist = nil
+require(!allRegionsDuplicate.valid, "All regions cannot request a duplicate")
+print("REMOTE_PLAYLIST_DUPLICATE_IDENTITY_AND_PERMISSIONS_OK")
+
+repeatedFixture.playing = false
+require(DAWRemoteSetlistPresentation.canQueueDuplicate(duplicateRowID, in: repeatedFixture), "Copy is allowed while stopped")
+repeatedFixture.playing = true
+require(!DAWRemoteSetlistPresentation.canQueueDuplicate(duplicateRowID, in: repeatedFixture), "Copy warns when its physical source is playing")
+repeatedFixture.currentRegion = plainRegion
+require(DAWRemoteSetlistPresentation.canQueueDuplicate(duplicateRowID, in: repeatedFixture), "Copy may queue while another song plays")
+repeatedFixture.subPlaying = true
+require(!DAWRemoteSetlistPresentation.canQueueDuplicate(duplicateRowID, in: repeatedFixture), "Copy warns when its source is already in Subplay")
+require(DAWRemoteSetlistPresentation.canQueueDuplicate(plainRegion, in: repeatedFixture), "Normal rows retain their existing selection rules")
+
+// No packet is needed at the boundary; late outgoing packets must not flash
+// the old blue selection back. Host confirmation remains authoritative.
+var localBlock = drawerFixture
+let localFirst = UUID(), localNext = UUID()
+localBlock.regions = [.init(id: localFirst, name: "First", start: 30, end: 40, color: 0),
+                      .init(id: localNext, name: "Next", start: 4, end: 14, color: 0)]
+localBlock.timelineRegions = localBlock.regions
+localBlock.selectedPlaylist = UUID(); localBlock.currentRegion = localFirst
+localBlock.currentPlaylistEntryId = localFirst
+localBlock.playing = true; localBlock.paused = false; localBlock.subPlaying = false; localBlock.loop = false
+localBlock.position = 39; localBlock.playbackEnd = 40; localBlock.queuedRegion = nil
+localBlock.regionAuto = false; localBlock.regionAutoUntilBlockEnd = true; localBlock.sectionPlayback = nil
+localBlock.setlistBlocks = [.init(id: UUID(), name: "Next block", color: 0, beforeRegion: localNext)]
+var localFeedback = DAWRemoteBlockFeedback()
+require(localFeedback.receive(localBlock, now: 10).playing, "Remote keeps playing until the actual boundary")
+require(localFeedback.advance(now: 10.99) == nil, "Remote cannot prepare the next block early")
+let localPrepared = localFeedback.advance(now: 11)!
+require(!localPrepared.playing && localPrepared.focusedRegion == localNext && localPrepared.position == 4 && localPrepared.editPosition == 4,
+        "Remote locally prepares the next block's blue selection and both cursors without AUTO")
+localBlock.position = 39.9
+require(!localFeedback.receive(localBlock, now: 11.01).playing, "Delayed outgoing packet cannot undo local completion")
+localBlock.position = 35
+require(localFeedback.receive(localBlock, now: 11.02).playing, "A seek invalidates local completion")
+for field in 0..<5 {
+    var changed = localBlock
+    switch field {
+    case 0: changed.loop = true
+    case 1: changed.subPlaying = true
+    case 2: changed.queuedRegion = localNext
+    case 3: changed.regionAutoUntilBlockEnd = false
+    default: changed.playbackEnd = 42
+    }
+    require(DAWRemoteBlockPreparation(changed) == nil, "Loop/Subplay/manual queue/policy/ignore-next prohibit a predicted stop")
+}
+localFeedback.reset()
+require(localFeedback.advance(now: 100) == nil, "Disconnect or local transport commands cancel pending prediction")
+var confirmedBlock = localPrepared
+confirmedBlock.focusedRegion = localFirst
+require(localFeedback.receive(confirmedBlock, now: 20).focusedRegion == localFirst, "Authoritative stopped selection wins")
+print("REMOTE_LOCAL_BLOCK_PREPARATION_CLOCK_RECONCILIATION_OK")
+
+let preparationHost = DAWRemoteSession(role: .host, name: "Preparation host")
+let preparationClient = DAWRemoteSession(role: .client, name: "Preparation client")
+let preparationEndpoint = try preparationHost.testListen()
+var preparationPacket = localBlock
+preparationPacket.position = 39.85
+var preparationCommands = 0
+preparationHost.stateProvider = { preparationPacket }
+preparationHost.commandHandler = { _ in preparationCommands += 1 }
+preparationClient.testConnect(preparationEndpoint, access: .director)
+waitFor("Remote receives the outgoing block song") { preparationClient.remoteState?.currentRegion == localFirst }
+waitFor("Remote timer prepares next block without a stopped host packet") {
+    preparationClient.remoteState?.focusedRegion == localNext && preparationClient.remoteState?.playing == false
+}
+require(preparationCommands == 0, "Local completion never sends Play, Stop or selection to the host")
+preparationPacket = localPrepared
+waitFor("Remote accepts host confirmation") { preparationClient.remoteState?.currentRegion == localNext }
+preparationPacket = localBlock
+preparationPacket.position = 35
+waitFor("Remote receives a fresh playing block for manual Stop") { preparationClient.remoteState?.playing == true && preparationClient.remoteState?.position == 35 }
+preparationClient.send(.init(project: preparationPacket.project, song: preparationPacket.song, action: .stop))
+require(preparationClient.remoteState?.focusedRegion == localNext && preparationClient.remoteState?.gridRegion == localNext && preparationClient.remoteState?.playing == false, "Remote Stop selects and reveals synchronously before host acknowledgment")
+waitFor("Remote sends exactly the requested Stop") { preparationCommands == 1 }
+preparationPacket = localPrepared
+waitFor("Remote accepts manual Stop confirmation") { preparationClient.remoteState?.currentRegion == localNext }
+
+preparationPacket.regionAutoUntilBlockEnd = false
+waitFor("Remote receives stopped transport outside block preparation") { preparationClient.remoteState?.regionAutoUntilBlockEnd == false }
+let rapidTransportState = preparationPacket
+func sendPreparationTransport(_ action: DAWRemoteCommand.Action) {
+    preparationClient.send(.init(project: rapidTransportState.project, song: rapidTransportState.song, action: action))
+}
+sendPreparationTransport(.play)
+require(preparationClient.predictedTransportRunning == true && preparationClient.remoteState?.playing == false,
+        "Play changes the client button immediately while audio position still uses the host snapshot")
+sendPreparationTransport(.stop)
+require(preparationClient.predictedTransportRunning == false, "Stop overrides an unconfirmed Play immediately")
+preparationPacket.position += 0.1
+waitFor("Remote receives a stopped packet sent before Play") { preparationClient.remoteState?.position == preparationPacket.position }
+require(preparationClient.predictedTransportRunning == false, "An old stopped packet cannot clear a rapid Stop")
+preparationPacket.playing = true
+waitFor("Remote receives a late playing packet") { preparationClient.remoteState?.playing == true }
+require(preparationClient.predictedTransportRunning == false, "A late Play packet cannot undo the latest Stop")
+preparationPacket.playing = false
+waitFor("Remote clears local feedback when the host confirms Stop") {
+    preparationClient.remoteState?.playing == false && preparationClient.predictedTransportRunning == nil
+}
+sendPreparationTransport(.play)
+require(preparationClient.predictedTransportRunning == true, "A new Play is rendered before the host responds")
+preparationPacket.transportPreparing = true
+waitFor("Remote leaves Stop visible while the host prepares audio") {
+    preparationClient.remoteState?.transportControlRunning == true && preparationClient.remoteState?.playing == false
+        && preparationClient.predictedTransportRunning == nil
+}
+preparationPacket.transportPreparing = nil
+preparationPacket.playing = true
+waitFor("Remote reconciles Play with the host") {
+    preparationClient.remoteState?.playing == true && preparationClient.predictedTransportRunning == nil
+}
+sendPreparationTransport(.stop)
+require(preparationClient.predictedTransportRunning == false && preparationClient.remoteState?.playing == true,
+        "Stop changes a normal playing button immediately, without waiting for block or host updates")
+require(!preparationPacket.tracks.isEmpty, "Mixer test requires a track")
+let remoteMixerTrack = preparationPacket.tracks[0].id
+let originalMute = preparationPacket.tracks[0].mute, originalSolo = preparationPacket.tracks[0].solo
+preparationClient.send(.init(project: rapidTransportState.project, song: rapidTransportState.song, action: .mute, target: remoteMixerTrack))
+require(preparationClient.remoteState?.tracks[0].mute == !originalMute && preparationPacket.tracks[0].mute == originalMute,
+        "M changes on the Remote before the host snapshot changes")
+preparationClient.send(.init(project: rapidTransportState.project, song: rapidTransportState.song, action: .solo, target: remoteMixerTrack))
+require(preparationClient.remoteState?.tracks[0].solo == !originalSolo && preparationPacket.tracks[0].solo == originalSolo,
+        "S changes on the Remote before the host snapshot changes")
+sendPreparationTransport(.toggleMultiLoopBypass)
+require(preparationClient.remoteState?.multiLoopsBypassed == (preparationPacket.multiLoopsBypassed != true),
+        "Bypass changes on the Remote before the host snapshot changes")
+sendPreparationTransport(.toggleLoop)
+require(preparationClient.remoteState?.loop == !preparationPacket.loop, "Repeat responds immediately too")
+preparationPacket.position += 0.1
+waitFor("Mixer receives a stale snapshot without reverting local controls") { preparationClient.remoteState?.position == preparationPacket.position }
+require(preparationClient.remoteState?.tracks[0].mute == !originalMute && preparationClient.remoteState?.tracks[0].solo == !originalSolo,
+        "Stale host snapshots keep local M and S state")
+require(preparationClient.remoteState?.multiLoopsBypassed == (preparationPacket.multiLoopsBypassed != true), "Stale host snapshots keep Bypass state")
+preparationClient.stop(); preparationHost.stop()
+require(preparationClient.predictedTransportRunning == nil, "Disconnect removes pending transport feedback")
+print("REMOTE_MUTE_SOLO_BYPASS_REPEAT_IMMEDIATE_OK")
+print("REMOTE_PLAY_STOP_IMMEDIATE_AND_LATE_HOST_PACKETS_OK")
+print("REMOTE_NETWORK_LOCAL_BLOCK_TIMER_NO_TRANSPORT_COMMANDS_OK")
+
+// Stop must predict the same grid/blue selection before any host round trip.
+var manualFeedback = DAWRemoteBlockFeedback()
+let manualPrepared = manualFeedback.stop(localBlock, now: 50)!
+require(manualPrepared.focusedRegion == localNext && manualPrepared.gridRegion == localNext && manualPrepared.editPosition == 4 && !manualPrepared.playing, "Manual Remote Stop immediately reveals the next block")
+require(manualFeedback.receive(localBlock, now: 50.1).focusedRegion == localNext, "Late running packets cannot undo a requested Stop")
+require(manualFeedback.receive(manualPrepared, now: 50.2).gridRegion == localNext, "Stopped host confirms next-block grid")
+require(manualFeedback.stop(manualPrepared, now: 51) == nil, "Repeated idle Stop does not advance")
+var pausedBlock = localBlock; pausedBlock.playing = false; pausedBlock.paused = true
+require(manualFeedback.stop(pausedBlock, now: 52)?.focusedRegion == localNext, "Stop after Pause prepares next block")
+_ = manualFeedback.stop(localBlock, now: 53)
+require(manualFeedback.advance(now: 54.5)?.playing == true, "Unconfirmed manual prediction expires")
+print("REMOTE_MANUAL_STOP_BLOCK_PREPARATION_OK")

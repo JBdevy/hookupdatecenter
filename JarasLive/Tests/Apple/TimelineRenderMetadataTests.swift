@@ -206,3 +206,36 @@ MainActor.assumeIsolated {
     print(String(format: "TIMELINE_METADATA_BENCHMARK frames=%d visible=%d project_clips=%d old_ms=%.3f cached_ms=%.3f speedup=%.1fx old_segments=%d cached_segments=%d",
         frames, visible.count, song.tracks.reduce(0) { $0 + $1.clips.count }, oldTime * 1000, newTime * 1000, oldTime / max(newTime, 1e-9), oldWork.fragments, TimelineMetadataWorkProbe.counts.fragments))
 }
+
+MainActor.assumeIsolated {
+    var full = metadataSong(); let project = UUID()
+    full.tracks[0].solo = true
+    var displayed = full
+    displayed.tracks.removeFirst()
+    let cache = TimelineRenderMetadataCache()
+    var key = metadataKey(full, project: project)
+    let complete = cache.metadata(song: full, key: key)
+    key.hiddenTracks = [full.tracks[0].id]
+    let filtered = cache.metadata(song: displayed, key: key, audibilityTracks: full.tracks)
+    precondition(filtered !== complete && filtered.song.tracks.map(\.id) == displayed.tracks.map(\.id))
+    precondition(filtered.hasSolo, "hiding a soloed track must not imply that the audible solo was turned off")
+    precondition(filtered.clipIndices(inTrack: 0, from: 0, through: 18) == [0, 1], "row indices belong to the compacted visible list")
+    full.tracks[0].solo = false
+    let unSoloed = cache.metadata(song: displayed, key: key, audibilityTracks: full.tracks)
+    precondition(unSoloed !== filtered && !unSoloed.hasSolo)
+    print("TIMELINE_VISIBILITY_REBUILDS_ROW_INDICES_AND_PRESERVES_HIDDEN_SOLO_OK")
+}
+
+MainActor.assumeIsolated {
+    var song = metadataSong()
+    song.tracks[0].solo = true
+    song.tracks[1].parentTrackID = song.tracks[0].id
+    let group = TimelineRenderMetadata(song: song)
+    precondition(!group.isSilenced(song.tracks[1]), "a soloed group keeps its child items coloured")
+    var visible = song; visible.tracks.removeFirst()
+    let hiddenGroup = TimelineRenderMetadata(song: visible, audibilityTracks: song.tracks)
+    precondition(!hiddenGroup.isSilenced(visible.tracks[0]), "hidden soloed parents still govern child audibility")
+    visible.tracks[0].mute = true
+    precondition(hiddenGroup.isSilenced(visible.tracks[0]), "own mute remains effective in a soloed group")
+    print("TIMELINE_GROUP_SOLO_ITEM_COLOUR_OK")
+}

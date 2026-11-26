@@ -1,14 +1,14 @@
 #pragma once
+#include "Localization.h"
 #include "StageState.h"
 namespace catlive {
 class NoticeAppearancePanel final : public Component {
   public:
     explicit NoticeAppearancePanel(StageState &value) : state(value) {
         auto settings = state.preferences.value("jaras.notices.appearance", object());
-        const char *keys[]{"window1", "window2", "emojiEnabled", "cleanDisplay"};
-        const StringArray titles{"Exibir no TP-1", "Exibir no TP-2", "Exibir emoji",
-                                 String::fromUTF8("Ocultar conteúdo enquanto exibe o recado")};
-        for (int i = 0; i < 4; ++i) {
+        const char *keys[]{"window1", "window2", "emojiEnabled"};
+        const StringArray titles{"Exibir no TP-1", "Exibir no TP-2", "Exibir emoji"};
+        for (int i = 0; i < 3; ++i) {
             addAndMakeVisible(toggles[i]);
             toggles[i].setButtonText(titles[i]);
             toggles[i].setToggleState(flag(settings, keys[i], i != 2), dontSendNotification);
@@ -82,14 +82,13 @@ class NoticeAppearancePanel final : public Component {
             wells[i].setBounds(104, 172 + i * 36, 46, 22);
         toggles[2].setBounds(16, 276, getWidth() - 32, 24);
         emoji.setBounds(16, 308, getWidth() - 32, 24);
-        toggles[3].setBounds(16, 340, getWidth() - 32, 28);
     }
 
   private:
     StageState &state;
-    ToggleButton toggles[4];
+    ToggleButton toggles[3];
     ComboBox font;
-    Slider scale;
+    ParameterSlider scale;
     TextButton wells[3];
     TextEditor emoji;
     void change(const String &key, var value) {
@@ -117,7 +116,7 @@ class NoticeAppearancePanel final : public Component {
 
       private:
         ColourSelector selector;
-        TextButton apply{"Aplicar"};
+        TextButton apply{localization::translate("Aplicar")};
     };
 };
 } // namespace catlive

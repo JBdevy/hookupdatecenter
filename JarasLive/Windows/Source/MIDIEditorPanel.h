@@ -1,27 +1,50 @@
 #pragma once
+#include "Localization.h"
 #include "Session.h"
 #include "MIDIEditing.h"
 #include "EditorShortcuts.h"
+#include "ClickProgram.h"
+#include "LibraryMIDIChords.h"
 namespace catlive {
-class MIDIEditorPanel final : public Component, private Timer {
+inline void drawPianoNoteLabel(Graphics& g, juce::Rectangle<float> bounds, int pitch, int velocity) {
+    if (bounds.getWidth() <= 14 || bounds.getHeight() < 11) return;
+    static constexpr const char* names[]{"C","C#","D","D#","E","F","F#","G","G#","A","A#","B"};
+    static std::map<int,std::pair<String,float>> labels;
+    const int key = pitch * 128 + velocity;
+    auto at = labels.find(key);
+    const auto font = theme::font(10);
+    if (at == labels.end()) {
+        const String text = String(names[jlimit(0,127,pitch) % 12]) + String(pitch / 12 - 1) + " - " + String(velocity);
+        at = labels.emplace(key,std::make_pair(text,std::ceil(GlyphArrangement::getStringWidth(font,text)))).first;
+    }
+    if (bounds.getWidth() < at->second.second + 6) return;
+    Graphics::ScopedSaveState save(g);
+    g.setColour(Colours::black);
+    g.setFont(font);
+    g.drawText(at->second.first,bounds.reduced(3,0),Justification::centredLeft,false);
+}
+class MIDIEditorPanel final : public Component, public DragAndDropTarget, private Timer {
   public:
-    MIDIEditorPanel(Session &value, ID item, std::function<void(ID)> effects,
-                    std::function<void(String)> failure)
-        : session(value), itemID(std::move(item)), projectID(session.project().id),
-          openEffects(std::move(effects)), error(std::move(failure)), canvas(*this) {
-        for (auto *button : {&fx, &undo, &redo, &play, &quantize, &applyVelocity})
-            addAndMakeVisible(button);
-        for (auto *box : {&division, &mode, &channel})
-            addAndMakeVisible(box);
-        for (auto *slider : {&zoom, &swing, &velocity})
-            addAndMakeVisible(slider);
-        addAndMakeVisible(canvas);
-        undo.setButtonText({});
-        redo.setButtonText({});
-        undo.setTooltip("Desfazer (Ctrl+Z)");
-        redo.setTooltip("Refazer (Ctrl+Shift+Z)");
-        undo.getProperties().set("icon", "undo");
-        redo.getProperties().set("icon", "redo");
+    MIDIEditorPanel(Session &value, ID item,
+                    std::function<void(String)> failure, bool followGrid = false)
+        : followGrid(followGrid), session(value), itemID(std::move(item)), projectID(session.project().id),
+          error(std::move(failure)), canvas(*this) {
+        for (Component *control : std::initializer_list<Component*>{&editToolsViewport, &heightMemoryButton,
+                 &zoomMemoryButton, &noteHeight, &zoom, &channel, &velocity, &canvas})
+            addAndMakeVisible(control);
+        editToolsViewport.setViewedComponent(&editTools, false);
+        editToolsViewport.setScrollBarsShown(false, true);
+        editToolsViewport.setScrollBarThickness(5);
+        for (Component *control : std::initializer_list<Component*>{&gridLabel, &division, &mode, &swing,
+                 &swingPercent, &quantize, &creationLabel, &creationVelocity})
+            editTools.addAndMakeVisible(control);
+        gridLabel.setText("Grade", dontSendNotification);
+        creationLabel.setText("Create Velocity", dontSendNotification);
+        for (auto *label : {&gridLabel, &creationLabel, &swingPercent}) {
+            label->setFont(theme::font(13));
+            label->setColour(Label::textColourId, theme::secondary);
+            label->setInterceptsMouseClicks(false, false);
+        }
         for (int d : {1, 2, 4, 8, 16, 32, 64, 128})
             division.addItem(d == 1 ? "1" : "1/" + String(d), d);
         mode.addItemList({"Straight", "Triplet", "Dotted", "Swing"}, 1);
@@ -35,120 +58,232 @@ class MIDIEditorPanel final : public Component, private Timer {
             canvas.repaint();
             repaint();
         };
-        zoom.setRange(24, 360, 1);
-        zoom.setValue(100, dontSendNotification);
-        zoom.setSliderStyle(Slider::LinearHorizontal);
-        zoom.setTextBoxStyle(Slider::NoTextBox, false, 0, 0);
+        configureZoomSlider(zoom, "timelineZoomAxis", "piano-time-zoom-slider", "Piano Roll zoom", 24, 360, 100);
+        configureZoomSlider(noteHeight, "trackHeightAxis", "piano-note-height-slider", "Note height", 10, 42, 18);
+        zoom.setSkewFactorFromMidPoint(std::sqrt(zoom.getMinimum() * zoom.getMaximum()));
+        configureZoomMemory(zoomMemoryButton, zoom, zoomMemory, "fitTime", "piano-time-zoom-memory", "Toggle Piano Roll zoom");
+        configureZoomMemory(heightMemoryButton, noteHeight, heightMemory, "fitTracks", "piano-note-height-memory", "Toggle note height");
         zoom.onValueChange = [this] {
+            if (zoom.getValue() > zoom.getMinimum()) {
+                zoomMemory.reset();
+                zoomMemoryButton.setToggleState(false, dontSendNotification);
+            }
             canvas.scale = zoom.getValue();
             canvas.updateRanges();
+        };
+        noteHeight.onValueChange = [this] {
+            if (noteHeight.getValue() > noteHeight.getMinimum()) {
+                heightMemory.reset();
+                heightMemoryButton.setToggleState(false, dontSendNotification);
+            }
+            canvas.setKeyHeight(noteHeight.getValue());
         };
         swing.setRange(0, .95, .01);
         swing.setSliderStyle(Slider::LinearHorizontal);
         swing.setTextBoxStyle(Slider::NoTextBox, false, 0, 0);
-        velocity.setRange(1, 127, 1);
-        velocity.setValue(100, dontSendNotification);
-        velocity.setSliderStyle(Slider::IncDecButtons);
-        velocity.setTextBoxStyle(Slider::TextBoxLeft, false, 34, 22);
+        for (auto *selector : {&velocity, &creationVelocity}) {
+            selector->setRange(1, 127, 1);
+            selector->setValue(100, dontSendNotification);
+            selector->setSliderStyle(Slider::IncDecButtons);
+            selector->setTextBoxStyle(Slider::TextBoxLeft, false, 34, 22);
+        }
+        creationVelocity.setTitle("Create Velocity");
+        creationVelocity.setTooltip(creationVelocity.getTitle());
+        creationVelocity.setComponentID("piano-new-note-velocity");
+        velocity.setComponentID("piano-selected-note-velocity");
         division.onChange = [this] { changeGrid(); };
         mode.onChange = [this] { changeGrid(); };
         swing.onDragEnd = [this] { changeGrid(); };
-        fx.onClick = [this] {
-            if (!trackID.empty())
-                openEffects(trackID);
+        swing.onValueChange = [this] { updateSwingLabel(); };
+        velocity.textFromValueFunction = [this](double value) {
+            return mixedVelocity && int(value) == velocityReference ? String("-") : String(int(value));
         };
-        undo.onClick = [this] {
-            guarded([&] { session.undo(); });
-            refresh();
+        velocity.valueFromTextFunction = [this](const String& input) -> double {
+            const auto digits = input.trim();
+            const int value = digits.getIntValue();
+            if (!digits.containsOnly("0123456789") || value < 1 || value > 127) return velocity.getValue();
+            if (mixedVelocity && value == int(velocity.getValue())) setSelectedVelocity(value);
+            return value;
         };
-        redo.onClick = [this] {
-            guarded([&] { session.redo(); });
-            refresh();
-        };
-        play.onClick = [this] {
-            guarded([&] {
-                session.command(session.transport().playing ? jaras::CommandKind::pause
-                                                            : jaras::CommandKind::play);
-            });
-        };
-        applyVelocity.onClick = [this] {
-            if (!clip)
-                return;
-            auto next = *clip->midi;
-            for (auto &note : next.notes)
-                if (canvas.selected.count(note.id) && canvas.visible(note))
-                    note.velocity = (int)velocity.getValue();
-            commit(next);
-        };
+        velocity.onValueChange = [this] { setSelectedVelocity(int(velocity.getValue())); };
         quantize.onClick = [this] { openQuantize(); };
         refresh();
         startTimerHz(20);
     }
+    bool isInterestedInDragSource(const SourceDetails& source) override {
+        return editable() && str(source.description,"type") == "catlive-midi-chord";
+    }
+    void itemDropped(const SourceDetails& source) override {
+        if (!isInterestedInDragSource(source) || !pianoBounds().contains(source.localPosition)) return;
+        const auto* chord = libraryChords::find(str(source.description,"name"));
+        if (!chord || !timing || !session.song()) return;
+        const auto cursor = session.transport().editPosition;
+        if (cursor < clip->startTime || cursor >= clip->startTime + clip->duration) return;
+        const auto meter = ClickProgram::meterAt(*session.song(),cursor);
+        const auto barSeconds = 60. / meter.bpm * meter.beats * 4. / meter.unit;
+        auto next = *clip->midi;
+        const auto start = timing->sourceAt(cursor) * next.sourceBPM / 60.;
+        const auto length = timing->sourceAt(cursor + barSeconds) * next.sourceBPM / 60. - start;
+        std::set<ID> added;
+        for (const auto& interval : list(get(*chord,"intervals"))) {
+            jaras::MIDINote note{uuid(),start,length,48 + int(interval),int(creationVelocity.getValue()),std::max(1,canvas.filter)};
+            added.insert(note.id);
+            next.notes.push_back(note);
+        }
+        if (!added.empty() && commit(next)) {
+            canvas.selected = std::move(added);
+            canvas.repaint();
+        }
+    }
+    struct PreviewGeometry { double left=0, pixelsPerSecond=1, topPitch=0, height=18; int keys=42, ruler=16; };
+    PreviewGeometry previewGeometry;
+    bool editsPreview() const { return followGrid && editable(); }
+    void drawPreviewNotes(Graphics& g) { canvas.drawNotes(g, canvas.area()); }
+    Component& previewInput() { return canvas; }
+    MouseCursor previewCursor(juce::Point<float> point) const { return canvas.cursorAt(point); }
+    bool hasPreviewNote(juce::Point<float> point) const { return canvas.noteAt(point) != nullptr; }
+    juce::Rectangle<int> pianoBounds() const { return canvas.getBounds(); }
+    void setPreviewZoom(double value) { zoom.setValue(value,sendNotificationSync); }
+    void setPreviewHeight(double value) { noteHeight.setValue(value,sendNotificationSync); }
+    double previewZoom() const { return zoom.getValue(); }
+    double previewKeyHeight() const { return noteHeight.getValue(); }
+    void setPreviewItem(const ID &id) {
+        if (id == itemID && projectID == session.project().id) return;
+        projectID = session.project().id;
+        itemID = id;
+        canvas.selected.clear();
+        refresh();
+    }
+    const String& trackTitle() const { return trackName; }
     void resized() override {
-        auto top = getLocalBounds().removeFromTop(42).reduced(10, 8);
-        play.setBounds(top.removeFromRight(64));
-        top.removeFromRight(8);
-        redo.setBounds(top.removeFromRight(28));
-        top.removeFromRight(6);
-        undo.setBounds(top.removeFromRight(28));
-        top.removeFromRight(8);
-        fx.setBounds(top.removeFromRight(92));
-        division.setBounds(54, 51, 78, 24);
-        mode.setBounds(138, 51, 104, 24);
-        swing.setBounds(252, 51, 82, 24);
-        quantize.setBounds(mode.getSelectedId() == 4 ? 372 : 254, 51, 104, 24);
-        zoom.setBounds(getWidth() - 124, 51, 110, 24);
-        canvas.setBounds(0, 84, getWidth(), std::max(40, getHeight() - 147));
-        const int y = getHeight() - 53;
+        const bool compact = followGrid && getHeight() < 170;
+        const int top = compact ? 0 : 5;
+        const int rightTools = std::max(0, getWidth() - 10 - 189);
+        heightMemoryButton.setBounds(rightTools, top, 24, 24);
+        zoomMemoryButton.setBounds(rightTools + 24, top, 24, 24);
+        noteHeight.setBounds(rightTools + 53, top, 68, 24);
+        zoom.setBounds(noteHeight.getRight(), top, 68, 24);
+        int x = 0;
+        const auto place = [&](Component& control, int width) {
+            control.setBounds(x, 0, width, 24);
+            x += width + 6;
+        };
+        place(gridLabel, 40);
+        place(division, 78);
+        place(mode, 104);
+        if (mode.getSelectedId() == 4) {
+            place(swing, 82);
+            place(swingPercent, 38);
+        }
+        place(quantize, 104);
+        place(creationLabel, 100);
+        place(creationVelocity, 78);
+        editTools.setSize(x - 6, 24);
+        editToolsViewport.setBounds(10, top, std::max(0, rightTools - 18), 30);
+        const int gridTop = top + editToolsViewport.getHeight() + 3;
+        const int footer = compact ? 25 : 63;
+        canvas.setBounds(0, gridTop, getWidth(), std::max(0, getHeight() - gridTop - footer));
+        const int y = std::max(0, getHeight() - (compact ? 24 : 53));
         channel.setBounds(getWidth() - 226, y, 132, 24);
-        applyVelocity.setBounds(getWidth() - 300, y, 64, 24);
-        velocity.setBounds(getWidth() - 388, y, 78, 24);
+        velocity.setBounds(channel.getX() - 88, y, 78, 24);
     }
     void paint(Graphics &g) override {
         g.fillAll(theme::background);
-        g.setFont(theme::font(13));
-        g.setColour(Colours::white);
-        g.drawText(trackName + "   " + (clip ? text(clip->name) : "Item MIDI removido"), 12, 8,
-                   getWidth() - 280, 26, Justification::centredLeft);
         g.setColour(theme::secondary);
-        g.drawHorizontalLine(42, 0, (float)getWidth());
-        g.drawText("Grade", 10, 51, 44, 24, Justification::centredLeft);
-        g.drawText("Zoom", getWidth() - 168, 51, 40, 24, Justification::centredLeft);
-        if (mode.getSelectedId() == 4)
-            g.drawText(String((int)(swing.getValue() * 100)) + "%", 334, 51, 34, 24,
-                       Justification::centred);
+        g.drawHorizontalLine(canvas.getY() - 1, 0, (float)getWidth());
+        const auto memoryBounds = heightMemoryButton.getBounds().getUnion(zoomMemoryButton.getBounds());
+        const auto sliderBounds = noteHeight.getBounds().getUnion(zoom.getBounds());
+        g.setColour(Colour(0xff4c4c4c)); g.fillRoundedRectangle(memoryBounds.toFloat(), 4.f);
+        g.setColour(Colour(0xff343434)); g.fillRoundedRectangle(sliderBounds.toFloat(), 4.f);
+        g.setColour(Colour(0xff393939)); g.drawVerticalLine(zoomMemoryButton.getX(), float(memoryBounds.getY()+1), float(memoryBounds.getBottom()-1));
+        g.setColour(Colour(0xff242424)); g.drawVerticalLine(zoom.getX(), float(sliderBounds.getY()+1), float(sliderBounds.getBottom()-1));
+        g.setColour(theme::secondary);
         g.setFont(theme::font(11));
-        g.drawText("Shift: mover e redimensionar sem encaixe", 10, getHeight() - 53,
-                   std::max(0, getWidth() - 462), 24, Justification::centredLeft);
-        g.drawText("Velocity", getWidth() - 443, getHeight() - 53, 52, 24,
+        g.drawText("Shift: mover e redimensionar sem encaixe", 10, velocity.getY(),
+                   std::max(0, velocity.getX() - 70), 24, Justification::centredLeft);
+        g.drawText("Velocity", velocity.getX() - 56, velocity.getY(), 52, 24,
                    Justification::centredLeft);
         g.drawText(String(clip ? (int)clip->midi->notes.size() : 0) + " notas", getWidth() - 90,
-                   getHeight() - 53, 80, 24, Justification::centredRight);
-        g.drawText(clip && clip->frozenMIDI.value_or(false)
-                       ? "Item congelado: descongele antes de editar as notas."
-                       : "Escolha um instrumento no FX da pista para ouvir as notas.",
-                   10, getHeight() - 25, getWidth() - 20, 20, Justification::centred);
+                   velocity.getY(), 80, 24, Justification::centredRight);
+        if (clip && clip->frozenMIDI.value_or(false))
+            g.drawText("Item congelado: descongele antes de editar as notas.", 10, getHeight() - 25, getWidth() - 20, 20, Justification::centred);
     }
     bool keyPressed(const KeyPress &key) override {
-        if (retryEditorShortcut(key))
-            return true;
+        // Text fields own their editing history, even when it is empty.
+        // Never let a declined text shortcut undo the project behind the field.
+        if (dynamic_cast<TextEditor *>(Component::getCurrentlyFocusedComponent()))
+            return retryEditorShortcut(key);
         return canvas.keyPressed(key);
     }
 
   private:
+    const bool followGrid;
     Session &session;
-    ID itemID, projectID, trackID;
+    ID itemID, projectID;
     String trackName;
     std::optional<jaras::AudioClip> clip;
-    uint64 revision = ~uint64(0);
-    std::function<void(ID)> openEffects;
+    std::optional<ClipTempo> timing;
+    uint64 revision = ~uint64(0), velocityRevision = 0;
+    std::set<ID> lastVelocitySelection;
+    bool mixedVelocity = false;
+    int velocityReference = 100;
+    void setSelectedVelocity(int value) {
+        if (!editable() || canvas.selected.empty()) return;
+        auto next = *clip->midi;
+        bool changed = false;
+        for (auto& note : next.notes) {
+            if (canvas.selected.count(note.id) && canvas.visible(note) && note.velocity != value) {
+                note.velocity = value;
+                changed = true;
+            }
+        }
+        if (changed) commit(next);
+    }
     std::function<void(String)> error;
-    TextButton fx{"FX da pista"}, undo{String::fromUTF8("↶")}, redo{String::fromUTF8("↷")},
-        play{"Play"}, quantize{String::fromUTF8("Quantizar…")}, applyVelocity{"Aplicar"};
+    Component editTools;
+    Viewport editToolsViewport;
+    Label gridLabel, creationLabel, swingPercent;
+    TextButton quantize{String::fromUTF8("Quantizar…")};
+    TextButton heightMemoryButton, zoomMemoryButton;
     ComboBox division, mode, channel;
-    Slider zoom, swing, velocity;
+    ParameterSlider zoom, noteHeight, swing, velocity, creationVelocity;
+    std::optional<double> zoomMemory, heightMemory;
+    static void configureZoomSlider(Slider &slider, const char *axis, const char *id, const char *title,
+                                    double minimum, double maximum, double initial) {
+        slider.setComponentID(id);
+        slider.setTitle(localization::translate(title));
+        slider.setTooltip(slider.getTitle());
+        slider.getProperties().set("zoomAxis", axis);
+        slider.setRange(minimum, maximum, 0);
+        slider.setValue(initial, dontSendNotification);
+        slider.setSliderStyle(Slider::LinearHorizontal);
+        slider.setTextBoxStyle(Slider::NoTextBox, false, 0, 0);
+    }
+    static void configureZoomMemory(TextButton &button, Slider &slider, std::optional<double> &memory,
+                                    const char *icon, const char *id, const char *title) {
+        button.setComponentID(id);
+        button.setTitle(localization::translate(title));
+        button.setTooltip(button.getTitle());
+        button.getProperties().set("icon", icon);
+        button.getProperties().set("iconSize", 15.f);
+        button.getProperties().set("zoomSegment", true);
+        button.onClick = [&button, &slider, &memory] {
+            if (memory) {
+                const double target = *memory;
+                memory.reset();
+                button.setToggleState(false, dontSendNotification);
+                slider.setValue(target, sendNotificationSync);
+            } else if (slider.getValue() > slider.getMinimum()) {
+                memory = slider.getValue();
+                button.setToggleState(true, dontSendNotification);
+                slider.setValue(slider.getMinimum(), sendNotificationSync);
+            }
+        };
+    }
     bool editable() const {
-        return clip && !clip->frozenMIDI.value_or(false) && !session.busy &&
+        return clip && (!followGrid || (clip->startTime <= session.transport().editPosition &&
+                                        session.transport().editPosition < clip->startTime + clip->duration)) &&
+               !clip->frozenMIDI.value_or(false) && !session.busy &&
                !session.transport().playing && !session.transport().subPlay.playing &&
                !session.audio.isRecording() && session.project().id == projectID;
     }
@@ -174,6 +309,9 @@ class MIDIEditorPanel final : public Component, private Timer {
         refresh();
         return applied;
     }
+    void updateSwingLabel() {
+        swingPercent.setText(String(roundToInt(swing.getValue() * 100)) + "%", dontSendNotification);
+    }
     void changeGrid() {
         if (!clip)
             return;
@@ -188,16 +326,20 @@ class MIDIEditorPanel final : public Component, private Timer {
     void refresh() {
         revision = session.revision;
         clip.reset();
-        if (session.project().id == projectID)
+        trackName.clear();
+        if (!itemID.empty() && session.project().id == projectID)
             for (const auto &song : session.project().songs)
                 for (const auto &track : song.tracks)
                     for (const auto &item : track.clips)
                         if (item.id == itemID && item.midi) {
                             clip = item;
-                            trackID = track.id;
                             trackName = text(track.name);
                         }
         if (clip) {
+            if (!followGrid)
+                if (auto *window = findParentComponentOfClass<DocumentWindow>(); window && window->getName() != trackName)
+                    window->setName(trackName);
+            timing.emplace(*clip, session.song());
             division.setSelectedId(clip->midi->division, dontSendNotification);
             mode.setSelectedId(clip->midi->mode == "triplet"  ? 2
                                : clip->midi->mode == "dotted" ? 3
@@ -205,8 +347,10 @@ class MIDIEditorPanel final : public Component, private Timer {
                                                               : 1,
                                dontSendNotification);
             swing.setValue(clip->midi->swing, dontSendNotification);
-        }
+        } else timing.reset();
         swing.setVisible(mode.getSelectedId() == 4);
+        swingPercent.setVisible(swing.isVisible());
+        updateSwingLabel();
         canvas.sync();
         resized();
         repaint();
@@ -216,12 +360,30 @@ class MIDIEditorPanel final : public Component, private Timer {
             refresh();
         const bool enabled = editable();
         for (auto *component : std::initializer_list<Component *>{&division, &mode, &swing,
-                                                                  &quantize, &applyVelocity})
+                                                                  &quantize})
             component->setEnabled(enabled);
-        applyVelocity.setEnabled(enabled && !canvas.selected.empty());
-        undo.setEnabled(session.canUndo() && enabled);
-        redo.setEnabled(session.canRedo() && enabled);
-        play.setButtonText(session.transport().playing ? "Pausar" : "Play");
+        if (followGrid) {
+            creationVelocity.setEnabled(enabled);
+            channel.setEnabled(enabled);
+            if (clip) canvas.followCursor();
+        }
+        velocity.setEnabled(enabled && !canvas.selected.empty());
+        if (lastVelocitySelection != canvas.selected || velocityRevision != revision) {
+            lastVelocitySelection = canvas.selected;
+            velocityRevision = revision;
+            std::optional<int> first;
+            mixedVelocity = false;
+            if (clip && !canvas.selected.empty()) {
+                for (const auto& note : clip->midi->notes) if (canvas.selected.count(note.id)) {
+                    if (!first) first = note.velocity;
+                    else if (note.velocity != *first) { mixedVelocity = true; break; }
+                }
+            }
+            velocityReference = first.value_or(100);
+            velocity.setValue(velocityReference,dontSendNotification);
+            velocity.updateText();
+        }
+        quantize.setEnabled(enabled && canvas.hasVisibleNotes());
         canvas.repaint();
     }
     void openQuantize() {
@@ -264,9 +426,9 @@ class MIDIEditorPanel final : public Component, private Timer {
             }
 
           private:
-            Slider strength;
+            ParameterSlider strength;
             ToggleButton ends{String::fromUTF8("Quantizar também o final das notas")};
-            TextButton ok{"Aplicar"}, cancel{"Cancelar"};
+            TextButton ok{localization::translate("Quantizar")}, cancel{localization::translate("Cancelar")};
         };
         const auto safe = SafePointer<MIDIEditorPanel>(this);
         CallOutBox::launchAsynchronously(
@@ -300,6 +462,10 @@ class MIDIEditorPanel final : public Component, private Timer {
         bool visible(const jaras::MIDINote &note) const {
             return filter == 0 || note.channel == filter;
         }
+        bool hasVisibleNotes() const {
+            return std::any_of(draft.notes.begin(), draft.notes.end(),
+                               [this](const auto &note){ return visible(note); });
+        }
         void pruneSelection() {
             std::set<ID> keep;
             for (const auto &note : draft.notes)
@@ -318,7 +484,7 @@ class MIDIEditorPanel final : public Component, private Timer {
                     high = std::max(high, note.pitch);
                 }
                 const double pitch = draft.notes.empty() ? 60. : (low + high) * .5;
-                yOffset = std::max(0., (127 - pitch) * 18 + 9 - (getHeight() - 36) * .5);
+                yOffset = std::max(0., (127.5 - pitch) * keyHeight - (getHeight() - 36) * .5);
                 centred = true;
             }
             updateRanges();
@@ -331,47 +497,37 @@ class MIDIEditorPanel final : public Component, private Timer {
             else
                 updateRanges();
         }
+        void setKeyHeight(double value) {
+            const double center = std::max(0, getHeight() - 36) * .5;
+            yOffset = (yOffset + center) * value / keyHeight - center;
+            keyHeight = value;
+            updateRanges();
+        }
+        void followCursor() {
+            const auto position = cursorBeat();
+            if (!std::isfinite(previousCursor) || position != previousCursor) {
+                previousCursor = position;
+                xOffset = position - horizontal.getCurrentRangeSize() / 2;
+                updateRanges();
+            }
+        }
         void updateRanges() {
             double end = 16;
-            if (p.clip)
-                end = (p.clip->sourceOffset + p.clip->duration * p.clip->playbackRate) *
-                      draft.sourceBPM / 60.;
+            if (p.clip && p.timing)
+                end = p.timing->sourceAt(p.clip->startTime + p.clip->duration) * draft.sourceBPM / 60.;
             for (const auto &note : draft.notes)
                 end = std::max(end, note.start + note.length);
             const double view = std::max(1, getWidth() - 76) / scale;
-            horizontal.setRangeLimits(0, std::max(view, end + 4));
+            const double padding = p.followGrid ? view / 2 : 0;
+            horizontal.setRangeLimits(-padding, std::max(view - padding, end + 4 + padding));
             horizontal.setCurrentRange(xOffset, view);
             xOffset = horizontal.getCurrentRangeStart();
-            vertical.setRangeLimits(0, 128 * 18);
+            vertical.setRangeLimits(0, 128 * keyHeight);
             vertical.setCurrentRange(yOffset, std::max(1, getHeight() - 36));
             yOffset = vertical.getCurrentRangeStart();
             repaint();
         }
-        void paint(Graphics &g) override {
-            g.fillAll(Colour(0xff242424));
-            const auto content = area();
-            {
-                Graphics::ScopedSaveState save(g);
-                g.reduceClipRegion(content);
-                for (int pitch = 0; pitch < 128; ++pitch) {
-                    const auto y = rowY(pitch);
-                    if (y > content.getBottom() || y + 18 < 24)
-                        continue;
-                    g.setColour(Colour(black(pitch) ? 0xff1b1b1b : 0xff252525));
-                    g.fillRect(64.f, y, (float)content.getWidth(), 18.f);
-                    g.setColour(Colour(pitch % 12 == 0 ? 0xff525252 : 0xff333333));
-                    g.drawHorizontalLine((int)y + 17, 64, (float)content.getRight());
-                }
-                const double gridStep = midiEditing::step(draft);
-                const int first = std::max(0, (int)(xOffset / gridStep) - 2);
-                const int last = first + (int)(content.getWidth() / scale / gridStep) + 5;
-                const int stride = std::max(1, (int)std::ceil(4. / (gridStep * scale)));
-                for (int i = first; i <= last; i += stride) {
-                    const double beat = midiEditing::line(draft, i);
-                    const bool bar = std::abs(beat / 4 - std::round(beat / 4)) < 1e-6;
-                    g.setColour(theme::green.withAlpha(bar ? .48f : .18f));
-                    g.drawVerticalLine((int)x(beat), 24, (float)content.getBottom());
-                }
+        void drawNotes(Graphics& g, juce::Rectangle<int> content) {
                 for (const auto &note : draft.notes)
                     if (visible(note)) {
                         auto r = noteRect(note);
@@ -384,25 +540,45 @@ class MIDIEditorPanel final : public Component, private Timer {
                             g.setColour(Colours::white);
                             g.drawRect(r.reduced(.5f), 1);
                         }
-                        if (r.getWidth() > 30) {
-                            g.setColour(Colours::black);
-                            g.setFont(theme::font(10));
-                            g.drawText(String(note.pitch), r.reduced(4, 0),
-                                       Justification::centredLeft);
-                        }
+                        drawPianoNoteLabel(g,r,note.pitch,note.velocity);
                     }
-                if (p.clip) {
+            if (p.followGrid && gesture == 5) {
+                g.setColour(theme::green.withAlpha(.18f)); g.fillRect(box);
+            }
+        }
+        void paint(Graphics &g) override {
+            g.fillAll(Colour(0xff242424));
+            const auto content = area();
+            {
+                Graphics::ScopedSaveState save(g);
+                g.reduceClipRegion(content);
+                for (int pitch = 0; pitch < 128; ++pitch) {
+                    const auto y = rowY(pitch);
+                    if (y > content.getBottom() || y + keyHeight < 24)
+                        continue;
+                    g.setColour(Colour(black(pitch) ? 0xff1b1b1b : 0xff252525));
+                    g.fillRect(64.f, y, (float)content.getWidth(), (float)keyHeight);
+                    g.setColour(Colour(pitch % 12 == 0 ? 0xff525252 : 0xff333333));
+                    g.drawHorizontalLine((int)(y + keyHeight - 1), 64, (float)content.getRight());
+                }
+                const double gridStep = midiEditing::step(draft);
+                const int first = std::max(0, (int)(xOffset / gridStep) - 2);
+                const int last = first + (int)(content.getWidth() / scale / gridStep) + 5;
+                const int stride = std::max(1, (int)std::ceil(4. / (gridStep * scale)));
+                for (int i = first; i <= last; i += stride) {
+                    const double beat = midiEditing::line(draft, i);
+                    const bool bar = std::abs(beat / 4 - std::round(beat / 4)) < 1e-6;
+                    g.setColour(theme::green.withAlpha(bar ? .48f : .18f));
+                    g.drawVerticalLine((int)x(beat), 24, (float)content.getBottom());
+                }
+                drawNotes(g, content);
+                if (p.clip && p.timing) {
                     const double begin = p.clip->sourceOffset * draft.sourceBPM / 60.;
-                    const double end =
-                        begin + p.clip->duration * p.clip->playbackRate * draft.sourceBPM / 60.;
+                    const double end = p.timing->sourceAt(p.clip->startTime + p.clip->duration) * draft.sourceBPM / 60.;
                     g.setColour(Colours::yellow);
                     for (double beat : {begin, end})
                         g.drawVerticalLine((int)x(beat), 24, (float)content.getBottom());
-                    const double cursor = begin + ((p.session.transport().playing
-                                                        ? p.session.transport().position
-                                                        : p.session.transport().editPosition) -
-                                                   p.clip->startTime) *
-                                                      p.clip->playbackRate * draft.sourceBPM / 60.;
+                    const double cursor = cursorBeat();
                     g.setColour(theme::green);
                     g.drawVerticalLine((int)x(cursor), 24, (float)content.getBottom());
                 }
@@ -416,13 +592,15 @@ class MIDIEditorPanel final : public Component, private Timer {
             g.setFont(theme::font(10));
             for (int pitch = 0; pitch < 128; ++pitch) {
                 const float y = rowY(pitch);
-                if (y < 6 || y >= content.getBottom())
+                const float top = std::max(24.f, y);
+                const float bottom = std::min((float)content.getBottom(), y + (float)keyHeight - 1);
+                if (bottom <= top)
                     continue;
                 g.setColour(Colour(black(pitch) ? 0xff191919 : 0xffc7c7c7));
-                g.fillRect(0.f, std::max(24.f, y), 63.f, std::min(17.f, y + 17 - 24));
-                if (pitch % 12 == 0 && y >= 24) {
+                g.fillRect(0.f, top, 63.f, bottom - top);
+                if (pitch % 12 == 0 && y >= 24 && keyHeight >= 13) {
                     g.setColour(Colours::black);
-                    g.drawText("C" + String(pitch / 12 - 1), 30, (int)y + 1, 30, 16,
+                    g.drawText("C" + String(pitch / 12 - 1), 30, (int)y, 30, (int)keyHeight,
                                Justification::centredLeft);
                 }
             }
@@ -433,19 +611,24 @@ class MIDIEditorPanel final : public Component, private Timer {
                 if (x(beat) >= 64)
                     g.drawText(String((int)(beat / 4) + 1), (int)x(beat) + 3, 2, 48, 20,
                                Justification::centredLeft);
+            const float cursor = x(cursorBeat());
+            if (p.timing && cursor >= 64 && cursor <= content.getRight()) {
+                Path head;
+                head.addTriangle(cursor-5, 0, cursor+5, 0, cursor, 7);
+                g.fillPath(head);
+            }
         }
         void mouseDown(const MouseEvent &e) override {
-            grabKeyboardFocus();
-            if (!p.editable())
-                return;
+            if (!p.followGrid) grabKeyboardFocus();
             origin = e.position;
             original = draft;
             anchor.clear();
             moved = false;
-            if (e.y < 24 && e.x >= 64) {
+            if (!p.followGrid && e.y < 24 && e.x >= 64 && e.mods.isLeftButtonDown() && p.clip && !p.session.busy) {
                 gesture = 6;
                 return;
             }
+            if (!p.editable()) return;
             if (!area().contains(e.getPosition()))
                 return;
             if (e.mods.isPopupMenu()) {
@@ -474,11 +657,23 @@ class MIDIEditorPanel final : public Component, private Timer {
                     repaint();
                     return;
                 }
+            if (!e.mods.isLeftButtonDown() || e.getNumberOfClicks() != 2) {
+                selected.clear();
+                gesture = 5;
+                box = {};
+                repaint();
+                return;
+            }
+            if (p.followGrid && p.clip) {
+                const auto& v = p.previewGeometry;
+                const double when = v.left+(e.x-v.keys)/v.pixelsPerSecond;
+                if (when < p.clip->startTime || when >= p.clip->startTime+p.clip->duration) return;
+            }
             jaras::MIDINote note{uuid(),
                                  midiEditing::snap(draft, beatAt(e.x), e.mods.isShiftDown()),
                                  midiEditing::step(draft),
                                  pitchAt(e.y),
-                                 (int)p.velocity.getValue(),
+                                 (int)p.creationVelocity.getValue(),
                                  std::max(1, filter)};
             draft.notes.push_back(note);
             selected = {note.id};
@@ -517,7 +712,7 @@ class MIDIEditorPanel final : public Component, private Timer {
                 if (found == original.notes.end())
                     return;
                 const double base = found->start + (gesture == 3 ? found->length : 0);
-                const double delta = midiEditing::snap(draft, base + (e.x - origin.x) / scale,
+                const double delta = midiEditing::snap(draft, base + (p.followGrid ? beatAt(e.x)-beatAt(origin.x) : (e.x-origin.x)/scale),
                                                        e.mods.isShiftDown()) -
                                      base;
                 midiEditing::transform(draft, selected, delta, pitchAt(e.y) - pitchAt(origin.y),
@@ -531,13 +726,13 @@ class MIDIEditorPanel final : public Component, private Timer {
         void mouseUp(const MouseEvent &e) override {
             const int kind = gesture;
             gesture = 0;
-            if (kind == 6 && !moved && p.clip) {
+            if (kind == 6 && !moved && p.clip && p.timing && !p.session.busy &&
+                e.y >= 0 && e.y < 24 && e.x >= 64) {
                 const double source = midiEditing::snap(draft, beatAt(e.x), e.mods.isShiftDown()) *
                                       60. / draft.sourceBPM;
-                const double time = jlimit(p.clip->startTime, p.clip->startTime + p.clip->duration,
-                                           p.clip->startTime + (source - p.clip->sourceOffset) /
-                                                                   p.clip->playbackRate);
-                p.guarded([&] { p.session.command(jaras::CommandKind::editSeek, {}, time); });
+                const double time = p.timing->timeAt(source);
+                p.guarded([&] { p.session.command(p.session.transport().playing ? jaras::CommandKind::seek
+                                                                              : jaras::CommandKind::editSeek, {}, time); });
             } else if (kind >= 1 && kind <= 4) {
                 bool changed = draft.notes.size() != original.notes.size();
                 if (!changed)
@@ -552,27 +747,40 @@ class MIDIEditorPanel final : public Component, private Timer {
             repaint();
             p.repaint();
         }
-        void mouseMove(const MouseEvent &e) override {
-            MouseCursor cursor(MouseCursor::CrosshairCursor);
-            for (const auto &note : draft.notes)
-                if (visible(note) && noteRect(note).contains(e.position)) {
-                    const auto r = noteRect(note);
-                    const float edge = std::min(6.f, r.getWidth() / 3);
-                    cursor = MouseCursor(e.x <= r.getX() + edge || e.x >= r.getRight() - edge
-                                             ? MouseCursor::LeftRightResizeCursor
-                                             : MouseCursor::DraggingHandCursor);
-                    break;
-                }
-            setMouseCursor(cursor);
+        const jaras::MIDINote* noteAt(juce::Point<float> point) const {
+            for (auto it = draft.notes.rbegin(); it != draft.notes.rend(); ++it)
+                if (visible(*it) && noteRect(*it).contains(point)) return &*it;
+            return nullptr;
         }
+        MouseCursor cursorAt(juce::Point<float> point) const {
+            const int keys = p.followGrid ? p.previewGeometry.keys : 64;
+            const int ruler = p.followGrid ? p.previewGeometry.ruler : 24;
+            if (point.x < keys) return MouseCursor::NormalCursor;
+            if (point.y < ruler) return MouseCursor::PointingHandCursor;
+            if (!p.editable()) return MouseCursor::NormalCursor;
+            if (const auto* note = noteAt(point)) {
+                const auto rect = noteRect(*note);
+                const float edge = std::min(6.f, rect.getWidth() / 3);
+                return point.x <= rect.getX() + edge || point.x >= rect.getRight() - edge
+                    ? MouseCursor::LeftRightResizeCursor : MouseCursor::DraggingHandCursor;
+            }
+            return MouseCursor::CrosshairCursor;
+        }
+        void mouseMove(const MouseEvent &event) override { setMouseCursor(cursorAt(event.position)); }
+        void mouseExit(const MouseEvent &) override { setMouseCursor(MouseCursor::NormalCursor); }
         void mouseWheelMove(const MouseEvent &e, const MouseWheelDetails &d) override {
-            if (e.mods.isCtrlDown())
-                p.zoom.setValue(jlimit(24., 360., scale * std::pow(1.3, d.deltaY)));
-            else if (e.mods.isShiftDown() || std::abs(d.deltaX) > std::abs(d.deltaY))
-                horizontal.setCurrentRangeStart(
-                    xOffset - (e.mods.isShiftDown() ? d.deltaY : d.deltaX) * 240 / scale);
-            else
-                vertical.setCurrentRangeStart(yOffset - d.deltaY * 240);
+            if (e.mods.isAltDown()) {
+                vertical.setCurrentRangeStart(yOffset - d.deltaY * 300);
+            } else if (e.mods.isCtrlDown()) {
+                if (!d.isInertial) p.setPreviewHeight(keyHeight * std::pow(1.3,d.deltaY * 4));
+            } else if (e.mods.isShiftDown() || e.mods.isLeftButtonDown() || std::abs(d.deltaX) > std::abs(d.deltaY)) {
+                const auto delta = std::abs(d.deltaX) > std::abs(d.deltaY) ? d.deltaX : d.deltaY;
+                horizontal.setCurrentRangeStart(xOffset - delta * 500 / scale);
+            } else if (!d.isInertial && d.deltaY != 0) {
+                const auto anchor = beatAt(std::max(64, e.x));
+                p.zoom.setValue(scale * std::pow(1.3, d.deltaY * 4), sendNotificationSync);
+                horizontal.setCurrentRangeStart(anchor - std::max(0, e.x - 64) / scale, sendNotificationSync);
+            }
         }
         bool keyPressed(const KeyPress &key) override {
             if (!p.editable())
@@ -582,7 +790,8 @@ class MIDIEditorPanel final : public Component, private Timer {
                 cancel();
                 return true;
             }
-            if (key.getModifiers().isCtrlDown() && (code == 'A' || code == 'a' || code == 1)) {
+            if (key.getModifiers().isCtrlDown() && !key.getModifiers().isAltDown() &&
+                !key.getModifiers().isShiftDown() && (code == 'A' || code == 'a' || code == 1)) {
                 selected.clear();
                 for (const auto &note : draft.notes)
                     if (visible(note))
@@ -590,11 +799,11 @@ class MIDIEditorPanel final : public Component, private Timer {
                 repaint();
                 return true;
             }
-            if (key.getModifiers().isCtrlDown() &&
-                (code == 'Z' || code == 'z' || code == 26 || code == 'Y' || code == 25)) {
+            if (key.getModifiers().isCtrlDown() && !key.getModifiers().isAltDown() &&
+                (code == 'Z' || code == 'z' || code == 26)) {
                 cancel();
                 p.guarded([&] {
-                    if (code == 'Y' || code == 25 || key.getModifiers().isShiftDown())
+                    if (key.getModifiers().isShiftDown())
                         p.session.redo();
                     else
                         p.session.undo();
@@ -620,29 +829,58 @@ class MIDIEditorPanel final : public Component, private Timer {
       private:
         MIDIEditorPanel &p;
         ScrollBar horizontal, vertical;
-        double xOffset = 0, yOffset = 0;
+        double xOffset = 0, yOffset = 0, keyHeight = 18;
         bool centred = false, moved = false;
         int gesture = 0;
         ID anchor;
         jaras::MIDIItem draft, original;
         Point<float> origin;
         juce::Rectangle<float> box;
-        juce::Rectangle<int> area() const {
-            return {64, 24, std::max(0, getWidth() - 76), std::max(0, getHeight() - 36)};
+        double previousCursor = std::numeric_limits<double>::quiet_NaN();
+        double cursorBeat() const {
+            return p.timing ? p.timing->sourceAt(p.session.transport().playing || p.session.transport().paused
+                                                  ? p.session.transport().position
+                                                  : p.session.transport().editPosition) * draft.sourceBPM / 60. : 0;
         }
-        float x(double beat) const { return (float)(64 + (beat - xOffset) * scale); }
-        float rowY(int pitch) const { return (float)(24 + (127 - pitch) * 18 - yOffset); }
-        double beatAt(double x) const { return std::max(0., xOffset + (x - 64) / scale); }
+      public:
+        juce::Rectangle<int> area() const {
+            if (p.followGrid) {
+                const auto& v=p.previewGeometry;
+                return {v.keys,v.ruler,std::max(0,getWidth()-v.keys-13),std::max(0,getHeight()-v.ruler-13)};
+            }
+            return {64,24,std::max(0,getWidth()-76),std::max(0,getHeight()-36)};
+        }
+      private:
+        float x(double beat) const {
+            if (p.followGrid && p.timing) {
+                const auto& v=p.previewGeometry;
+                return float(v.keys+(p.timing->timeAt(beat*60/draft.sourceBPM,false)-v.left)*v.pixelsPerSecond);
+            }
+            return float(64+(beat-xOffset)*scale);
+        }
+        float rowY(int pitch) const {
+            const auto& v=p.previewGeometry;
+            return p.followGrid ? float(v.ruler+(127-pitch-v.topPitch)*v.height) : float(24+(127-pitch)*keyHeight-yOffset);
+        }
+        double beatAt(double pos) const {
+            if (p.followGrid && p.timing) {
+                const auto& v=p.previewGeometry;
+                return std::max(0.,p.timing->sourceAt(v.left+(pos-v.keys)/v.pixelsPerSecond)*draft.sourceBPM/60);
+            }
+            return std::max(0.,xOffset+(pos-64)/scale);
+        }
         int pitchAt(double y) const {
-            return jlimit(0, 127, 127 - (int)std::floor((y - 24 + yOffset) / 18));
+            const auto& v=p.previewGeometry;
+            const double row=p.followGrid ? (y-v.ruler)/v.height+v.topPitch : (y-24+yOffset)/keyHeight;
+            return jlimit(0,127,127-int(std::floor(row)));
         }
         static bool black(int pitch) {
             const int key = pitch % 12;
             return key == 1 || key == 3 || key == 6 || key == 8 || key == 10;
         }
         juce::Rectangle<float> noteRect(const jaras::MIDINote &note) const {
-            return {x(note.start), rowY(note.pitch) + 1, (float)std::max(2., note.length * scale),
-                    16};
+            return {x(note.start), rowY(note.pitch) + 1, std::max(2.f,x(note.start+note.length)-x(note.start)),
+                    (float)keyHeight - 2};
         }
         void scrollBarMoved(ScrollBar *bar, double value) override {
             if (bar == &horizontal)

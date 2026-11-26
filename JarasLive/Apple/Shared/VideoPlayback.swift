@@ -8,6 +8,7 @@ import AppKit
 typealias ProjectionImage = NSImage
 #else
 import UIKit
+import Metal
 typealias ProjectionImage = UIImage
 #endif
 
@@ -22,12 +23,23 @@ typealias ProjectionImage = UIImage
     @Published private(set) var stretch: Bool
     @Published private(set) var image: ProjectionImage?
     @Published private(set) var opacity = 1.0
-    let player = AVPlayer()
+    @Published private(set) var player = AVPlayer()
+    private var activeURL: URL?
+    private var activeSourceOrigin = 0.0
+    private var activeSourceRate = 1.0
+    private var activeEnd = 0.0
+    private var preparedPlayer: AVPlayer?
+    private var preparedID: UUID?
+    private var preparedURL: URL?
+    private var preparation: Task<Void, Never>?
+    private var colorPreparation: Task<Void, Never>?
     #if os(macOS)
     private var window: NSWindow?
     #endif
     private var directory: URL?
     private var snapshot: ShowSnapshot?
+    private var snapshotRevision: UInt64?
+    private var mediaProjection: (project: UUID, song: UUID, revision: UInt64, media: Song)?
     private var clipID: UUID?
     private let trackKind: TrackKind
     private var stretchKey: String { trackKind == .teleprompt ? "jaras.teleprompter.video.stretch" : trackKind == .teleprompt2 ? "jaras.teleprompter2.video.stretch" : "jaras.video.stretch" }
@@ -78,17 +90,17 @@ typealias ProjectionImage = UIImage
         guard projectionEnabled != enabled else { return }
         projectionEnabled = enabled
         if !active { reset() }
-        else if let snapshot { update(snapshot) }
+        else if let snapshot { update(snapshot, revision: snapshotRevision) }
     }
     func open(directory: URL) {
-        reset(); self.directory = directory; snapshot = nil
+        reset(); self.directory = directory; snapshot = nil; mediaProjection = nil
     }
     func closeProject() {
         #if os(macOS)
         window?.close()
         #endif
         visible = false; projectionEnabled = false
-        reset(); directory = nil; snapshot = nil; message = ""
+        reset(); directory = nil; snapshot = nil; mediaProjection = nil; message = ""
     }
     #if os(macOS)
     func toggle() {
@@ -97,51 +109,129 @@ typealias ProjectionImage = UIImage
         window.closesOnRightDoubleClick = true
         window.title = "CatLive Video"; window.isReleasedWhenClosed = false
         window.contentMinSize = NSSize(width: 320,height: 180)
-        window.level = .floating; window.hidesOnDeactivate = false; window.delegate = self
+        window.followApplicationWindowOrder(); window.delegate = self
         let host = NSHostingView(rootView: VideoSurface(controller: self))
         if #available(macOS 13, *) { host.sizingOptions = [] }
         window.contentView = host
-        window.restorePlacement(key: "jaras.videoWindow"); window.makeKeyAndOrderFront(nil)
+        window.restorePlacement(key: "jaras.videoWindow")
+        ProjectionWindow.presentWorkspaceWindow(window, activates: false)
         self.window = window; visible = true
-        if let snapshot { update(snapshot) }
+        DispatchQueue.main.async { [weak self, weak window] in
+            guard let self, let window, self.window === window, let snapshot = self.snapshot else { return }
+            self.update(snapshot, revision: self.snapshotRevision)
+        }
     }
     func windowWillClose(_ notification: Notification) {
-        visible = false
-        if !active { reset() }
-        window?.contentView = nil; window = nil
+        guard let closed = notification.object as? NSWindow, window === closed else { return }
+        visible = false; window = nil
+        DispatchQueue.main.async { [weak self] in
+            closed.contentView = nil
+            if let self, !self.active { self.reset() }
+        }
     }
     #else
     func toggle() { setVisible(!visible) }
     func setVisible(_ value: Bool) {
+        guard visible != value else { return }
         visible = value
         if !active { reset() }
-        else if let snapshot { update(snapshot) }
+        else {
+            Task { @MainActor [weak self] in
+                guard let self, self.visible, let snapshot = self.snapshot else { return }
+                self.update(snapshot, revision: self.snapshotRevision)
+            }
+        }
     }
     #endif
-    private func reset() {
+    private func clearPreparation() {
+        preparation?.cancel(); preparation = nil
+        preparedPlayer?.pause(); preparedPlayer = nil; preparedID = nil; preparedURL = nil
+    }
+    private func prepareNextVideo(song: Song, clip: AudioClip, position: Double, playing: Bool, directory: URL) {
+        let boundary = clip.startTime + clip.duration
+        guard playing, boundary - position <= 5,
+              let next = song.firstProjectionItem(at: boundary, trackKind: trackKind == .video ? nil : trackKind),
+              next.id != clip.id, let file = next.audioFile else { return }
+        let url = directory.appendingPathComponent(file.path)
+        guard UTType(filenameExtension: url.pathExtension)?.conforms(to: .image) != true else { return }
+        guard preparedID != next.id || preparedURL != url else { return }
+        clearPreparation(); preparedID = next.id; preparedURL = url
+        var source = next.sourceOffset + (boundary - next.startTime) * next.audioRate
+        if let length = next.loopLength, length > 0 {
+            let start = next.loopStart ?? next.sourceOffset
+            source = start + (source - start).truncatingRemainder(dividingBy: length)
+        }
+        let item = AVPlayerItem(url: url)
+        item.preferredForwardBufferDuration = 1
+        if trackKind == .video { item.preferredMaximumResolution = VideoMediaSettings.shared.size }
+        let candidate = AVPlayer(playerItem: item)
+        candidate.isMuted = true; candidate.volume = 0
+        candidate.automaticallyWaitsToMinimizeStalling = false
+        preparation = Task { [weak self] in
+            // Loading and seeking happen while the preceding clip still plays.
+            for _ in 0..<250 {
+                guard !Task.isCancelled else { return }
+                if item.status != .unknown { break }
+                try? await Task.sleep(nanoseconds: 20_000_000)
+            }
+            guard !Task.isCancelled, item.status == .readyToPlay else { return }
+            if self?.trackKind == .video {
+                let settings = VideoMediaSettings.shared
+                let composition = try? await Self.makeVideoComposition(asset: item.asset,
+                    limit: settings.size, grayscale: settings.blackAndWhite)
+                guard !Task.isCancelled else { return }
+                item.videoComposition = composition
+            }
+            let sought = await candidate.seek(to: CMTime(seconds: max(0, source), preferredTimescale: 60000), toleranceBefore: .zero, toleranceAfter: .zero)
+            guard sought, !Task.isCancelled else { return }
+            let ready = await candidate.preroll(atRate: Float(next.audioRate))
+            guard ready, !Task.isCancelled, let self, self.preparedID == next.id, self.preparedURL == url else { return }
+            self.preparedPlayer = candidate
+        }
+    }
+    private func reset(preserveDisplayedFrame: Bool = false) {
+        clearPreparation()
+        colorPreparation?.cancel(); colorPreparation = nil
+        activeURL = nil
         generation = UUID(); pendingSeek = nil; seeking = false
-        player.pause(); player.replaceCurrentItem(with: nil)
+        player.pause()
+        if !preserveDisplayedFrame { player.replaceCurrentItem(with: nil) }
         itemStatus = nil; clipID = nil; playbackRate = 0; lastPosition = nil; lastSourcePosition = nil
         lastSectionJumpSerial = nil
         if !message.isEmpty { message = "" }
         if image != nil { image = nil }
     }
-    func update(_ snapshot: ShowSnapshot) {
+    func update(_ snapshot: ShowSnapshot, revision: UInt64? = nil) {
         self.snapshot = snapshot
+        snapshotRevision = revision
         guard active, let directory else { return }
         guard let originalSong = snapshot.project.songs.first(where: { $0.id == snapshot.transport.songId }) else { reset(); return }
-        let song = snapshot.transport.multiLoop?.projectionSong(originalSong) ?? originalSong
+        let media: Song
+        if let revision, let cached = mediaProjection, cached.project == snapshot.project.id,
+           cached.song == originalSong.id, cached.revision == revision {
+            media = cached.media
+        } else {
+            var projection = originalSong
+            projection.tracks = originalSong.tracks.compactMap { source in
+                guard trackKind == .video ? !source.kind.isTeleprompter : trackKind == source.kind else { return nil }
+                let clips = source.clips.filter(\.isProjectionMedia)
+                guard !clips.isEmpty else { return nil }
+                var track = source
+                track.clips = clips
+                return track
+            }
+            media = projection
+            mediaProjection = revision.map { (snapshot.project.id, originalSong.id, $0, projection) }
+        }
+        let song = snapshot.transport.multiLoop?.projectionSong(media) ?? media
         let transport = snapshot.transport
         let position = transport.playing || transport.paused == true ? transport.position : transport.editPosition ?? transport.position
         guard let clip = song.firstProjectionItem(at: position, trackKind: trackKind == .video ? nil : trackKind), let file = clip.audioFile else {
             if clipID != nil { reset() }
-            message = ""; return
+            if !message.isEmpty { message = "" }
+            return
         }
-        func curve(_ amount: Double) -> Double { let value = min(1, max(0, amount)); return value * value * (3 - 2 * value) }
-        let elapsed = position - (clip.fadeTimelineStart ?? clip.startTime)
-        let duration = clip.fadeTimelineDuration ?? clip.duration
-        let fade = ((clip.fadeIn ?? 0) > 0 ? curve(elapsed / clip.fadeIn!) : 1) *
-                   ((clip.fadeOut ?? 0) > 0 ? curve((duration - elapsed) / clip.fadeOut!) : 1)
+        let fade = clip.fadeGain(at: position)
         if opacity != fade { opacity = fade }
         let url = directory.appendingPathComponent(file.path)
         if UTType(filenameExtension: url.pathExtension)?.conforms(to: .image) == true {
@@ -174,9 +264,21 @@ typealias ProjectionImage = UIImage
         }
         let rate = transport.playing ? Float(clip.audioRate) : 0
         let changedClip = clipID != clip.id
-        if changedClip {
-            reset(); clipID = clip.id
-            let item = AVPlayerItem(url: url)
+        var usedPreparedPlayer = false
+        let continuousCut = changedClip && transport.playing && activeURL == url &&
+            position >= activeEnd && position - activeEnd < 0.15 &&
+            abs(clip.audioRate - activeSourceRate) < 0.000001 && clip.loopLength == nil &&
+            abs(clip.sourceOffset - clip.startTime * clip.audioRate - activeSourceOrigin) < 0.000001
+        if continuousCut { clipID = clip.id }
+        if changedClip && !continuousCut {
+            let prepared = preparedID == clip.id && preparedURL == url ? preparedPlayer : nil
+            preparedPlayer = nil
+            reset(preserveDisplayedFrame: true); clipID = clip.id
+            player = prepared ?? AVPlayer()
+            player.isMuted = true; player.volume = 0
+            player.automaticallyWaitsToMinimizeStalling = false
+            usedPreparedPlayer = prepared != nil
+            let item = prepared?.currentItem ?? AVPlayerItem(url: url)
             item.preferredForwardBufferDuration = 1
             if trackKind == .video { item.preferredMaximumResolution = VideoMediaSettings.shared.size }
             let requestedGeneration = generation
@@ -187,10 +289,11 @@ typealias ProjectionImage = UIImage
                     if let error { self.message = error }
                 }
             }
-            player.replaceCurrentItem(with: item)
-            applyVideoColor()
+            if prepared == nil { player.replaceCurrentItem(with: item); applyVideoColor() }
             message = ""
         }
+        activeURL = url; activeSourceOrigin = clip.sourceOffset - clip.startTime * clip.audioRate
+        activeSourceRate = clip.audioRate; activeEnd = clip.startTime + clip.duration
         // Explicit jumps and loop wraps cannot use the drift tolerance: a
         // short jump is intentional even when it is less than 120 ms.
         let sectionJumped = lastSectionJumpSerial != transport.sectionJumpSerial
@@ -198,36 +301,53 @@ typealias ProjectionImage = UIImage
         let jumped = lastPosition.map { position < $0 - 0.001 || abs(position - $0 - (playbackRate != 0 ? now-lastHost : 0)) > 0.12 } ?? true
         let playerTime = player.currentTime().seconds
         let drifted = rate != 0 && !seeking && now - lastCorrection > 1.8 && playerTime.isFinite && abs(playerTime - source) > 0.15
-        if changedClip || sectionJumped || jumped || sourceJumped || drifted || rate != playbackRate || (rate == 0 && lastPosition != position) {
+        if usedPreparedPlayer && rate != 0 {
+            lastCorrection = now
+            player.setRate(rate, time: CMTime(seconds: max(0, source), preferredTimescale: 60000), atHostTime: CMClockGetTime(CMClockGetHostTimeClock()))
+        } else if (changedClip && !continuousCut) || sectionJumped || jumped || sourceJumped || drifted || rate != playbackRate || (rate == 0 && lastPosition != position) {
             lastCorrection = now; seek(source, rate: rate)
         }
         playbackRate = rate; lastPosition = position; lastSourcePosition = source; lastHost = now
         lastSectionJumpSerial = transport.sectionJumpSerial
+        prepareNextVideo(song: song, clip: clip, position: position, playing: transport.playing, directory: directory)
     }
     private func applyVideoColor() {
         guard trackKind == .video, let item = player.currentItem else { return }
+        colorPreparation?.cancel()
         let settings = VideoMediaSettings.shared
-        let source = item.asset.tracks(withMediaType: .video).first
-        let natural = source?.naturalSize ?? .zero
-        let transform = source?.preferredTransform ?? .identity
-        let rotated = natural.applying(transform)
+        let limit = settings.size, grayscale = settings.blackAndWhite
+        colorPreparation = Task { [weak self, weak item] in
+            guard let item else { return }
+            do {
+                let composition = try await Self.makeVideoComposition(asset: item.asset, limit: limit, grayscale: grayscale)
+                guard !Task.isCancelled, self?.player.currentItem === item else { return }
+                item.videoComposition = composition
+            } catch { }
+        }
+    }
+    nonisolated private static func makeVideoComposition(asset: AVAsset, limit: CGSize, grayscale: Bool) async throws -> AVVideoComposition? {
+        guard let source = try await asset.loadTracks(withMediaType: .video).first else { return nil }
+        async let natural = source.load(.naturalSize)
+        async let transform = source.load(.preferredTransform)
+        let rotated = try await natural.applying(transform)
         let width = max(1, abs(rotated.width)), height = max(1, abs(rotated.height))
-        let limit = settings.size
         let renderScale = min(1, limit.width / width, limit.height / height)
-        guard settings.blackAndWhite || renderScale < 0.999 else { item.videoComposition = nil; return }
-        let grayscale = settings.blackAndWhite
-        let composition = AVVideoComposition(asset: item.asset, applyingCIFiltersWithHandler: { request in
-            if grayscale {
-                let filter = CIFilter(name: "CIColorControls")!
+        guard grayscale || renderScale < 0.999 else { return nil }
+        try Task.checkCancellation()
+        let composition = AVVideoComposition(asset: asset, applyingCIFiltersWithHandler: { request in
+            if grayscale, let filter = CIFilter(name: "CIColorControls") {
                 filter.setValue(request.sourceImage.clampedToExtent(), forKey: kCIInputImageKey)
                 filter.setValue(0, forKey: kCIInputSaturationKey)
-                request.finish(with: filter.outputImage!.cropped(to: request.sourceImage.extent), context: nil)
-            } else { request.finish(with: request.sourceImage, context: nil) }
+                if let output = filter.outputImage {
+                    request.finish(with: output.cropped(to: request.sourceImage.extent), context: nil)
+                    return
+                }
+            }
+            request.finish(with: request.sourceImage, context: nil)
         })
-        if let scaled = composition.mutableCopy() as? AVMutableVideoComposition {
-            scaled.renderScale = Float(renderScale)
-            item.videoComposition = scaled
-        } else { item.videoComposition = composition }
+        guard let scaled = composition.mutableCopy() as? AVMutableVideoComposition else { return composition }
+        scaled.renderScale = Float(renderScale)
+        return scaled
     }
     private func seek(_ seconds: Double, rate: Float) {
         if seeking { pendingSeek = (seconds,rate); return }
@@ -292,50 +412,176 @@ private struct NativeVideoLayer: NSViewRepresentable {
     let player: AVPlayer
     let stretch: Bool
     func makeNSView(context: Context) -> VideoLayerView { VideoLayerView(player: player, stretch: stretch) }
-    func updateNSView(_ view: VideoLayerView, context: Context) { view.setStretch(stretch) }
+    func updateNSView(_ view: VideoLayerView, context: Context) { view.setPlayer(player); view.setStretch(stretch) }
+    static func dismantleNSView(_ view: VideoLayerView, coordinator: ()) { view.clear() }
 }
-private final class VideoLayerView: NSView {
-    let video = AVPlayerLayer()
-    init(player: AVPlayer, stretch: Bool) {
-        super.init(frame: .zero); wantsLayer = true
-        video.player = player; video.videoGravity = stretch ? .resize : .resizeAspect
-        layer?.addSublayer(video)
-    }
-    func setStretch(_ enabled: Bool) {
-        let gravity: AVLayerVideoGravity = enabled ? .resize : .resizeAspect
-        guard video.videoGravity != gravity else { return }
-        CATransaction.begin(); CATransaction.setDisableActions(true)
-        video.videoGravity = gravity
-        CATransaction.commit()
-    }
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-    override func layout() {
-        super.layout(); CATransaction.begin(); CATransaction.setDisableActions(true)
-        video.frame = bounds; CATransaction.commit()
-    }
-}
+typealias ProjectionPlatformView = NSView
 #else
 private struct NativeVideoLayer: UIViewRepresentable {
     let player: AVPlayer
     let stretch: Bool
     func makeUIView(context: Context) -> VideoLayerView { VideoLayerView(player: player, stretch: stretch) }
-    func updateUIView(_ view: VideoLayerView, context: Context) { view.setStretch(stretch) }
-    static func dismantleUIView(_ view: VideoLayerView, coordinator: ()) { view.video.player = nil }
+    func updateUIView(_ view: VideoLayerView, context: Context) { view.setPlayer(player); view.setStretch(stretch) }
+    static func dismantleUIView(_ view: VideoLayerView, coordinator: ()) { view.clear() }
 }
-private final class VideoLayerView: UIView {
-    override class var layerClass: AnyClass { AVPlayerLayer.self }
-    var video: AVPlayerLayer { layer as! AVPlayerLayer }
+typealias ProjectionPlatformView = UIView
+#endif
+#if os(iOS)
+struct IpadNativeVideoButton: View {
+    private let video = VideoPlayback.shared
+    @State private var visible = false
+    @State private var stretch = false
+    var body: some View {
+        Button { video.toggle() } label: {
+            HStack(spacing: 3) {
+                ControlIcon(name: "video", active: visible, size: 16)
+                Text("Video").font(.jarasSystem(size: 11, weight: .semibold))
+            }.lineLimit(1)
+                .frame(width: 62, height: 32).foregroundStyle(JarasTheme.toolbarTint(active: visible))
+                .background { RemoteSurface.panel.clipShape(RoundedRectangle(cornerRadius: 5)) }
+                .contentShape(Rectangle())
+        }.buttonStyle(.plain).accessibilityLabel("Video")
+            .accessibilityValue(visible ? "On" : "Off")
+            .contextMenu { Toggle("Stretch", isOn: Binding(get: { stretch }, set: { video.setStretch($0) })) }
+            .onReceive(video.$visible.removeDuplicates()) { visible = $0 }
+            .onReceive(video.$stretch.removeDuplicates()) { stretch = $0 }
+    }
+}
+
+@MainActor private enum IpadVideoWindowCapability {
+    static let supportsExtendedDisplay: Bool = {
+        #if targetEnvironment(simulator)
+        false
+        #else
+        // The iPad Air and Pro models with an Apple M-series GPU support a
+        // separate extended desktop. Lightning and A-series models are docked.
+        MTLCreateSystemDefaultDevice()?.name.hasPrefix("Apple M") == true
+        #endif
+    }()
+}
+
+struct IpadNativeVideoPanel: View {
+    let leading: CGFloat
+    let trailing: CGFloat
+    let dockedChanged: (Bool) -> Void
+    private let video = VideoPlayback.shared
+    @State private var visible = false
+    @State private var origin: CGPoint?
+    @State private var fullscreen = false
+    @GestureState private var drag = CGSize.zero
+    private var floating: Bool { IpadVideoWindowCapability.supportsExtendedDisplay && !fullscreen }
+    var body: some View {
+        GeometryReader { geometry in
+            if visible {
+                let insetLeading = min(leading, geometry.size.width)
+                let insetTrailing = min(trailing, geometry.size.width - insetLeading)
+                let width = fullscreen ? geometry.size.width : floating
+                    ? min(480, max(240, geometry.size.width * 0.55), geometry.size.width)
+                    : max(0, geometry.size.width - insetLeading - insetTrailing)
+                let height = floating ? min(geometry.size.height, width * 9 / 16 + 36) : geometry.size.height
+                let initial = origin ?? CGPoint(x: geometry.size.width - width - 12, y: geometry.size.height - height - 12)
+                let x = floating ? min(max(0, initial.x + drag.width), max(0, geometry.size.width - width)) : fullscreen ? 0 : insetLeading
+                let y = floating ? min(max(0, initial.y + drag.height), max(0, geometry.size.height - height)) : 0
+                VStack(spacing: 0) {
+                    HStack(spacing: 8) {
+                        HStack { Image(systemName: "video"); Text("Video"); Spacer(minLength: 0) }
+                            .contentShape(Rectangle())
+                            .gesture(DragGesture().updating($drag) { value, current, _ in
+                                if floating { current = value.translation }
+                            }.onEnded { value in
+                                if floating { origin = CGPoint(x: min(max(0, initial.x + value.translation.width), max(0, geometry.size.width - width)),
+                                    y: min(max(0, initial.y + value.translation.height), max(0, geometry.size.height - height))) }
+                            }, including: floating ? .gesture : .none)
+                        Button { fullscreen.toggle() } label: {
+                            Image(systemName: fullscreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right").frame(width: 36, height: 36)
+                        }.accessibilityLabel(fullscreen ? "Sair da tela cheia" : "Tela cheia")
+                        Button { video.setVisible(false) } label: { Image(systemName: "xmark").frame(width: 36, height: 36) }
+                            .accessibilityLabel("Fechar vídeo")
+                    }.padding(.leading, 12).font(.system(size: 13, weight: .semibold))
+                        .frame(height: 36).background(JarasTheme.panel).foregroundStyle(Color.white).buttonStyle(.plain)
+                    VideoSurface(controller: video).clipped().contentShape(Rectangle())
+                        .onTapGesture(count: 2) { fullscreen.toggle() }
+                }.frame(width: width, height: height).background(Color.black)
+                    .clipShape(RoundedRectangle(cornerRadius: floating ? 8 : 0))
+                    .shadow(radius: floating ? 10 : 0).offset(x: x, y: y)
+            }
+        }.clipped().allowsHitTesting(visible)
+            .onReceive(video.$visible.removeDuplicates()) { value in
+                visible = value
+                if !value { fullscreen = false }
+            }
+            .onChange(of: visible && !floating, perform: dockedChanged)
+    }
+}
+#endif
+
+/// A ready AVPlayerItem is not necessarily a drawable AVPlayerLayer yet.
+/// Keep the outgoing layer visible until the incoming layer has a real frame.
+final class VideoLayerView: ProjectionPlatformView {
+    private var projectionLayer: CALayer? { layer }
+    private(set) var video = AVPlayerLayer()
+    private var incoming: AVPlayerLayer?
+    private var readiness: NSKeyValueObservation?
+    private var itemObservation: NSKeyValueObservation?
+    private weak var requestedPlayer: AVPlayer?
     init(player: AVPlayer, stretch: Bool) {
         super.init(frame: .zero)
-        backgroundColor = .black; video.player = player; setStretch(stretch)
+        #if os(macOS)
+        wantsLayer = true
+        #else
+        backgroundColor = .black
+        #endif
+        video.videoGravity = stretch ? .resize : .resizeAspect
+        projectionLayer?.addSublayer(video)
+        setPlayer(player)
+    }
+    func clear() {
+        readiness = nil; itemObservation = nil; requestedPlayer = nil
+        incoming?.player = nil; incoming?.removeFromSuperlayer(); incoming = nil
+        video.player = nil
+    }
+    func setPlayer(_ player: AVPlayer) {
+        guard requestedPlayer !== player else { return }
+        readiness = nil; itemObservation = nil
+        incoming?.player = nil; incoming?.removeFromSuperlayer(); incoming = nil
+        requestedPlayer = player
+        guard player.currentItem != nil else { video.player = player; return }
+        let next = AVPlayerLayer(player: player)
+        next.frame = bounds; next.videoGravity = video.videoGravity
+        incoming = next
+        // Decode behind the previous frame, without hiding the incoming layer.
+        projectionLayer?.insertSublayer(next, below: video)
+        readiness = next.observe(\.isReadyForDisplay, options: [.initial, .new]) { [weak self, weak next] _, _ in
+            DispatchQueue.main.async {
+                guard let self, let next, self.incoming === next, next.isReadyForDisplay else { return }
+                CATransaction.begin(); CATransaction.setDisableActions(true)
+                let previous = self.video
+                self.video = next; self.incoming = nil; self.readiness = nil
+                previous.removeFromSuperlayer(); previous.player = nil
+                CATransaction.commit()
+            }
+        }
+        itemObservation = player.observe(\.currentItem, options: [.new]) { [weak self, weak player] _, _ in
+            DispatchQueue.main.async {
+                guard let self, let player, self.requestedPlayer === player, player.currentItem == nil else { return }
+                self.clear()
+            }
+        }
     }
     func setStretch(_ enabled: Bool) {
         let gravity: AVLayerVideoGravity = enabled ? .resize : .resizeAspect
-        guard video.videoGravity != gravity else { return }
         CATransaction.begin(); CATransaction.setDisableActions(true)
-        video.videoGravity = gravity
+        video.videoGravity = gravity; incoming?.videoGravity = gravity
         CATransaction.commit()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    private func layoutVideo() {
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        video.frame = bounds; incoming?.frame = bounds; CATransaction.commit()
+    }
+    #if os(macOS)
+    override func layout() { super.layout(); layoutVideo() }
+    #else
+    override func layoutSubviews() { super.layoutSubviews(); layoutVideo() }
+    #endif
 }
-#endif

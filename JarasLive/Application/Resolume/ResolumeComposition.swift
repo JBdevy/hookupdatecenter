@@ -104,8 +104,9 @@ public actor ResolumeComposition {
         let decks: [[String: Any]] = array(composition, "decks").enumerated().map { index, deck in
             ["id": deck["id"] ?? NSNull(), "name": ["value": deckNames[index]]]
         }
-        composition = try await mutate("/composition", method: "PUT", json: ["name": ["value": project.name], "decks": decks]) {
-            self.name($0) == project.name && self.array($0, "decks").map(self.name) == deckNames
+        let compositionName = LightingExportName.clean(project.name, fallback: "Projeto CatLive")
+        composition = try await mutate("/composition", method: "PUT", json: ["name": ["value": compositionName], "decks": decks]) {
+            self.name($0) == compositionName && self.array($0, "decks").map(self.name) == deckNames
         }
         for index in 1...count {
             composition = try await select(index)

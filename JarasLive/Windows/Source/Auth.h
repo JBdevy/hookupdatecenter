@@ -3,19 +3,33 @@
 namespace catlive {
 class Auth final : private Timer {
   public:
-    Auth();
+    struct ServiceFailure final : std::runtime_error {
+        String code;
+        ServiceFailure(String value,String message) : std::runtime_error(utf8(message)),code(std::move(value)) {}
+    };
+    using Request = std::function<var(const String &,const var &,const String &)>;
+    explicit Auth(File storageDirectory = {},Request transport = {});
     ~Auth() override;
     std::function<void()> changed;
     bool allowed() const { return authorised && (expiry > Time::getCurrentTime() || pendingRevocation); }
-    bool busy = false, pendingRevocation = false;
+    bool busy = false, pendingRevocation = false, trialFinished = false;
+    bool requiresDeviceName = false;
+    uint64 loginRevision = 0;
+    var devices;
     String message, title = "Sem acesso", installationId, deviceName;
     var loginData;
     std::function<bool()> isPlaying;
     void login(String email, String cpf, String name);
+    void beginLogin(String email, String cpf);
+    void completeDeviceNaming(String name);
+    void cancelDeviceNaming();
+    static String validatedDeviceName(String name);
+    void refreshDevices();
+    void removeDevice(String installation);
     void trial(String name);
     void restore();
     void logout();
-    void validate();
+    void checkOnlineAccess();
     void credentialDevices(String email, String cpf, std::function<void(var, String)>);
     void revokeCredentialDevice(String email, String cpf, String id, std::function<void(String)>);
     static bool verifyEntitlement(const var &, const String &account, const String &installation);
@@ -26,8 +40,13 @@ class Auth final : private Timer {
     File dataDirectory() const;
 
   private:
+    File storageDirectory;
+    Request transport;
+    var call(const String &route,const var &body = {},const String &token = {}) { return transport ? transport(route,body,token) : request(route,body,token); }
     ThreadPool worker{1};
     bool authorised = false;
+    bool hasChosenDeviceName = false;
+    String pendingEmail, pendingCPF;
     Time expiry, offlineUntil, lastWall;
     double validatedMonotonic = 0;
     std::shared_ptr<int> alive = std::make_shared<int>(0);
@@ -35,6 +54,7 @@ class Auth final : private Timer {
     void begin(const String &route, var body);
     void accept(var, bool online);
     void persist();
+    void loadDevices(String removal = {});
     var device() const;
 };
 } // namespace catlive

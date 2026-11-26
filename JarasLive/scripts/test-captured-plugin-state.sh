@@ -8,10 +8,11 @@ mkdir -p "$plugin/Contents/MacOS"
 cat > "$plugin/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>com.jaras.test.gain</string><key>CFBundleExecutable</key><string>GainFixture</string><key>CFBundlePackageType</key><string>BNDL</string></dict></plist>
 PLIST
-clang++ -std=c++17 -fPIC -bundle -DCATLIVE_CAPTURE_STATE_DIAGNOSTICS -ICore/ThirdParty/VST3 Tests/Apple/VST3/GainFixture.cpp Core/ThirdParty/VST3/pluginterfaces/base/funknown.cpp Core/ThirdParty/VST3/pluginterfaces/base/ustring.cpp -framework CoreFoundation -o "$plugin/Contents/MacOS/GainFixture"
+clang++ -std=c++17 -fPIC -bundle -DCATLIVE_CAPTURE_STATE_DIAGNOSTICS -DCATLIVE_MIDI_STATE_DIAGNOSTICS -ICore/ThirdParty/VST3 Tests/Apple/VST3/GainFixture.cpp Core/ThirdParty/VST3/pluginterfaces/base/funknown.cpp Core/ThirdParty/VST3/pluginterfaces/base/ustring.cpp -framework CoreFoundation -o "$plugin/Contents/MacOS/GainFixture"
 bash scripts/compile-vst3.sh "$build_dir"
 clang++ -std=c++17 -fobjc-arc -c Apple/Bridge/JarasEffects.mm -o "$build_dir/effects.o"
+clang++ -std=c++17 -fobjc-arc -c Apple/Bridge/JarasCatSynth.mm -o "$build_dir/catsynth.o"
 clang++ -std=c++17 -fobjc-arc -c Apple/Bridge/JarasStemSeparator.mm -o "$build_dir/stemseparator.o"
 cp Tests/Apple/VST3/CapturedStateTests.swift "$build_dir/main.swift"
-swiftc -swift-version 5 -import-objc-header Apple/Bridge/JarasLive-Bridging-Header.h Application/Project/OutputPatch.swift Application/Project/NativeFXSettings.swift Application/Project/TrackRouting.swift Application/Project/MultiLoop.swift Application/Project/TrackAutomation.swift Application/Controls/NativeFXParameter.swift Application/Project/ProjectModels.swift Application/Project/MIDIItem.swift Application/Project/TimelineTempo.swift Apple/Shared/NativeEffectsChain.swift Apple/Shared/CatStemRealtimeRuntime.swift "$build_dir/main.swift" "$build_dir"/*.o -framework Accelerate -lc++ -o "$build_dir/test"
+swiftc -swift-version 5 -import-objc-header Apple/Bridge/JarasLive-Bridging-Header.h Application/Project/OutputPatch.swift Application/Project/DrummerPadKit.swift Application/Project/NativeFXSettings.swift Application/Project/TrackRouting.swift Application/Project/MultiLoop.swift Application/Project/TrackAutomation.swift Application/Controls/NativeFXParameter.swift Application/Project/ProjectModels.swift Application/Project/MIDIItem.swift Application/Project/ItemFade.swift Application/Project/ItemFadeCurve.swift Application/Project/TimelineTempo.swift Apple/Shared/NativeEffectsChain.swift Apple/Shared/CatStemRealtimeRuntime.swift "$build_dir/main.swift" "$build_dir"/*.o -framework Accelerate -lc++ -o "$build_dir/test"
 "$build_dir/test" "$plugin"

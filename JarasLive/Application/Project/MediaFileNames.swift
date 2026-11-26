@@ -3,11 +3,34 @@ import Foundation
 /// Allocate once per import batch, including names retained for Undo.
 struct MediaFileNames {
     private var used: Set<String> = []
-    init(directory: URL) {
-        if let files = FileManager.default.enumerator(at: directory, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles]) {
+    init(directory: URL?) {
+        if let directory, let files = FileManager.default.enumerator(at: directory, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles]) {
             for case let url as URL in files where (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true {
                 used.insert(url.lastPathComponent.lowercased())
             }
+        }
+    }
+    /// Repeated unification belongs to one filename family, not nested suffixes.
+    mutating func allocateUnification(_ name: String) -> String {
+        let clean = name.replacingOccurrences(of: ":", with: "-").replacingOccurrences(of: "/", with: "-")
+        let ext = (clean as NSString).pathExtension
+        var stem = (clean as NSString).deletingPathExtension
+        var latest = 0
+        while let range = stem.range(of: "\\s*-\\s*[0-9]{3}$", options: .regularExpression) {
+            latest = max(latest, Int(stem[range].filter(\.isNumber)) ?? 0)
+            stem.removeSubrange(range)
+        }
+        stem = stem.trimmingCharacters(in: .whitespacesAndNewlines)
+        while stem.utf8.count > 210 { stem.removeLast() }
+        let family = stem.lowercased()+"-", tail = ext.isEmpty ? "" : "."+ext
+        for candidate in used where candidate.hasPrefix(family) && (candidate as NSString).pathExtension == ext.lowercased() {
+            let number = String((candidate as NSString).deletingPathExtension.dropFirst(family.count))
+            if number.count >= 3 && number.allSatisfy(\.isNumber) { latest = max(latest, Int(number) ?? 0) }
+        }
+        while true {
+            latest += 1
+            let candidate = stem+String(format: "-%03d",latest)+tail
+            if used.insert(candidate.lowercased()).inserted { return candidate }
         }
     }
     mutating func allocate(_ name: String, forceSuffix: Bool = false) -> String {
@@ -41,9 +64,9 @@ struct RecordingNames {
         var name = track.components(separatedBy: CharacterSet.controlCharacters.union(CharacterSet(charactersIn: "/:\\"))).joined(separator: "-").trimmingCharacters(in: .whitespacesAndNewlines)
         if name.isEmpty || name == "." || name == ".." { name = "Track" }
         while name.utf8.count > 200 { name.removeLast() }
-        var index = 1
+        var index = 0
         while true {
-            let value = name + String(format: " - %03d", index)
+            let value = index == 0 ? name : name + String(format: " - %03d", index)
             if used.insert(value.lowercased()).inserted { return value }
             index += 1
         }

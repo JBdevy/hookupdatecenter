@@ -1,11 +1,17 @@
 #import "JarasEffects.h"
 #include "JarasOutputChannelMap.hpp"
 #include "JarasRealtimeClock.hpp"
+#include "../../Core/Tracks/OverlapCrossfade.hpp"
+#include "../../Core/Audio/RealtimeBorrowedPointer.hpp"
+#include "../../Core/Audio/DiskIOActivity.hpp"
+#include "../../Core/Include/CatDynamicsDSP.hpp"
+#include "CatMIDISequenceBridge.h"
+#include "../../Core/Audio/CreativeEffects.hpp"
+#include "../../Core/Transport/PluginTransportClock.hpp"
+#include "../../Core/Audio/PadGateRelease.hpp"
+#include "../../Core/Audio/RemoteMainAudio.hpp"
 #include <TargetConditionals.h>
 #import <Accelerate/Accelerate.h>
-#if defined(__x86_64__)
-#include <xmmintrin.h>
-#endif
 #include <array>
 #include <atomic>
 #include <cmath>
@@ -15,8 +21,66 @@
 #include <vector>
 #include <mach/mach_time.h>
 #include "JarasMobileAudioIO.inc"
+#include "JarasPreparedClip.inc"
+#if TARGET_OS_OSX
+#include "JarasBufferedAudioIO.inc"
+#endif
+#include "JarasPadSource.inc"
+
+#include "../../Core/MIDI/ChordName.hpp"
+
+void JarasBeginAudioDiskIO(void) { catlive::audio::diskIOActivity.begin(); }
+void JarasEndAudioDiskIO(void) { catlive::audio::diskIOActivity.end(); }
+int64_t JarasAudioDiskOccupiedNanoseconds(void) { return catlive::audio::diskIOActivity.occupiedNanoseconds(); }
+
+@implementation JarasRemoteMainAudio {
+    jaras::audio::RemoteMainAudio audio;
+}
+- (void)setCapturing:(BOOL)capturing { audio.setEnabled(capturing); }
+- (void)captureBuffer:(AVAudioPCMBuffer *)buffer {
+    auto *channels = buffer.floatChannelData;
+    if (!channels || buffer.format.isInterleaved || buffer.format.channelCount < 2) return;
+    audio.push(channels[0], channels[1], buffer.frameLength, unsigned(buffer.format.sampleRate));
+}
+- (NSData *)nextPacket {
+    auto data = audio.pop();
+    return data.empty() ? nil : [NSData dataWithBytes:data.data() length:data.size()];
+}
+@end
+
+@implementation JarasMIDIChord
++ (NSString *)nameForPitchClasses:(uint16_t)classes bass:(NSInteger)bass {
+    const auto name = jaras::midi::chordName(classes, int(bass));
+    return [NSString stringWithUTF8String:name.c_str()];
+}
+@end
 
 @implementation JarasAudioOutputConnection
++ (BOOL)startPlayer:(AVAudioPlayerNode *)player error:(NSError **)error {
+    @try { [player play]; return YES; }
+    @catch (NSException *exception) {
+        if (error) *error = [NSError errorWithDomain:@"CatLive.AudioPlayer" code:1
+            userInfo:@{NSLocalizedDescriptionKey: exception.reason ?: @"Unable to start audio playback"}];
+        return NO;
+    }
+}
+// AVAudioPlayerNode's immediate start can wait for an I/O cycle. Start the
+// already prepared independent players together rather than one cycle per stem.
++ (BOOL)startPlayers:(NSArray<AVAudioPlayerNode *> *)players error:(NSError **)error {
+    if (players.count == 1) return [self startPlayer:players.firstObject error:error];
+    NSLock *lock = [[NSLock alloc] init];
+    __block NSError *failure = nil;
+    dispatch_apply(players.count, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^(size_t index) {
+        NSError *current = nil;
+        if (![self startPlayer:players[index] error:&current]) {
+            [lock lock];
+            if (!failure) failure = current;
+            [lock unlock];
+        }
+    });
+    if (failure && error) *error = failure;
+    return failure == nil;
+}
 + (AVAudioFormat *)connectEngine:(AVAudioEngine *)engine error:(NSError **)error {
     // A HAL route change can report 0 Hz / 0 channels while the selected
     // device is still settling. Do not manufacture a rate or borrow another
@@ -64,38 +128,39 @@
     }
 }
 @end
-// A callback may pull several nested units. Only the outermost unit changes
-// the floating-point mode; restoring it preserves the caller's environment.
-struct ScopedAudioDenormals {
-#if defined(__aarch64__)
-    uint64_t previous=0;
-    bool changed=false;
-    ScopedAudioDenormals() {
-        asm volatile("mrs %0, fpcr" : "=r"(previous));
-        const auto next=previous | (uint64_t(1)<<24);
-        changed=next!=previous;
-        if(changed) asm volatile("msr fpcr, %0" :: "r"(next));
-    }
-    ~ScopedAudioDenormals() { if(changed) asm volatile("msr fpcr, %0" :: "r"(previous)); }
-#elif defined(__x86_64__)
-    unsigned previous=_mm_getcsr();
-    ScopedAudioDenormals() { _mm_setcsr(previous | 0x8040); }
-    ~ScopedAudioDenormals() { _mm_setcsr(previous); }
-#endif
-};
+using jaras::ScopedAudioDenormals;
 static void scaleAudioBlock(float* data,unsigned count,float gain) {
     if(!count || gain==1) return;
     if(count>=64) vDSP_vsmul(data,1,&gain,data,1,count);
     else for(unsigned i=0;i<count;++i) data[i]*=gain;
+}
+// Upstream silence describes the input, not a filter/reverb/trigger tail.
+// Correct only a stale hint: audible input takes no extra scan, while truly
+// silent output keeps the host's idle optimization. No threshold may discard
+// quiet tails, and stop/item gates remain downstream of these processors.
+static void updateEffectSilenceFlag(AudioUnitRenderActionFlags* flags,
+                                    const AudioBufferList* buffers,unsigned frames) {
+    if(!frames || !(*flags & kAudioUnitRenderAction_OutputIsSilence)) return;
+    for(unsigned ch=0;ch<buffers->mNumberBuffers;++ch) {
+        const auto& buffer=buffers->mBuffers[ch];
+        const auto* data=static_cast<const float*>(buffer.mData);
+        const auto samples=vDSP_Length(frames)*buffer.mNumberChannels;
+        if(!data || !samples) continue;
+        float peak=0;
+        vDSP_maxmgv(data,1,&peak,samples);
+        if(peak!=0) { *flags &= ~kAudioUnitRenderAction_OutputIsSilence; return; }
+    }
 }
 // Level meters read the same maximum absolute sample as the former node taps.
 // Capture the existing render buffer directly; the UI consumes only atomics.
 struct StereoLevelPeaks {
     std::atomic<bool> enabled{false};
     std::array<std::atomic<float>,2> peaks{};
+    std::atomic<float> rms{0};
     StereoLevelPeaks() { for(auto& peak:peaks) peak.store(0,std::memory_order_relaxed); }
     void capture(const AudioBufferList *buffers,unsigned frames) {
         if(!enabled.load(std::memory_order_relaxed) || !frames || !buffers->mNumberBuffers) return;
+        float level=0;
         for(unsigned ch=0;ch<2;++ch) {
             const auto& buffer=buffers->mBuffers[std::min(ch,buffers->mNumberBuffers-1)];
             auto data=static_cast<const float*>(buffer.mData);
@@ -106,11 +171,19 @@ struct StereoLevelPeaks {
             vDSP_maxmgv(data,stride,&peak,frames);
             float old=peaks[ch].load(std::memory_order_relaxed);
             while(peak>old && !peaks[ch].compare_exchange_weak(old,peak,std::memory_order_relaxed)) {}
+            if (peak > 0.0001f) {
+                float channelRMS=0;
+                vDSP_rmsqv(data,stride,&channelRMS,frames);
+                level=std::max(level,channelRMS);
+            }
         }
+        float old=rms.load(std::memory_order_relaxed);
+        while(level>old && !rms.compare_exchange_weak(old,level,std::memory_order_relaxed)) {}
     }
     float take(NSUInteger channel) {
         return channel<peaks.size() ? peaks[channel].exchange(0,std::memory_order_relaxed) : 0;
     }
+    float takeRMS() { return rms.exchange(0,std::memory_order_relaxed); }
 };
 // Storage is prepared on the control thread. The render block uses only
 // bounded arithmetic and atomic snapshots, never locks, files or allocations.
@@ -180,6 +253,8 @@ struct EffectAnalysis {
 @end
 
 struct VoiceGainKernel {
+    std::atomic<uint64_t> startHost{0};
+    double sampleRate=48000;
     std::atomic<bool> enabled{true};
     std::atomic<float> gain{1};
     float current=1;
@@ -208,6 +283,7 @@ struct VoiceGainKernel {
 - (AUAudioUnitBusArray *)outputBusses { return _outputs; }
 - (BOOL)allocateRenderResourcesAndReturnError:(NSError **)error {
     if(![super allocateRenderResourcesAndReturnError:error]) return NO;
+    gain.sampleRate=_output.format.sampleRate;
     gain.capacity=self.maximumFramesToRender; gain.channels=_output.format.channelCount;
     gain.silence.assign(gain.capacity*gain.channels,0);
     gain.resetRequested.store(true,std::memory_order_release);
@@ -252,11 +328,29 @@ struct VoiceGainKernel {
             const auto& buffer=output->mBuffers[ch]; auto data=static_cast<float*>(buffer.mData);
             if(data) scaleAudioBlock(data+frame*buffer.mNumberChannels,(frames-frame)*buffer.mNumberChannels,state->current);
         }
+        // Prepared sources drain their converters while silent. Enforce the
+        // audible deadline after conversion/insert FX so cached samples cannot
+        // escape before a newly scheduled onset, even on an immediate replay.
+        const auto physicalTime = jaras::physicalRenderTime(*time, state->sampleRate);
+        time = &physicalTime;
+        const auto start = state->startHost.load(std::memory_order_acquire);
+        if (start && ((time->mFlags & kAudioTimeStampHostTimeValid) || start == UINT64_MAX)) {
+            const double before = start == UINT64_MAX ? double(frames) :
+                (double(start) - double(time->mHostTime)) * [AVAudioTime secondsForHostTime:1] * state->sampleRate;
+            const auto silent = unsigned(std::clamp(std::ceil(before), 0., double(frames)));
+            if (silent) for (unsigned ch=0; ch<output->mNumberBuffers; ++ch) {
+                auto &buffer=output->mBuffers[ch];
+                if (buffer.mData) memset(buffer.mData, 0, silent * sizeof(float) * buffer.mNumberChannels);
+            }
+        }
         return noErr;
     };
 }
 @end
 @implementation JarasVoiceGain
++ (void)setStartHostTime:(AVAudioUnitEffect *)node hostTime:(uint64_t)hostTime {
+    ((JarasVoiceGainUnit *)node.AUAudioUnit)->gain.startHost.store(hostTime, std::memory_order_release);
+}
 + (AVAudioUnitEffect *)makeNode {
     static dispatch_once_t once;
     AudioComponentDescription d={kAudioUnitType_Effect,'JLvg','Jara',0,0};
@@ -277,6 +371,20 @@ struct VoiceGainKernel {
 // segments. The control thread publishes bounded atomic snapshots; rendering
 // never allocates, locks, or rebuilds the graph.
 struct ItemFadeKernel {
+    std::vector<jaras::overlap::Ramp> envelope;
+    catlive::audio::RealtimeBorrowedPointer<std::vector<jaras::overlap::Ramp>> publishedEnvelope;
+    std::atomic<bool> hasEnvelope{false};
+    void setEnvelope(NSData *data) {
+        using Ramp = jaras::overlap::Ramp;
+        hasEnvelope.store(false);
+        publishedEnvelope.withdrawAndWait();
+        envelope.resize(data.length / sizeof(Ramp));
+        if (!envelope.empty()) {
+            memcpy(envelope.data(), data.bytes, envelope.size()*sizeof(Ramp));
+            publishedEnvelope.publish(&envelope);
+            hasEnvelope.store(true);
+        }
+    }
     std::atomic<uint64_t> boundaryHost{0};
     void gate(AudioBufferList* buffers,unsigned frames,const AudioTimeStamp* time) {
         const auto physical = jaras::physicalRenderTime(*time, rate); time = &physical;
@@ -292,34 +400,36 @@ struct ItemFadeKernel {
             }
         }
     }
-    std::array<std::atomic<double>,6> pending{};
+    std::array<std::atomic<double>,10> pending{};
     std::atomic<unsigned> generation{0};
     unsigned consumedGeneration=~0u;
-    double parameters[6]{};
+    double parameters[10]{0,0,0,0,0,0,1,1,1,1};
     double rate=48000;
     const double hostSecondsPerTick=[] {
         mach_timebase_info_data_t timebase{};
         mach_timebase_info(&timebase);
         return double(timebase.numer)/double(timebase.denom)*1e-9;
     }();
-    void configure(double in,double out,double duration,double position,uint64_t host,double sample) {
+    void configure(double in,double out,double duration,double position,uint64_t host,double sample,double inCurve=0,double inS=1,double outCurve=0,double outS=1) {
         generation.fetch_add(1,std::memory_order_acq_rel);
-        const double values[]={in,out,duration,position,host?double(host)*hostSecondsPerTick:0,sample};
-        for(unsigned i=0;i<6;++i) pending[i].store(values[i],std::memory_order_relaxed);
+        const double values[]={in,out,duration,position,host?double(host)*hostSecondsPerTick:0,sample,std::exp2(4*std::clamp(inCurve,-1.,1.)),std::clamp(inS,-1.,1.),std::exp2(4*std::clamp(outCurve,-1.,1.)),std::clamp(outS,-1.,1.)};
+        for(unsigned i=0;i<10;++i) pending[i].store(values[i],std::memory_order_relaxed);
         generation.fetch_add(1,std::memory_order_release);
     }
     static double curve(double t) { t=std::clamp(t,0.0,1.0); return t*t*(3-2*t); }
+    static double shaped(double t,double bias,double s) { t=std::clamp(t,0.,1.); const auto y=t+s*(curve(t)-t); return y/(bias+(1-bias)*y); }
     void process(AudioBufferList* buffers,unsigned frames,const AudioTimeStamp* time) {
         const auto physical = jaras::physicalRenderTime(*time, rate); time = &physical;
         const auto before=generation.load(std::memory_order_acquire);
         if(!(before&1) && before!=consumedGeneration) {
-            double values[6];
-            for(unsigned i=0;i<6;++i) values[i]=pending[i].load(std::memory_order_relaxed);
-            if(generation.load(std::memory_order_acquire)==before) { std::copy(values,values+6,parameters); consumedGeneration=before; }
+            double values[10];
+            for(unsigned i=0;i<10;++i) values[i]=pending[i].load(std::memory_order_relaxed);
+            if(generation.load(std::memory_order_acquire)==before) { std::copy(values,values+10,parameters); consumedGeneration=before; }
         }
         const double duration=parameters[2];
         const double in=std::min(duration,parameters[0]), out=std::min(duration,parameters[1]);
-        if(duration<=0 || (in<=0 && out<=0)) return;
+        const bool overlap = hasEnvelope.load(std::memory_order_acquire);
+        if(duration<=0 || (in<=0 && out<=0 && !overlap)) return;
         double position=parameters[3];
         if(parameters[4]>0 && (time->mFlags&kAudioTimeStampHostTimeValid))
             position+=double(time->mHostTime)*hostSecondsPerTick-parameters[4];
@@ -327,11 +437,13 @@ struct ItemFadeKernel {
         else return;
         // Outside both edge ramps the envelope is exactly unity. Keep the
         // original sample loop for blocks crossing an edge or overlapping fades.
-        if(!frames || ((in<=0 || position>=in) &&
+        if(!frames || (!overlap && (in<=0 || position>=in) &&
            (out<=0 || duration-(position+double(frames-1)/rate)>=out))) return;
+        auto lease = publishedEnvelope.read();
+        const auto *ramps = lease.get();
         for(unsigned frame=0;frame<frames;++frame) {
             const double t=position+double(frame)/rate;
-            const float gain=float((in>0?curve(t/in):1)*(out>0?curve((duration-t)/out):1));
+            const float gain=float((ramps ? jaras::overlap::gain(*ramps,t) : 1.)*(in>0?shaped(t/in,parameters[6],parameters[7]):1)*(out>0?shaped((duration-t)/out,parameters[8],parameters[9]):1));
             for(unsigned ch=0;ch<buffers->mNumberBuffers;++ch) {
                 auto& buffer=buffers->mBuffers[ch]; auto data=static_cast<float*>(buffer.mData);
                 if(!data) continue;
@@ -343,35 +455,66 @@ struct ItemFadeKernel {
 static constexpr unsigned kSections=160;
 struct EQKernel {
     ItemFadeKernel fade;
+    jaras::PadGateRelease padRelease;
+    std::atomic<bool> padReleaseRequested{false}, padReleaseComplete{false};
     StereoLevelPeaks outputPeaks;
     std::unique_ptr<EffectAnalysis> inputStorage, outputStorage;
     std::atomic<EffectAnalysis*> inputAnalysis{nullptr}, outputAnalysis{nullptr};
     std::array<std::array<std::atomic<double>,5>,kSections> pending;
-    double coefficients[kSections][5] = {}, z1[2][kSections] = {}, z2[2][kSections] = {};
+    double coefficients[kSections][5] = {};
+    // Direct-form histories retain their meaning when coefficients change.
+    // Transposed-II accumulator histories depend on the previous coefficients
+    // and turn a parameter edit into an impulse even for a constant input.
+    double x1[2][kSections] = {}, x2[2][kSections] = {}, y1[2][kSections] = {}, y2[2][kSections] = {};
+    double coefficientSmoothing = -std::expm1(-1.0/(48000.0*0.005));
     std::atomic<unsigned> count{0}, generation{0};
     double desired[kSections][5] = {};
     unsigned activeSections=0;
     unsigned consumedGeneration=~0u;
     bool coefficientsSettled=false;
+    std::atomic<unsigned> effectChannels{3};
     std::atomic<bool> enabled{false}, resetRequested{false};
     std::atomic<double> inputGain{1};
+    // Item fader precedes every insert, independently of normalization. Keep
+    // their ranges separate: two +18 dB controls must still produce +36 dB.
+    std::atomic<double> itemGain{1};
     std::atomic<double> inputPan{0};
     std::atomic<bool> inverted{false};
     std::atomic<int> channelMode{0};
     double channelMatrix[4] = {1,0,0,1};
     double currentInputGain=1;
     double currentInputPan=0;
+    double inputGainTarget=1;
+    double inputPanTarget=0;
+    double inputGainStep=0;
+    double inputPanStep=0;
+    double sampleRate=48000;
+    unsigned inputRampFrames=240;
+    unsigned inputRampRemaining=0;
     bool inputGainInitialized=false;
     double mix=0;
     EQKernel() { for(unsigned n=0;n<kSections;n++) for(unsigned j=0;j<5;j++) { pending[n][j].store(j==0?1:0); coefficients[n][j]=j==0?1:0; desired[n][j]=j==0?1:0; } }
     void process(AudioBufferList *buffers, unsigned frames) {
+        if (padReleaseRequested.exchange(false, std::memory_order_acq_rel)) padRelease.begin(sampleRate);
+        if (padRelease.started) {
+            for (unsigned frame=0; frame<frames; ++frame) {
+                const float gain=padRelease.next();
+                for (unsigned ch=0; ch<buffers->mNumberBuffers; ++ch) {
+                    auto &buffer=buffers->mBuffers[ch]; auto *data=static_cast<float *>(buffer.mData);
+                    if (data) for (unsigned channel=0; channel<buffer.mNumberChannels; ++channel)
+                        data[frame*buffer.mNumberChannels+channel]*=gain;
+                }
+            }
+            if (padRelease.finished()) padReleaseComplete.store(true, std::memory_order_release);
+        }
         if (resetRequested.exchange(false, std::memory_order_acq_rel)) {
-            for (unsigned ch=0; ch<2; ++ch) for (unsigned n=0; n<kSections; ++n) z1[ch][n]=z2[ch][n]=0;
+            for (unsigned ch=0; ch<2; ++ch) for (unsigned n=0; n<kSections; ++n) x1[ch][n]=x2[ch][n]=y1[ch][n]=y2[ch][n]=0;
             inputGainInitialized=false;
+            inputRampRemaining=0;
         }
         const int mode=channelMode.load(std::memory_order_relaxed);
-        const double matrices[4][4]={{1,0,0,1},{1,0,1,0},{0,1,0,1},{0.5,0.5,0.5,0.5}};
-        const auto &matrixTarget=matrices[std::clamp(mode,0,3)];
+        const double matrices[5][4]={{1,0,0,1},{1,0,1,0},{0,1,0,1},{0.5,0.5,0.5,0.5},{0,1,1,0}};
+        const auto &matrixTarget=matrices[std::clamp(mode,0,4)];
         if(!inputGainInitialized) std::copy(matrixTarget,matrixTarget+4,channelMatrix);
         if(buffers->mNumberBuffers>=2 && (mode!=0 || channelMatrix[0]!=1 || channelMatrix[3]!=1)) {
             auto left=static_cast<float*>(buffers->mBuffers[0].mData);
@@ -383,19 +526,30 @@ struct EQKernel {
                 right[frame]=float(l*channelMatrix[2]+r*channelMatrix[3]);
             }
         }
-        const double gain=inputGain.load(std::memory_order_relaxed)*(inverted.load(std::memory_order_relaxed)?-1:1);
+        const double gain=inputGain.load(std::memory_order_relaxed)*itemGain.load(std::memory_order_relaxed)*(inverted.load(std::memory_order_relaxed)?-1:1);
         const double pan=inputPan.load(std::memory_order_relaxed);
-        if(!inputGainInitialized) { currentInputGain=gain; currentInputPan=pan; inputGainInitialized=true; }
-        if(gain!=1 || currentInputGain!=1 || pan!=0 || currentInputPan!=0) {
+        if(!inputGainInitialized) {
+            currentInputGain=inputGainTarget=gain;
+            currentInputPan=inputPanTarget=pan;
+            inputGainInitialized=true;
+        } else if(gain!=inputGainTarget || pan!=inputPanTarget) {
+            inputGainTarget=gain; inputPanTarget=pan;
+            inputRampRemaining=inputRampFrames;
+            inputGainStep=(gain-currentInputGain)/inputRampRemaining;
+            inputPanStep=(pan-currentInputPan)/inputRampRemaining;
+        }
+        if(inputRampRemaining || currentInputGain!=1 || currentInputPan!=0) {
             unsigned frame=0;
-            // Smooth only parameter changes. Once settled, use a contiguous
-            // channel pass that the compiler can vectorize instead of doing
-            // control interpolation and channel lookup for every sample.
-            for(;frame<frames && (currentInputGain!=gain || currentInputPan!=pan);frame++) {
-                currentInputGain += (gain-currentInputGain)*0.02;
-                if(std::abs(gain-currentInputGain)<1e-9) currentInputGain=gain;
-                currentInputPan += (pan-currentInputPan)*0.02;
-                if(std::abs(pan-currentInputPan)<1e-9) currentInputPan=pan;
+            // Use the same short, fixed-duration ramp for every track. Solo
+            // changes then open all affected buses together instead of making
+            // louder targets appear to return before quieter ones.
+            for(;frame<frames && inputRampRemaining;frame++) {
+                currentInputGain += inputGainStep;
+                currentInputPan += inputPanStep;
+                if(--inputRampRemaining==0) {
+                    currentInputGain=inputGainTarget;
+                    currentInputPan=inputPanTarget;
+                }
                 for(unsigned ch=0;ch<std::min(2u,buffers->mNumberBuffers);ch++) {
                     auto data=static_cast<float*>(buffers->mBuffers[ch].mData);
                     // Stereo balance matches the existing mixer: center is
@@ -420,12 +574,25 @@ struct EQKernel {
         if((before&1)==0 && before!=consumedGeneration) {
             for(unsigned n=0;n<requested;n++) for(unsigned j=0;j<5;j++) target[n][j]=pending[n][j].load(std::memory_order_relaxed);
             if(generation.load(std::memory_order_acquire)==before) {
+                const auto previousSections=activeSections;
                 activeSections=requested;
                 consumedGeneration=before; coefficientsSettled=false;
-                for(unsigned n=0;n<requested;n++) for(unsigned j=0;j<5;j++) desired[n][j]=target[n][j];
+                for(unsigned n=0;n<requested;n++) {
+                    // A newly inserted filter has no meaningful previous state.
+                    // Interpolating its denominator from identity creates a
+                    // different resonant filter before the requested EQ exists.
+                    const bool fresh = mix==0 || n>=previousSections;
+                    for(unsigned j=0;j<5;j++) {
+                        desired[n][j]=target[n][j];
+                        if(fresh) coefficients[n][j]=target[n][j];
+                    }
+                    if(fresh) for(unsigned ch=0;ch<2;ch++) x1[ch][n]=x2[ch][n]=y1[ch][n]=y2[ch][n]=0;
+                }
             }
         }
+        const unsigned channels=effectChannels.load(std::memory_order_relaxed);
         const auto sections=activeSections;
+        if(on && mix==0) for(unsigned ch=0;ch<2;ch++) for(unsigned n=0;n<sections;n++) x1[ch][n]=x2[ch][n]=y1[ch][n]=y2[ch][n]=0;
         for(unsigned frame=0;frame<frames;frame++) {
             const double targetMix=on?1.0:0.0;
             if(mix!=targetMix) { mix += (targetMix-mix)*0.02; if(std::abs(targetMix-mix)<(on?1e-14:1e-6)) mix=targetMix; }
@@ -433,26 +600,41 @@ struct EQKernel {
                 coefficientsSettled=true;
                 for(unsigned n=0;n<sections;n++) for(unsigned j=0;j<5;j++) {
                     auto& value=coefficients[n][j]; const auto target=desired[n][j];
-                    value+=(target-value)*0.02;
+                    value+=(target-value)*coefficientSmoothing;
                     if(std::abs(target-value)<1e-14*std::max(1.0,std::abs(target))) value=target;
                     else coefficientsSettled=false;
                 }
             }
             for(unsigned ch=0;ch<std::min(2u,buffers->mNumberBuffers);ch++) {
                 auto data=static_cast<float*>(buffers->mBuffers[ch].mData); if(!data) continue;
-                double dry=data[frame], value=dry;
+                if (!(channels & (1u << ch))) continue;
+                const double dry=data[frame];
+                if(!std::isfinite(dry)) {
+                    // An invalid upstream sample must not poison the recursive
+                    // history, or survive recovery through the dry/wet blend.
+                    for(unsigned n=0;n<sections;n++) x1[ch][n]=x2[ch][n]=y1[ch][n]=y2[ch][n]=0;
+                    data[frame]=0;
+                    continue;
+                }
+                double value=dry;
                 for(unsigned n=0;n<sections;n++) {
                     auto k=coefficients[n];
-                    double out=k[0]*value+z1[ch][n];
-                    z1[ch][n]=k[1]*value-k[3]*out+z2[ch][n];
-                    z2[ch][n]=k[2]*value-k[4]*out;
+                    const double out=k[0]*value+k[1]*x1[ch][n]+k[2]*x2[ch][n]-k[3]*y1[ch][n]-k[4]*y2[ch][n];
+                    x2[ch][n]=x1[ch][n]; x1[ch][n]=value;
+                    y2[ch][n]=y1[ch][n]; y1[ch][n]=out;
                     value=out;
                 }
                 if(!std::isfinite(value)) {
-                    for(unsigned n=0;n<sections;n++) z1[ch][n]=z2[ch][n]=0;
+                    for(unsigned n=0;n<sections;n++) x1[ch][n]=x2[ch][n]=y1[ch][n]=y2[ch][n]=0;
                     value=0;
                 }
-                data[frame]=float(dry+(value-dry)*mix);
+                const float rendered=float(dry+(value-dry)*mix);
+                if(!std::isfinite(rendered)) {
+                    // The double cascade can still overflow when narrowed to
+                    // Float32. Contain this sample and recover on the next one.
+                    for(unsigned n=0;n<sections;n++) x1[ch][n]=x2[ch][n]=y1[ch][n]=y2[ch][n]=0;
+                    data[frame]=0;
+                } else data[frame]=rendered;
             }
         }
     }
@@ -476,6 +658,9 @@ struct EQKernel {
 - (BOOL)allocateRenderResourcesAndReturnError:(NSError **)error {
     if(![super allocateRenderResourcesAndReturnError:error]) return NO;
     kernel.fade.rate=_output.format.sampleRate;
+    kernel.sampleRate=_output.format.sampleRate;
+    kernel.coefficientSmoothing=-std::expm1(-1.0/(kernel.sampleRate*0.005));
+    kernel.inputRampFrames=std::max(1u,(unsigned)std::lround(kernel.sampleRate*0.005));
     return YES;
 }
 - (void)reset { [super reset]; kernel.resetRequested.store(true, std::memory_order_release); }
@@ -492,6 +677,7 @@ struct EQKernel {
             state->fade.gate(output,frames,time);
             if(auto analysis=state->inputAnalysis.load(std::memory_order_acquire)) analysis->capture(output,frames);
             state->process(output,frames);
+            updateEffectSilenceFlag(flags,output,frames);
             if(auto analysis=state->outputAnalysis.load(std::memory_order_acquire)) analysis->capture(output,frames);
             state->outputPeaks.capture(output,frames);
         }
@@ -503,10 +689,13 @@ struct EQKernel {
 + (void)setOutputMeteringEnabled:(AVAudioUnitEffect *)node enabled:(BOOL)enabled {
     auto &peaks=((JarasEQAudioUnit *)node.AUAudioUnit)->kernel.outputPeaks;
     peaks.enabled.store(enabled,std::memory_order_relaxed);
-    if(!enabled) { peaks.take(0); peaks.take(1); }
+    if(!enabled) { peaks.take(0); peaks.take(1); peaks.takeRMS(); }
 }
 + (float)takeOutputPeak:(AVAudioUnitEffect *)node channel:(NSUInteger)channel {
     return ((JarasEQAudioUnit *)node.AUAudioUnit)->kernel.outputPeaks.take(channel);
+}
++ (float)takeOutputRMS:(AVAudioUnitEffect *)node {
+    return ((JarasEQAudioUnit *)node.AUAudioUnit)->kernel.outputPeaks.takeRMS();
 }
 + (AVAudioUnitEffect *)makeNode {
     static dispatch_once_t once;
@@ -523,15 +712,39 @@ struct EQKernel {
     unit->kernel.enabled.store(enabled,std::memory_order_relaxed);
     unit->kernel.generation.fetch_add(1,std::memory_order_release);
 }
++ (void)setEffectChannels:(AVAudioUnitEffect *)node mask:(NSUInteger)mask {
+    ((JarasEQAudioUnit *)node.AUAudioUnit)->kernel.effectChannels.store(unsigned(mask) & 3u, std::memory_order_relaxed);
+}
 + (void)setPlaybackBoundary:(AVAudioUnitEffect *)node hostTime:(uint64_t)hostTime {
     ((JarasEQAudioUnit *)node.AUAudioUnit)->kernel.fade.boundaryHost.store(hostTime,std::memory_order_relaxed);
+}
++ (void)beginPadRelease:(AVAudioUnitEffect *)node {
+    ((JarasEQAudioUnit *)node.AUAudioUnit)->kernel.padReleaseRequested.store(true, std::memory_order_release);
+}
++ (BOOL)isPadReleaseComplete:(AVAudioUnitEffect *)node {
+    return ((JarasEQAudioUnit *)node.AUAudioUnit)->kernel.padReleaseComplete.load(std::memory_order_acquire);
+}
++ (NSDictionary<NSString *, NSData *> *)overlapEnvelopes:(NSArray<NSArray *> *)items {
+    std::vector<jaras::overlap::Item> entries;
+    for (NSArray *item in items) entries.push_back({[item[0] UTF8String], [item[1] doubleValue], [item[2] doubleValue]});
+    NSMutableDictionary *result = [NSMutableDictionary dictionary];
+    for (const auto &[id, ramps] : jaras::overlap::compile(std::move(entries)))
+        result[[NSString stringWithUTF8String:id.c_str()]] = [NSData dataWithBytes:ramps.data() length:ramps.size()*sizeof(jaras::overlap::Ramp)];
+    return result;
+}
++ (void)setOverlapEnvelope:(AVAudioUnitEffect *)node data:(NSData *)data {
+    ((JarasEQAudioUnit *)node.AUAudioUnit)->kernel.fade.setEnvelope(data);
 }
 + (void)setInputFade:(AVAudioUnitEffect *)node fadeIn:(double)fadeIn fadeOut:(double)fadeOut duration:(double)duration position:(double)position hostTime:(uint64_t)hostTime sampleTime:(double)sampleTime {
     if(!std::isfinite(fadeIn)||!std::isfinite(fadeOut)||!std::isfinite(duration)||!std::isfinite(position)||!std::isfinite(sampleTime)) return;
     ((JarasEQAudioUnit *)node.AUAudioUnit)->kernel.fade.configure(std::max(0.0,fadeIn),std::max(0.0,fadeOut),std::max(0.0,duration),position,hostTime,sampleTime);
 }
++ (void)setInputFade:(AVAudioUnitEffect *)node fadeIn:(double)fadeIn fadeOut:(double)fadeOut fadeInCurve:(double)inCurve fadeInSCurve:(double)inS fadeOutCurve:(double)outCurve fadeOutSCurve:(double)outS duration:(double)duration position:(double)position hostTime:(uint64_t)hostTime sampleTime:(double)sampleTime {
+    if(!std::isfinite(fadeIn)||!std::isfinite(fadeOut)||!std::isfinite(duration)||!std::isfinite(position)||!std::isfinite(sampleTime)||!std::isfinite(inCurve)||!std::isfinite(inS)||!std::isfinite(outCurve)||!std::isfinite(outS)) return;
+    ((JarasEQAudioUnit *)node.AUAudioUnit)->kernel.fade.configure(std::max(0.0,fadeIn),std::max(0.0,fadeOut),std::max(0.0,duration),position,hostTime,sampleTime,inCurve,inS,outCurve,outS);
+}
 + (void)setInputChannelMode:(AVAudioUnitEffect *)node mode:(int)mode {
-    ((JarasEQAudioUnit *)node.AUAudioUnit)->kernel.channelMode.store(std::clamp(mode,0,3),std::memory_order_relaxed);
+    ((JarasEQAudioUnit *)node.AUAudioUnit)->kernel.channelMode.store(std::clamp(mode,0,4),std::memory_order_relaxed);
 }
 + (void)setInputPan:(AVAudioUnitEffect *)node pan:(double)pan {
     if(!std::isfinite(pan)) return;
@@ -542,6 +755,9 @@ struct EQKernel {
 }
 + (void)setInputGain:(AVAudioUnitEffect *)node gain:(double)gain {
     if(std::isfinite(gain)) ((JarasEQAudioUnit *)node.AUAudioUnit)->kernel.inputGain.store(std::clamp(gain,0.0,std::pow(10.0,24.0/20.0)),std::memory_order_relaxed);
+}
++ (void)setItemGain:(AVAudioUnitEffect *)node gain:(double)gain {
+    if(std::isfinite(gain)) ((JarasEQAudioUnit *)node.AUAudioUnit)->kernel.itemGain.store(gain<=0?0:std::clamp(gain,std::pow(10.0,-96.0/20.0),std::pow(10.0,24.0/20.0)),std::memory_order_relaxed);
 }
 + (void)setAnalysisEnabled:(AVAudioUnitEffect *)node enabled:(BOOL)enabled {
     auto &kernel=((JarasEQAudioUnit *)node.AUAudioUnit)->kernel;
@@ -571,35 +787,169 @@ struct EQKernel {
 
 #include <vector>
 #include <algorithm>
+// Samples are decoded into a fresh processor by the control thread. Ownership
+// crosses at a render boundary using exchanges; retired storage is reclaimed
+// only by the control thread, never by the audio callback.
+struct CatTriggerSnapshot {
+    catlive::dsp::Trigger processor;
+    CatTriggerSnapshot *retiredNext = nullptr;
+};
+struct CatDynamicsKernel {
+    bool trigger = false;
+    std::array<std::atomic<double>,8> parameters{};
+    std::atomic<bool> filterOutput{false};
+    std::atomic<double> sampleDuration{0};
+    std::atomic<CatTriggerSnapshot*> pending{nullptr}, retired{nullptr};
+    CatTriggerSnapshot *current = nullptr; // renderer-owned
+    catlive::dsp::Gate gate;
+    double blend = 0;
+    ~CatDynamicsKernel() { delete pending.exchange(nullptr); delete current; collect(); }
+    void collect() {
+        auto entry=retired.exchange(nullptr,std::memory_order_acquire);
+        while(entry) { auto next=entry->retiredNext; delete entry; entry=next; }
+    }
+    void publish(std::unique_ptr<CatTriggerSnapshot> sample) {
+        delete pending.exchange(sample.release(),std::memory_order_acq_rel);
+        collect();
+    }
+    void reset() { gate.reset(); if(current) current->processor.reset(); }
+    void process(AudioBufferList *buffers,unsigned frames,double rate,bool enabled) {
+        if(auto sample=pending.exchange(nullptr,std::memory_order_acq_rel)) {
+            auto previous=current; current=sample;
+            if(previous) {
+                auto head=retired.load(std::memory_order_relaxed);
+                do { previous->retiredNext=head; }
+                while(!retired.compare_exchange_weak(head,previous,std::memory_order_release,std::memory_order_relaxed));
+            }
+        }
+        if(!enabled && blend==0) return;
+        if(!buffers->mNumberBuffers || !buffers->mBuffers[0].mData) return;
+        auto left=static_cast<float*>(buffers->mBuffers[0].mData);
+        auto right=buffers->mNumberBuffers>1?static_cast<float*>(buffers->mBuffers[1].mData):nullptr;
+        if(trigger) {
+            catlive::dsp::TriggerParameters p;
+            p.threshold=parameters[0].load(); p.retrigger=parameters[1].load();
+            p.gain=parameters[2].load(); p.mix=parameters[3].load();
+            p.attack=parameters[4].load(); p.decay=parameters[5].load();
+            p.sustain=parameters[6].load(); p.release=parameters[7].load();
+            if(current) current->processor.setParameters(p);
+        } else {
+            catlive::dsp::GateParameters p;
+            p.threshold=parameters[0].load(); p.attack=parameters[1].load();
+            p.decay=parameters[2].load(); p.hold=parameters[3].load();
+            p.release=parameters[4].load(); p.highPass=parameters[5].load();
+            p.lowPass=parameters[6].load(); p.filterOutput=filterOutput.load();
+            gate.setParameters(p);
+        }
+        // Fixed scratch slices preserve stereo linkage and a five-ms bypass
+        // ramp for any AU block size, with no render-time allocation.
+        std::array<float,512> dryLeft{},dryRight{};
+        const double step=1/std::max(1.0,rate*.005),target=enabled?1:0;
+        for(unsigned offset=0;offset<frames;) {
+            const unsigned count=std::min(512u,frames-offset);
+            const bool ramping=blend!=target;
+            if(ramping) {
+                std::copy_n(left+offset,count,dryLeft.data());
+                if(right) std::copy_n(right+offset,count,dryRight.data());
+            }
+            if(trigger) {
+                if(current) current->processor.process(left+offset,right?right+offset:nullptr,count,rate);
+                else { std::fill_n(left+offset,count,0.f); if(right) std::fill_n(right+offset,count,0.f); }
+            }
+            else gate.process(left+offset,right?right+offset:nullptr,count,rate);
+            if(ramping) for(unsigned frame=0;frame<count;++frame) {
+                blend=enabled?std::min(1.0,blend+step):std::max(0.0,blend-step);
+                left[offset+frame]=float(dryLeft[frame]+(left[offset+frame]-dryLeft[frame])*blend);
+                if(right) right[offset+frame]=float(dryRight[frame]+(right[offset+frame]-dryRight[frame])*blend);
+            }
+            offset+=count;
+            if(!enabled && blend==0) { reset(); break; }
+        }
+    }
+};
 struct DynamicsKernel {
-    EffectAnalysis inputAnalysis, outputAnalysis;
+    std::unique_ptr<EffectAnalysis> inputStorage, outputStorage;
+    std::atomic<EffectAnalysis*> inputAnalysis{nullptr}, outputAnalysis{nullptr};
+    std::atomic<unsigned> effectChannels{3};
+    bool channelDelay = false;
+    unsigned delayWrite = 0;
     bool reverb = false, limiter = false;
+    std::unique_ptr<CatDynamicsKernel> catDynamics;
     double rate = 48000, envelope = 0, gain = 1, mix = 0;
     std::atomic<bool> enabled{false}, resetRequested{false};
     std::atomic<bool> meteringEnabled{false};
+    std::atomic<float> reductionDB{0};
     std::array<std::atomic<double>,6> params;
     std::array<std::atomic<float>,4> peaks;
     std::array<std::vector<float>,8> delays;
     std::array<unsigned,8> positions{};
     std::array<double,8> damping{};
     double lowState[2]{}, highState[2]{};
+    std::array<double,5> reverbConfiguration{{-1,-1,-1,-1,-1}};
+    std::array<unsigned,8> reverbLengths{};
+    std::array<double,8> reverbFeedback{};
+    double reverbHP=0,reverbLP=0,reverbSmoothing=0,reverbDamping=0;
+    static float finitePCM(double value) noexcept {
+        const auto sample=static_cast<float>(value);
+        return std::isfinite(sample)?sample:0.f;
+    }
     DynamicsKernel() { for(auto &v:params) v.store(0); for(auto &v:peaks) v.store(0); }
     void prepare(double sampleRate) {
         rate=sampleRate; envelope=0; gain=1; mix=0;
+        if(catDynamics) { catDynamics->reset(); catDynamics->blend=enabled.load()?1:0; }
         positions.fill(0); damping.fill(0);
         for(auto &v:peaks) v.store(0);
         for(unsigned ch=0;ch<2;ch++) lowState[ch]=highState[ch]=0;
         if(reverb) for(auto &line:delays) line.assign(unsigned(rate*.18)+1,0);
+        if(channelDelay) for(unsigned ch=0; ch<2; ++ch) delays[ch].assign(unsigned(rate*2)+1,0);
+        delayWrite=0;
+        reverbConfiguration.fill(-1);
+    }
+    void prepareReverbCoefficients(unsigned space,double decay,double lowCut,double highCut) noexcept {
+        const std::array<double,5> configuration{{rate,double(space),decay,lowCut,highCut}};
+        if(configuration==reverbConfiguration) return;
+        reverbConfiguration=configuration;
+        reverbHP=exp(-2*M_PI*lowCut/rate);
+        reverbLP=1-exp(-2*M_PI*std::min(rate*.45,highCut)/rate);
+        reverbSmoothing=1-exp(-1/(rate*.01));
+        static const double times[3][8]={{.0191,.0239,.0293,.0317,.0371,.0419,.0437,.0479},{.0473,.0531,.0617,.0713,.0797,.0893,.1013,.1139},{.0113,.0137,.0179,.0199,.0233,.0271,.0299,.0313}};
+        for(unsigned n=0;n<8;n++) {
+            reverbLengths[n]=std::min(unsigned(delays[n].size()),std::max(1u,unsigned(times[space][n]*rate)));
+            reverbFeedback[n]=pow(.001,double(reverbLengths[n])/rate/decay);
+            positions[n]%=reverbLengths[n];
+        }
+        reverbDamping=space==2?.72:(space==1?.46:.6);
     }
     void process(AudioBufferList *buffers, unsigned frames) {
         if (resetRequested.exchange(false, std::memory_order_acq_rel)) {
-            envelope=0; gain=1; positions.fill(0); damping.fill(0);
+            envelope=0; gain=1; positions.fill(0); damping.fill(0); delayWrite=0;
+            if(catDynamics) catDynamics->reset();
             for (auto& line : delays) std::fill(line.begin(), line.end(), 0);
             for (unsigned ch=0; ch<2; ++ch) lowState[ch]=highState[ch]=0;
             for (auto& peak : peaks) peak.store(0);
         }
 
         const bool on=enabled.load(std::memory_order_relaxed);
+        if(catDynamics) { catDynamics->process(buffers,frames,rate,on); return; }
+        const unsigned channels=effectChannels.load(std::memory_order_relaxed);
+        if(channelDelay) {
+            if(!on || channels==0 || delays[0].empty()) return;
+            const unsigned size=unsigned(delays[0].size());
+            const unsigned lag=std::clamp(unsigned(std::round(params[0].load()*rate)),1u,size-1);
+            const double feedback=params[1].load()*.01, wet=params[2].load()*.01;
+            for(unsigned frame=0;frame<frames;++frame) {
+                for(unsigned ch=0;ch<std::min(2u,buffers->mNumberBuffers);++ch) {
+                    auto* data=static_cast<float*>(buffers->mBuffers[ch].mData);
+                    if(!data) continue;
+                    const bool selected=(channels & (1u<<ch)) != 0;
+                    const float delayed=delays[ch][(delayWrite+size-lag)%size];
+                    delays[ch][delayWrite]=selected?finitePCM(data[frame]+delayed*feedback):0;
+                    if(selected) data[frame]=finitePCM(data[frame]*(1-wet)+delayed*wet);
+                }
+                delayWrite=(delayWrite+1)%size;
+            }
+            return;
+        }
         // Most per-item chains are prepared but bypassed. Preserve the ramp
         // when switching off, and read peaks only while an editor needs them.
         if (!reverb && !on && !meteringEnabled.load(std::memory_order_relaxed) && fabs(gain-1)<1e-7) {
@@ -613,19 +963,22 @@ struct DynamicsKernel {
             // Zero-latency, stereo-linked sample-peak limiter. No allocations,
             // locks or look-ahead delay in render. Fast attack catches even a
             // single-sample transient; exponential release restores the gain.
+            double minimumGain = 1;
             const double inputGain=pow(10,params[0].load(std::memory_order_relaxed)/20);
             const double ceiling=pow(10,params[1].load(std::memory_order_relaxed)/20);
             const double release=exp(-1/(rate*std::max(.01,params[2].load(std::memory_order_relaxed))));
             const bool metering=meteringEnabled.load(std::memory_order_relaxed);
             for(unsigned i=0;i<frames;i++) {
-                const double left=l[i], right=r[i];
-                if(metering) { observed[0]=std::max(observed[0],fabsf(l[i])); observed[1]=std::max(observed[1],fabsf(r[i])); }
+                const double left=finitePCM(l[i]), right=finitePCM(r[i]);
+                if(metering) { observed[0]=std::max(observed[0],float(fabs(left))); observed[1]=std::max(observed[1],float(fabs(right))); }
                 const double peak=std::max(fabs(left),fabs(right))*inputGain;
                 const double target=on?inputGain*std::min(1.0,ceiling/std::max(1e-20,peak)):1;
                 gain=on && target<gain?target:target+(gain-target)*release;
-                l[i]=float(left*gain); r[i]=float(right*gain);
+                minimumGain = std::min(minimumGain, double(gain) / inputGain);
+                l[i]=finitePCM(left*gain); r[i]=finitePCM(right*gain);
                 if(metering) { observed[2]=std::max(observed[2],fabsf(l[i])); observed[3]=std::max(observed[3],fabsf(r[i])); }
             }
+            reductionDB.store(on ? float(-20 * log10(std::max(1e-6, minimumGain))) : 0.f, std::memory_order_relaxed);
             if(metering) for(unsigned ch=0;ch<4;ch++) {
                 float previous=peaks[ch].load(std::memory_order_relaxed);
                 peaks[ch].store(std::max(previous,observed[ch]),std::memory_order_relaxed);
@@ -638,8 +991,11 @@ struct DynamicsKernel {
             const bool metering=meteringEnabled.load(std::memory_order_relaxed);
             const double attack=exp(-1/(rate*std::max(.0001,params[2].load()))), release=exp(-1/(rate*std::max(.01,params[3].load())));
             const double makeup=pow(10,params[4].load()/20), smoothing=1-exp(-1/(rate*.002));
+            double blockReduction = 0;
             for(unsigned i=0;i<frames;i++) {
-                const double peak=std::max(fabs(l[i]),fabs(r[i]));
+                if(channels & 1u) l[i]=finitePCM(l[i]);
+                if(channels & 2u) r[i]=finitePCM(r[i]);
+                const double peak=std::max(channels & 1u ? fabs(l[i]) : 0.,channels & 2u ? fabs(r[i]) : 0.);
                 if(metering) { observed[0]=std::max(observed[0],fabsf(l[i])); observed[1]=std::max(observed[1],fabsf(r[i])); }
                 if(!on && fabs(gain-1)<1e-7) {
                     gain=1; envelope=0;
@@ -653,9 +1009,12 @@ struct DynamicsKernel {
                 envelope=coefficient*envelope+(1-coefficient)*reduction;
                 const double target=on?(envelope==0?makeup:pow(10,-envelope/20)*makeup):1;
                 gain+=(target-gain)*smoothing;
-                l[i]*=gain; r[i]*=gain;
+                blockReduction = std::max(blockReduction, envelope);
+                if(channels & 1u) l[i]=finitePCM(l[i]*gain);
+                if(channels & 2u) r[i]=finitePCM(r[i]*gain);
                 if(metering) { observed[2]=std::max(observed[2],fabsf(l[i])); observed[3]=std::max(observed[3],fabsf(r[i])); }
             }
+            reductionDB.store(on && channels ? float(blockReduction) : 0.f, std::memory_order_relaxed);
             if(metering) for(unsigned ch=0;ch<4;ch++) {
                 // Only the renderer writes peaks; UI exchange clears the window.
                 float previous=peaks[ch].load(std::memory_order_relaxed);
@@ -664,38 +1023,35 @@ struct DynamicsKernel {
             return;
         }
         if(!on && mix<1e-6) { mix=0; return; }
+        if(delays[0].empty()) return;
         const unsigned space=std::min(2u,unsigned(std::max(0.0,params[0].load())));
         const double targetMix=on?params[1].load()*.01:0;
         const double decay=std::max(.1,params[2].load());
-        const double hp=exp(-2*M_PI*params[3].load()/rate), lp=1-exp(-2*M_PI*std::min(rate*.45,params[4].load())/rate);
-        const double smooth=1-exp(-1/(rate*.01));
+        prepareReverbCoefficients(space,decay,params[3].load(),params[4].load());
         // Eight mutually prime delay lengths, orthogonal Householder feedback.
         // RT60 is calibrated independently of room size. Plate uses dense short
         // reflections; Hall longer diffuse reflections; Room a smaller space.
-        static const double times[3][8]={{.0191,.0239,.0293,.0317,.0371,.0419,.0437,.0479},{.0473,.0531,.0617,.0713,.0797,.0893,.1013,.1139},{.0113,.0137,.0179,.0199,.0233,.0271,.0299,.0313}};
-        unsigned lengths[8]; double feedback[8];
-        for(unsigned n=0;n<8;n++) { lengths[n]=std::min(unsigned(delays[n].size()),std::max(1u,unsigned(times[space][n]*rate))); feedback[n]=pow(.001,double(lengths[n])/rate/decay); positions[n]%=lengths[n]; }
-        const double damp=space==2?.72:(space==1?.46:.6);
         for(unsigned frame=0;frame<frames;frame++) {
-            mix+=(targetMix-mix)*smooth;
+            const float dryLeft=finitePCM(l[frame]),dryRight=finitePCM(r[frame]);
+            mix+=(targetMix-mix)*reverbSmoothing;
             double values[8],sum=0,wetL=0,wetR=0;
-            for(unsigned n=0;n<8;n++) { double v=delays[n][positions[n]]; damping[n]+=damp*(v-damping[n]); values[n]=damping[n]; sum+=values[n]; }
+            for(unsigned n=0;n<8;n++) { double v=delays[n][positions[n]]; damping[n]+=reverbDamping*(v-damping[n]); values[n]=damping[n]; sum+=values[n]; }
             for(unsigned n=0;n<8;n++) {
-                double input=(n&1?r[frame]:l[frame])*.24;
+                double input=(channels & (1u << (n&1)))?(n&1?dryRight:dryLeft)*.24:0.;
                 // I - 2/N * ones is energy-preserving before RT60 attenuation.
-                double value=input+(values[n]-.25*sum)*feedback[n];
-                delays[n][positions[n]]=std::isfinite(value)?float(value):0;
+                double value=input+(values[n]-.25*sum)*reverbFeedback[n];
+                delays[n][positions[n]]=finitePCM(value);
                 // Block setup bounds every position below its current length.
-                if(++positions[n]==lengths[n]) positions[n]=0;
+                if(++positions[n]==reverbLengths[n]) positions[n]=0;
                 wetL+=values[n]*(n&2?-1:1)*.45;
                 wetR+=values[n]*(n&1?-1:1)*.45;
             }
             double wet[2]={wetL,wetR};
             for(unsigned ch=0;ch<2;ch++) {
-                lowState[ch]=(1-hp)*wet[ch]+hp*lowState[ch];
-                highState[ch]+=lp*((wet[ch]-lowState[ch])-highState[ch]);
+                lowState[ch]=(1-reverbHP)*wet[ch]+reverbHP*lowState[ch];
+                highState[ch]+=reverbLP*((wet[ch]-lowState[ch])-highState[ch]);
                 auto data=ch?r:l;
-                data[frame]=float(data[frame]*(1-mix)+highState[ch]*mix);
+                if(channels & (1u<<ch)) data[frame]=finitePCM((ch?dryRight:dryLeft)*(1-mix)+highState[ch]*mix);
             }
         }
     }
@@ -710,7 +1066,12 @@ struct DynamicsKernel {
 - (instancetype)initWithComponentDescription:(AudioComponentDescription)d options:(AudioComponentInstantiationOptions)o error:(NSError **)e {
     if((self=[super initWithComponentDescription:d options:o error:e])) {
         kernel.reverb=d.componentSubType=='JLRV';
+        kernel.channelDelay=d.componentSubType=='JLD2';
         kernel.limiter=d.componentSubType=='JLLM';
+        if(d.componentSubType=='JLTG' || d.componentSubType=='JLG2') {
+            kernel.catDynamics=std::make_unique<CatDynamicsKernel>();
+            kernel.catDynamics->trigger=d.componentSubType=='JLTG';
+        }
         AVAudioFormat *format=[[AVAudioFormat alloc] initStandardFormatWithSampleRate:48000 channels:2];
         _input=[[AUAudioUnitBus alloc] initWithFormat:format error:e]; _output=[[AUAudioUnitBus alloc] initWithFormat:format error:e];
         _inputs=[[AUAudioUnitBusArray alloc] initWithAudioUnit:self busType:AUAudioUnitBusTypeInput busses:@[_input]];
@@ -730,7 +1091,11 @@ struct DynamicsKernel {
         ScopedAudioDenormals denormals;
         if(!pull) return kAudioUnitErr_NoConnection;
         auto status=pull(flags,time,frames,0,output);
-        if(status==noErr) { state->inputAnalysis.capture(output,frames); state->process(output,frames); state->outputAnalysis.capture(output,frames); }
+        if(status==noErr) {
+            if(auto analysis=state->inputAnalysis.load(std::memory_order_acquire)) analysis->capture(output,frames);
+            state->process(output,frames);
+            if(auto analysis=state->outputAnalysis.load(std::memory_order_acquire)) analysis->capture(output,frames);
+            updateEffectSilenceFlag(flags,output,frames); }
         return status;
     };
 }
@@ -761,9 +1126,10 @@ struct DynamicsKernel {
             if(auto analysis=eq->inputAnalysis.load(std::memory_order_acquire)) analysis->capture(output,frames);
             eq->process(output,frames);
             if(auto analysis=eq->outputAnalysis.load(std::memory_order_acquire)) analysis->capture(output,frames);
-            compressor->inputAnalysis.capture(output,frames);
+            if(auto analysis=compressor->inputAnalysis.load(std::memory_order_acquire)) analysis->capture(output,frames);
             compressor->process(output,frames);
-            compressor->outputAnalysis.capture(output,frames);
+            updateEffectSilenceFlag(flags,output,frames);
+            if(auto analysis=compressor->outputAnalysis.load(std::memory_order_acquire)) analysis->capture(output,frames);
             eq->outputPeaks.capture(output,frames);
         }
         return status;
@@ -789,9 +1155,9 @@ static DynamicsKernel& dynamicsKernel(AVAudioUnitEffect *node) {
 + (AVAudioUnitEffect *)make:(OSType)subtype {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        for(NSNumber *type in @[@((unsigned)'JLCP'),@((unsigned)'JLRV'),@((unsigned)'JLLM')]) {
+        for(NSNumber *type in @[@((unsigned)'JLCP'),@((unsigned)'JLRV'),@((unsigned)'JLLM'),@((unsigned)'JLTG'),@((unsigned)'JLG2'),@((unsigned)'JLD2')]) {
             AudioComponentDescription d={kAudioUnitType_Effect,type.unsignedIntValue,'Jara',0,0};
-            [AUAudioUnit registerSubclass:JarasDynamicsAudioUnit.class asComponentDescription:d name:type.unsignedIntValue=='JLCP'?@"CatLive Compressor":(type.unsignedIntValue=='JLLM'?@"CatLive Limiter":@"CatLive Reverb") version:1];
+            [AUAudioUnit registerSubclass:JarasDynamicsAudioUnit.class asComponentDescription:d name:type.unsignedIntValue=='JLCP'?@"CatLive Compressor":(type.unsignedIntValue=='JLLM'?@"CatLive Limiter":(type.unsignedIntValue=='JLTG'?@"CatLive Trigger":(type.unsignedIntValue=='JLG2'?@"Cat Gate":(type.unsignedIntValue=='JLD2'?@"CatLive Channel Delay":@"CatLive Reverb")))) version:1];
         }
     });
     AudioComponentDescription d={kAudioUnitType_Effect,subtype,'Jara',0,0};
@@ -800,6 +1166,63 @@ static DynamicsKernel& dynamicsKernel(AVAudioUnitEffect *node) {
 + (AVAudioUnitEffect *)makeCompressor { return [self make:'JLCP']; }
 + (AVAudioUnitEffect *)makeReverb { return [self make:'JLRV']; }
 + (AVAudioUnitEffect *)makeLimiter { return [self make:'JLLM']; }
++ (AVAudioUnitEffect *)makeTrigger { return [self make:'JLTG']; }
++ (AVAudioUnitEffect *)makeGate { return [self make:'JLG2']; }
++ (AVAudioUnitEffect *)makeChannelDelay { return [self make:'JLD2']; }
++ (void)setEffectChannels:(AVAudioUnitEffect *)node mask:(NSUInteger)mask {
+    dynamicsKernel(node).effectChannels.store(unsigned(mask)&3u,std::memory_order_relaxed);
+}
++ (void)configureChannelDelay:(AVAudioUnitEffect *)node enabled:(BOOL)enabled delay:(double)delay feedback:(double)feedback mix:(double)mix {
+    auto &k=dynamicsKernel(node);
+    k.params[0].store(delay); k.params[1].store(feedback); k.params[2].store(mix);
+    k.enabled.store(enabled);
+}
++ (double)triggerSampleDuration:(AVAudioUnitEffect *)node {
+    auto &k=dynamicsKernel(node); return k.catDynamics?k.catDynamics->sampleDuration.load():0;
+}
++ (BOOL)loadTriggerSample:(AVAudioUnitEffect *)node url:(NSURL *)url error:(NSError **)error {
+    auto &k=dynamicsKernel(node);
+    if(!k.catDynamics || !k.catDynamics->trigger) return NO;
+    auto sample=std::make_unique<CatTriggerSnapshot>();
+    double duration=0;
+    if(url) {
+        const auto fail=[&](NSString *message) {
+            if(error) *error=[NSError errorWithDomain:@"CatLive.Trigger" code:1 userInfo:@{NSLocalizedDescriptionKey:message}];
+            return NO;
+        };
+        const NSString *extension=url.pathExtension.lowercaseString;
+        if(![extension isEqualToString:@"wav"] && ![extension isEqualToString:@"mp3"])
+            return fail(@"Choose a WAV or MP3 sample.");
+        AVAudioFile *file=[[AVAudioFile alloc] initForReading:url commonFormat:AVAudioPCMFormatFloat32 interleaved:NO error:error];
+        if(!file) return NO;
+        const double rate=file.processingFormat.sampleRate;
+        const auto channels=file.processingFormat.channelCount;
+        if(channels<1 || channels>2 || !std::isfinite(rate) || rate<=0 || file.length<=0 || double(file.length)/rate>60)
+            return fail(@"Choose a mono or stereo sample up to 60 seconds.");
+        AVAudioPCMBuffer *buffer=[[AVAudioPCMBuffer alloc] initWithPCMFormat:file.processingFormat frameCapacity:AVAudioFrameCount(file.length)];
+        if(!buffer || ![file readIntoBuffer:buffer error:error] || !buffer.floatChannelData || !buffer.frameLength) return NO;
+        std::vector<float> left(buffer.floatChannelData[0],buffer.floatChannelData[0]+buffer.frameLength),right;
+        if(channels==2) right.assign(buffer.floatChannelData[1],buffer.floatChannelData[1]+buffer.frameLength);
+        duration=double(buffer.frameLength)/rate;
+        sample->processor.setSample(std::move(left),std::move(right),rate);
+    }
+    k.catDynamics->publish(std::move(sample));
+    k.catDynamics->sampleDuration.store(duration);
+    return YES;
+}
++ (void)configureTrigger:(AVAudioUnitEffect *)node enabled:(BOOL)enabled threshold:(double)threshold retrigger:(double)retrigger gain:(double)gain mix:(double)mix attack:(double)attack decay:(double)decay sustain:(double)sustain release:(double)release {
+    auto &k=dynamicsKernel(node); if(!k.catDynamics) return;
+    const double values[]={threshold,retrigger,gain,mix,attack,decay,sustain,release};
+    for(unsigned i=0;i<8;++i) k.catDynamics->parameters[i].store(values[i]);
+    k.catDynamics->collect(); k.enabled.store(enabled);
+}
++ (void)configureGate:(AVAudioUnitEffect *)node enabled:(BOOL)enabled threshold:(double)threshold attack:(double)attack decay:(double)decay hold:(double)hold release:(double)release highPass:(double)highPass lowPass:(double)lowPass filterOutput:(BOOL)filterOutput {
+    auto &k=dynamicsKernel(node); if(!k.catDynamics) return;
+    const double values[]={threshold,attack,decay,hold,release,highPass,lowPass};
+    for(unsigned i=0;i<7;++i) k.catDynamics->parameters[i].store(values[i]);
+    k.catDynamics->filterOutput.store(filterOutput); k.enabled.store(enabled);
+}
+
 + (void)configureLimiter:(AVAudioUnitEffect *)node enabled:(BOOL)enabled gain:(double)gain ceiling:(double)ceiling release:(double)release {
     auto &k=dynamicsKernel(node);
     if(!std::isfinite(gain) || !std::isfinite(ceiling) || !std::isfinite(release)) return;
@@ -810,31 +1233,49 @@ static DynamicsKernel& dynamicsKernel(AVAudioUnitEffect *node) {
 }
 + (void)configureCompressor:(AVAudioUnitEffect *)node enabled:(BOOL)enabled threshold:(double)threshold ratio:(double)ratio attack:(double)attack release:(double)release gain:(double)gain {
     auto &k=dynamicsKernel(node);
-    const double values[]={threshold,ratio,attack,release,gain}; for(unsigned i=0;i<5;i++) k.params[i].store(values[i]); k.enabled.store(enabled);
+    if(!std::isfinite(threshold)||!std::isfinite(ratio)||!std::isfinite(attack)||!std::isfinite(release)||!std::isfinite(gain)) return;
+    const double values[]={std::clamp(threshold,-60.0,0.0),std::clamp(ratio,1.0,20.0),
+        std::clamp(attack,.0001,.2),std::clamp(release,.01,3.0),std::clamp(gain,-12.0,24.0)};
+    for(unsigned i=0;i<5;i++) k.params[i].store(values[i]); k.enabled.store(enabled);
 }
 + (void)configureReverb:(AVAudioUnitEffect *)node enabled:(BOOL)enabled space:(NSInteger)space mix:(double)mix decay:(double)decay lowCut:(double)lowCut highCut:(double)highCut {
     auto &k=dynamicsKernel(node);
-    const double values[]={double(space),mix,decay,lowCut,highCut}; for(unsigned i=0;i<5;i++) k.params[i].store(values[i]); k.enabled.store(enabled);
+    if(!std::isfinite(mix)||!std::isfinite(decay)||!std::isfinite(lowCut)||!std::isfinite(highCut)) return;
+    const double values[]={double(std::clamp(space,NSInteger(0),NSInteger(2))),std::clamp(mix,0.0,100.0),
+        std::clamp(decay,.1,20.0),std::clamp(lowCut,20.0,2000.0),std::clamp(highCut,2000.0,20000.0)};
+    for(unsigned i=0;i<5;i++) k.params[i].store(values[i]); k.enabled.store(enabled);
 }
 + (void)setAnalysisEnabled:(AVAudioUnitEffect *)node input:(BOOL)input enabled:(BOOL)enabled {
     auto &k=dynamicsKernel(node);
-    auto &analysis=input?k.inputAnalysis:k.outputAnalysis;
-    if(analysis.enabled.exchange(enabled)==enabled) return;
-    analysis.consumed=analysis.head.load();
-    analysis.enabledAt=analysis.consumed;
-    analysis.left.store(0); analysis.right.store(0);
+    auto &storage=input?k.inputStorage:k.outputStorage;
+    auto &published=input?k.inputAnalysis:k.outputAnalysis;
+    if(enabled) {
+        if(!storage) storage=std::make_unique<EffectAnalysis>();
+        if(storage->enabled.exchange(true,std::memory_order_relaxed)) return;
+        storage->consumed=storage->head.load(std::memory_order_acquire);
+        storage->enabledAt=storage->consumed;
+        storage->left.store(0); storage->right.store(0);
+        published.store(storage.get(),std::memory_order_release);
+    } else {
+        published.store(nullptr,std::memory_order_release);
+        if(storage) storage->enabled.store(false,std::memory_order_relaxed);
+    }
 }
 + (void)setCompressorMeteringEnabled:(AVAudioUnitEffect *)node enabled:(BOOL)enabled {
     dynamicsKernel(node).meteringEnabled.store(enabled, std::memory_order_relaxed);
 }
 + (NSData *)analysisFrame:(AVAudioUnitEffect *)node input:(BOOL)input {
     auto &k=dynamicsKernel(node);
-    return (input?k.inputAnalysis:k.outputAnalysis).snapshot();
+    auto analysis=(input?k.inputAnalysis:k.outputAnalysis).load(std::memory_order_acquire);
+    return analysis?analysis->snapshot():nil;
 }
 + (NSArray<NSNumber *> *)analysisPeaks:(AVAudioUnitEffect *)node input:(BOOL)input {
     auto &k=dynamicsKernel(node);
-    auto &analysis=input?k.inputAnalysis:k.outputAnalysis;
-    return @[@(analysis.left.exchange(0)),@(analysis.right.exchange(0))];
+    auto analysis=(input?k.inputAnalysis:k.outputAnalysis).load(std::memory_order_acquire);
+    return analysis?@[@(analysis->left.exchange(0)),@(analysis->right.exchange(0))]:@[@0,@0];
+}
++ (float)compressorReduction:(AVAudioUnitEffect *)node {
+    return dynamicsKernel(node).reductionDB.load(std::memory_order_relaxed);
 }
 + (NSArray<NSNumber *> *)takeCompressorPeaks:(AVAudioUnitEffect *)node {
     auto &k=dynamicsKernel(node);
@@ -850,7 +1291,9 @@ struct ChannelRouteKernel {
     std::atomic<bool> renderEnabled{true};
     std::atomic<bool> hasDestinations{false};
     std::atomic<bool> stopFadeRequested{false};
-    std::vector<float> input, output, leftGain, rightGain, lastOutput, fadeOrigin;
+    std::atomic<bool> stopHeld{false};
+    std::vector<float> input, output, leftGain, rightGain, lastOutput, fadeOrigin, stopHistory;
+    unsigned stopHistoryWrite=0, stopHistoryCount=0, stopHistoryOrigin=0;
     unsigned capacity=0, channels=0, stopFadeFrames=0, stopFadePosition=0;
     bool wasRendering=false;
     bool routingSilent=true;
@@ -859,10 +1302,15 @@ struct ChannelRouteKernel {
         input.assign(frames*2,0); output.assign(frames*count,0);
         leftGain.assign(count,0); rightGain.assign(count,0);
         lastOutput.assign(count,0); fadeOrigin.assign(count,0);
-        stopFadeFrames=std::max(64u,static_cast<unsigned>(rate*0.005)); stopFadePosition=stopFadeFrames;
+        // Retain a short waveform tail instead of holding a nonzero sample.
+        // Reversing the recent samples keeps continuity without a DC pulse.
+        stopFadeFrames=std::max(32u,static_cast<unsigned>(rate*0.002)); stopFadePosition=stopFadeFrames;
+        stopHistory.assign(count*stopFadeFrames,0);
+        stopHistoryWrite=stopHistoryCount=stopHistoryOrigin=0;
         wasRendering=false;
         routingSilent=true;
         stopFadeRequested.store(false,std::memory_order_relaxed);
+        stopHeld.store(false,std::memory_order_relaxed);
     }
 };
 @interface JarasChannelRouteUnit : AUAudioUnit {
@@ -898,10 +1346,11 @@ struct ChannelRouteKernel {
         if (frames>state->capacity) return kAudioUnitErr_TooManyFramesToProcess;
         const bool enabled=state->renderEnabled.load(std::memory_order_relaxed);
         const bool stopRequested=state->stopFadeRequested.exchange(false,std::memory_order_relaxed);
-        if (!enabled || stopRequested || state->stopFadePosition<state->stopFadeFrames) {
+        if (!enabled || state->stopHeld.load(std::memory_order_acquire) || stopRequested || state->stopFadePosition<state->stopFadeFrames) {
             if (stopRequested || (!enabled && state->wasRendering)) {
                 std::copy(state->lastOutput.begin(),state->lastOutput.end(),state->fadeOrigin.begin());
                 state->stopFadePosition=0;
+                state->stopHistoryOrigin=state->stopHistoryWrite;
                 state->wasRendering=false;
             }
             const unsigned fadePosition=state->stopFadePosition;
@@ -911,11 +1360,21 @@ struct ChannelRouteKernel {
                 if(!buffer.mData) buffer.mData=state->output.data()+ch*state->capacity;
                 buffer.mDataByteSize=frames*sizeof(float);
                 auto *out=static_cast<float*>(buffer.mData);
-                if (!fading || state->fadeOrigin[ch]==0) { memset(out,0,buffer.mDataByteSize); continue; }
+                if (!fading || state->fadeOrigin[ch]==0) {
+                    memset(out,0,buffer.mDataByteSize);
+                    state->lastOutput[ch]=0;
+                    continue;
+                }
                 for(unsigned frame=0;frame<frames;frame++) {
                     const unsigned position=std::min(state->stopFadeFrames,fadePosition+frame+1);
-                    out[frame]=state->fadeOrigin[ch]*(1-float(position)/float(state->stopFadeFrames));
+                    const float remaining=1-float(position)/float(state->stopFadeFrames);
+                    const unsigned age=fadePosition+frame;
+                    const float tail=age<state->stopHistoryCount
+                        ? state->stopHistory[ch*state->stopFadeFrames+(state->stopHistoryOrigin+state->stopFadeFrames-1-age)%state->stopFadeFrames]
+                        : 0;
+                    out[frame]=tail*remaining*remaining;
                 }
+                state->lastOutput[ch]=frames ? out[frames-1] : state->lastOutput[ch];
             }
             state->stopFadePosition=std::min(state->stopFadeFrames,fadePosition+frames);
             if (flags) {
@@ -962,7 +1421,10 @@ struct ChannelRouteKernel {
             if(l==0 && r==0 && std::abs(gl)<1e-6f && std::abs(gr)<1e-6f) {
                 state->leftGain[ch]=0; state->rightGain[ch]=0;
                 state->lastOutput[ch]=0;
-                memset(out,0,frames*sizeof(float)); continue;
+                memset(out,0,frames*sizeof(float));
+                for(unsigned n=frames-std::min(frames,state->stopFadeFrames);n<frames;++n)
+                    state->stopHistory[ch*state->stopFadeFrames+(state->stopHistoryWrite+n)%state->stopFadeFrames]=0;
+                continue;
             }
             // Keep the exact float fixed point reached by the ramp. Snapping
             // to its target would change PCM; a settled block only needs mixing.
@@ -977,20 +1439,35 @@ struct ChannelRouteKernel {
             state->leftGain[ch]=gl; state->rightGain[ch]=gr;
             if(l!=0 || r!=0 || std::abs(gl)>=1e-6f || std::abs(gr)>=1e-6f) silentRouting=false;
             state->lastOutput[ch]=frames ? out[frames-1] : 0;
+            for(unsigned n=frames-std::min(frames,state->stopFadeFrames);n<frames;++n)
+                state->stopHistory[ch*state->stopFadeFrames+(state->stopHistoryWrite+n)%state->stopFadeFrames]=out[n];
         }
+        state->stopHistoryWrite=(state->stopHistoryWrite+frames)%state->stopFadeFrames;
+        state->stopHistoryCount=std::min(state->stopFadeFrames,state->stopHistoryCount+frames);
         state->routingSilent=silentRouting;
         return noErr;
     };
 }
 @end
 @implementation JarasChannelRouter
++ (void)beginStop:(AVAudioUnitEffect *)node {
+    auto &state=((JarasChannelRouteUnit *)node.AUAudioUnit)->route;
+    state.stopFadeRequested.store(true,std::memory_order_relaxed);
+    state.stopHeld.store(true,std::memory_order_release);
+}
++ (void)endStop:(AVAudioUnitEffect *)node {
+    ((JarasChannelRouteUnit *)node.AUAudioUnit)->route.stopHeld.store(false,std::memory_order_release);
+}
 + (void)setInputMeteringEnabled:(AVAudioUnitEffect *)node enabled:(BOOL)enabled {
     auto &peaks=((JarasChannelRouteUnit *)node.AUAudioUnit)->route.inputPeaks;
     peaks.enabled.store(enabled,std::memory_order_relaxed);
-    if(!enabled) { peaks.take(0); peaks.take(1); }
+    if(!enabled) { peaks.take(0); peaks.take(1); peaks.takeRMS(); }
 }
 + (float)takeInputPeak:(AVAudioUnitEffect *)node channel:(NSUInteger)channel {
     return ((JarasChannelRouteUnit *)node.AUAudioUnit)->route.inputPeaks.take(channel);
+}
++ (float)takeInputRMS:(AVAudioUnitEffect *)node {
+    return ((JarasChannelRouteUnit *)node.AUAudioUnit)->route.inputPeaks.takeRMS();
 }
 + (AVAudioUnitEffect *)makeNode {
     static dispatch_once_t once;
@@ -1010,12 +1487,15 @@ struct ChannelRouteKernel {
     [self configurePatches:node firsts:@[@(first)] counts:@[@(count)]];
 }
 + (void)configurePatches:(AVAudioUnitEffect *)node firsts:(NSArray<NSNumber *> *)firsts counts:(NSArray<NSNumber *> *)counts {
+    [self configurePatches:node firsts:firsts counts:counts outputChannels:node.AUAudioUnit.outputBusses[0].format.channelCount];
+}
++ (void)configurePatches:(AVAudioUnitEffect *)node firsts:(NSArray<NSNumber *> *)firsts counts:(NSArray<NSNumber *> *)counts outputChannels:(NSUInteger)outputChannels {
     // Build the hardware matrix on the control thread. Changing route count
     // needs no new audio units, graph rebuilds or render-time allocations.
     auto *unit=(JarasChannelRouteUnit*)node.AUAudioUnit;
     std::array<uint32_t,1024> gains{};
     std::set<std::pair<unsigned,unsigned>> seen;
-    const unsigned channels=unit.outputBusses[0].format.channelCount;
+    const unsigned channels=static_cast<unsigned>(std::min<NSUInteger>(1024,outputChannels));
     for (NSUInteger i=0; i<MIN(firsts.count, counts.count); ++i) {
         const NSInteger first=firsts[i].integerValue, count=counts[i].integerValue;
         if (first<1 || first>1024 || count<1 || count>2 || first+count-1>channels || !seen.insert({unsigned(first),unsigned(count)}).second) continue;
@@ -1100,3 +1580,256 @@ struct ChannelRouteKernel {
     return [[AVAudioUnitEffect alloc] initWithAudioComponentDescription:d];
 }
 @end
+
+namespace {
+struct CreativeKernel {
+    std::atomic<float> reductionDB{0};
+    std::unique_ptr<jaras::audio::CreativeEffectDSP> dsp;
+    std::array<std::atomic<double>,4> pending{};
+    std::array<double,4> values{};
+    std::atomic<unsigned> revision{0};
+    unsigned consumed=0;
+    std::atomic<bool> enabled{false}, resetRequested{false};
+    double rate=48000;
+    jaras::PluginTransportClock clock;
+    std::atomic<const jaras::PluginTempoMap*> tempo{nullptr};
+    std::vector<std::unique_ptr<jaras::PluginTempoMap>> tempos;
+    bool rhythmic=false;
+
+    void process(AudioBufferList* buffers,const AudioTimeStamp* timestamp,unsigned frames) {
+        if(resetRequested.exchange(false,std::memory_order_acq_rel)) dsp->reset();
+        if(!enabled.load(std::memory_order_relaxed) || buffers->mNumberBuffers < 1) return;
+        auto serial=revision.load(std::memory_order_acquire);
+        if (!(serial&1u) && serial!=consumed) {
+            std::array<double,4> next{};
+            for(unsigned n=0;n<next.size();++n) next[n]=pending[n].load(std::memory_order_relaxed);
+            if(serial==revision.load(std::memory_order_acquire)) { values=next; consumed=serial; }
+        }
+        auto* left=static_cast<float*>(buffers->mBuffers[0].mData);
+        auto* right=buffers->mNumberBuffers>1?static_cast<float*>(buffers->mBuffers[1].mData):nullptr;
+        auto transport=rhythmic?clock.render(catMIDIClock(timestamp,rate),rate,frames,tempo.load(std::memory_order_acquire)):jaras::PluginTransport{};
+        dsp->process(left,right,frames,values,transport);
+        reductionDB.store(dsp->gainReductionDB(), std::memory_order_relaxed);
+    }
+};
+}
+
+// One continuously clocked processor keeps the same latency for pitch,
+// formant and the neutral signal.
+namespace {
+struct PitchFormantKernel {
+    signalsmith::stretch::SignalsmithStretch<float> stretch{0};
+    std::atomic<uint32_t> controls{pack(0, 0)};
+    std::atomic<bool> resetRequested{true};
+    std::atomic<double> latency{0};
+    uint32_t applied = 0;
+    unsigned capacity = 0;
+    std::vector<float> samples;
+    std::vector<const float *> input;
+    std::vector<float *> output;
+
+    void prepare(unsigned channels, unsigned frames, double rate) {
+        capacity = frames;
+        samples.resize(size_t(channels) * frames);
+        input.resize(channels);
+        output.resize(channels);
+        for (unsigned channel = 0; channel < channels; ++channel)
+            input[channel] = samples.data() + size_t(channel) * frames;
+        stretch.presetDefault(int(channels), float(rate));
+        stretch.setNeutralWarmup(true);
+        latency.store((stretch.inputLatency() + stretch.outputLatency()) / rate);
+        resetRequested.store(true);
+        applied = 0;
+    }
+    static uint32_t pack(float pitch, float formant) {
+        const auto field = [](float value) {
+            return uint32_t(std::lround((std::clamp(std::isfinite(value) ? value : 0.f, -12.f, 12.f) + 12.f) * 100));
+        };
+        return (field(pitch) << 12) | field(formant);
+    }
+    OSStatus process(AudioBufferList *buffers, unsigned frames) {
+        const auto next = controls.load(std::memory_order_acquire);
+        if (frames > capacity) return kAudioUnitErr_TooManyFramesToProcess;
+        if (buffers->mNumberBuffers != input.size()) return kAudioUnitErr_FormatNotSupported;
+        for (unsigned ch = 0; ch < input.size(); ++ch) {
+            auto &buffer = buffers->mBuffers[ch];
+            if (buffer.mNumberChannels != 1 || !buffer.mData || buffer.mDataByteSize < frames * sizeof(float))
+                return kAudioUnitErr_FormatNotSupported;
+            output[ch] = static_cast<float *>(buffer.mData);
+            std::copy_n(output[ch], frames, samples.data() + size_t(ch) * capacity);
+        }
+        const bool reset = resetRequested.exchange(false, std::memory_order_acq_rel);
+        if (reset) stretch.reset();
+        if (applied != next || reset) {
+            stretch.setTransposeSemitones(float(int(next >> 12) - 1200) * .01f);
+            stretch.setFormantSemitones(float(int(next & 0xfffu) - 1200) * .01f);
+            applied = next;
+        }
+        stretch.process(input.data(), int(frames), output.data(), int(frames));
+        return noErr;
+    }
+};
+}
+
+@interface JarasPitchFormantUnit : AUAudioUnit {
+@public PitchFormantKernel kernel;
+    AUAudioUnitBus *_input, *_output;
+    AUAudioUnitBusArray *_inputs, *_outputs;
+}
+@end
+@implementation JarasPitchFormantUnit
+- (instancetype)initWithComponentDescription:(AudioComponentDescription)description options:(AudioComponentInstantiationOptions)options error:(NSError **)error {
+    if ((self = [super initWithComponentDescription:description options:options error:error])) {
+        AVAudioFormat *format = [[AVAudioFormat alloc] initStandardFormatWithSampleRate:48000 channels:2];
+        _input = [[AUAudioUnitBus alloc] initWithFormat:format error:error];
+        _output = [[AUAudioUnitBus alloc] initWithFormat:format error:error];
+        if (!_input || !_output) return nil;
+        _inputs = [[AUAudioUnitBusArray alloc] initWithAudioUnit:self busType:AUAudioUnitBusTypeInput busses:@[_input]];
+        _outputs = [[AUAudioUnitBusArray alloc] initWithAudioUnit:self busType:AUAudioUnitBusTypeOutput busses:@[_output]];
+        self.maximumFramesToRender = 8192;
+    }
+    return self;
+}
+- (AUAudioUnitBusArray *)inputBusses { return _inputs; }
+- (AUAudioUnitBusArray *)outputBusses { return _outputs; }
+- (NSTimeInterval)latency { return kernel.latency.load(); }
+- (BOOL)allocateRenderResourcesAndReturnError:(NSError **)error {
+    if (![_input.format isEqual:_output.format] || _output.format.interleaved ||
+        _output.format.commonFormat != AVAudioPCMFormatFloat32) {
+        if (error) *error = [NSError errorWithDomain:NSOSStatusErrorDomain code:kAudioUnitErr_FormatNotSupported userInfo:nil];
+        return NO;
+    }
+    if (![super allocateRenderResourcesAndReturnError:error]) return NO;
+    kernel.prepare(_output.format.channelCount, self.maximumFramesToRender, _output.format.sampleRate);
+    return YES;
+}
+- (void)reset { [super reset]; kernel.resetRequested.store(true, std::memory_order_release); }
+- (AUInternalRenderBlock)internalRenderBlock {
+    auto *state = &kernel;
+    return ^AUAudioUnitStatus(AudioUnitRenderActionFlags *flags, const AudioTimeStamp *time, AVAudioFrameCount frames,
+                              NSInteger bus, AudioBufferList *output, const AURenderEvent *events, AURenderPullInputBlock pull) {
+        if (!pull) return kAudioUnitErr_NoConnection;
+        const OSStatus inputStatus = pull(flags, time, frames, 0, output);
+        if (inputStatus != noErr) return inputStatus;
+        const auto status = state->process(output, frames);
+        if (status == noErr) updateEffectSilenceFlag(flags, output, frames);
+        return status;
+    };
+}
+@end
+@implementation JarasPitchFormant
++ (AVAudioUnitEffect *)makeNode {
+    static dispatch_once_t once;
+    AudioComponentDescription description = {kAudioUnitType_Effect, 'JLpf', 'Jara', 0, 0};
+    dispatch_once(&once, ^{
+        [AUAudioUnit registerSubclass:JarasPitchFormantUnit.class asComponentDescription:description name:@"CatLive Pitch Formant" version:1];
+    });
+    return [[AVAudioUnitEffect alloc] initWithAudioComponentDescription:description];
+}
++ (void)configure:(AVAudioUnitEffect *)node pitch:(float)pitch formant:(float)formant {
+    auto &kernel = ((JarasPitchFormantUnit *)node.AUAudioUnit)->kernel;
+    kernel.controls.store(PitchFormantKernel::pack(pitch, formant), std::memory_order_release);
+}
+@end
+
+@interface JarasCreativeAudioUnit : AUAudioUnit {
+@public CreativeKernel kernel;
+    AUAudioUnitBus *_input, *_output;
+    AUAudioUnitBusArray *_inputs, *_outputs;
+}
+@end
+
+@implementation JarasCreativeAudioUnit
+- (instancetype)initWithComponentDescription:(AudioComponentDescription)d options:(AudioComponentInstantiationOptions)o error:(NSError **)e {
+    if((self=[super initWithComponentDescription:d options:o error:e])) {
+        auto kind=static_cast<jaras::audio::CreativeEffect>(d.componentSubType-'CLF0');
+        kernel.dsp=std::make_unique<jaras::audio::CreativeEffectDSP>(kind);
+        kernel.rhythmic=kind==jaras::audio::CreativeEffect::divisionGate;
+        AVAudioFormat *format=[[AVAudioFormat alloc] initStandardFormatWithSampleRate:48000 channels:2];
+        _input=[[AUAudioUnitBus alloc] initWithFormat:format error:e];
+        _output=[[AUAudioUnitBus alloc] initWithFormat:format error:e];
+        _inputs=[[AUAudioUnitBusArray alloc] initWithAudioUnit:self busType:AUAudioUnitBusTypeInput busses:@[_input]];
+        _outputs=[[AUAudioUnitBusArray alloc] initWithAudioUnit:self busType:AUAudioUnitBusTypeOutput busses:@[_output]];
+    }
+    return self;
+}
+- (AUAudioUnitBusArray *)inputBusses { return _inputs; }
+- (AUAudioUnitBusArray *)outputBusses { return _outputs; }
+- (void)reset { [super reset]; kernel.resetRequested.store(true,std::memory_order_release); }
+- (BOOL)allocateRenderResourcesAndReturnError:(NSError **)error {
+    if(![super allocateRenderResourcesAndReturnError:error]) return NO;
+    kernel.rate=_output.format.sampleRate;
+    kernel.dsp->prepare(kernel.rate);
+    return YES;
+}
+- (AUInternalRenderBlock)internalRenderBlock {
+    auto* state=&kernel;
+    return ^AUAudioUnitStatus(AudioUnitRenderActionFlags *flags,const AudioTimeStamp *time,AVAudioFrameCount frames,NSInteger bus,AudioBufferList *output,const AURenderEvent *events,AURenderPullInputBlock pull) {
+        ScopedAudioDenormals denormals;
+        if(!pull) return kAudioUnitErr_NoConnection;
+        const auto result=pull(flags,time,frames,0,output);
+        if(result==noErr) {
+            state->process(output,time,frames);
+            updateEffectSilenceFlag(flags,output,frames);
+        }
+        return result;
+    };
+}
+@end
+
+@implementation JarasCreativeEffects
++ (float)gainReduction:(AVAudioUnitEffect *)node {
+    return ((JarasCreativeAudioUnit *)node.AUAudioUnit)->kernel.reductionDB.load(std::memory_order_relaxed);
+}
++ (AVAudioUnitEffect *)makeEffect:(NSInteger)kind {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        for (const auto& effect:jaras::audio::creativeEffects) {
+            AudioComponentDescription d={kAudioUnitType_Effect,OSType('CLF0'+int(effect.kind)),'Jara',0,0};
+            NSString *name=[NSString stringWithUTF8String:effect.name.data()];
+            [AUAudioUnit registerSubclass:JarasCreativeAudioUnit.class asComponentDescription:d name:name version:1];
+        }
+    });
+    AudioComponentDescription d={kAudioUnitType_Effect,OSType('CLF0'+kind),'Jara',0,0};
+    return [[AVAudioUnitEffect alloc] initWithAudioComponentDescription:d];
+}
++ (void)configure:(AVAudioUnitEffect *)node enabled:(BOOL)enabled parameters:(NSArray<NSNumber *> *)parameters {
+    auto &k=((JarasCreativeAudioUnit *)node.AUAudioUnit)->kernel;
+    k.revision.fetch_add(1,std::memory_order_acq_rel);
+    for(unsigned n=0;n<k.pending.size();++n) k.pending[n].store(n<parameters.count?parameters[n].doubleValue:0,std::memory_order_relaxed);
+    k.revision.fetch_add(1,std::memory_order_release);
+    k.enabled.store(enabled,std::memory_order_release);
+}
++ (void)setTempoMap:(AVAudioUnitEffect *)node points:(NSArray<NSDictionary<NSString *, NSNumber *> *> *)points {
+    auto &k=((JarasCreativeAudioUnit *)node.AUAudioUnit)->kernel;
+    std::vector<jaras::PluginTempoMap::Point> sections;
+    sections.reserve(points.count);
+    for(NSDictionary<NSString *,NSNumber *> *point in points)
+        sections.push_back({point[@"seconds"].doubleValue,point[@"bpm"].doubleValue,point[@"beats"].intValue,point[@"unit"].intValue});
+    k.tempos.push_back(std::make_unique<jaras::PluginTempoMap>(std::move(sections)));
+    k.tempo.store(k.tempos.back().get(),std::memory_order_release);
+}
++ (void)transport:(AVAudioUnitEffect *)node position:(double)position clock:(double)clock playing:(BOOL)playing loopStart:(double)start loopEnd:(double)end tempo:(double)tempo {
+    ((JarasCreativeAudioUnit *)node.AUAudioUnit)->kernel.clock.publish(position,clock,playing,start,end,tempo);
+}
+@end
+
+BOOL JarasRequestNativePlaybackReset(AVAudioUnit *node) {
+    AUAudioUnit *unit = node.AUAudioUnit;
+    if ([unit isKindOfClass:JarasVoiceGainUnit.class]) {
+        ((JarasVoiceGainUnit *)unit)->gain.resetRequested.store(true, std::memory_order_release);
+    } else if ([unit isKindOfClass:JarasEQAudioUnit.class]) {
+        ((JarasEQAudioUnit *)unit)->kernel.resetRequested.store(true, std::memory_order_release);
+        if ([unit isKindOfClass:CatItemEQCompressorAudioUnit.class])
+            ((CatItemEQCompressorAudioUnit *)unit)->compressorKernel.resetRequested.store(true, std::memory_order_release);
+    } else if ([unit isKindOfClass:JarasDynamicsAudioUnit.class]) {
+        ((JarasDynamicsAudioUnit *)unit)->kernel.resetRequested.store(true, std::memory_order_release);
+    } else if ([unit isKindOfClass:JarasPitchFormantUnit.class]) {
+        ((JarasPitchFormantUnit *)unit)->kernel.resetRequested.store(true, std::memory_order_release);
+    } else if ([unit isKindOfClass:JarasCreativeAudioUnit.class]) {
+        ((JarasCreativeAudioUnit *)unit)->kernel.resetRequested.store(true, std::memory_order_release);
+    } else {
+        return NO;
+    }
+    return YES;
+}

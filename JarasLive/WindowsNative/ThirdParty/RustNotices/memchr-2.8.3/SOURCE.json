@@ -1,0 +1,7 @@
+﻿{
+    "license":  "Unlicense OR MIT",
+    "source":  "registry+https://github.com/rust-lang/crates.io-index",
+    "name":  "memchr",
+    "version":  "2.8.3",
+    "repository":  "https://github.com/BurntSushi/memchr"
+}

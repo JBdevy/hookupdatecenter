@@ -14,6 +14,7 @@ start = layout.index('TimelineView(.periodic(')
 end = layout.index('\n', start)
 layout = layout[:start] + 'Group {' + layout[end:]
 layout = layout.replace('context.date', 'Date(timeIntervalSince1970: 1000)')
+layout = layout.replace('NSFont.jarasBoldSystemFont', 'NSFont.boldSystemFont')
 protocol = Path('Apple/Shared/DAWRemoteProtocol.swift').read_text()
 protocol = protocol[protocol.index('struct DAWRemoteTeleprompter:'):protocol.index('struct DAWRemoteNotices:')]
 config = Path('Apple/Shared/TeleprompterConfig.swift').read_text()
@@ -22,7 +23,11 @@ helpers = '''extension Color {
     init(hex: UInt32) { self.init(red: Double((hex >> 16) & 255)/255, green: Double((hex >> 8) & 255)/255, blue: Double(hex & 255)/255) }
 }
 '''
-Path(sys.argv[1]).write_text(layout + protocol + config + helpers + Path('Tests/Apple/TeleprompterLayoutTests.swift').read_text())
+colors = Path('Application/Project/ProjectModels.swift').read_text().split('public enum ItemTextColors {',1)[1]
+colors = 'public enum ItemTextColors {' + colors.split('/// Presentation only:',1)[0]
+views = Path('Apple/Shared/TextItemEditor.swift').read_text().split('extension ItemTextColors {',1)[1]
+views = 'extension ItemTextColors {' + views
+Path(sys.argv[1]).write_text(layout + protocol + config + helpers + colors + views + Path('Tests/Apple/TeleprompterLayoutTests.swift').read_text())
 PY
 swiftc -swift-version 5 Application/Project/TeleprompterSettings.swift "$test_dir/main.swift" -o "$test_dir/test"
 "$test_dir/test"

@@ -13,12 +13,12 @@ colors += theme[theme.index('extension Color {'):theme.index('struct StageButton
 blink = theme[theme.index('struct JarasBlink:'):theme.index('/// A color drag')]
 transport = Path('Apple/Shared/TransportView.swift').read_text()
 metrics = transport[transport.index('enum TransportControlMetrics'):transport.index('struct TransportPreview:')]
-metronome = transport[transport.index('private struct MetronomeControl:'):transport.index('private struct MetronomeEditor:')]
+metronome = transport[transport.index('private struct MetronomeControl:'):transport.index('struct MetronomeEditor:')]
 mapping = Path('Apple/Shared/ControlMappings.swift').read_text()
 right_click = mapping[mapping.index('private struct MappingClickAnchor:'):mapping.index('private struct ImmediateRightClick:')]
 right_click = '#if os(macOS)\n' + right_click
 right_click += mapping[mapping.index('private struct ImmediateRightClick:'):mapping.index('\n}', mapping.index('extension View {\n    func immediateRightClick')) + 2]
-source = colors + blink + metrics + metronome + right_click
+source = colors + theme[theme.index('// App-owned typography.'):] + blink + metrics + metronome + right_click
 source = source.replace('private struct', 'struct').replace('private final class', 'final class')
 # Instrument only this generated fixture, so production views carry no counter.
 source = source.replace('    required init(rootView: AnyView)',
@@ -70,6 +70,10 @@ struct ShowSnapshot { var project: Project; var transport: TransportState }
     static let shared = MetronomeSettings()
     @Published var enabled = true
 }
+// The fixture isolates control animation; editor presentation is tested separately.
+extension View {
+    func workspaceEditor<Content: View>(_ title: String, isPresented: Binding<Bool>, @ViewBuilder content: @escaping () -> Content) -> some View { sheet(isPresented: isPresented, content: content) }
+}
 struct ProjectDocuments {}
 struct MetronomeEditor: View {
     var body: some View { Text("Metronome settings").frame(width: 220, height: 100)
@@ -81,6 +85,6 @@ Path(sys.argv[1]).write_text('import SwiftUI\nimport AppKit\nimport Combine\n' +
     source + '\n' + Path('Tests/Apple/NativeControlPulseTests.swift').read_text().replace('precondition(', 'expect('))
 PYTEST
 swiftc -swift-version 5 -O -target "$(uname -m)-apple-macos12.0" \
-    Apple/Shared/RightClickRouting.swift Apple/Shared/NativeTooltips.swift \
+    Apple/Shared/NativeTimelineInputGate.swift Apple/Shared/RightClickRouting.swift Apple/Shared/NativeTooltips.swift \
     "$test_dir/main.swift" -o "$test_dir/test"
 "$test_dir/test"

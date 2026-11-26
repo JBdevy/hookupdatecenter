@@ -1,17 +1,99 @@
 import SwiftUI
 
-struct AdvancedView: View {
+struct ItemRateEditor: View {
     @ObservedObject var show: ShowController
+    let items: Set<UUID>
+    var close: (() -> Void)?
+    private let project: UUID
+    private let song: UUID?
+    @Environment(\.dismiss) private var dismiss
+    @State private var settings: ItemRateSettings
+    @State private var rateText: String
+    @State private var bpmText: String
+    @State private var validInput = true
+    @State private var resetTempo = false
+    init(show: ShowController, items: Set<UUID>, close: (() -> Void)? = nil) {
+        self.show = show; self.items = items; self.close = close
+        project = show.snapshot.project.id; song = show.current?.id
+        let entry = show.current?.tracks.flatMap { track in track.clips.filter { items.contains($0.id) && $0.supportsRate(on: track) }.map { (track, $0) } }.first
+        let clip = entry?.1
+        let initial = entry?.0.kind == .click && clip?.audioFile == nil ? clip?.clickRate : clip?.audioRate
+        let value = ItemRateSettings(baseBPM: show.current?.tempoSection(at: clip?.startTime ?? 0).bpm ?? 120, rate: initial ?? 1)
+        _settings = State(initialValue: value)
+        _rateText = State(initialValue: value.rateText)
+        _bpmText = State(initialValue: Self.bpmLabel(value.bpmOffset))
+    }
+    private static func bpmLabel(_ value: Double) -> String {
+        guard abs(value) > 0.000001 else { return "0" }
+        var text = String(format: "%+.2f", value)
+        while text.last == "0" { text.removeLast() }
+        if text.last == "." { text.removeLast() }
+        return text
+    }
+    private func number(_ text: String) -> Double? { Double(text.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: ",", with: ".")) }
+    private func finish() { if let close { close() } else { dismiss() } }
+    private func refresh() { rateText = settings.rateText; bpmText = Self.bpmLabel(settings.bpmOffset); validInput = true }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                Text("Config rate").font(.jarasTitle3.bold())
+                Spacer()
+                Button("Reset") { settings.reset(); resetTempo = true; refresh() }
+            }
+            HStack {
+                Text(verbatim: "Rate").frame(width: 78, alignment: .leading)
+                Button("−") { settings.stepRate(-1); refresh() }.disabled(settings.rate - 0.01 < 1.0 / 32)
+                TextField("Rate", text: Binding(get: { rateText }, set: {
+                    rateText = $0
+                    if let value = number($0), value.isFinite { settings.rate = value; bpmText = Self.bpmLabel(settings.bpmOffset); validInput = true }
+                    else { validInput = false }
+                })).textFieldStyle(.roundedBorder).multilineTextAlignment(.center).accessibilityLabel("Playback rate")
+                Button("+") { settings.stepRate(1); refresh() }.disabled(settings.rate + 0.01 > 32)
+            }
+            HStack {
+                Text("BPM offset").frame(width: 78, alignment: .leading)
+                Button("−") { settings.stepBPM(-1); refresh() }.disabled((settings.baseBPM + settings.bpmOffset - 1) / settings.baseBPM < 1.0 / 32)
+                TextField("BPM", text: Binding(get: { bpmText }, set: {
+                    bpmText = $0
+                    if let value = number($0), value.isFinite { settings.bpmOffset = value; rateText = settings.rateText; validInput = true }
+                    else { validInput = false }
+                })).textFieldStyle(.roundedBorder).multilineTextAlignment(.center).accessibilityLabel("BPM offset")
+                Button("+") { settings.stepBPM(1); refresh() }.disabled((settings.baseBPM + settings.bpmOffset + 1) / settings.baseBPM > 32)
+            }
+            Text(verbatim: String(format: "Base: %.2f BPM", settings.baseBPM)).font(.jarasCaption).foregroundStyle(JarasTheme.secondary)
+            HStack {
+                Button("Cancel", action: finish).keyboardShortcut(.cancelAction)
+                Spacer()
+                Button("Save") {
+                    guard show.snapshot.project.id == project, show.current?.id == song else { finish(); return }
+                    if show.configureItemsRate(items, rate: settings.rate, resetTempo: resetTempo) { finish() }
+                }.disabled(!validInput || !settings.isValid).keyboardShortcut(.defaultAction)
+            }
+        }.padding(20).frame(width: 360)
+            .onChange(of: show.snapshot.project.id) { if $0 != project { finish() } }
+            .onChange(of: show.current?.id) { if $0 != song { finish() } }
+    }
+}
+
+struct AdvancedView: View {
+    #if os(macOS)
+    // Includes all eight sidebar tabs, the heading and the action row. Keep
+    // the window's canvas and the view's minimum proposal in agreement.
+    static let desktopSize = CGSize(width: 760, height: 460)
+    #endif
+    let show: ShowController
+    @StateObject private var updates: ShowPresentationObserver
     let documents: ProjectDocuments?
     var close: (() -> Void)? = nil
+    var presentationID: Int = 0
     @Environment(\.dismiss) private var dismiss
     private enum Tab: String, CaseIterable {
-        case transport = "Transport", timeProject = "TimeProject", timeline = "Timeline", record = "Record", reRender = "Re-render", video = "Video", setlist = "Setlist"
-        var icon: String { switch self { case .transport: return "playpause"; case .timeProject: return "metronome"; case .timeline: return "square.grid.3x3"; case .record: return "record.circle"; case .reRender: return "waveform"; case .video: return "video"; case .setlist: return "list.bullet" } }
+        case transport = "Transport", timeProject = "TimeProject", timeline = "Timeline", record = "Record", reRender = "Re-render", video = "Video", setlist = "Setlist", keyboard = "Keyboard", pads = "Pads", trackMixer = "Track Mixer", hozMixer = "Hoz Mixer"
+        var icon: String { switch self { case .transport: return "tabs.transport"; case .timeProject: return "tabs.metronome"; case .timeline: return "square.grid.3x3"; case .record: return "tabs.record"; case .reRender: return "tabs.waveform"; case .video: return "video"; case .setlist: return "list.bullet.indent"; case .keyboard: return "pianokeys"; case .pads: return "square.grid.3x2.fill"; case .trackMixer: return "slider.horizontal.3"; case .hozMixer: return "slider.vertical.3" } }
     }
     private var availableTabs: [Tab] {
         #if os(iOS)
-        [.timeline, .setlist, .transport]
+        [.timeline, .setlist, .transport, .video, .pads, .trackMixer, .hozMixer]
         #else
         Tab.allCases.filter { $0 != .transport }
         #endif
@@ -30,9 +112,12 @@ struct AdvancedView: View {
     @State private var shake = 0.0
     @FocusState private var focus: Int?
 
-    init(show: ShowController, documents: ProjectDocuments? = nil, close: (() -> Void)? = nil) {
-        self.show = show; self.documents = documents; self.close = close
-        let timing = GlobalProjectTiming.load() ?? show.current.map { GlobalProjectTiming(song: $0) } ?? GlobalProjectTiming()
+    init(show: ShowController, documents: ProjectDocuments? = nil, close: (() -> Void)? = nil, presentationID: Int = 0) {
+        self.show = show; self.documents = documents; self.close = close; self.presentationID = presentationID
+        // Closing the desktop panel retains its drafts and hosting tree. Its
+        // controls need project/command changes, never every playback sample.
+        _updates = StateObject(wrappedValue: show.presentationObserver)
+        let timing = show.current.map { GlobalProjectTiming(song: $0) } ?? GlobalProjectTiming.load() ?? GlobalProjectTiming()
         _bpm = State(initialValue: String(format: "%g", timing.bpm))
         _beats = State(initialValue: String(timing.beats))
         _unit = State(initialValue: String(timing.unit))
@@ -45,20 +130,18 @@ struct AdvancedView: View {
             IpadModalHeader(title: "Advanced", close: finish)
             #else
             HStack {
-                Text("Advanced").font(.headline)
+                Text("Advanced").font(.jarasHeadline)
                 Spacer()
-                Button { finish() } label: { Image(systemName: "xmark").frame(width: 32, height: 32).contentShape(Rectangle()) }
-                    .buttonStyle(.plain).accessibilityLabel("Close")
             }.padding(.horizontal, 16).padding(.vertical, 6)
             #endif
             Divider()
             HStack(spacing: 0) {
-                VStack(spacing: 6) {
+                VStack(spacing: 4) {
                     ForEach(availableTabs, id: \.self) { item in
                         Button { tab = item; invalidField = nil; applyError = "" } label: {
-                            Label { Text(LocalizedStringKey(item.rawValue)).lineLimit(2).minimumScaleFactor(0.8) } icon: { Image(systemName: item.icon) }
-                                .font(.system(size: 12, weight: .semibold)).frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(.horizontal, 10).frame(height: 36)
+                            Label { Text(LocalizedStringKey(item.rawValue)).lineLimit(2).minimumScaleFactor(0.8) } icon: { ControlIcon(name: item.icon, active: tab == item, size: 16) }
+                                .font(.jarasSystem(size: 12, weight: .semibold)).frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 10).frame(height: 32)
                                 .background(tab == item ? JarasTheme.green.opacity(0.15) : .clear, in: RoundedRectangle(cornerRadius: 6))
                                 .contentShape(Rectangle())
                         }.buttonStyle(.plain).accessibilityLabel(item.rawValue)
@@ -68,34 +151,47 @@ struct AdvancedView: View {
                 Divider()
                 ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
-                    Text(LocalizedStringKey(tab.rawValue)).font(.title3.bold())
+                    Text(LocalizedStringKey(tab.rawValue)).font(.jarasTitle3.bold())
                     if tab == .timeProject { timingControls }
-                    if tab == .timeline { AdvancedTimelineSettings(documents: documents) }
+                    if tab == .timeline { AdvancedTimelineSettings(show: show, documents: documents) }
+                    if tab == .trackMixer { AdvancedMixerSettings(key: MixerTrackStyle.trackMixerKey) }
+                    if tab == .hozMixer { AdvancedMixerSettings(key: MixerTrackStyle.hozMixerKey) }
                     if tab == .transport { AdvancedTransportSettings() }
                     if tab == .video { AdvancedVideoSettings() }
+                    if tab == .pads { AdvancedPadsSettings() }
                     if tab == .setlist { AdvancedSetlistColors() }
+                    if tab == .keyboard { AdvancedKeyboardSettings() }
                     if tab == .record || tab == .reRender { MediaProcessingFormatEditor(scope: tab == .record ? "record" : "rerender").id(tab.rawValue) }
                     Spacer(minLength: 0)
                 }.padding(20).frame(maxWidth: .infinity, alignment: .topLeading)
                 }.frame(maxWidth: .infinity, maxHeight: .infinity)
             }.frame(maxHeight: .infinity)
-            Divider()
-            HStack {
-                if let invalidField {
-                    Text(LocalizedStringKey(invalidField == 0 ? "Enter a BPM between 60 and 300." : "Invalid time signature."))
-                        .font(.caption).foregroundStyle(.red)
-                } else if !applyError.isEmpty { Text(LocalizedStringKey(applyError)).font(.caption).foregroundStyle(.red) }
-                Spacer()
-                Button("Cancel") { finish() }.keyboardShortcut(.cancelAction)
-                if tab == .timeProject { Button("Apply", action: apply).keyboardShortcut(.defaultAction) }
-            }.padding(14).fixedSize(horizontal: false, vertical: true)
+            if tab == .timeProject {
+                Divider()
+                HStack {
+                    if let invalidField {
+                        Text(LocalizedStringKey(invalidField == 0 ? "Enter a BPM between 60 and 300." : "Invalid time signature."))
+                            .font(.jarasCaption).foregroundStyle(.red)
+                    } else if !applyError.isEmpty { Text(LocalizedStringKey(applyError)).font(.jarasCaption).foregroundStyle(.red) }
+                    Spacer()
+                    Button("Apply", action: apply).keyboardShortcut(.defaultAction)
+                }.padding(14).fixedSize(horizontal: false, vertical: true)
+            }
         }
         #if os(macOS)
-        .frame(width: 760, height: 420)
+        .frame(minWidth: Self.desktopSize.width, minHeight: Self.desktopSize.height)
         #else
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         #endif
         .foregroundStyle(JarasTheme.text).background(JarasTheme.background)
+        .onChange(of: presentationID) { _ in
+            let timing = show.current.map { GlobalProjectTiming(song: $0) } ?? GlobalProjectTiming.load() ?? GlobalProjectTiming()
+            bpm = String(format: "%g", timing.bpm); beats = String(timing.beats); unit = String(timing.unit)
+            settings = timing.settings; invalidField = nil; applyError = ""; focus = nil
+        }
+        .onChange(of: show.current?.projectTime.timebase) { value in
+            if let value { settings.timebase = value }
+        }
     }
     private func finish() { if let close { close() } else { dismiss() } }
     private var timingControls: some View {
@@ -110,15 +206,13 @@ struct AdvancedView: View {
                     timingField($unit, index: 2, width: 34, label: "Beat unit")
                 }
 
-            }.font(.system(size: 12))
+            }.font(.jarasSystem(size: 12))
             HStack(spacing: 14) {
                 Text("Project timebase")
                 Picker("Project timebase", selection: $settings.timebase) {
                     ForEach(ProjectTimebase.allCases, id: \.self) { Text(LocalizedStringKey($0.title)).tag($0) }
                 }.labelsHidden().frame(maxWidth: .infinity).accessibilityLabel("Project timebase")
             }
-            Toggle("Timebase affects automation item length", isOn: $settings.affectsAutomationLength)
-                .toggleStyle(.automatic)
         }
     }
     private func timingField(_ text: Binding<String>, index: Int, width: CGFloat, label: String) -> some View {
@@ -140,6 +234,7 @@ struct AdvancedView: View {
         guard let denominator = Int(unit), TimelineTempo.beatUnits.contains(denominator) else { reject(2); return }
         invalidField = nil
         applyError = ""
+        settings.affectsAutomationLength = true
         if show.configureProjectTime(bpm: tempo, beats: numerator, unit: denominator, settings: settings) {
             GlobalProjectTiming(bpm: tempo, beats: numerator, unit: denominator, settings: settings).save()
             finish()
@@ -152,6 +247,7 @@ struct AdvancedView: View {
 struct TempoMarkerEditor: View {
     let marker: TimelineMarker
     let save: (TimelineMarker) -> Void
+    var close: (() -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
     @State private var bpm: String
     @State private var beats: String
@@ -159,15 +255,15 @@ struct TempoMarkerEditor: View {
     @State private var timebase: TempoMarkerTimebase
     @State private var invalid = false
     @State private var shake = 0.0
-    init(marker: TimelineMarker, save: @escaping (TimelineMarker) -> Void) {
-        self.marker = marker; self.save = save
+    init(marker: TimelineMarker, save: @escaping (TimelineMarker) -> Void, close: (() -> Void)? = nil) {
+        self.marker = marker; self.save = save; self.close = close
         _bpm = State(initialValue: String(format: "%g", marker.tempoBPM ?? 120))
         _beats = State(initialValue: String(marker.tempoBeats ?? 4)); _unit = State(initialValue: String(marker.tempoUnit ?? 4))
         _timebase = State(initialValue: marker.tempoTimebase ?? .global)
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text("Tempo marker").font(.headline)
+            Text("Tempo marker").font(.jarasHeadline)
             HStack(spacing: 10) {
                 Text(verbatim: "BPM")
                 TextField("BPM", text: $bpm).frame(width: 72).accessibilityLabel("BPM")
@@ -178,7 +274,7 @@ struct TempoMarkerEditor: View {
             }.textFieldStyle(.roundedBorder)
                 .overlay(RoundedRectangle(cornerRadius: 4).stroke(invalid ? .red : .clear))
                 .modifier(InputValidationShake(animatableData: shake))
-            if invalid { Text("Invalid tempo or time signature.").font(.caption).foregroundStyle(.red) }
+            if invalid { Text("Invalid tempo or time signature.").font(.jarasCaption).foregroundStyle(.red) }
             HStack {
                 Text("Timebase")
                 Picker("Timebase", selection: $timebase) {
@@ -186,11 +282,12 @@ struct TempoMarkerEditor: View {
                 }.labelsHidden().frame(maxWidth: .infinity).accessibilityLabel("Timebase")
             }
             HStack {
-                Spacer(); Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
+                Spacer(); Button("Cancel") { finish() }.keyboardShortcut(.cancelAction)
                 Button("Apply", action: apply).keyboardShortcut(.defaultAction)
             }
         }.padding(20).frame(width: 420).foregroundStyle(JarasTheme.text).background(JarasTheme.background)
     }
+    private func finish() { if let close { close() } else { dismiss() } }
     private func apply() {
         guard let value = Double(bpm.replacingOccurrences(of: ",", with: ".")), value.isFinite, TimelineTempo.bpmRange.contains(value),
               let beats = Int(beats), (1...32).contains(beats), let unit = Int(unit), TimelineTempo.beatUnits.contains(unit) else {
@@ -200,14 +297,50 @@ struct TempoMarkerEditor: View {
         var edited = marker; edited.name = "TEMPO"; edited.color = 0x999999
         edited.tempoBPM = value; edited.tempoBeats = beats; edited.tempoUnit = unit
         edited.tempoTimebase = timebase
-        save(edited); dismiss()
+        save(edited); finish()
+    }
+}
+
+private struct AdvancedMixerSettings: View {
+    @AppStorage private var style: MixerTrackStyle
+
+    init(key: String) { _style = AppStorage(wrappedValue: MixerTrackStyle.defaultStyle, key) }
+
+    var body: some View {
+        HStack {
+            Text("Track style")
+            Spacer()
+            Picker("Track style", selection: $style) {
+                Text(verbatim: "Default").tag(MixerTrackStyle.standard)
+                Text("Stripe only").tag(MixerTrackStyle.stripeOnly)
+            }.labelsHidden().pickerStyle(.menu)
+        }
     }
 }
 
 private struct AdvancedTimelineSettings: View {
+    let show: ShowController
+    @StateObject private var updates: ShowPresentationObserver
+    @State private var conversionReport: String?
+    @State private var deletion: TimelineBulkDeletion?
+    @State private var deletionProject: UUID?
+    @State private var deletionSong: UUID?
+    private func title(_ kind: TimelineBulkDeletion) -> String {
+        switch kind { case .tempo: return "Deletar todos os marcadores de tempo"; case .regions: return "Deletar todas as regiões"; case .markers: return "Deletar todos os marcadores" }
+    }
     let documents: ProjectDocuments?
     @State private var confirmingCleanup = false
+    @State private var showingMP3Conversion = false
+    @AppStorage(JarasInterfaceTheme.preferenceKey) private var interfaceTheme = JarasInterfaceTheme.defaultTheme
+    @AppStorage(StemLayoutPreferences.stackedKey) private var stackedStems = StemLayoutPreferences.stackedDefault
+    @AppStorage(StemLayoutPreferences.crossfadeKey) private var crossfadeOverlaps = false
+    @AppStorage("jaras.timeline.continuousScroll") private var continuousScroll = false
+    @AppStorage(TimelineAppearanceDefaults.invertWaveformColorsKey) private var invertWaveformColors = TimelineAppearanceDefaults.invertWaveformColors
     @AppStorage("jaras.timeline.gridlines") private var gridlines = GlobalProjectTiming.load()?.settings.divisions != 0
+    init(show: ShowController, documents: ProjectDocuments?) {
+        self.show = show; self.documents = documents
+        _updates = StateObject(wrappedValue: show.presentationObserver)
+    }
     var body: some View {
         VStack(spacing: 18) {
             HStack {
@@ -218,12 +351,62 @@ private struct AdvancedTimelineSettings: View {
                     Text("Disabled").tag(false)
                 }.labelsHidden()
             }
-            SetlistTextColorRow(title: "Timeline background", key: "jaras.timeline.background", defaultColor: TimelineAppearanceDefaults.background, showsReset: true)
-            SetlistTextColorRow(title: "Primary grid color", key: "jaras.timeline.primaryGrid", defaultColor: TimelineAppearanceDefaults.primaryGrid, showsReset: true)
-            SetlistTextColorRow(title: "Secondary grid color", key: "jaras.timeline.secondaryGrid", defaultColor: TimelineAppearanceDefaults.secondaryGrid, showsReset: true)
+            HStack {
+                Text("Continuous scroll")
+                Spacer()
+                Picker("Continuous scroll", selection: $continuousScroll) {
+                    Text("Enabled").tag(true)
+                    Text("Disabled").tag(false)
+                }.labelsHidden()
+            }
+            HStack {
+                Text("Invert colors of waveform items")
+                Spacer()
+                Picker("Invert colors of waveform items", selection: $invertWaveformColors) {
+                    Text(verbatim: "Default").tag(false)
+                    Text("Inverted").tag(true)
+                }.labelsHidden()
+            }
+            HStack {
+                Text("Stem organization in the grid"); Spacer()
+                Picker("Stem organization in the grid", selection: $stackedStems) {
+                    Text(verbatim: "Crossfader").tag(true)
+                    Text("Separated").tag(false)
+                }.labelsHidden()
+            }.onChange(of: stackedStems) { _ in show.stemPreferencesChanged() }
+            HStack {
+                Text("Crossfade overlapping items"); Spacer()
+                Picker("Crossfade overlapping items", selection: $crossfadeOverlaps) {
+                    Text("Enabled").tag(true)
+                    Text("Disabled").tag(false)
+                }.labelsHidden()
+            }.onChange(of: crossfadeOverlaps) { _ in show.stemPreferencesChanged() }
+            SetlistTextColorRow(title: "Timeline background", swatch: .background, theme: interfaceTheme)
+            SetlistTextColorRow(title: "Vertical grid color", swatch: .verticalGrid, theme: interfaceTheme)
+            SetlistTextColorRow(title: "Horizontal grid color", swatch: .horizontalGrid, theme: interfaceTheme)
             SetlistTextColorRow(title: "Playback cursor color", key: "jaras.timeline.playCursor", defaultColor: TimelineAppearanceDefaults.playCursor, showsReset: true)
             SetlistTextColorRow(title: "Edit cursor color", key: "jaras.timeline.editCursor", defaultColor: TimelineAppearanceDefaults.editCursor, showsReset: true)
-            SetlistTextColorRow(title: "Sub Play cursor color", key: "jaras.timeline.subPlayCursor", defaultColor: TimelineAppearanceDefaults.subPlayCursor, showsReset: true)
+            Divider()
+            HStack {
+                Text("Converter marcadores em regiões"); Spacer()
+                Button("Converter") { conversionReport = show.convertMarkersToRegions() }
+                    .disabled(show.current == nil)
+                    .sheet(isPresented: Binding(get: { conversionReport != nil }, set: { if !$0 { conversionReport = nil } })) {
+                        VStack(alignment: .leading, spacing: 16) {
+                            Text("Conversão de marcadores").font(.headline)
+                            ScrollView { Text(conversionReport ?? "").frame(maxWidth: .infinity, alignment: .leading) }
+                            HStack { Spacer(); Button("OK") { conversionReport = nil }.keyboardShortcut(.defaultAction) }
+                        }.padding(20).frame(width: 540, height: 360)
+                    }
+            }
+            ForEach(TimelineBulkDeletion.allCases) { kind in
+                HStack {
+                    Text(verbatim: title(kind)); Spacer()
+                    Button("Deletar", role: .destructive) {
+                        deletionProject = show.snapshot.project.id; deletionSong = show.current?.id; deletion = kind
+                    }.disabled(show.current == nil)
+                }
+            }
             if let documents {
                 Divider()
                 HStack {
@@ -233,7 +416,65 @@ private struct AdvancedTimelineSettings: View {
                         .disabled(!documents.canCleanTimelineMedia)
                 }
                 .sheet(isPresented: $confirmingCleanup) { TimelineMediaCleanupConfirmation(documents: documents) }
+                HStack {
+                    Spacer()
+                    Button("MP3 - 320 kbps") { showingMP3Conversion = true }
+                        .disabled(!documents.canConvertTimelineAudio)
+                }
+                .sheet(isPresented: $showingMP3Conversion) { TimelineMP3ConversionView(documents: documents) }
             }
+        }
+        .alert(deletion.map(title) ?? "Deletar", isPresented: Binding(get: { deletion != nil }, set: { if !$0 { deletion = nil } }), presenting: deletion) { kind in
+            Button("Cancelar", role: .cancel) { deletion = nil }
+            Button("Deletar", role: .destructive) {
+                if let project = deletionProject, let song = deletionSong { show.deleteTimelineElements(kind, project: project, song: song) }
+                deletion = nil
+            }
+        } message: { kind in
+            Text(kind == .regions ? "Deletar todas as regiões desta timeline, incluindo as unificadas? Os itens de áudio, MIDI e vídeo serão mantidos. Você pode desfazer com Command+Z." : kind == .tempo ? "Deletar todos os marcadores de tempo desta timeline? Você pode desfazer com Command+Z." : "Deletar todos os marcadores comuns desta timeline? Os marcadores de tempo e das regiões unificadas serão mantidos. Você pode desfazer com Command+Z.")
+        }
+    }
+}
+
+private struct TimelineMP3ConversionView: View {
+    @Environment(\.dismiss) private var dismiss
+    let documents: ProjectDocuments
+    @State private var running = false
+    @State private var progress = 0
+    @State private var total = 0
+    @State private var result: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("MP3 - 320 kbps").font(.jarasHeadline)
+            if running {
+                ProgressView(value: Double(progress), total: Double(max(1, total)))
+                Text("\(progress)/\(total)").monospacedDigit()
+            } else if let result {
+                Text(LocalizedStringKey(result))
+            } else {
+                Text("Convert timeline audio to MP3 at 320 kbps. Existing MP3 files and source files are kept.")
+            }
+            HStack {
+                Spacer()
+                if result != nil { Button("OK") { dismiss() } }
+                else {
+                    Button("Cancelar") { dismiss() }.disabled(running)
+                    Button("Converter") { start() }.disabled(running)
+                }
+            }
+        }
+        .padding(20).frame(width: 450)
+        .interactiveDismissDisabled(running)
+    }
+    private func start() {
+        running = true
+        Task { @MainActor in
+            defer { running = false }
+            do {
+                let count = try await documents.convertTimelineAudioToMP3 { progress = $0; total = $1 }
+                result = count == 0 ? "No audio files to convert." : "Timeline audio converted to MP3."
+            } catch { result = error.localizedDescription }
         }
     }
 }
@@ -251,10 +492,15 @@ private struct AdvancedSetlistColors: View {
                 Text("Regular").tag(0)
                 Text("Bold").tag(1)
                 Text("Bold italic").tag(2)
+                Text(verbatim: "Inter ExtraBold").font(SetlistTypeface.font(3)).tag(3)
+                Text(verbatim: "Inter Black").font(SetlistTypeface.font(4)).tag(4)
+                Text(verbatim: "Archivo Black").font(SetlistTypeface.font(5)).tag(5)
+                Text(verbatim: "Bungee").font(SetlistTypeface.font(6)).tag(6)
             }
             SetlistTextColorRow(title: "All Regions song text", key: "jaras.setlist.allRegionsTextColor", defaultColor: 0xffffff)
             SetlistTextColorRow(title: "Playlist song text", key: "jaras.setlist.playlistTextColor", defaultColor: 0x00ff9a)
             SetlistTextColorRow(title: "Unified drawer song text", key: "jaras.setlist.unifiedTextColor", defaultColor: 0xffeb3b)
+            SetlistTextColorRow(title: "Block text color", key: "jaras.setlist.blockTextColor", defaultColor: 0x69ed91)
         }
     }
 }
@@ -263,32 +509,50 @@ private struct SetlistTextColorRow: View {
     let title: String
     let defaultColor: Int
     let showsReset: Bool
+    let followsTheme: Bool
     @ObservedObject private var color: AppearanceColor
     @State private var editing = false
+    @State private var openingColor: (stored: Int, displayed: Int)?
+    private var displayedColor: Int { color.resolved(default: defaultColor) }
     init(title: String, key: String, defaultColor: Int, showsReset: Bool = false) {
         self.title = title
         self.defaultColor = defaultColor
         self.showsReset = showsReset
+        self.followsTheme = false
         self.color = AppearanceColor.shared(key, default: defaultColor)
+    }
+    init(title: String, swatch: TimelineThemeColor, theme: JarasInterfaceTheme) {
+        self.title = title
+        self.defaultColor = swatch.defaultColor(for: theme)
+        self.showsReset = true
+        self.followsTheme = true
+        self.color = AppearanceColor.timeline(swatch)
     }
     var body: some View {
         HStack {
             Text(LocalizedStringKey(title))
             Spacer()
-            Button { editing = true } label: {
-                RoundedRectangle(cornerRadius: 3).fill(Color(hex: UInt32(color.value)))
+            Button {
+                openingColor = (color.value, displayedColor)
+                editing = true
+            } label: {
+                RoundedRectangle(cornerRadius: 3).fill(Color(hex: UInt32(displayedColor)))
                     .frame(width: 44, height: 22)
                     .overlay(RoundedRectangle(cornerRadius: 3).stroke(JarasTheme.secondary))
             }.buttonStyle(.plain).accessibilityLabel(Text(LocalizedStringKey(title)))
                 .popover(isPresented: $editing) {
-                    NameColorEditor(title: title, initialName: "", initialColor: UInt32(color.value),
+                    NameColorEditor(title: title, initialName: "", initialColor: UInt32(openingColor?.displayed ?? displayedColor),
                         save: { _, value in color.save(Int(value)) }, close: { editing = false }, nameEditable: false, showsName: false,
-                        previewColor: { if color.value != Int($0) { color.value = Int($0) } })
+                        previewColor: { value in
+                            let rgb = Int(value)
+                            let preview = openingColor.flatMap { $0.displayed == rgb ? $0.stored : nil } ?? rgb
+                            if color.value != preview { color.value = preview }
+                        })
                 }
             if showsReset {
-                Button("Reset") { color.save(defaultColor) }
-                    .font(.caption)
-                    .disabled(color.value == defaultColor)
+                Button("Reset") { color.save(followsTheme ? -1 : defaultColor) }
+                    .font(.jarasCaption)
+                    .disabled(followsTheme ? color.value < 0 : color.value == defaultColor)
                     .accessibilityLabel(Text("Reset") + Text(" ") + Text(LocalizedStringKey(title)))
             }
         }
@@ -305,13 +569,13 @@ private struct TimelineMediaCleanupConfirmation: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Label("Clean up files deleted from the timeline", systemImage: "trash")
-                .font(.headline).foregroundStyle(.red)
-            Text("This saves the project and permanently removes audio and video files deleted from the timeline from its Stems and Videos folders. Files still in use are kept. Recovery backups retain their media. The editing undo history will be cleared. This cleanup cannot be undone.")
+                .font(.jarasHeadline).foregroundStyle(.red)
+            Text("This saves the project and permanently removes audio and video files deleted from the timeline from its Stems and Videos folders. Files still in use are kept. Old recovery backups of this project will also be deleted. The editing undo history will be cleared. This cleanup cannot be undone.")
             if let url = documents.currentURL {
-                Text(verbatim: url.deletingLastPathComponent().path).font(.caption)
-                    .textSelection(.enabled).foregroundStyle(JarasTheme.secondary)
+                Text(verbatim: url.deletingLastPathComponent().path).font(.jarasCaption)
+                    .textSelection(.disabled).foregroundStyle(JarasTheme.secondary)
             }
-            if !error.isEmpty { Text(LocalizedStringKey(error)).font(.caption).foregroundStyle(.red) }
+            if !error.isEmpty { Text(LocalizedStringKey(error)).font(.jarasCaption).foregroundStyle(.red) }
             HStack {
                 Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction).disabled(working)
                 Spacer()
@@ -344,13 +608,13 @@ private struct TimelineMediaCleanupConfirmation: View {
 
 /// Stored per device: hiding a transport control never disables its action.
 enum IpadTransportControl: String, CaseIterable, Identifiable {
-    case play, pause, subPlay, repeatPlayback, record, metronome, bpm, tuner
+    case play, fadeout, pause, repeatPlayback, record, metronome, bpm, tuner
     var id: String { rawValue }
     var title: String {
         switch self {
         case .play: return "Play / Stop"
         case .pause: return "Pause"
-        case .subPlay: return "Sub Play"
+        case .fadeout: return "Fadeout"
         case .repeatPlayback: return "Repeat"
         case .record: return "Record"
         case .metronome: return "Metronome"
@@ -361,7 +625,7 @@ enum IpadTransportControl: String, CaseIterable, Identifiable {
     var weight: Double {
         switch self {
         case .play, .pause: return 60
-        case .subPlay: return 66
+        case .fadeout: return 66
         case .repeatPlayback: return 52
         case .record: return 47
         case .metronome: return 34
@@ -393,6 +657,23 @@ private struct AdvancedTransportSettings: View {
                 })).toggleStyle(.switch)
             }
             Button("Reset") { hidden = "" }
+        }
+    }
+}
+
+struct AdvancedKeyboardSettings: View {
+    @AppStorage("jaras.keyboard.style") private var style = "default"
+    @AppStorage("jaras.keyboard.channel") private var channel = 0
+    var body: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            Picker("Keyboard style", selection: $style) {
+                Text(verbatim: "Default").tag("default")
+                Text(verbatim: "Black").tag("black")
+            }
+            Picker("MIDI channel", selection: $channel) {
+                Text(verbatim: "Omni").tag(0)
+                ForEach(1...16, id: \.self) { Text(verbatim: String($0)).tag($0) }
+            }.onChange(of: channel) { KeyboardMIDIMonitor.shared.channel = $0 }
         }
     }
 }

@@ -19,6 +19,34 @@ wheel.focus(request: restoration, x: 2400)
 precondition(scroll.contentView.bounds.minX == 0, "a consumed restoration cannot pull back later manual scrolling")
 print("NATIVE_CURSOR_RESTORATION_WAIT_FOR_VIEWPORT_AND_CONSUME_ONCE_OK")
 let gate = NativeTimelineInputGate.shared
+// Dense region heads are registered repeatedly while zooming. Registration
+// remains weak and unique; modal cancellation is delivered once, in order.
+do {
+    final class RegionObserver: NativeTimelineInputObserver {
+        weak var window: NSWindow?
+        var blocks: [Bool] = []
+        var cancelled = 0
+        init(_ window: NSWindow) { self.window = window }
+        func timelineInputGateChanged(blocked: Bool) { blocks.append(blocked) }
+        func timelinePendingClickCancelled() { cancelled += 1 }
+    }
+    let denseGate = NativeTimelineInputGate()
+    let heads = (0..<4000).map { _ in RegionObserver(window) }
+    for _ in 0..<4 { for head in heads { denseGate.add(head) } }
+    denseGate.setBlocked(true, for: window)
+    denseGate.cancelPendingClicks(for: window)
+    precondition(heads.allSatisfy { $0.blocks == [false, false, false, false, true] && $0.cancelled == 1 })
+    denseGate.setBlocked(false, for: window)
+    weak var released: RegionObserver?
+    do {
+        let temporary = RegionObserver(window); released = temporary
+        denseGate.add(temporary)
+    }
+    precondition(released == nil, "closing a region must release its input observer")
+    denseGate.cancelPendingClicks(for: window)
+    precondition(heads.allSatisfy { $0.cancelled == 2 && $0.blocks.last == false })
+    print("DENSE_REGION_INPUT_IDENTITY_WEAK_LIFETIME_AND_SINGLE_CANCEL_OK")
+}
 let previousZoom = TimelineViewportPreferences.storage.object(forKey: "jaras.timelineZoom")
 let legacyZoomBeforeTest = UserDefaults.standard.object(forKey: "jaras.timelineZoom") as? NSObject
 defer {
@@ -149,17 +177,8 @@ func requireZoomFrame(after inputTime: Double, callbackCount: Int) {
     let latency = zoomTimes[callbackCount - 1] - inputTime
     print("ZOOM_FRAME_LATENCY_MS=" + String(format: "%.2f",latency * 1_000))
     precondition(latency <= 0.050,"latest zoom input reaches layout at the display-frame cadence, within bounded native scheduler tolerance")
-}
-func requireWheelZoomTarget(_ target: Double, after inputTime: Double) {
-    // The 90 ms mouse transition retains room for the next native display tick.
-    let deadline = inputTime + 0.125
-    while (zoomValues.last.map { abs($0 - target) > 1e-12 } ?? true) && ProcessInfo.processInfo.systemUptime < deadline {
-        _ = RunLoop.main.run(mode: .default, before: Date(timeIntervalSinceNow: 0.002))
-    }
-    precondition(zoomValues.last.map { abs($0 - target) < 1e-12 } == true,
-                 "mouse zoom reaches its complete input target within 125 ms")
-    precondition(zoomTimes.last! - inputTime <= 0.125,
-                 "mouse animation finishes within its bounded display deadline")
+    // The shared ease has a fixed 100 ms deadline, not an accumulating tail.
+    RunLoop.main.run(until: Date().addingTimeInterval(0.12))
 }
 func requireMonotonicZoom(_ values: [Double], increasing: Bool) {
     precondition(zip(values, values.dropFirst()).allSatisfy { increasing ? $0.1 >= $0.0 : $0.1 <= $0.0 },
@@ -190,6 +209,37 @@ for tinyDelta: CGFloat in [0.1, 0.2, -0.1, -0.2] {
                  "small reversals preserve the exact signed travel without dead zones")
 }
 print("FRACTIONAL_ZOOM_FIRST_RESPONSE_AND_REVERSALS_OK")
+
+do {
+    final class MagnifyInputEvent: NSEvent {
+        weak var target: NSWindow?
+        var delta: CGFloat = 0.1
+        var gesturePhase: NSEvent.Phase = .began
+        override var type: NSEvent.EventType { .magnify }
+        override var window: NSWindow? { target }
+        override var locationInWindow: NSPoint { NSPoint(x: 100, y: 100) }
+        override var magnification: CGFloat { delta }
+        override var phase: NSEvent.Phase { gesturePhase }
+    }
+    let pinch = MagnifyInputEvent()
+    pinch.target = window
+    resetZoomInput()
+    pinch.delta = 0
+    precondition(wheel.handleMagnifyEvent(pinch) && zoomValues.isEmpty)
+    pinch.gesturePhase = .changed
+    pinch.delta = 0.05
+    precondition(wheel.handleMagnifyEvent(pinch) && zoomValues.count == 1 && zoomValues[0] > 1,
+                 "pinching out starts horizontal zoom on the first movement")
+    resetZoomInput()
+    pinch.gesturePhase = .began
+    pinch.delta = -0.05
+    precondition(wheel.handleMagnifyEvent(pinch) && zoomValues.count == 1 && zoomValues[0] < 1,
+                 "pinching in reduces the timeline scale")
+    gate.setBlocked(true, for: window)
+    precondition(!wheel.handleMagnifyEvent(pinch), "a modal blocks pinch along with other grid gestures")
+    gate.setBlocked(false, for: window)
+}
+print("TIMELINE_PINCH_ZOOM_OK")
 
 // A phase-ended gesture need not have a momentum tail. A later zero-delta
 // begin must not inherit its axis and swallow the next gesture's movement.
@@ -277,7 +327,7 @@ let initialLogResponse = 10 * TimelineZoomLimits.preciseSensitivity
 let firstTrackpadInput = ProcessInfo.processInfo.systemUptime
 precondition(wheel.handleWheelEvent(event))
 precondition(zoomValues.count == 1,"the first trackpad zoom callback occurs before the event handler returns")
-precondition(abs(zoomValues[0] - exp(initialLogResponse)) < 1e-10,"the first input applies its full delta without interpolation lag")
+precondition(log(zoomValues[0]) >= initialLogResponse * 0.35 && log(zoomValues[0]) < initialLogResponse,"at least 35% of coarse input is visible before the event returns")
 precondition(zoomTimes[0] >= firstTrackpadInput)
 event.gesturePhase = .changed
 let burstInput = ProcessInfo.processInfo.systemUptime
@@ -290,54 +340,45 @@ requireZoomFrame(after: burstInput,callbackCount: 2)
 let burstLogResponse = log(zoomValues.last!)
 precondition(burstLogResponse >= 22 * TimelineZoomLimits.preciseSensitivity - 1e-12 && burstLogResponse <= 22 * TimelineZoomLimits.preciseSensitivity * 1.12 + 1e-12,
              "the next frame consumes the complete signed burst within the bounded velocity gain")
-let finalBurstZoom = zoomValues.last!
+let finalBurstZoom = zoomValues.last!, finalBurstCount = zoomValues.count
 RunLoop.main.run(until: Date().addingTimeInterval(0.2))
-precondition(zoomValues.count == 2 && zoomValues.last! == finalBurstZoom,
+precondition(zoomValues.count == finalBurstCount && zoomValues.last! == finalBurstZoom,
              "releasing the trackpad without native momentum adds no movement")
 
 resetZoomInput(precise: false)
 let savedBeforeWheel = TimelineViewportPreferences.storage.double(forKey: "jaras.timelineZoom")
 event.delta = 2
-let physicalStart = ProcessInfo.processInfo.systemUptime
 precondition(wheel.handleWheelEvent(event))
 precondition(TimelineViewportPreferences.storage.double(forKey: "jaras.timelineZoom") == savedBeforeWheel,
              "wheel input must not publish UserDefaults changes during a grid frame")
 let physicalTarget = exp(2 * TimelineZoomLimits.wheelSensitivity)
-precondition(zoomValues.count == 1 && zoomValues[0] > 1 && zoomValues[0] < physicalTarget,
-             "a physical wheel tick responds immediately and leaves a short visible finish")
-let physicalFirstStep = zoomValues[0]
+precondition(zoomValues.count == 1 && log(zoomValues[0]) >= log(physicalTarget) * 0.35 && zoomValues[0] < physicalTarget,
+             "a physical wheel immediately shows most of its travel with a short gentle finish")
+let physicalImmediate = zoomValues[0]
 wheel.acceptRenderedZoom(1)
-precondition(wheel.zoom == physicalFirstStep,
-             "an older SwiftUI update cannot rewind the first mouse animation step")
-requireWheelZoomTarget(physicalTarget, after: physicalStart)
-precondition(zoomValues.count >= 2 && zoomValues.allSatisfy { $0 >= 1 && $0 <= physicalTarget },
-             "mouse animation uses bounded intermediate scale publications")
-requireMonotonicZoom(zoomValues, increasing: true)
-let physicalSettledCount = zoomValues.count
+precondition(wheel.zoom == physicalImmediate,
+             "an older SwiftUI update cannot rewind the first mouse response")
 RunLoop.main.run(until: Date().addingTimeInterval(0.6))
-precondition(zoomValues.count == physicalSettledCount && abs(zoomValues.last! - physicalTarget) < 1e-12,
-             "a physical tick ends at its exact input target")
-precondition(abs(TimelineViewportPreferences.storage.double(forKey: "jaras.timelineZoom") - zoomValues.last!) < 1e-12,
+precondition(zoomValues.count >= 2 && abs(zoomValues.last! - physicalTarget) < 1e-12,
+             "the short finish reaches the exact input target without extra travel")
+precondition(abs(TimelineViewportPreferences.storage.double(forKey: "jaras.timelineZoom") - physicalTarget) < 1e-12,
              "the final zoom preference is persisted after the gesture settles")
-let physicalTailCount = zoomValues.count
-RunLoop.main.run(until: Date().addingTimeInterval(0.1))
-precondition(zoomValues.count == physicalTailCount, "physical-wheel zoom settles without idle updates")
+
 resetZoomInput(precise: false)
 event.delta = 2
 precondition(wheel.handleWheelEvent(event))
-RunLoop.main.run(until: Date().addingTimeInterval(0.03))
 let beforeReverse = zoomValues.last!
-let beforeReverseCount = zoomValues.count
 event.delta = -1; event.inputTime += 0.03
 let mouseReversalStart = ProcessInfo.processInfo.systemUptime
 precondition(wheel.handleWheelEvent(event))
+requireZoomFrame(after: mouseReversalStart, callbackCount: 2)
 let reverseTarget = beforeReverse * exp(-TimelineZoomLimits.wheelSensitivity)
-requireWheelZoomTarget(reverseTarget, after: mouseReversalStart)
-requireMonotonicZoom([beforeReverse] + Array(zoomValues.dropFirst(beforeReverseCount)), increasing: false)
-let mouseReversalSettledCount = zoomValues.count
-RunLoop.main.run(until: Date().addingTimeInterval(0.10))
-precondition(zoomValues.count == mouseReversalSettledCount,
-             "mouse reversal drops the unseen forward tail and ends at the reverse input target")
+precondition(abs(zoomValues.last! - reverseTarget) < 1e-12,
+             "the next frame applies the full reverse input, without an old animation tail")
+requireMonotonicZoom(zoomValues, increasing: false)
+let reversalFinalCount = zoomValues.count
+RunLoop.main.run(until: Date().addingTimeInterval(0.12))
+precondition(zoomValues.count == reversalFinalCount, "mouse reversal has no ongoing idle drift")
 
 resetZoomInput(precise: false)
 event.delta = 2
@@ -347,10 +388,15 @@ for _ in 0..<40 {
     event.delta = 0.02; event.inputTime += 1.0 / 120
     precondition(wheel.handleWheelEvent(event))
 }
-precondition(zoomValues.count == 1, "retargeting a mouse burst keeps layout at the display cadence")
+precondition(zoomValues.count == 1, "a mouse burst keeps layout at the display cadence")
 let mouseBurstEnd = ProcessInfo.processInfo.systemUptime
-requireWheelZoomTarget(exp(2.8 * TimelineZoomLimits.wheelSensitivity), after: mouseBurstEnd)
+requireZoomFrame(after: mouseBurstEnd, callbackCount: 2)
+precondition(abs(zoomValues.last! - exp(2.8 * TimelineZoomLimits.wheelSensitivity)) < 1e-12,
+             "the next mouse frame consumes every delta, with no interpolation delay")
 requireMonotonicZoom(zoomValues, increasing: true)
+let burstFinalCount = zoomValues.count
+RunLoop.main.run(until: Date().addingTimeInterval(0.12))
+precondition(zoomValues.count == burstFinalCount, "a complete burst cannot continue moving during idle")
 
 for phase: NSEvent.Phase in [[], .began] {
     resetZoomInput(precise: false)
@@ -360,11 +406,13 @@ for phase: NSEvent.Phase in [[], .began] {
     event.precise = true; event.gesturePhase = phase; event.delta = -1; event.inputTime += 0.01
     let mouseToPreciseStart = ProcessInfo.processInfo.systemUptime
     precondition(wheel.handleWheelEvent(event))
-    requireWheelZoomTarget(switchBase * exp(-TimelineZoomLimits.preciseSensitivity), after: mouseToPreciseStart)
+    requireZoomFrame(after: mouseToPreciseStart, callbackCount: 2)
+    precondition(abs(zoomValues.last! - switchBase * exp(-TimelineZoomLimits.preciseSensitivity)) < 1e-12,
+                 "new gestures and continuous reversals both resume from the visible scale")
     requireMonotonicZoom([switchBase] + Array(zoomValues.dropFirst(switchCount)), increasing: false)
-    let switchSettledCount = zoomValues.count
-    RunLoop.main.run(until: Date().addingTimeInterval(0.10))
-    precondition(zoomValues.count == switchSettledCount, "precise input cancels the previous mouse animation")
+    let switchedCount = zoomValues.count
+    RunLoop.main.run(until: Date().addingTimeInterval(0.12))
+    precondition(zoomValues.count == switchedCount, "switching devices must not leave a long tail")
 }
 
 for cancellation in ["modal", "held-pan"] {
@@ -372,6 +420,8 @@ for cancellation in ["modal", "held-pan"] {
     event.delta = 2
     precondition(wheel.handleWheelEvent(event))
     let cancelledScale = zoomValues.last!, cancelledCount = zoomValues.count
+    event.delta = 1; event.inputTime += 0.01
+    precondition(wheel.handleWheelEvent(event) && zoomValues.count == cancelledCount)
     if cancellation == "modal" { gate.setBlocked(true, for: window) }
     else {
         event.delta = -1; event.inputTime += 0.01
@@ -379,16 +429,90 @@ for cancellation in ["modal", "held-pan"] {
     }
     RunLoop.main.run(until: Date().addingTimeInterval(0.12))
     precondition(zoomValues.count == cancelledCount && wheel.zoom == cancelledScale,
-                 "\(cancellation) cancels every remaining mouse zoom animation frame")
+                 "\(cancellation) cancels coalesced zoom input before the next frame")
 }
 resetZoomInput()
-event.gesturePhase = []; event.delta = 2
+event.gesturePhase = []; event.delta = 0.002 / TimelineZoomLimits.preciseSensitivity
 precondition(wheel.handleWheelEvent(event))
-precondition(zoomValues.count == 1 && abs(zoomValues[0] - exp(2 * TimelineZoomLimits.preciseSensitivity)) < 1e-12,
+precondition(zoomValues.count == 1 && abs(zoomValues[0] - exp(0.002)) < 1e-12,
              "a precise mouse event without gesture phases is immediate too")
 RunLoop.main.run(until: Date().addingTimeInterval(0.12))
 precondition(zoomValues.count == 1)
-print("MOUSE_ZOOM_RELEASE_ANIMATION_REVERSAL_AND_STALE_UPDATE_PROTECTION_OK")
+print("MOUSE_TRACKPAD_ZOOM_IMMEDIATE_RESPONSE_SHORT_FINISH_AND_REVERSAL_OK")
+
+// Finger-up has a longer finish than the physical wheel, without delaying
+// live input or adding unbounded native momentum to the requested scale.
+for precise in [false, true] {
+    for sign in [-1.0, 1.0] {
+        resetZoomInput(precise: precise)
+        event.delta = precise ? sign * 20 : sign
+        let target = exp(Double(event.delta) * (precise ? TimelineZoomLimits.preciseSensitivity : TimelineZoomLimits.wheelSensitivity))
+        precondition(wheel.handleWheelEvent(event))
+        let releaseScale = zoomValues.last!
+        if precise {
+            event.gesturePhase = .ended; event.delta = 0
+            precondition(wheel.handleWheelEvent(event))
+            precondition(zoomValues.last! == releaseScale, "finger-up must not jump the scale")
+        }
+        RunLoop.main.run(until: Date().addingTimeInterval(0.125))
+        if precise {
+            precondition(abs(log(zoomValues.last! / target)) > 0.0001,
+                         "the trackpad keeps a short gentle finish after the mouse has settled")
+        } else {
+            precondition(abs(zoomValues.last! - target) < 1e-12, "the mouse keeps its existing finish")
+        }
+        RunLoop.main.run(until: Date().addingTimeInterval(0.12))
+        if precise {
+            precondition(abs(log(zoomValues.last! / target)) > 0.0001,
+                         "the trackpad finish continues beyond the former 180 ms release")
+        }
+        RunLoop.main.run(until: Date().addingTimeInterval(0.24))
+        if precise {
+            precondition(abs(log(zoomValues.last! / target)) > 0.0001,
+                         "the trackpad finish continues beyond the former 420 ms release")
+        }
+        RunLoop.main.run(until: Date().addingTimeInterval(0.18))
+        precondition(abs(zoomValues.last! - target) < 1e-12, "the release reaches the exact requested scale promptly")
+        requireMonotonicZoom(zoomValues, increasing: sign > 0)
+        let complete = zoomValues.count
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        precondition(zoomValues.count == complete, "the longer release cannot keep drifting")
+    }
+}
+resetZoomInput()
+event.delta = 20
+precondition(wheel.handleWheelEvent(event))
+event.delta = 0; event.gesturePhase = .ended
+precondition(wheel.handleWheelEvent(event))
+let releaseBeforeCancel = zoomValues.last!, releaseCountBeforeCancel = zoomValues.count
+gate.setBlocked(true, for: window)
+RunLoop.main.run(until: Date().addingTimeInterval(0.22))
+precondition(zoomValues.count == releaseCountBeforeCancel && wheel.zoom == releaseBeforeCancel,
+             "opening a modal cancels the longer trackpad release immediately")
+gate.setBlocked(false, for: window)
+print("TRACKPAD_SOFT_RELEASE_MOUSE_UNCHANGED_EXACT_TARGET_AND_CANCELLATION_OK")
+
+// Touching the trackpad again must interrupt its release at the visible scale,
+// not finish the unseen travel and then bounce back on the first reverse delta.
+for sign in [-1.0, 1.0] {
+    resetZoomInput()
+    event.delta = sign * 20
+    precondition(wheel.handleWheelEvent(event))
+    event.delta = 0; event.gesturePhase = .ended
+    precondition(wheel.handleWheelEvent(event))
+    RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+    let visible = wheel.zoom, count = zoomValues.count
+    event.gesturePhase = .began; event.inputTime += 0.06
+    precondition(wheel.handleWheelEvent(event))
+    precondition(wheel.zoom == visible && zoomValues.count == count,
+                 "touching the trackpad during release cannot jump to the unfinished target")
+    event.gesturePhase = .changed; event.delta = -sign
+    let began = ProcessInfo.processInfo.systemUptime
+    precondition(wheel.handleWheelEvent(event))
+    requireZoomFrame(after: began, callbackCount: count + 1)
+    requireMonotonicZoom([visible] + Array(zoomValues.dropFirst(count)), increasing: sign < 0)
+}
+print("TRACKPAD_RELEASE_RESTART_BOTH_DIRECTIONS_WITHOUT_REBOUND_OK")
 
 // Holding the left button converts only an unmodified physical wheel into pan.
 // A pending trackpad zoom/anchor is cancelled before the viewport moves.
@@ -571,26 +695,28 @@ let settledUpdates = zoomValues.count
 RunLoop.main.run(until: Date().addingTimeInterval(0.035))
 precondition(zoomValues.count == settledUpdates,"after settling, idle frames add no stale target callback")
 
+// Trackpad native inertia must not add a second, longer zoom after finger-up.
 resetZoomInput()
 event.delta = 8
 precondition(wheel.handleWheelEvent(event))
 event.gesturePhase = []; event.momentum = .began
-let fingerScale = zoomValues.last!
 for delta: CGFloat in [4,2,1] {
     event.delta = delta
     precondition(wheel.handleWheelEvent(event))
     RunLoop.main.run(until: Date().addingTimeInterval(0.025))
-    precondition(zoomValues.last! > fingerScale, "native trackpad momentum continues zoom after release")
     event.momentum = .changed
 }
 event.delta = 0; event.momentum = .ended
 precondition(wheel.handleWheelEvent(event))
+RunLoop.main.run(until: Date().addingTimeInterval(0.12))
+precondition(abs(log(zoomValues.last!) - 8 * TimelineZoomLimits.preciseSensitivity) < 1e-12,
+             "trackpad finishes only the finger travel, just like a physical wheel")
 let nativeMomentumUpdates = zoomValues.count
-RunLoop.main.run(until: Date().addingTimeInterval(0.035))
-precondition(zoomValues.count == nativeMomentumUpdates,"native momentum has no added synthetic animation")
+RunLoop.main.run(until: Date().addingTimeInterval(0.12))
+precondition(zoomValues.count == nativeMomentumUpdates,"trackpad zoom cannot coast beyond the common finish")
 
-// Ending a gesture and beginning another before a display tick cannot lose
-// the previous gesture's queued signed travel, including a zero-delta begin.
+// A zero-delta finger-down stops unfinished motion, including changes queued
+// before a display tick. The next movement starts from what was visible.
 resetZoomInput()
 event.delta = 0.1
 precondition(wheel.handleWheelEvent(event))
@@ -600,11 +726,11 @@ event.gesturePhase = .ended; event.delta = 0
 precondition(wheel.handleWheelEvent(event))
 event.gesturePhase = .began; event.inputTime += 1.0 / 120
 precondition(wheel.handleWheelEvent(event))
-precondition(zoomValues.count == 2 && abs(log(zoomValues.last!) - 0.3 * TimelineZoomLimits.preciseSensitivity) < 1e-12,
-             "new zero-delta begin commits the preceding gesture's pending movement")
+precondition(zoomValues.count == 1 && abs(log(zoomValues.last!) - 0.1 * TimelineZoomLimits.preciseSensitivity) < 1e-12,
+             "new zero-delta begin leaves the visible scale unchanged")
 event.gesturePhase = .changed; event.delta = 0.1; event.inputTime += 1.0 / 120
-precondition(wheel.handleWheelEvent(event) && zoomValues.count == 3)
-precondition(abs(log(zoomValues.last!) - 0.4 * TimelineZoomLimits.preciseSensitivity) < 1e-12)
+precondition(wheel.handleWheelEvent(event) && zoomValues.count == 2)
+precondition(abs(log(zoomValues.last!) - 0.2 * TimelineZoomLimits.preciseSensitivity) < 1e-12)
 
 resetZoomInput(precise: false)
 let preferenceBeforeDebounce = TimelineViewportPreferences.storage.double(forKey: "jaras.timelineZoom")
@@ -639,7 +765,7 @@ let ruler = TimelineRulerView(frame: NSRect(x: 0,y: 0,width: 400,height: 24))
 document.addSubview(ruler)
 var seeks = 0
 var rulerFreeSeeks: [Bool] = []
-ruler.seek = { _,_,free in seeks += 1; rulerFreeSeeks.append(free) }
+ruler.seek = { _,free in seeks += 1; rulerFreeSeeks.append(free) }
 func pointer(_ type: NSEvent.EventType) -> NSEvent {
     NSEvent.mouseEvent(with: type,location: ruler.convert(NSPoint(x: 100,y: 12),to: nil),modifierFlags: [],timestamp: ProcessInfo.processInfo.systemUptime,windowNumber: window.windowNumber,context: nil,eventNumber: 1,clickCount: 1,pressure: 1)!
 }
@@ -657,6 +783,9 @@ ruler.mouseUp(with: pointer(.leftMouseUp))
 precondition(seeks == 0, "native modal opening cancels a pending ruler press")
 ruler.rightMouseDown(with: pointer(.rightMouseDown))
 ruler.rightMouseUp(with: pointer(.rightMouseUp))
+precondition(seeks == 0, "a secondary ruler click leaves both transport cursors alone")
+ruler.mouseDown(with: pointer(.leftMouseDown))
+ruler.mouseUp(with: pointer(.leftMouseUp))
 precondition(seeks == 1, "the ruler resumes immediately after closing the modal")
 let shifted = NSEvent.mouseEvent(with: .leftMouseUp, location: ruler.convert(NSPoint(x: 113.75, y: 12),to: nil), modifierFlags: .shift, timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1)!
 ruler.mouseDown(with: shifted); ruler.mouseUp(with: shifted)
@@ -673,8 +802,8 @@ precondition(seeks == seeksBeforeVerticalDrag, "a vertical ruler drag returning 
 print("RULER_PURE_RELEASE_ONLY_AND_VERTICAL_DRAG_NO_SEEK_OK")
 var intervals: [(Double, Double)] = []
 ruler.selectTime = { intervals.append(($0, $1)) }
-func selectionEvent(_ type: NSEvent.EventType, x: CGFloat) -> NSEvent {
-    NSEvent.mouseEvent(with: type, location: ruler.convert(NSPoint(x: x, y: 12), to: nil), modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1)!
+func selectionEvent(_ type: NSEvent.EventType, x: CGFloat, modifiers: NSEvent.ModifierFlags = []) -> NSEvent {
+    NSEvent.mouseEvent(with: type, location: ruler.convert(NSPoint(x: x, y: 12), to: nil), modifierFlags: modifiers, timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1)!
 }
 for (start, end): (CGFloat, CGFloat) in [(100, 300), (300, 100)] {
     let before = seeks
@@ -684,6 +813,10 @@ for (start, end): (CGFloat, CGFloat) in [(100, 300), (300, 100)] {
     precondition(seeks == before, "right drag selects an interval without moving the Sub Play cursor")
     precondition(intervals.last!.0 == start / 400 && intervals.last!.1 == end / 400, "both ruler drag directions preserve their endpoints")
 }
+ruler.mouseDown(with: selectionEvent(.leftMouseDown, x: 50, modifiers: .control))
+ruler.mouseDragged(with: selectionEvent(.leftMouseDragged, x: 250))
+ruler.mouseUp(with: selectionEvent(.leftMouseUp, x: 250))
+precondition(intervals.last!.0 == 50.0 / 400 && intervals.last!.1 == 250.0 / 400 && seeks == seeksBeforeVerticalDrag)
 ruler.rightMouseDown(with: selectionEvent(.rightMouseDown, x: 100))
 gate.setBlocked(true, for: window); gate.setBlocked(false, for: window)
 let beforeCancelled = intervals.count
@@ -692,7 +825,7 @@ ruler.rightMouseUp(with: selectionEvent(.rightMouseUp, x: 300))
 precondition(intervals.count == beforeCancelled, "opening a modal cancels the pending interval gesture")
 let retainedRulerFrame = ruler.frame
 var projectedRulerSeeks: [Double] = []
-ruler.seek = { fraction, _, _ in projectedRulerSeeks.append(fraction) }
+ruler.seek = { fraction, _ in projectedRulerSeeks.append(fraction) }
 for width: CGFloat in [800, 200, 400] {
     ruler.documentWidth = width
     ruler.mouseDown(with: pointer(.leftMouseDown))
@@ -707,6 +840,28 @@ for width: CGFloat in [800, 200, 400] {
 }
 ruler.documentWidth = nil
 print("RULER_RETAINED_SURFACE_LOGICAL_ZOOM_SEEK_AND_RANGE_OK")
+var selectionMenuRequests = 0
+ruler.openSelectionMenu = { _, _ in selectionMenuRequests += 1 }
+ruler.selectedTime = { (0.25, 0.75) }
+let intervalsBeforeMenu = intervals.count
+for x: CGFloat in [30, 100, 200, 300, 360] {
+    ruler.rightMouseDown(with: selectionEvent(.rightMouseDown, x: x))
+    ruler.rightMouseUp(with: selectionEvent(.rightMouseUp, x: x))
+}
+precondition(selectionMenuRequests == 3 && intervals.count == intervalsBeforeMenu)
+ruler.mouseDown(with: selectionEvent(.leftMouseDown, x: 200, modifiers: .control))
+ruler.mouseUp(with: selectionEvent(.leftMouseUp, x: 200, modifiers: .control))
+precondition(selectionMenuRequests == 4, "Control-click also opens the ruler selection menu")
+ruler.rightMouseDown(with: selectionEvent(.rightMouseDown, x: 200))
+ruler.rightMouseDragged(with: selectionEvent(.rightMouseDragged, x: 230))
+ruler.rightMouseUp(with: selectionEvent(.rightMouseUp, x: 200))
+precondition(selectionMenuRequests == 4 && intervals.count > intervalsBeforeMenu)
+ruler.selectedTime = { nil }
+ruler.rightMouseDown(with: selectionEvent(.rightMouseDown, x: 200))
+ruler.rightMouseUp(with: selectionEvent(.rightMouseUp, x: 200))
+precondition(selectionMenuRequests == 4)
+ruler.openSelectionMenu = nil
+print("RULER_SELECTION_BPM_MENU_ONLY_ON_STATIONARY_INSIDE_EXISTING_RANGE_OK")
 if #available(macOS 14.0, *) {
     window.orderBack(nil)
     RunLoop.main.run(until: Date().addingTimeInterval(0.03))
@@ -815,8 +970,8 @@ for sign in [-1.0, 1.0] {
         movement += 10
         if abs(amount) >= fullRange { break }
     }
-    precondition(abs(amount) > movement * TimelineZoomLimits.preciseSensitivity && abs(amount) <= movement * TimelineZoomLimits.preciseSensitivity * 1.12,
-                 "sustained faster movement receives modest bounded gain")
+    precondition(abs(abs(amount) - movement * TimelineZoomLimits.preciseSensitivity) < 1e-12,
+                 "zoom preserves native travel without extra device-dependent acceleration")
     let lastSwipeTime = 10 + movement / 1200
     let correction = response.change(delta: sign * 0.2, timestamp: lastSwipeTime + 0.01, begins: false)
     precondition(abs(correction) <= 0.002, "slowing down immediately restores fine control")
@@ -855,13 +1010,24 @@ _ = fine.change(delta: 0.1, timestamp: 60, begins: true)
 var accelerated = false
 for index in 1...20 {
     let amount = fine.change(delta: 10, timestamp: 60 + Double(index) / 120, begins: false)
-    if amount > 10 * TimelineZoomLimits.preciseSensitivity { accelerated = true }
+    if abs(amount - 10 * TimelineZoomLimits.preciseSensitivity) > 1e-12 { accelerated = true }
 }
-precondition(accelerated, "sustained fast input receives the requested bounded velocity response")
+precondition(!accelerated, "zoom uses the same response without synthetic acceleration")
 let fineAfterFast = fine.change(delta: -0.1, timestamp: 60.18, begins: false)
 precondition(abs(fineAfterFast + 0.1 * TimelineZoomLimits.preciseSensitivity) < 1e-14,
              "a fine reversal responds immediately without inheriting fast-swipe acceleration")
-print("ZOOM_CONTINUOUS_FINE_INPUT_AND_ACCELERATION_OK")
+for frequency in [60.0,120.0,240.0] {
+    var mouse=TimelineZoomResponse(),trackpad=TimelineZoomResponse()
+    for i in 0..<100 {
+        let wheelDelta = (i < 50 ? 1.0 : -1.0) * 6 / frequency
+        let trackpadDelta = wheelDelta * TimelineZoomLimits.wheelSensitivity / TimelineZoomLimits.preciseSensitivity
+        let t = 100 + Double(i) / frequency
+        precondition(abs(mouse.change(delta: wheelDelta,timestamp: t,begins: i==0,precise: false) -
+                         trackpad.change(delta: trackpadDelta,timestamp: t,begins: i==0,precise: true)) < 1e-12,
+                     "equivalent mouse and trackpad travel must match at every event frequency and reversal")
+    }
+}
+print("ZOOM_MOUSE_TRACKPAD_NORMALIZED_RESPONSE_PARITY_OK")
 
 gate.setBlocked(false, for: window)
 window.orderBack(nil)
@@ -886,10 +1052,10 @@ ruler.mouseUp(with: areaPointer(.leftMouseUp,x: 80))
 precondition(area.0 == 0.2 && area.1 == 0.75 && resizeRequests.last!.1, "left edge keeps right edge fixed")
 ruler.mouseEntered(with: areaPointer(.leftMouseUp,x: 180))
 precondition(NSCursor.current == NSCursor.openHand, "hand appears on entering ruler without a press")
-ruler.markerCursor = { _ in true }
+ruler.markerCursor = { _ in .resizeLeftRight }
 ruler.mouseMoved(with: areaPointer(.mouseMoved, x: 180))
 precondition(NSCursor.current == NSCursor.resizeLeftRight, "ruler tracking cannot overwrite the tempo display move cursor")
-ruler.markerCursor = { _ in false }
+ruler.markerCursor = { _ in nil }
 ruler.mouseMoved(with: areaPointer(.mouseMoved, x: 180))
 precondition(NSCursor.current == NSCursor.openHand, "leaving the tempo display restores the ruler hand")
 print("RULER_AREA_EXISTING_EDGES_AND_IMMEDIATE_HOVER_OK")
@@ -933,3 +1099,37 @@ for precise in [false, true] {
 precondition((UserDefaults.standard.object(forKey: "jaras.timelineZoom") as? NSObject) == legacyZoomBeforeTest,
              "zoom persistence must never write the standard preferences domain")
 print("ZOOM_PERSISTENCE_LEAVES_STANDARD_PREFERENCES_UNCHANGED_OK")
+
+private final class HeightRoutingRoot: NSView {
+    var hitTests = 0
+    override var isFlipped: Bool { true }
+    override func hitTest(_ point: NSPoint) -> NSView? { hitTests += 1; return super.hitTest(point) }
+}
+MainActor.assumeIsolated {
+    let testWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 300), styleMask: .borderless, backing: .buffered, defer: false)
+    testWindow.isReleasedWhenClosed = false
+    let root = HeightRoutingRoot(frame: NSRect(x: 0, y: 0, width: 400, height: 300))
+    testWindow.contentView = root
+    let heightInput = TimelineTrackHeightResizeView(frame: root.bounds)
+    root.addSubview(heightInput)
+    heightInput.configure(project: UUID(), song: UUID(), tracks: [UUID()], offsets: [0], heights: [80],
+                          laneCounts: [1], scales: [1], baseHeight: 64, top: 40,
+                          verticalOffset: 0, mixerWidth: 200, blocked: false)
+    func click(_ point: CGPoint, flags: NSEvent.ModifierFlags = []) -> NSEvent {
+        NSEvent.mouseEvent(with: .leftMouseDown, location: heightInput.convert(point, to: nil), modifierFlags: flags,
+                           timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: testWindow.windowNumber,
+                           context: nil, eventNumber: 1, clickCount: 1, pressure: 1)!
+    }
+    precondition(TimelineTrackHeightResizeView.handlesPointer(click(CGPoint(x: 50, y: 117))))
+    precondition(!TimelineTrackHeightResizeView.handlesPointer(click(CGPoint(x: 50, y: 80))))
+    precondition(!TimelineTrackHeightResizeView.handlesPointer(click(CGPoint(x: 250, y: 117))))
+    precondition(!TimelineTrackHeightResizeView.handlesPointer(click(CGPoint(x: 50, y: 117), flags: .shift)))
+    NativeTimelineInputGate.shared.setBlocked(true, for: testWindow)
+    precondition(!TimelineTrackHeightResizeView.handlesPointer(click(CGPoint(x: 50, y: 117))))
+    NativeTimelineInputGate.shared.setBlocked(false, for: testWindow)
+    heightInput.isHidden = true
+    precondition(!TimelineTrackHeightResizeView.handlesPointer(click(CGPoint(x: 50, y: 117))))
+    precondition(root.hitTests == 0, "Track selection must resolve resize borders without hit-testing the complete SwiftUI window")
+    testWindow.close()
+    print("TRACK_HEIGHT_BORDER_ROUTE_VISIBLE_GEOMETRY_MODIFIERS_GATE_AND_NO_WINDOW_HIT_TEST_OK")
+}

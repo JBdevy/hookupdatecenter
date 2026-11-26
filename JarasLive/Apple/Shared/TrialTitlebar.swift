@@ -27,10 +27,10 @@ private final class TrialTitlebarAnchor: NSView {
     override init(frame: NSRect) {
         super.init(frame: frame)
         label.identifier = NSUserInterfaceItemIdentifier("catlive.trialTitle")
-        label.font = .systemFont(ofSize: 11, weight: .semibold)
-        label.textColor = NSColor(red: 84/255, green: 1, blue: 147/255, alpha: 1)
+        label.font = .jarasSystemFont(ofSize: 11, weight: .semibold)
+        label.textColor = NSColor(JarasTheme.licenseTitleGreen)
         label.alignment = .center; label.lineBreakMode = .byTruncatingMiddle
-        label.toolTip = text
+        label.setAccessibilityHelp(text)
         label.isHidden = true
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -45,7 +45,11 @@ private final class TrialTitlebarAnchor: NSView {
         }
         let visible = text != nil
         let changed = label.isHidden == visible || label.stringValue != (text ?? "")
-        label.stringValue = text ?? ""; label.toolTip = text; label.isHidden = !visible
+        if changed {
+            label.stringValue = text ?? ""
+            label.setAccessibilityHelp(text)
+            label.isHidden = !visible
+        }
         layoutLabel()
         if changed, let window { NotificationCenter.default.post(name: .catliveTrialTitleChanged, object: window) }
     }

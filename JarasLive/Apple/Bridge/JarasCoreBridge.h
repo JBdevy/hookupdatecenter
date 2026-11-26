@@ -1,12 +1,21 @@
 #import <Foundation/Foundation.h>
 NS_ASSUME_NONNULL_BEGIN
 @interface JarasCoreBridge : NSObject
+- (double)subplayPreparationPosition;
++ (void)setProjectSyncFollowing:(BOOL)following;
+- (void)setProjectSyncID:(NSString *)identifier;
+- (nullable NSData *)projectSyncFrameWithError:(NSError **)error NS_SWIFT_NAME(projectSyncFrame());
+- (nullable NSData *)applyProjectSyncData:(NSData *)data elapsed:(double)elapsed first:(BOOL)first error:(NSError **)error NS_SWIFT_NAME(applyProjectSync(_:elapsed:first:));
 - (BOOL)applyProjectEditData:(NSData *)data error:(NSError **)error;
 - (BOOL)applyProjectMetadataEditData:(NSData *)data preservingWaveforms:(NSArray<NSString *> *)identifiers error:(NSError **)error NS_SWIFT_NAME(applyProjectMetadataEdit(_:preservingWaveforms:));
+- (BOOL)applyTrackStructureEditData:(NSData *)data trackOrders:(NSDictionary<NSString *, NSArray<NSString *> *> *)orders preservingWaveforms:(NSDictionary<NSString *, NSString *> *)identifiers error:(NSError **)error NS_SWIFT_NAME(applyTrackStructureEdit(_:trackOrders:preservingWaveforms:));
 - (BOOL)loadProjectData:(NSData *)data error:(NSError **)error NS_SWIFT_NAME(load(projectData:));
+- (BOOL)loadProjectData:(NSData *)data waveforms:(NSDictionary<NSString *, NSArray<NSData *> *> *)waveforms error:(NSError **)error NS_SWIFT_NAME(load(projectData:waveforms:));
+- (BOOL)executeAutomation:(NSString *)command target:(nullable NSString *)target value:(double)value error:(NSError **)error NS_SWIFT_NAME(executeAutomation(command:target:value:));
 - (BOOL)executeCommand:(NSString *)command target:(nullable NSString *)target value:(double)value error:(NSError **)error NS_SWIFT_NAME(execute(command:target:value:));
 - (nullable NSData *)snapshotWithError:(NSError **)error NS_SWIFT_NAME(snapshot());
 - (nullable NSData *)metadataSnapshotWithError:(NSError **)error NS_SWIFT_NAME(metadataSnapshot());
+- (nullable NSData *)trackMetadataSnapshotWithRevision:(uint64_t)revision error:(NSError **)error NS_SWIFT_NAME(trackMetadataSnapshot(previousRevision:));
 - (nullable NSData *)playbackSnapshotWithError:(NSError **)error NS_SWIFT_NAME(playbackSnapshot());
 - (BOOL)configureRegionSetlistData:(NSData *)data error:(NSError **)error;
 - (BOOL)addTrackWithId:(NSString *)identifier name:(NSString *)name role:(NSString *)role error:(NSError **)error NS_SWIFT_NAME(addTrack(id:name:role:));
@@ -15,6 +24,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (BOOL)setFX:(NSString *)track data:(NSData *)data error:(NSError **)error;
 - (BOOL)setClipFX:(NSString *)clip data:(NSData *)data error:(NSError **)error;
 - (BOOL)setClipFXBypass:(NSString *)clip bypassed:(BOOL)bypassed error:(NSError **)error;
+- (BOOL)setClipName:(NSString *)clip name:(NSString *)name error:(NSError **)error;
 - (BOOL)setClipText:(NSString *)clip text:(NSString *)text error:(NSError **)error;
 - (BOOL)setTimecode:(NSString *)track data:(NSData *)data error:(NSError **)error;
 - (BOOL)setMIDIInput:(NSString *)track slot:(int)slot error:(NSError **)error;
@@ -27,7 +37,11 @@ NS_ASSUME_NONNULL_BEGIN
 - (BOOL)replaceAudioClip:(NSData *)data track:(NSString *)track error:(NSError **)error;
 - (BOOL)addRecordedClip:(NSData *)data track:(NSString *)track error:(NSError **)error;
 - (BOOL)editMasterColor:(unsigned int)color error:(NSError **)error;
+- (BOOL)setTrackMixerComponents:(NSString *)song masks:(NSDictionary<NSString *, NSNumber *> *)masks error:(NSError **)error;
 - (BOOL)editTrack:(NSString *)identifier name:(NSString *)name color:(unsigned int)color error:(NSError **)error;
+- (BOOL)renameTrack:(NSString *)identifier name:(NSString *)name error:(NSError **)error;
+- (BOOL)soloTrackExclusively:(NSString *)identifier error:(NSError **)error;
+- (BOOL)setRegionInit:(NSString *)identifier count:(int)count bars:(BOOL)bars error:(NSError **)error;
 - (BOOL)setRegionPitch:(NSString *)identifier semitones:(int)semitones tracks:(NSArray<NSString *> *)tracks groups:(NSArray<NSString *> *)groups error:(NSError **)error;
 - (BOOL)editRegion:(NSString *)identifier name:(NSString *)name color:(unsigned int)color uppercaseName:(BOOL)uppercaseName error:(NSError **)error;
 - (BOOL)moveClip:(NSString *)clipId start:(double)start track:(NSString *)trackId error:(NSError **)error;

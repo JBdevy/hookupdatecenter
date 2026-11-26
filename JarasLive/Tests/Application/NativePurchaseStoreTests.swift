@@ -38,6 +38,38 @@ import XCTest
 }
 
 @MainActor final class NativePurchaseStoreTests: XCTestCase {
+    func testSinglePrimaryActionNeverConvertsTheTrialIntoAPaidPurchase() async {
+        let client=PurchaseClient(), start=Date(timeIntervalSince1970:1_700_000_000)
+        var date=start
+        let store=NativePurchaseStore(client:client,now:{date},uptime:{0},boot:{"test"})
+        XCTAssertFalse(store.primaryActionAvailable)
+        await store.load()
+        XCTAssertEqual(store.primaryAction,.startTrial)
+        XCTAssertTrue(store.primaryActionAvailable)
+        let cancelled=await store.activateNative()
+        XCTAssertFalse(cancelled)
+        XCTAssertEqual(client.trialBegins,1)
+        XCTAssertEqual(client.buys,0)
+        client.trial=NativeTrialEntitlement(originalPurchaseDate:start,signedDate:start)
+        await store.refresh()
+        XCTAssertEqual(store.primaryAction,.continueTrial)
+        let active=await store.activateNative()
+        XCTAssertTrue(active)
+        XCTAssertEqual(client.trialBegins,1)
+        XCTAssertEqual(client.buys,0)
+        date=start.addingTimeInterval(7*86400)
+        await store.refresh()
+        XCTAssertEqual(store.primaryAction,.purchase)
+        XCTAssertEqual(client.buys,0,"Expiration must not charge automatically")
+        client.result = .purchased
+        let purchased=await store.activateNative()
+        XCTAssertTrue(purchased)
+        XCTAssertEqual(client.buys,1)
+        XCTAssertEqual(store.primaryAction,.openPurchased)
+        let reopened=await store.activateNative()
+        XCTAssertTrue(reopened)
+        XCTAssertEqual(client.buys,1)
+    }
     func testCatalogUnavailableIsNotReportedAsNetworkFailure() async {
         let client = PurchaseClient(), store: NativePurchaseStore
         store = NativePurchaseStore(client: client)

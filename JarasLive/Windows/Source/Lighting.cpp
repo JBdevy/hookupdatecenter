@@ -130,6 +130,11 @@ void Lighting::loadSettings() {
     webPort = 8080;
     includeMarkers = flag(raw, "includeMarkers", true);
     auto resolume = get(session.original, "resolume");
+    integrationEnabled = flag(resolume,"integrationEnabled");
+    integrationHost = str(resolume,"integrationHost");
+    integrationPort = (int)num(resolume,"integrationPort",48726);
+    integrationMTC = flag(resolume,"integrationMTCEnabled");
+    integrationMIDIOutput = str(resolume,"integrationMIDIOutput");
     if (resolume.isObject()) {
         host = str(resolume, "host", host);
         port = (int)num(resolume, "oscPort", port);
@@ -146,6 +151,8 @@ void Lighting::loadSettings() {
     refresh();
     if (resolumeEnabled)
         connectResolume();
+    remoteMTCActive = integrationEnabled && integrationMTC;
+    integration.configure(integrationConfiguration());
 }
 void Lighting::saveSettings() {
     auto root = session.original.isObject() ? session.original.clone() : object();
@@ -173,14 +180,29 @@ void Lighting::saveSettings() {
     put(resolume, "includeMarkers", includeMarkers);
     put(resolume, "withMarkers", resolumeAssignments.clone());
     put(resolume, "regionsOnly", resolumeRegionsOnly.clone());
+    put(resolume,"integrationEnabled",integrationEnabled);
+    put(resolume,"integrationHost",integrationHost);
+    put(resolume,"integrationPort",integrationPort);
+    put(resolume,"integrationMTCEnabled",integrationMTC);
+    put(resolume,"integrationMIDIOutput",integrationMIDIOutput);
     put(root, "resolume", resolume);
     session.original = root;
     session.dirty = true;
     session.notify();
+    remoteMTCActive = integrationEnabled && integrationMTC;
+    integration.configure(integrationConfiguration());
+}
+var Lighting::integrationConfiguration() const {
+    auto value=object();put(value,"enabled",integrationEnabled && (integrationForeground || integrationSending));put(value,"host",integrationHost);put(value,"port",integrationPort);
+    put(value,"project",text(session.project().id));put(value,"name",text(session.project().name));put(value,"resolume",resolumeEnabled);put(value,"mtc",integrationMTC);put(value,"midiOutput",integrationMIDIOutput);
+    put(value,"oscPort",port);put(value,"webPort",webPort);return value;
 }
 void Lighting::refresh(bool assignMissing) {
     regions.clear();
     resolumeCues.clear();
+    // Both exporters use the same leaf-song scope. Unified parent blocks and
+    // markers in gaps never become a song, executor, deck or cue.
+    resolumeRegions = buildResolumeRegions(session.project());
     if (!mapCommitted)
         starts = object();
     double nextStart = 0;
@@ -207,32 +229,16 @@ void Lighting::refresh(bool assignMissing) {
                 nextStart = num(reserve, "end") + 60;
             }
         }
-        auto append = [&](ID id, String name, double start, double end) {
-            LightingRegion r;
-            r.id = id;
-            r.songId = song.id;
-            r.name = name;
-            r.start = base + start;
-            r.end = base + end;
-            r.localStart = start;
-            r.cues.push_back({"region-" + id, "Inicio", r.start, true});
-            if (song.markers)
-                for (const auto &m : *song.markers)
-                    if (!m.tempoBPM && m.position > start + .0005 && m.position < end - .0005)
-                        r.cues.push_back({m.id, text(m.name), base + m.position, false});
-            std::stable_sort(r.cues.begin(), r.cues.end(),
-                             [](const auto &a, const auto &b) { return a.position < b.position; });
-            regions.push_back(std::move(r));
-        };
-        if (song.parts.empty())
-            append(song.id, text(song.name), 0, song.duration);
-        else
-            for (const auto &p : song.parts)
-                if (!p.parentRegionID)
-                    append(p.id, text(p.name), p.startTime, p.endTime);
+        for (const auto &source : resolumeRegions) if (source.songId == song.id) {
+            auto region = source;
+            region.start += base; region.end += base;
+            for (auto &cue : region.cues) {
+                cue.position += base;
+            }
+            regions.push_back(std::move(region));
+        }
     }
     assignments = buildAssignments(regions, assignments, assignMissing);
-    resolumeRegions = buildResolumeRegions(session.project());
     resolumeAssignments = buildResolumeAssignments(resolumeRegions, resolumeAssignments, true);
     resolumeRegionsOnly = buildResolumeAssignments(resolumeRegions, resolumeRegionsOnly, false);
     for (auto &r : regions) {
@@ -472,10 +478,10 @@ std::vector<LightingRegion> Lighting::buildResolumeRegions(const jaras::Project 
                 LightingRegion r;
                 r.id = part.id;
                 r.songId = song.id;
-                r.name = text(part.name);
+                r.name = cleanName(text(part.name), "Musica");
                 r.start = r.localStart = part.startTime;
                 r.end = part.endTime;
-                r.cues.push_back({"region-" + part.id, "Start", part.startTime, true});
+                r.cues.push_back({"region-" + part.id, "Inicio", part.startTime, true});
                 regions.push_back(std::move(r));
             }
         std::sort(regions.begin(), regions.end(), [](const auto &a, const auto &b) {
@@ -483,7 +489,7 @@ std::vector<LightingRegion> Lighting::buildResolumeRegions(const jaras::Project 
         });
         if (song.markers)
             for (const auto &marker : *song.markers)
-                if (!marker.tempoBPM && !marker.sourceRegionID) {
+                if (!marker.tempoBPM && !marker.sourceRegionID && !marker.unifiedRegionID) {
                     LightingRegion *owner = nullptr;
                     for (auto &r : regions)
                         if (marker.position > r.start + .0005 && marker.position < r.end - .0005 &&
@@ -491,7 +497,7 @@ std::vector<LightingRegion> Lighting::buildResolumeRegions(const jaras::Project 
                             owner = &r;
                     if (owner)
                         owner->cues.push_back(
-                            {marker.id, text(marker.name), marker.position, false});
+                            {marker.id, cleanName(text(marker.name)), marker.position, false});
                 }
         for (auto &region : regions) {
             std::sort(region.cues.begin() + 1, region.cues.end(), [](const auto &a, const auto &b) {
@@ -571,6 +577,7 @@ String Lighting::exportGrandMA2(const File &folder, bool selectedOnly) {
 bool Lighting::connectResolume() {
     ++oscGeneration;
     osc.disconnect();
+    if(integrationEnabled) {lastResolumeClock=0;lastColumn=lastDeck=-1;return true;}
     bool ok = osc.connect(host, port);
     error = ok ? String() : String::fromUTF8("Não foi possível abrir a saída OSC.");
     lastColumn = lastDeck = -1;
@@ -578,7 +585,7 @@ bool Lighting::connectResolume() {
     return ok;
 }
 void Lighting::enableResolume(bool value) {
-    if (resolumeEnabled && !value)
+    if (resolumeEnabled && !value && !integrationEnabled)
         osc.send("/composition/speed", String("a"), 1.0f);
     if (resolumeEnabled != value)
         ++oscGeneration;
@@ -603,13 +610,21 @@ double Lighting::absolutePosition(const ID &song, double local) const {
     auto reservation = get(starts, Identifier(text(song)));
     return local + (reservation.isObject() ? num(reservation, "start") : 0);
 }
+void Lighting::setIntegrationForeground(bool foreground) {
+    integrationForeground = foreground;
+    integration.configure(integrationConfiguration());
+}
 void Lighting::update(const jaras::TransportState &state) {
+    if(integrationSending != state.playing) {
+        integrationSending = state.playing;
+        integration.configure(integrationConfiguration());
+    }
     mtcPosition = absolutePosition(state.songId.value_or(""), state.position);
     mtcBase = absolutePosition(state.songId.value_or(""), 0);
     if (mtcPlaying.load() != state.playing)
         notify();
     mtcPlaying = state.playing;
-    if (!resolumeEnabled) {
+    if (!resolumeEnabled && !integrationEnabled) {
         wasPlaying = false;
         lastResolumeClock = 0;
         return;
@@ -619,23 +634,26 @@ void Lighting::update(const jaras::TransportState &state) {
         wasPlaying && state.playing && lastResolumeClock > 0 &&
         (state.position < lastResolumePosition - .08 ||
          state.position > lastResolumePosition + std::max(.35, now - lastResolumeClock + .25));
-    if (state.playing != wasPlaying || lastResolumeClock == 0)
+    if (!integrationEnabled && (state.playing != wasPlaying || lastResolumeClock == 0))
         osc.send("/composition/speed", String("a"), state.playing ? 1.0f : 0.0f);
     lastResolumePosition = state.position;
     lastResolumeClock = now;
     wasPlaying = state.playing;
-    if (!state.songId)
-        return;
     int deck = -1, column = -1;
     double best = -1;
     for (auto &cue : resolumeCues)
-        if (std::get<0>(cue) == *state.songId && std::get<1>(cue) <= state.position + .0001 &&
+        if (state.songId && std::get<0>(cue) == *state.songId && std::get<1>(cue) <= state.position + .0001 &&
             std::get<1>(cue) >= best && state.position >= std::get<4>(cue) - .0005 &&
             state.position < std::get<5>(cue) - .0005) {
             best = std::get<1>(cue);
             deck = std::get<2>(cue);
             column = std::get<3>(cue);
         }
+    if(integrationEnabled) {
+        if(jump)++integrationJump;
+        integration.update(absolutePosition(state.songId.value_or(""),state.position),state.playing,std::max(0,deck),std::max(0,column),integrationJump);
+        return;
+    }
     if (deck < 0)
         return;
     bool changedDeck = deck != lastDeck;
@@ -680,7 +698,7 @@ void Lighting::run() {
     bool previous = false;
     double lastPosition = 0, next = Time::getMillisecondCounterHiRes();
     while (!threadShouldExit()) {
-        if (!mtcEnabled.load()) {
+        if (!mtcEnabled.load() || remoteMTCActive.load()) {
             wait(100);
             next = Time::getMillisecondCounterHiRes();
             previous = false;
@@ -694,8 +712,9 @@ void Lighting::run() {
         next += 1000.0 / 120;
         if (now - next > 100)
             next = now + 1000.0 / 120;
-        const bool active = mtcEnabled.load() && mtcPlaying.load();
-        const double position = mtcPlaying.load() ? session.audio.state().position + mtcBase.load()
+        const auto audible = session.audio.presentationState();
+        const bool active = mtcEnabled.load() && mtcPlaying.load() && audible.playing;
+        const double position = mtcPlaying.load() ? audible.position + mtcBase.load()
                                                   : mtcPosition.load();
         const ScopedLock lock(midiLock);
         if (midi && (active || std::abs(position - lastPosition) > .0001)) {

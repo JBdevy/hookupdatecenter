@@ -104,9 +104,9 @@ timer.stopAndReset(); settle()
 let reopened = TeleprompterTimerController(defaults: defaults, now: { clock })
 precondition(reopened.mode == .countdown && reopened.targetSeconds == 120)
 window.close()
-let configurationWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 380, height: 405), styleMask: [.titled], backing: .buffered, defer: false)
+let configurationWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 380, height: 445), styleMask: [.titled], backing: .buffered, defer: false)
 configurationWindow.isReleasedWhenClosed = false
-let configuration = NSHostingView(rootView: TeleprompterTimerConfiguration(controller: timer, close: {}))
+let configuration = NSHostingView(rootView: TeleprompterTimerConfiguration(controller: timer))
 configurationWindow.contentView = configuration; configurationWindow.makeKeyAndOrderFront(nil); settle()
 press("Start", in: configuration)
 precondition(timer.running && configurationWindow.attachedSheet == nil, "configuration Start is immediate")
@@ -120,4 +120,57 @@ guard let configurationStop = configurationWindow.attachedSheet else { fatalErro
 press("Stop timer", in: configurationStop)
 precondition(!timer.running && timer.displayText() == "00:00:00", "configuration confirmation performs existing Stop/reset")
 configurationWindow.close()
+let readoutWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 28), styleMask: [.titled], backing: .buffered, defer: false)
+readoutWindow.isReleasedWhenClosed = false
+let readout = NSHostingView(rootView: Color.clear.overlay { TeleprompterTimerToolbarReadout(timer: timer) })
+readoutWindow.contentView = readout; readoutWindow.orderFront(nil); settle()
+precondition(displayedText(readout).isEmpty, "Stopped toolbar timer has no visible count")
+timer.setTargetText("00:01:05"); timer.start(); settle()
+precondition(displayedText(readout).contains("00:01:05") && fields(in: readout).isEmpty, "Toolbar shows only the running count")
+for width in [600.0, 1000.0] {
+    readoutWindow.setContentSize(NSSize(width: width, height: 28)); readout.layoutSubtreeIfNeeded(); settle()
+    func readoutField(_ view: NSView) -> NSTextField? {
+        if let field = view as? NSTextField { return field }
+        return view.subviews.lazy.compactMap(readoutField).first
+    }
+    let field = readoutField(readout)!
+    let rect = readout.convert(field.bounds, from: field)
+    precondition(abs(rect.midX-readout.bounds.midX)<1, "Countdown stays centered when the toolbar width changes")
+}
+clock += 2
+RunLoop.main.run(until: Date().addingTimeInterval(0.65))
+precondition(displayedText(readout).contains("00:01:03"), "Central countdown updates without editing controls")
+timer.stopAndReset(); settle()
+precondition(displayedText(readout).isEmpty, "Stopping clears the central countdown")
+readoutWindow.close()
+print("TIMER_TOOLBAR_CENTERED_RUNNING_READOUT_AND_HIDDEN_STOPPED_OK")
 print("TIMER_TOOLBAR_CONFIGURATION_START_IMMEDIATE_STOP_CONFIRM_CANCEL_STALE_RUN_AND_RESET_OK")
+
+// Preferences and all readouts retain the new mode without losing the countdown target.
+timer.stopAndReset(); timer.setMode(.progressive)
+precondition(timer.mode == .progressive && timer.targetSeconds == 65 && timer.displayText() == "00:00:00")
+let progressiveReloaded = TeleprompterTimerController(defaults: defaults, now: { clock })
+precondition(progressiveReloaded.mode == .progressive && progressiveReloaded.targetSeconds == 65 && !progressiveReloaded.running)
+timer.start(); clock += 0.2
+precondition(timer.displayText() == "00:00:00" && !timer.expired())
+timer.setMode(.countdown)
+precondition(timer.mode == .progressive, "tabs cannot reset a running timer")
+clock += 65
+precondition(timer.displayText() == "00:01:05" && !timer.expired() && timer.displayOpacity() == 1)
+timer.stopAndReset(); timer.setMode(.countdown)
+precondition(timer.targetSeconds == 65 && timer.displayText() == "00:01:05")
+print("TIMER_PROGRESSIVE_COUNTDOWN_PERSISTENCE_ROUNDING_OK")
+
+timer.showConfiguration()
+settle()
+let timerPanel = NSApp.windows.compactMap { $0 as? NSPanel }.first { $0.delegate === timer }!
+let timerContent = timerPanel.contentView
+precondition(timer.configurationOpen && timerPanel.isVisible)
+timerPanel.close()
+settle()
+precondition(!timer.configurationOpen && !timerPanel.isVisible)
+timer.showConfiguration()
+settle()
+precondition(timer.configurationOpen && timerPanel.isVisible && timerPanel.contentView === timerContent)
+timerPanel.close()
+print("TIMER_REOPEN_REUSES_CONFIGURATION_PANEL_OK")

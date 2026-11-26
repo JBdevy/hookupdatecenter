@@ -44,6 +44,28 @@ struct TimelineVisibleClipIndex {
         return result
     }
 
+    /// Visible portions of a stacked item. More recent paint order wins,
+    /// independent of the playback order used to mix overlapping audio.
+    func uncoveredParts(start: Double, end: Double, above sourceIndex: Int,
+                        interval: (Int) -> (Double, Double)) -> [Range<Double>]? {
+        let covers = indices(from: start, through: end)
+            .filter { $0 > sourceIndex }
+            .map(interval)
+            .filter { $0.0 < end && $0.1 > start }
+            .sorted { $0.0 < $1.0 }
+        if covers.isEmpty { return nil }
+        var remaining: [Range<Double>] = []
+        var left = start
+        for (first, last) in covers where last > left {
+            let right = min(first, end)
+            if right > left { remaining.append(left..<right) }
+            left = max(left, last)
+            if left >= end { return remaining }
+        }
+        remaining.append(left..<end)
+        return remaining
+    }
+
     /// Exposed internally for work-bound tests without adding per-frame clocks
     /// or counters to the renderer.
     func candidateRange(from start: Double, through end: Double) -> Range<Int> {
@@ -61,4 +83,36 @@ struct TimelineVisibleClipIndex {
         }
         return low..<upper
     }
+}
+
+/// Track rows are contiguous and ordered by their document offsets. Find the
+/// visible range without walking every track for each new scroll or zoom tile.
+func timelineRowsIntersecting(_ visible: ClosedRange<CGFloat>, offsets: [CGFloat],
+                              heights: [CGFloat], top: CGFloat) -> Range<Int> {
+    var low = 0, high = offsets.count
+    while low < high {
+        let mid = low + (high - low) / 2
+        if top + offsets[mid] + heights[mid] < visible.lowerBound { low = mid + 1 }
+        else { high = mid }
+    }
+    let first = low
+    high = offsets.count
+    while low < high {
+        let mid = low + (high - low) / 2
+        if top + offsets[mid] <= visible.upperBound { low = mid + 1 }
+        else { high = mid }
+    }
+    return first..<low
+}
+
+func timelineTrackSeparators(in visible: ClosedRange<CGFloat>, offsets: [CGFloat],
+                             heights: [CGFloat], top: CGFloat) -> [CGFloat] {
+    var boundaries: [CGFloat] = []
+    for row in timelineRowsIntersecting(visible, offsets: offsets, heights: heights, top: top) where heights[row] > 0 {
+        let start = top + offsets[row]
+        for boundary in [start, start + heights[row]] where visible.contains(boundary) && boundaries.last != boundary {
+            boundaries.append(boundary)
+        }
+    }
+    return boundaries
 }

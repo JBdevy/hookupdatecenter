@@ -1,9 +1,36 @@
 #pragma once
 #include "Common.h"
+#include "ClipEditing.h"
+#include "../../Core/Transport/PlaybackScope.hpp"
 namespace catlive {
 struct ClickProgram {
-    struct Section {double start=0,end=0,origin=0,bpm=120;int beats=4,unit=4;};
+    struct ItemGate { std::optional<double> playbackStart; std::uint32_t owner=0; double rate=1; int subdivisions=1; };
+    struct Section {
+        double start=0,end=0,origin=0,bpm=120; int beats=4,unit=4; double rate=1; int subdivisions=1;
+        // Prepared on control; the callback only checks overlapping item gates.
+        std::vector<ItemGate> items;
+    };
     struct Sample {std::vector<float> data;double rate=48000;};
+    struct EnableGate {
+        bool enabled=false, running=false, waiting=false;
+        std::optional<double> existingBeat;
+        void update(bool nextEnabled, bool nextRunning) noexcept {
+            if (nextEnabled && nextRunning && running && !enabled) {
+                waiting=true;
+                existingBeat.reset();
+            }
+            if (!nextEnabled || !nextRunning) waiting=false;
+            enabled=nextEnabled;
+            running=nextRunning;
+        }
+        bool accepts(double beatStart) noexcept {
+            if (!waiting) return true;
+            if (!existingBeat) existingBeat=beatStart;
+            if (*existingBeat == beatStart) return false;
+            waiting=false;
+            return true;
+        }
+    };
     std::vector<Section>sections;Sample a,b;
     static std::vector<Section> tempo(const jaras::Song &song){
         std::vector<Section> result;Section current{0,song.duration,0,song.bpm,song.beatsPerBar,song.beatUnit};
@@ -15,17 +42,47 @@ struct ClickProgram {
         }
         if(current.end>current.start)result.push_back(current);return result;
     }
+    static Section meterAt(const jaras::Song &song, double position) {
+        Section section{0,song.duration,0,song.bpm,song.beatsPerBar,song.beatUnit};
+        const jaras::TimelineMarker *latest = nullptr;
+        if (song.markers) for (const auto &marker : *song.markers) {
+            if (marker.tempoBPM && marker.position <= position &&
+                (!latest || std::tie(marker.position,marker.id) > std::tie(latest->position,latest->id)))
+                latest = &marker;
+        }
+        if (latest) {
+            section.start = section.origin = latest->position;
+            section.bpm = *latest->tempoBPM;
+            section.beats = latest->tempoBeats.value_or(4);
+            section.unit = latest->tempoUnit.value_or(4);
+        }
+        return section;
+    }
     void prepare(const jaras::Song &song,const jaras::Track *track=nullptr){
         sections.clear();auto timing=tempo(song);
         if(!track){sections=timing;return;}
-        std::vector<std::pair<double,double>>spans;
-        for(const auto &clip:track->clips)if(!clip.muted&&!clip.audioFile&&clip.duration>0)spans.push_back({clip.startTime,clip.startTime+clip.duration});
-        std::sort(spans.begin(),spans.end());std::vector<std::pair<double,double>>merged;
-        for(const auto &span:spans){if(!merged.empty()&&merged.back().second>=span.first)merged.back().second=std::max(merged.back().second,span.second);else merged.push_back(span);}
-        for(const auto &span:merged)for(auto section:timing)if(section.end>span.first&&section.start<span.second){
-            section.start=std::max(span.first,section.start);section.end=std::min(span.second,section.end);sections.push_back(section);
+        std::vector<double> edges;
+        for(const auto &clip:track->clips)if(!clip.muted&&!clip.audioFile&&clip.duration>0){edges.push_back(clip.startTime);edges.push_back(clip.startTime+clip.duration);}
+        std::sort(edges.begin(),edges.end());edges.erase(std::unique(edges.begin(),edges.end()),edges.end());
+        for(size_t i=1;i<edges.size();++i){
+            const double start=edges[i-1],end=edges[i]; double rate=0; int subdivisions=1;
+            std::vector<ItemGate> items;
+            for(const auto &clip:track->clips) if(!clip.muted&&!clip.audioFile&&clip.startTime<end&&clip.startTime+clip.duration>start) {
+                const int itemSubdivisions=clip.clickDouble.value_or(false)?2:1;
+                const double itemRate=clip.tempoBasePlaybackRate.value_or(clip.playbackRate)*itemSubdivisions;
+                if(itemRate>rate){rate=itemRate;subdivisions=itemSubdivisions;}
+                jaras::AudioClip owned;owned.startTime=clip.startTime;owned.regionOwnerID=clip.regionOwnerID;
+                if (!owned.regionOwnerID) if (const auto *region = clipEditing::generatedClickRegion(song,clip)) owned.regionOwnerID=region->id;
+                items.push_back({jaras::playbackItemStart(song,owned),jaras::playbackOwnerIndex(song,owned.regionOwnerID),itemRate,itemSubdivisions});
+            }
+            if(!rate)continue;
+            for(auto section:timing)if(section.end>start&&section.start<end){
+                section.start=std::max(start,section.start);section.end=std::min(end,section.end);
+                section.bpm*=rate;section.beats*=subdivisions;section.rate=rate;section.subdivisions=subdivisions;section.items=items;sections.push_back(std::move(section));
+            }
         }
     }
+
     static Sample decode(std::unique_ptr<AudioFormatReader> reader){
         if(!reader||reader->sampleRate<8000||reader->lengthInSamples<=0||reader->lengthInSamples>reader->sampleRate*30)throw std::runtime_error("O som de click deve ser um arquivo de áudio de até 30 segundos.");
         Sample result;result.rate=reader->sampleRate;const int count=(int)reader->lengthInSamples;
@@ -45,12 +102,25 @@ struct ClickProgram {
         }
         if(peak>0)for(auto &v:sample.data)v/=peak;return sample;
     }
-    float sample(double time,int mode=0,float gainA=1,float gainB=1)const{
+    float sample(double time,int mode=0,float gainA=1,float gainB=1,const jaras::PlaybackScope *scope=nullptr,
+                 EnableGate *gate=nullptr)const{
         const auto next=std::upper_bound(sections.begin(),sections.end(),time,[](double t,const Section &s){return t<s.start;});
         if(next==sections.begin())return 0;const auto &section=*(next-1);if(time>=section.end||section.bpm<=0||section.unit<=0)return 0;
-        const double beat=60./section.bpm*4/section.unit;const auto index=(int64)std::floor((time-section.origin)/beat+1e-9);
-        const bool accent=mode==1||(mode==0&&index%std::max(1,section.beats)==0);
-        const auto &sound=accent?a:b;const double offset=(time-section.origin-index*beat)*sound.rate;
+        double rate=section.rate; int subdivisions=section.subdivisions;
+        if(scope && *scope!=jaras::PlaybackScope{} && !section.items.empty()) {
+            rate=0;
+            for(const auto &item:section.items) if(scope->allows(item.playbackStart,item.owner)) if(item.rate>rate){rate=item.rate;subdivisions=item.subdivisions;}
+            if(!rate)return 0;
+        }
+        const double bpm=section.bpm/section.rate*rate;
+        const int beats=section.beats/section.subdivisions*subdivisions;
+        const double beat=60./bpm*4/section.unit;const auto index=(int64)std::floor((time-section.origin)/beat+1e-9);
+        if (gate && !gate->accepts(section.origin + index * beat)) return 0;
+        return pulse(index,time-section.origin-index*beat,beats,mode,gainA,gainB);
+    }
+    float pulse(int64 index, double phase, int beats, int mode, float gainA, float gainB) const {
+        const bool accent=mode==1||(mode==0&&index%std::max(1,beats)==0);
+        const auto &sound=accent?a:b;const double offset=phase*sound.rate;
         if(offset<0||offset>=(double)sound.data.size())return 0;const auto n=(size_t)offset;const float fraction=(float)(offset-n);
         const float left=sound.data[n],right=n+1<sound.data.size()?sound.data[n+1]:0;
         return (left+(right-left)*fraction)*(accent?gainA:gainB);

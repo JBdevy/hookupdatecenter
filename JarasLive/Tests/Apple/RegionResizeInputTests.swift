@@ -9,6 +9,31 @@ import AppKit
     func event(_ type: NSEvent.EventType, _ x: CGFloat, _ y: CGFloat = 1, flags: NSEvent.ModifierFlags = []) -> NSEvent {
         NSEvent.mouseEvent(with: type, location: NSPoint(x: x, y: y), modifierFlags: flags, timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
     }
+    var selectionFlags: [NSEvent.ModifierFlags] = []
+    view.select = { selectionFlags.append($0) }
+    for flags: NSEvent.ModifierFlags in [.shift, .command, [.shift, .command]] {
+        view.mouseDown(with: event(.leftMouseDown, 110, flags: flags))
+        view.mouseUp(with: event(.leftMouseUp, 110))
+    }
+    precondition(selectionFlags == [.shift, .command, [.shift, .command]],
+                 "Modified header clicks preserve their own flags and select without starting a region move")
+    view.mouseDown(with: event(.leftMouseDown, 110))
+    view.mouseUp(with: event(.leftMouseUp, 110, flags: .shift))
+    precondition(selectionFlags.last == [], "Selection uses the press modifiers even if Shift changes before release")
+    var shiftedDrags: [(CGFloat, Bool, Int)] = []
+    view.drag = { shiftedDrags.append(($0, $1, $2)) }
+    for x: CGFloat in [110, 8, 212] {
+        view.mouseDown(with: event(.leftMouseDown, x, flags: .shift))
+        view.mouseDragged(with: event(.leftMouseDragged, x + 12.5, flags: .shift))
+        view.mouseUp(with: event(.leftMouseUp, x + 12.5, flags: .shift))
+    }
+    precondition(shiftedDrags.map { $0.2 } == [0, 0, -1, -1, 1, 1] &&
+                 shiftedDrags.map { $0.1 } == [false, true, false, true, false, true] &&
+                 shiftedDrags.allSatisfy { $0.0 == 12.5 },
+                 "Shift held before clicking permits region movement and both resize edges")
+    precondition(selectionFlags.count == 4, "A Shift drag cannot also select a region on release")
+    view.drag = nil
+    view.select = nil
     view.mouseEntered(with: event(.mouseMoved, 8))
     precondition(NSCursor.current == .resizeLeftRight, "region left edge advertises resizing")
     view.mouseMoved(with: event(.mouseMoved, 110))

@@ -1,0 +1,7 @@
+{
+  "name": "catlive-windows-native",
+  "version": "1.2.0",
+  "private": true,
+  "type": "module",
+  "scripts": {"test:ui": "node --test Tests/*.test.js"}
+}

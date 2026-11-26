@@ -46,8 +46,8 @@ class AutomationPanel final : public Component {
                     if (!found) {
                         const auto *t = track();
                         list.add(automation::envelope(
-                            kind, i == 0   ? AutomationCurve::normalized(t ? t->volume : 1)
-                                  : i == 1 ? (t ? t->pan : 0) * .5 + .5
+                            kind, i == 0   ? AutomationCurve::normalized(t ? t->volume : session.project().masterVolume)
+                                  : i == 1 ? (t ? t->pan : session.project().masterPan) * .5 + .5
                                            : 0));
                     }
                     put(s, "envelopes", list);
@@ -75,7 +75,7 @@ class AutomationPanel final : public Component {
                    294, 68, 200, 28, Justification::centredLeft);
         g.setColour(theme::secondary);
         g.setFont(theme::font(12));
-        g.drawFittedText(String::fromUTF8("Edite os pontos do envelope no grid, abaixo da pista."),
+        g.drawFittedText(localization::translate(String::fromUTF8("Edite os pontos do envelope no grid, abaixo da pista.")),
                          280, getHeight() - 70, getWidth() - 300, 24, Justification::centred, 1);
         g.setFont(theme::font(10));
         g.drawFittedText(
@@ -99,7 +99,7 @@ class AutomationPanel final : public Component {
     Session &session;
     ID id;
     std::function<void(String)> error;
-    ToggleButton enabled{String::fromUTF8("Automação ativada")}, active{"Ativado"},
+    ToggleButton enabled{localization::translate(String::fromUTF8("Automação ativada"))}, active{localization::translate("Ativado")},
         visible{String::fromUTF8("Visível")}, armed{"Armar"};
     ComboBox mode;
     TextEditor search;
@@ -113,6 +113,7 @@ class AutomationPanel final : public Component {
         return nullptr;
     }
     var settings() const {
+        if(id.empty())return session.project().masterAutomationJSON ? JSON::parse(text(*session.project().masterAutomationJSON)) : object();
         if (auto *t = track())
             return automation::settings(*t);
         return {};
@@ -121,6 +122,7 @@ class AutomationPanel final : public Component {
     void edit(std::function<void(var &)> action) {
         try {
             session.edit([&](jaras::Project &p) {
+                if(id.empty()){auto value=settings();action(value);p.masterAutomationJSON=utf8(JSON::toString(value,true));return;}
                 for (auto &s : p.songs)
                     for (auto &t : s.tracks)
                         if (t.id == id) {

@@ -18,6 +18,7 @@
     }
     let url = directory.appendingPathComponent("audio.wav")
     do { let file = try AVAudioFile(forWriting: url, settings: format.settings); try file.write(from: pcm) }
+    let itemInset = GridSelectionItem.verticalInset
     let first = AudioClip(id: UUID(), name: "Audio", startTime: 0, duration: 2, audioFile: AudioFile(path: "audio.wav"))
     var loop = AudioClip(id: UUID(), name: "Loop", startTime: 2.5, duration: 2, audioFile: AudioFile(path: "audio.wav"))
     loop.loopLength = 0.5
@@ -33,7 +34,7 @@
     textTrack.clips = [AudioClip(id: UUID(), name: "Text", startTime: 0, duration: 12, text: "Verso 1\nC Am F G")]
     var song = Song(id: UUID(), name: "Mixed", duration: 12, bpm: 120, tracks: [audioTrack, clickTrack, textTrack], parts: [])
     func configuration(_ source: Song, selected: Set<UUID> = [], height: CGFloat = 64) -> NativeTimelineAudioBodyConfiguration? {
-        NativeTimelineAudioBodyConfiguration.make(song: source, rows: TrackRowLayout(tracks: source.tracks, baseHeight: height),
+        NativeTimelineAudioBodyConfiguration.make(song: source, key: TimelineRenderKey(revision: 1, songID: source.id, movingClip: nil, movingStart: 0, movingTrack: nil, movingRegion: nil, regionDelta: 0, resizingRegion: nil, resizedStart: 0, resizedEnd: 0), rows: TrackRowLayout(tracks: source.tracks, baseHeight: height),
             metadata: TimelineRenderMetadata(song: source), rulerHeight: 55, selectedClips: selected,
             mediaDirectory: directory, missingAudioPaths: ["missing.wav"])
     }
@@ -66,13 +67,13 @@
                 track.clips.map { clip in
                     let lane = rows.lanes[index].lanes[clip.id] ?? 0
                     return GridSelectionItem(id: clip.id,
-                        rect: CGRect(x: clip.startTime, y: 55 + rows.offsets[index] + CGFloat(lane) * rows.laneHeights[index] + 3,
-                                     width: clip.duration, height: rows.laneHeights[index] - 6),
+                        rect: CGRect(x: clip.startTime, y: 55 + rows.offsets[index] + CGFloat(lane) * rows.laneHeights[index] + itemInset,
+                                     width: clip.duration, height: rows.laneHeights[index] - 2 * itemInset),
                         name: clip.name, duration: clip.duration, trackIndex: index, laneIndex: lane)
                 }
             }
         }
-        let config = bodyConfigurationCache.configuration(song: source,
+        let config = bodyConfigurationCache.configuration(song: source, renderKey: unchangedKey,
             rows: rows, metadata: metadata,
             rulerHeight: 55, selectedClips: [], mediaDirectory: snapshotDirectory, missingAudioPaths: [])
         snapshotBody.configure(config)
@@ -108,12 +109,12 @@
             "An unchanged snapshot must retain all cached metadata across zoom frames")
     }
     let retainedRows = TrackRowLayout(tracks: snapshotSong.tracks, baseHeight: 64)
-    let retainedConfig = bodyConfigurationCache.configuration(song: snapshotSong, rows: retainedRows,
+    let retainedConfig = bodyConfigurationCache.configuration(song: snapshotSong, renderKey: unchangedKey, rows: retainedRows,
         metadata: unchangedMetadata, rulerHeight: 55, selectedClips: [], mediaDirectory: snapshotDirectory, missingAudioPaths: [])!
     let fillsBeforeConfigure = snapshotBody.fillSubmissionsForTest
     let inkBeforeConfigure = snapshotBody.inkUpdatesForTest
     for _ in 0..<80 {
-        let unchanged = bodyConfigurationCache.configuration(song: snapshotSong, rows: retainedRows,
+        let unchanged = bodyConfigurationCache.configuration(song: snapshotSong, renderKey: unchangedKey, rows: retainedRows,
             metadata: unchangedMetadata, rulerHeight: 55, selectedClips: [], mediaDirectory: snapshotDirectory, missingAudioPaths: [])!
         precondition(unchanged.fallbackIdentity == retainedConfig.fallbackIdentity && unchanged.metadata === retainedConfig.metadata,
             "Window layout keeps clip classification and hosted-coverage identity independent of viewport dimensions")
@@ -123,15 +124,15 @@
     }
     precondition(snapshotBody.fillSubmissionsForTest == fillsBeforeConfigure && snapshotBody.inkUpdatesForTest == inkBeforeConfigure,
         "No-op host updates cannot clear text/media or resubmit identical GPU item fills")
-    let selectedConfig = bodyConfigurationCache.configuration(song: snapshotSong, rows: retainedRows,
+    let selectedConfig = bodyConfigurationCache.configuration(song: snapshotSong, renderKey: unchangedKey, rows: retainedRows,
         metadata: unchangedMetadata, rulerHeight: 55, selectedClips: [otherClip.id], mediaDirectory: snapshotDirectory, missingAudioPaths: [])!
     precondition(selectedConfig.fallbackIdentity != retainedConfig.fallbackIdentity && snapshotBody.configure(selectedConfig),
         "Selection still invalidates retained visual contents")
-    let missingConfig = bodyConfigurationCache.configuration(song: snapshotSong, rows: retainedRows,
+    let missingConfig = bodyConfigurationCache.configuration(song: snapshotSong, renderKey: unchangedKey, rows: retainedRows,
         metadata: unchangedMetadata, rulerHeight: 55, selectedClips: [], mediaDirectory: snapshotDirectory, missingAudioPaths: ["audio.wav"])!
     precondition(missingConfig.fallbackIdentity != selectedConfig.fallbackIdentity && snapshotBody.configure(missingConfig),
         "Relink/missing-media status invalidates actual clip presentation without a new song revision")
-    precondition(bodyConfigurationCache.configuration(song: snapshotSong, rows: retainedRows, metadata: unchangedMetadata,
+    precondition(bodyConfigurationCache.configuration(song: snapshotSong, renderKey: unchangedKey, rows: retainedRows, metadata: unchangedMetadata,
         rulerHeight: 55, selectedClips: [], mediaDirectory: nil, missingAudioPaths: []) == nil,
         "Closing the media directory cannot reuse a previous project's GPU configuration")
     print("NATIVE_BODY_CONFIGURE_AND_CLASSIFICATION_REUSE_REAL_CONTENT_SELECTION_MISSING_MEDIA_OK")
@@ -184,6 +185,83 @@
         "PCM readiness must leave retained text/media ink untouched")
     print("NATIVE_BODY_FILL_AND_TEXT_BEFORE_PCM_READINESS_WITHOUT_FILL_OR_INK_REDRAW_OK")
 
+    // A row-height gesture changes the vertical projection of reused item IDs.
+    // Preserve ready sources and submit each surface once at the new geometry.
+    var heightSong = song
+    heightSong.tracks = (0..<18).map { index in
+        var track = audioTrack
+        track.id = UUID()
+        track.heightScale = index % 2 == 0 ? 1 : 1.25
+        var clip = first
+        clip.id = UUID()
+        track.clips = [clip]
+        return track
+    }
+    let heightMetadata = TimelineRenderMetadata(song: heightSong)
+    let heightCache = NativeTimelineAudioBodyCache()
+    let heightBody = NativeTimelineAudioBodyView()
+    var previousRows: TrackRowLayout?
+    for height: CGFloat in [64, 112, 157, 240, 85, 32, 24, 64] {
+        let rows = TrackRowLayout(tracks: heightSong.tracks, baseHeight: height)
+        let config = heightCache.configuration(song: heightSong, renderKey: unchangedKey, rows: rows,
+            metadata: heightMetadata, rulerHeight: 55, selectedClips: [], mediaDirectory: directory, missingAudioPaths: [])
+        let fillsBefore = heightBody.fillSubmissionsForTest
+        let waveformsBefore = heightBody.waveformSubmissionsForTest
+        heightBody.configure(config)
+        let destination = CGRect(x: 0, y: rows.offsets[8], width: 600, height: 260)
+        heightBody.project(viewport: destination, documentSize: CGSize(width: 4000, height: 55 + rows.totalHeight), scale: 300)
+        if let previousRows {
+            let expectedUpdates = previousRows == rows ? 0 : 1
+            precondition(heightBody.fillSubmissionsForTest == fillsBefore + expectedUpdates && heightBody.waveformSubmissionsForTest == waveformsBefore + expectedUpdates,
+                "Height-only updates must replace the projected surfaces without an intervening empty frame")
+        }
+        previousRows = rows
+        let heightFills = heightBody.fillsForTest!, heightWaves = heightBody.waveformsForTest!
+        precondition(heightFills.coordinateSpace == heightWaves.coordinateSpace)
+        let origin = heightFills.coordinateSpace!.documentOrigin
+        let rowPositions = rows.offsets.indices.map { CGRect(x: 1, y: 55 + itemInset + rows.offsets[$0], width: 598, height: rows.laneHeights[$0] - 2 * itemInset) }
+        let visibleRects = heightFills.items.map { $0.rect.offsetBy(dx: origin.x, dy: origin.y) }
+        precondition(visibleRects.allSatisfy { rect in rowPositions.contains {
+            abs($0.minY - rect.minY) < 0.001 && abs($0.height - rect.height) < 0.001
+        } }, "Every fill must match the current track height and offset")
+        precondition(heightWaves.strokes.allSatisfy { stroke in
+            heightFills.items.contains { $0.rect == stroke.itemRect }
+        }, "Every waveform must stay inside its item at the new track height")
+    }
+    print("NATIVE_BODY_TRACK_HEIGHT_FILLS_AND_WAVEFORMS_SHARE_ROWS_AND_SUBMIT_ONCE_OK")
+
+    // A preference-only change must replace cached GPU colors without changing
+    // the document, its selection, its source data or text/media appearances.
+    let appearanceCache = NativeTimelineAudioBodyCache()
+    func appearance(_ inverted: Bool) -> NativeTimelineAudioBodyConfiguration {
+        appearanceCache.configuration(song: song, renderKey: mixed.presentationKey, rows: mixed.rows,
+            metadata: mixed.metadata, rulerHeight: 55, selectedClips: [], mediaDirectory: directory,
+            missingAudioPaths: ["missing.wav"], invertWaveformColors: inverted)!
+    }
+    let normal = appearance(false), inverted = appearance(true)
+    precondition(normal.contentKey != inverted.contentKey && normal.fallbackIdentity != inverted.fallbackIdentity)
+    body.configure(inverted)
+    for scale in [20.0, 300, 2400] {
+        body.project(viewport: viewport, documentSize: CGSize(width: 12 * scale, height: 400), scale: scale)
+        let frame = body.fillsForTest!, origin = frame.coordinateSpace!.documentOrigin
+        let item = frame.items.first { abs($0.rect.minX + origin.x - 1) < 0.001 && abs($0.rect.minY + origin.y - mixed.rulerHeight - itemInset) < 0.001 }!
+        precondition(item.topColor == TimelineItemWaveformColors.invertedBackgroundRGB && item.bottomColor == item.topColor,
+            "Inverted item body must use dark gray at every zoom")
+        awaitValue({ body.waveformsForTest?.strokes.contains { $0.block.key != "timeline-centerline-unit" } == true },
+            "Overview/detail readiness must update the inverted waveform without another zoom event")
+        let waves = body.waveformsForTest!.strokes.filter { $0.block.key != "timeline-centerline-unit" }
+        precondition(waves.allSatisfy { $0.color == TimelineItemWaveformColors.ink(rgb: mixed.palettes[0].normal, silenced: false) },
+            "Inverted waveform primitives follow the track color, including cached overviews")
+        let text = frame.items.first { abs($0.rect.minY + origin.y - mixed.rulerHeight - mixed.rows.offsets[2] - itemInset) < 0.001 }!
+        precondition(text.topColor == mixed.palettes[2].normal,
+            "Inverting waveform colors must not recolor teleprompter items")
+    }
+    body.configure(appearance(false))
+    body.project(viewport: viewport, documentSize: CGSize(width: 4000, height: 400), scale: 300)
+    precondition(body.fillsForTest!.items.map(\.topColor) == cold.items.map(\.topColor),
+        "Switching back restores the original cached body colors immediately")
+    print("NATIVE_BODY_INVERTED_COLORS_CACHE_ZOOM_TEXT_ISOLATION_AND_RESTORE_OK")
+
     body.project(viewport: CGRect(x: 700, y: 0, width: 600, height: 260), documentSize: CGSize(width: 8000, height: 400), scale: 600)
     let zoomed = body.fillsForTest!
     precondition(zoomed.coordinateSpace?.pixelsPerSecond == 600)
@@ -210,7 +288,10 @@
     for (index, offset) in [CGFloat(0), 0.25, 63.75, 128, 255.5, 384, 511.999].enumerated() {
         let movingViewport = bucketStart.offsetBy(dx: offset, dy: 0)
         let exactScale = Double(400 + index)
+        let previousWaveforms = body.waveformSubmissionsForTest
         body.project(viewport: movingViewport, documentSize: largeDocument, scale: exactScale)
+        precondition(body.waveformSubmissionsForTest <= previousWaveforms + 1,
+                     "Zoom must replace the waveform frame directly, without clearing its drawable and source buffers first")
         precondition(body.surfaceGeometryForTest == retainedSurfaceGeometry,
                      "subbucket zoom origins must not mutate body, surface, or MTKView frames/bounds")
         precondition(body.frame.contains(movingViewport),
@@ -219,6 +300,14 @@
         precondition(exact.coordinateSpace?.pixelsPerSecond == exactScale &&
                      abs(exact.items[0].rect.width - (2 * exactScale - 2)) < 0.001,
                      "retained surface geometry still redraws item coordinates at the exact live scale")
+        let waveform = body.waveformsForTest!
+        precondition(waveform.coordinateSpace == exact.coordinateSpace && waveform.size == exact.size,
+                     "The waveform and item fills must use the same viewport on every zoom frame")
+        let audioRect = exact.items[0].rect
+        precondition(!waveform.strokes.isEmpty && waveform.strokes.contains { stroke in
+            abs(stroke.itemRect.minX - audioRect.minX) < 0.001 &&
+                abs(stroke.itemRect.maxX - audioRect.maxX) < 0.001
+        }, "Waveform passes must keep the item edges aligned during rapid zoom")
     }
     for movingViewport in [CGRect(x: 1024, y: 512, width: 600, height: 260),
                            CGRect(x: 1535.999, y: 1023.999, width: 600, height: 260),
@@ -235,13 +324,20 @@
     body.configure(configuration(song, selected: [first.id]))
     body.project(viewport: viewport, documentSize: CGSize(width: 4000, height: 400), scale: 300)
     let edited = body.fillsForTest!
-    precondition(abs(edited.items[0].rect.minX - 301) < 0.001 && edited.items[0].borderWidth == 1.5)
+    precondition(abs(edited.items[0].rect.minX - 301) < 0.001 && edited.items[0].borderWidth == 1.25 && edited.items[0].borderBackdropWidth == 2)
     precondition(edited.coordinateSpace?.contentRevision != cold.coordinateSpace?.contentRevision)
     body.configure(configuration(song, selected: [first.id], height: 24))
     body.project(viewport: viewport, documentSize: CGSize(width: 4000, height: 400), scale: 300)
-    precondition(body.fillsForTest!.items[0].rect.height == 18 && body.waveformsForTest!.isEmpty && body.inkForTest.isEmpty,
-        "collapsed native clips keep their bar without waveform work")
-    print("NATIVE_BODY_EDIT_SELECTION_AND_COLLAPSED_ROW_OK")
+    let compactRows = TrackRowLayout(tracks: song.tracks, baseHeight: 24)
+    let minimumItemHeight = compactRows.itemLaneHeight(first.id, track: 0) - 2 * itemInset
+    precondition(body.fillsForTest!.items[0].rect.height == minimumItemHeight,
+        "The native item bar follows the compact row height")
+    precondition(body.waveformIDsForTest.contains(first.id) == (minimumItemHeight > 26),
+        "Only the bar is drawn when the compact row has no room for the waveform")
+    body.configure(configuration(song, selected: [first.id]))
+    body.project(viewport: viewport, documentSize: CGSize(width: 4000, height: 400), scale: 300)
+    precondition(body.waveformIDsForTest.contains(first.id), "Expanding the row restores the waveform")
+    print("NATIVE_BODY_EDIT_SELECTION_AND_MINIMUM_ROW_WAVEFORM_OK")
 
     var shortLoop = first
     shortLoop.loopLength = 20
@@ -262,6 +358,7 @@
     var repeatedText = textTrack
     repeatedText.clips = [AudioClip(id: UUID(), name: "Repeated lyrics", startTime: 1, duration: 7, text: "Verse\nChorus")]
     var repeatedImage = textTrack
+    repeatedImage.id = UUID()
     repeatedImage.clips = [AudioClip(id: UUID(), name: "Repeated image", startTime: 1, duration: 7,
         audioFile: AudioFile(path: "Videos/image.jpg"))]
     var repeatedVideo = Track(id: UUID(), name: "Video", role: TrackRole(rawValue: "video"))
@@ -289,8 +386,9 @@
     }
     body.configure(configuration(repeatedSong, height: 24))
     body.project(viewport: viewport, documentSize: CGSize(width: 1000, height: 400), scale: 80)
-    precondition(body.inkForTest.isEmpty && body.fillsForTest!.items.allSatisfy { $0.firstSeamX == 200 && $0.repeatSpacing == 160 },
-        "collapsed media/text bars retain repetition cuts without preparing body ink")
+    precondition(body.fillsForTest!.items.count == 3 && body.fillsForTest!.items.allSatisfy { $0.firstSeamX == 200 && $0.repeatSpacing == 160 },
+        "Media and text at the compact height retain their repetition cuts")
+    precondition(body.inkForTest.allSatisfy { $0.rect.height > 26 }, "Collapsed items reserve the remaining height for their header")
     print("NATIVE_BODY_TEXT_IMAGE_VIDEO_REPEAT_SEAMS_AND_INK_CUTOUTS_OK")
 
     // Projects made entirely of retained text and media must release the
@@ -311,6 +409,18 @@
     missingTrack.clips = [missingAtStart]
     var specials = Song(id: UUID(), name: "Native specials", duration: 12, bpm: 120,
         tracks: [specialText, videoTrack, timecodeTrack, missingTrack], parts: [])
+    let presentation = TimelineRenderMetadata(song: specials)
+    for role in ["teleprompt", "teleprompt2"] {
+        var tp = specialText
+        tp.role = TrackRole(rawValue: role)
+        precondition(presentation.itemTitle(for: tp.clips[0], track: tp).isEmpty)
+        precondition(!tp.clips[0].hasSelectableMediaHeader(on: tp))
+        precondition(!presentation.itemTitle(for: imageClip, track: tp).isEmpty && imageClip.hasSelectableMediaHeader(on: tp))
+    }
+    for clip in [first, midi, AudioClip(id: UUID(), name: "Video", startTime: 0, duration: 4, audioFile: AudioFile(path: "Videos/movie.mov"))] {
+        precondition(clip.hasSelectableMediaHeader(on: audioTrack))
+    }
+    precondition(!timecodeTrack.clips[0].hasSelectableMediaHeader(on: timecodeTrack))
     let allNative = configuration(specials)!
     precondition(allNative.itemIDs == Set(specials.tracks.flatMap { $0.clips.map(\.id) }) &&
         !allNative.hasFallbackItems && !allNative.hasFallbackWaveforms && allNative.fallbackItems.isEmpty,
@@ -343,9 +453,13 @@
     precondition(body.inkForTest.map(\.rect) == firstInk, "returning from an offscreen pan restores exact ink geometry")
     body.configure(configuration(specials, height: 24))
     body.project(viewport: viewport, documentSize: CGSize(width: 4000, height: 400), scale: 80)
-    precondition(body.inkForTest.isEmpty && body.fillsForTest!.items.count == 5,
-        "collapsed special items preserve bars without text or labels")
+    precondition(body.fillsForTest!.items.count == 5 && body.inkForTest.allSatisfy { $0.content.isVisible(in: $0.rect) },
+        "Special items retain their bars and draw labels only in lanes tall enough for them")
+    precondition(body.inkForTest.allSatisfy { !$0.content.isVisible(in: CGRect(x: 0, y: 0, width: 80, height: 24)) },
+        "item lanes too short for labels omit their ink")
     body.configure(allNative)
+    body.project(viewport: viewport, documentSize: CGSize(width: 4000, height: 400), scale: 80)
+    precondition(body.inkForTest.map(\.rect) == firstInk, "Expanding restores the exact special-item ink geometry")
     body.project(viewport: viewport, documentSize: CGSize(width: 4000, height: 400), scale: 0.01)
     for zoom in [0.015, 0.02, 0.04, 0.1] {
         body.project(viewport: viewport, documentSize: CGSize(width: 4000, height: 400), scale: zoom)
@@ -396,10 +510,10 @@
     cache.pauseNativeBodyTestDecoding(); paused = true
     body.project(viewport: verticalViewport, documentSize: verticalDocument, scale: 600)
     let baselineTile = TimelineWaveformCoverage.preparedRect(visibleRect: CGRect(x: 512, y: 512, width: 600, height: 260), documentSize: verticalDocument)
-    let baselineRows = verticalSong.tracks.indices.filter { index in
-        let rect = CGRect(x: 1, y: 58 + index * 80, width: 1198, height: 74)
-        return rect.intersects(baselineTile)
-    }.count
+    func verticalItemRect(_ index: Int) -> CGRect {
+        CGRect(x: 1, y: CGFloat(55 + index * 80) + itemInset, width: 1198, height: 80 - 2 * itemInset)
+    }
+    let baselineRows = verticalSong.tracks.indices.filter { verticalItemRect($0).intersects(baselineTile) }.count
     precondition(body.waveformIDsForTest.count <= baselineRows - 3,
                  "native Y coverage must remove at least three offscreen PCM sources in this viewport")
     let firstVerticalGeometry = body.surfaceGeometryForTest
@@ -429,12 +543,12 @@
         precondition(body.frame.contains(visible), "destination coverage exists before the clip moves")
         let origin = frame.coordinateSpace!.documentOrigin
         let expectedRows = verticalSong.tracks.indices.filter { index in
-            CGRect(x: 1, y: 58 + index * 80, width: 1198, height: 74).intersects(visible)
+            verticalItemRect(index).intersects(visible)
         }
         for index in expectedRows {
             precondition(frame.strokes.contains { stroke in
                 stroke.block.key != "timeline-centerline-unit" &&
-                abs(stroke.itemRect.minY + origin.y - CGFloat(58 + index * 80)) < 0.001
+                abs(stroke.itemRect.minY + origin.y - verticalItemRect(index).minY) < 0.001
             }, "every newly visible row has actual source geometry while PCM decode is paused")
         }
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm,
@@ -455,7 +569,8 @@
         texture.getBytes(&pixels, bytesPerRow: texture.width * 4,
                         from: MTLRegionMake2D(0, 0, texture.width, texture.height), mipmapLevel: 0)
         for index in expectedRows {
-            let rect = CGRect(x: 1, y: 58 + index * 80 + 25, width: 1198, height: 49).intersection(visible)
+            let waveArea = verticalItemRect(index).divided(atDistance: 25, from: .minYEdge).remainder
+            let rect = waveArea.intersection(visible)
             if rect.isNull || rect.height < 2 { continue }
             let local = rect.offsetBy(dx: -origin.x, dy: -origin.y)
             var alpha = 0
@@ -480,8 +595,12 @@
     let coarseBeforeReadiness = body.waveformsForTest!
     let fillsBeforeReadiness = body.fillSubmissionsForTest
     cache.resumeNativeBodyTestDecoding(); paused = false
-    awaitValue({ body.waveformsForTest!.strokes.contains { !$0.block.isPeakEnvelope && $0.block.key != "timeline-centerline-unit" } },
-               "cold visible PCM must replace its compact source curve without another viewport event")
+    // At this zoom the decoded PCM is intentionally rasterized as a signed
+    // envelope too. Primitive type does not distinguish the 256-frame source
+    // overview from its finer PCM detail; the source-frame resolution does.
+    awaitValue({ body.waveformsForTest!.strokes.contains {
+        $0.block.step < TimelineAudioWaveform.peakFramesPerInterval && $0.block.key != "timeline-centerline-unit"
+    } }, "cold visible PCM must replace its compact source curve without another viewport event")
     precondition(body.fillSubmissionsForTest == fillsBeforeReadiness &&
                  body.waveformsForTest!.coordinateSpace == coarseBeforeReadiness.coordinateSpace,
                  "PCM readiness preserves exact projected item alignment and fill surface")
@@ -509,3 +628,54 @@
 }
 setbuf(stdout, nil)
 try MainActor.assumeIsolated { try testNativeTimelineBody() }
+
+// Unify creates a new file after project preload. Its peaks must reach the
+// native view even when the reclaimable caches cannot retain another entry.
+try MainActor.assumeIsolated {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("catlive-glued-body-\(UUID())")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let format = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 2)!
+    let pcm = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 48_000)!
+    pcm.frameLength = 48_000
+    for sample in 0..<Int(pcm.frameLength) {
+        pcm.floatChannelData![0][sample] = Float(sin(Double(sample) * 0.031) * 0.5)
+        pcm.floatChannelData![1][sample] = -pcm.floatChannelData![0][sample]
+    }
+    do {
+        let file = try AVAudioFile(forWriting: directory.appendingPathComponent("unified.wav"), settings: format.settings)
+        for _ in 0..<40 { try file.write(from: pcm) }
+    }
+    let cache = TimelineAudioWaveform.shared
+    cache.constrainNativeBodyTestCaches(true)
+    defer { cache.constrainNativeBodyTestCaches(false) }
+    let clip = AudioClip(id: UUID(), name: "Unified", startTime: 56_750, duration: 40,
+        audioFile: AudioFile(path: "unified.wav"), renderedTiming: true)
+    var track = Track(id: UUID(), name: "Percussion", role: TrackRole(rawValue: "standard"))
+    track.clips = [clip]
+    let song = Song(id: UUID(), name: "Late song", duration: 57_000, bpm: 145, tracks: [track], parts: [])
+    let configuration = NativeTimelineAudioBodyConfiguration.make(song: song,
+        key: TimelineRenderKey(revision: 2, songID: song.id, movingClip: nil, movingStart: 0, movingTrack: nil,
+            movingRegion: nil, regionDelta: 0, resizingRegion: nil, resizedStart: 0, resizedEnd: 0),
+        rows: TrackRowLayout(tracks: song.tracks, baseHeight: 90), metadata: TimelineRenderMetadata(song: song),
+        rulerHeight: 55, selectedClips: [clip.id], mediaDirectory: directory, missingAudioPaths: [])!
+    let body = NativeTimelineAudioBodyView(), scale = 23.47981560587109
+    body.configure(configuration)
+    body.project(viewport: CGRect(x: 56_755 * scale, y: 0, width: 700, height: 200),
+        documentSize: CGSize(width: 57_000 * scale, height: 200), scale: scale)
+    @MainActor func hasPeaks() -> Bool {
+        body.waveformsForTest?.strokes.contains { stroke in
+            stroke.block.key != "timeline-centerline-unit" &&
+                stroke.block.channels[stroke.channel].contains { abs($0.y) > 0.25 }
+        } == true
+    }
+    let deadline = Date().addingTimeInterval(5)
+    while !hasPeaks(), Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
+    precondition(hasPeaks(), "Newly unified audio must acquire real peaks after cache eviction without another zoom or project update")
+    let submissions = body.waveformSubmissionsForTest
+    RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+    precondition(body.waveformSubmissionsForTest <= submissions + 1,
+        "Generated media must settle instead of repeatedly rebuilding evicted peak pyramids")
+    body.configure(nil)
+    print("NATIVE_BODY_NEW_UNIFIED_MEDIA_LATE_TIMELINE_CACHE_PRESSURE_READINESS_AND_SETTLING_OK")
+}

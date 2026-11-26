@@ -26,7 +26,7 @@ private final class HeaderProbeShapeLayer: CAShapeLayer {
     let tempo = TimelineMarker(id: UUID(), name: "BPM", position: 34, color: 0x999999, tempoBPM: 128)
     var song = Song(id: UUID(), name: "Layer state", duration: 600, bpm: 120, tracks: [], parts: [part], markers: [ordinary, tempo])
     func configuration() -> NativeTimelineHeaderConfiguration {
-        .init(song: song, lanes: RegionLanes(parts: song.parts), parentIDs: [], regionTargets: [],
+        .init(song: song, lanes: RegionLanes(parts: song.parts), rulerSections: song.tempoSections(until: song.timelineScrollEnd), parentIDs: [], regionTargets: [],
             edit: { _ in }, delete: { _ in }, seek: { _ in }, move: { _ in })
     }
     func project(_ view: NativeTimelineHeaderView, scale: CGFloat, backing: CGFloat = 2, offset: CGFloat = 0) {

@@ -3,11 +3,222 @@ import XCTest
 @testable import JarasApplication
 
 final class ReaperProjectImportTests: XCTestCase {
+    func testIgnoredItemsReportTheirSourceFilesAndIndividualReasonsWithoutBlockingRecovery() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = try fixture("""
+        <REAPER_PROJECT 0.1
+          <TRACK
+            NAME "Órgãos %"
+            <ITEM
+              POSITION nan
+              LENGTH 3
+              NAME "Broken position"
+              <SOURCE WAVE
+                FILE "A/Órgão % 1.wav"
+              >
+            >
+            <ITEM
+              POSITION 4
+              LENGTH 3
+              PLAYRATE invalid
+              <SOURCE SECTION
+                <SOURCE WAVE
+                  FILE "B/Órgão % 2.wav"
+                >
+              >
+            >
+            <ITEM
+              POSITION 8
+              LENGTH 3
+              <SOURCE UNKNOWN
+                FILE "C/Unsupported.xyz"
+              >
+            >
+            <ITEM
+              POSITION 12
+              LENGTH 3
+              <SOURCE WAVE
+                FILE "Survives.wav"
+              >
+            >
+          >
+        >
+        """, in: directory)
+        let result = try ReaperProjectImporter.read(source)
+        XCTAssertEqual(result.project.songs[0].tracks[0].clips.count, 1)
+        for path in ["A/Órgão % 1.wav", "B/Órgão % 2.wav"] {
+            let notice = try XCTUnwrap(result.warnings.first { $0.contains(path) })
+            XCTAssertTrue(notice.contains("Órgãos %") && notice.contains("Invalid numeric value"), notice)
+        }
+        let unsupported = try XCTUnwrap(result.warnings.first { $0.contains("C/Unsupported.xyz") })
+        XCTAssertTrue(unsupported.contains("Unsupported REAPER source type: UNKNOWN"))
+        try result.project.validate()
+    }
+    func testImportedTimecodeRetainsRateAndItsOriginalFPSAndOffset() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = try fixture("""
+        <REAPER_PROJECT 0.1
+          TEMPO 120 4 4
+          <TRACK
+            NAME TIMECODE
+            <ITEM
+              POSITION 5
+              LENGTH 7
+              PLAYRATE 1.159123456789 1 0
+              SOFFS 2
+              <SOURCE LTC
+                STARTTIME 3600
+                FRAMERATE 25 0
+                SEND 2
+                USERDATA 0 0 0 0
+              >
+            >
+          >
+        >
+        """, in: directory)
+        let result = try ReaperProjectImporter.read(file)
+        let clip = try XCTUnwrap(result.project.songs[0].tracks[0].clips.first)
+        XCTAssertEqual(clip.audioRate, 1.159123456789)
+        XCTAssertEqual(clip.timecode?.frameRate, 25)
+        XCTAssertEqual(clip.timecode?.offset, 3602)
+        XCTAssertFalse(result.warnings.contains { $0.contains("Timecode") })
+    }
+    func testImportedTakeRateKeepsFullDoublePrecisionThroughProjectSave() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = try fixture("""
+        <REAPER_PROJECT 0.1
+          TEMPO 146 4 4
+          <TRACK
+            NAME "Precision reference"
+            <ITEM
+              POSITION 0.667123456789
+              LENGTH 184.66123456789
+              SOFFS 0.123456789012345
+              PLAYRATE 1.1234567890123456 1 0
+              <SOURCE WAVE
+                FILE "missing-reference.wav"
+              >
+            >
+          >
+        >
+        """, in: directory)
+        let imported = try ReaperProjectImporter.read(source).project
+        let clip = try XCTUnwrap(imported.songs[0].tracks.first(where: { $0.kind == .standard })?.clips.first)
+        let expected = 1.1234567890123456
+        XCTAssertEqual(clip.audioRate.bitPattern, expected.bitPattern)
+        let saved = try JSONEncoder().encode(imported)
+        let reopened = try JSONDecoder().decode(Project.self, from: saved)
+        let restored = try XCTUnwrap(reopened.songs[0].tracks.first(where: { $0.kind == .standard })?.clips.first)
+        XCTAssertEqual(restored.audioRate.bitPattern, expected.bitPattern)
+        XCTAssertEqual(restored.duration, 184.66123456789)
+        XCTAssertEqual(Double(ItemRateSettings(baseBPM: 146, rate: restored.audioRate).rateText)?.bitPattern, expected.bitPattern)
+    }
     private func fixture(_ text: String, in directory: URL) throws -> URL {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let url = directory.appendingPathComponent("Migration.rpp")
         try text.write(to: url, atomically: true, encoding: .utf8)
         return url
+    }
+    func testEmptyTakesDoNotHideVideoOrMissingAudioOnOrdinaryTracks() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = try fixture("""
+        <REAPER_PROJECT 0.1
+          <TRACK
+            NAME Audio
+            <ITEM
+              POSITION 0
+              LENGTH 2
+            >
+            <ITEM
+              POSITION 2
+              LENGTH 2
+              <SOURCE VIDEO
+                FILE "movie.mp4"
+              >
+            >
+            <ITEM
+              POSITION 4
+              LENGTH 2
+              <SOURCE WAVE
+                FILE "Stems/missing.wav"
+              >
+            >
+          >
+        >
+        """, in: directory)
+        let result = try ReaperProjectImporter.read(source)
+        XCTAssertEqual(result.project.songs[0].tracks[0].clips.count, 2)
+        XCTAssertEqual(result.project.songs[0].tracks[0].clips[0].audioFile?.path, "Videos/movie.mp4")
+        XCTAssertEqual(result.project.songs[0].tracks[0].clips[1].audioFile?.path, "Stems/missing.wav")
+        XCTAssertFalse(result.warnings.contains { $0.contains("unsupported sources") })
+    }
+    func testVideosOnCustomNamedTracksKeepSectionsAndProjectionPriority() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = try fixture("""
+        <REAPER_PROJECT 0.1
+          <TRACK
+            NAME "Teleprompt 1"
+            <ITEM
+              POSITION 0
+              LENGTH 30
+              <SOURCE VIDEO
+                FILE "lyrics.mov"
+              >
+            >
+          >
+          <TRACK
+            NAME "Abertura do show"
+            <ITEM
+              POSITION 10
+              LENGTH 3
+              SOFFS 1
+              PLAYRATE 2 1 0
+              VOLPAN 0.5 -0.25 1
+              FADEIN 1 0.1
+              FADEOUT 1 0.2
+              LOOP 1
+              <SOURCE SECTION
+                STARTPOS 5
+                LENGTH 8
+                <SOURCE VIDEO
+                  FILE "intro.mp4"
+                >
+              >
+            >
+          >
+          <TRACK
+            NAME "Fundo do palco"
+            <ITEM
+              POSITION 10
+              LENGTH 20
+              <SOURCE WAVE
+                FILE "backdrop.MOV"
+              >
+            >
+          >
+        >
+        """, in: directory)
+        let result = try ReaperProjectImporter.read(source)
+        let song = result.project.songs[0]
+        let intro = try XCTUnwrap(song.tracks.first { $0.name == "Abertura do show" }?.clips.first)
+        XCTAssertEqual(intro.audioFile?.path, "Videos/intro.mp4")
+        XCTAssertEqual(intro.startTime, 10); XCTAssertEqual(intro.duration, 3)
+        XCTAssertEqual(intro.sourceOffset, 6); XCTAssertEqual(intro.playbackRate, 2)
+        XCTAssertEqual(intro.loopStart, 5); XCTAssertEqual(intro.loopLength, 8)
+        XCTAssertEqual(intro.gain, 0.5); XCTAssertEqual(intro.pan, -0.25)
+        XCTAssertEqual(intro.fadeIn, 0.1); XCTAssertEqual(intro.fadeOut, 0.2)
+        XCTAssertEqual(song.firstProjectionItem(at: 10)?.id, intro.id)
+        XCTAssertEqual(song.firstProjectionItem(at: 13)?.audioFile?.path, "Videos/backdrop.MOV")
+        XCTAssertNil(song.firstProjectionItem(at: 0))
+        XCTAssertEqual(song.firstProjectionItem(at: 10, trackKind: .teleprompt)?.audioFile?.path, "Videos/lyrics.mov")
+        XCTAssertEqual(result.media.count, 3)
+        XCTAssertEqual(try ProjectDocumentCodec.decode(ProjectDocumentCodec.encode(result.project)), result.project)
+        XCTAssertTrue(result.warnings.isEmpty, result.warnings.joined(separator: "\n"))
     }
     func testThreeNestedFoldersKeepImmediateParentsAndCloseMultipleLevels() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -64,8 +275,12 @@ final class ReaperProjectImportTests: XCTestCase {
         for text in malformed {
             let source = try fixture(text, in: directory)
             let original = try Data(contentsOf: source)
-            XCTAssertThrowsError(try ReaperProjectImporter.read(source), text) { error in
-                XCTAssertTrue(error is ProjectError, "Malformed take structures must produce an import error")
+            if !text.hasPrefix("<REAPER_PROJECT") {
+                XCTAssertThrowsError(try ReaperProjectImporter.read(source))
+            } else {
+                let recovered = try ReaperProjectImporter.read(source)
+                XCTAssertFalse(recovered.warnings.isEmpty, text)
+                try recovered.project.validate()
             }
             XCTAssertEqual(try Data(contentsOf: source), original)
         }
@@ -252,13 +467,67 @@ final class ReaperProjectImportTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: audio), bytes)
         XCTAssertEqual(ProjectAudioRecovery.missingPaths(in: result.project, directory: directory), [clips[0].audioFile!.path, clips[2].audioFile!.path].sorted())
     }
-    func testRejectsMalformedInputWithoutCreatingDestination() throws {
+    func testRecoversMalformedElementsWithWarningsWithoutChangingSource() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
         for text in ["<REAPER_PROJECT\n<TRACK\n>", "<REAPER_PROJECT\nNAME \"broken\n>", "<REAPER_PROJECT\nTEMPO 120 1e200 4\n>", "<REAPER_PROJECT\n<TRACK\n<ITEM\nPOSITION nan\nLENGTH 1\n>\n>\n>", "<REAPER_PROJECT\nMARKER 1 2 intro 1\n>"] {
             let source = try fixture(text, in: directory)
-            XCTAssertThrowsError(try ReaperProjectImporter.read(source), text)
+            let recovered = try ReaperProjectImporter.read(source)
+            XCTAssertFalse(recovered.warnings.isEmpty, text)
+            try recovered.project.validate()
         }
+    }
+    func testBadItemAndFXDoNotDiscardValidNeighbors() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = try fixture("""
+        <REAPER_PROJECT 0.1
+        TEMPO 120 4 4
+        <TRACK
+        NAME "Recovered track"
+        <FXCHAIN
+        <VST "VST3: Invalid" ignored 0 ignored {invalid}
+        >
+        >
+        <ITEM
+        POSITION 0
+        LENGTH 2
+        NAME "Before"
+        <SOURCE WAVE
+        FILE "Before.wav"
+        >
+        >
+        <ITEM
+        POSITION nan
+        LENGTH 3
+        >
+        <ITEM
+        POSITION 5
+        LENGTH 2
+        NAME "After"
+        <SOURCE WAVE
+        FILE "After.wav"
+        >
+        >
+        >
+        MARKER 1 1 "Good marker" 0
+        MARKER bad
+        MARKER 2 6 "Later marker" 0
+        >
+        """, in: directory)
+        let original = try Data(contentsOf: source)
+        let result = try ReaperProjectImporter.read(source)
+        XCTAssertEqual(result.project.songs[0].tracks.first?.clips.map(\.name), ["Before", "After"])
+        XCTAssertEqual(result.project.songs[0].markers?.filter { !$0.isTempo }.map(\.name), ["Good marker", "Later marker"])
+        XCTAssertTrue(result.warnings.contains { $0.contains("FX ignored") })
+        XCTAssertTrue(result.warnings.contains { $0.contains("item ignored") })
+        XCTAssertTrue(result.warnings.contains { $0.contains("marker ignored") })
+        try result.project.validate()
+        XCTAssertEqual(try Data(contentsOf: source), original)
+        let output = directory.appendingPathComponent("Recovered.jl")
+        try ProjectMigration.save(result, to: output)
+        let reopened = try await ProjectStore(url: output).load()
+        XCTAssertEqual(reopened, result.project)
     }
     func testSpecialRegionsAndOneFlagPerPosition() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -330,7 +599,7 @@ final class ReaperProjectImportTests: XCTestCase {
         let original = try Data(contentsOf: source)
         let result = try ReaperProjectImporter.read(source)
         let imported = result.project.songs[0].tracks
-        XCTAssertEqual(imported.map(\.kind), [.chords, .teleprompt, .teleprompt2])
+        XCTAssertEqual(imported.map(\.kind), [.teleprompt, .teleprompt2, .chords])
         XCTAssertEqual(imported.compactMap { $0.clips.first?.text }, [text, text, text])
         XCTAssertEqual(try ProjectDocumentCodec.decode(ProjectDocumentCodec.encode(result.project)), result.project)
         XCTAssertEqual(try Data(contentsOf: source), original)
@@ -421,12 +690,12 @@ final class ReaperProjectImportTests: XCTestCase {
         """, in: directory)
         let result = try ReaperProjectImporter.read(source)
         let tracks = result.project.songs[0].tracks
-        XCTAssertEqual(tracks.map(\.kind), [.timecode, .chords, .teleprompt, .teleprompt2, .standard])
-        XCTAssertEqual(tracks[2].clips.count, 2, "remove only empty placeholders overlapping actual content")
-        XCTAssertEqual(tracks[2].clips[0].text, "Primeira linha\nSegunda linha")
-        XCTAssertEqual(tracks[3].clips[0].text, "Texto do segundo TP")
-        XCTAssertEqual(tracks[1].clips[0].text, "C#m7")
-        XCTAssertTrue(tracks[2].clips[1].isProjectionMedia)
+        XCTAssertEqual(tracks.map(\.kind), [.timecode, .teleprompt, .teleprompt2, .chords, .standard])
+        XCTAssertEqual(tracks[1].clips.count, 2, "remove only empty placeholders overlapping actual content")
+        XCTAssertEqual(tracks[1].clips[0].text, "Primeira linha\nSegunda linha")
+        XCTAssertEqual(tracks[2].clips[0].text, "Texto do segundo TP")
+        XCTAssertEqual(tracks[3].clips[0].text, "C#m7")
+        XCTAssertTrue(tracks[1].clips[1].isProjectionMedia)
         XCTAssertTrue(tracks[4].clips[0].isProjectionMedia)
         XCTAssertEqual(tracks[4].clips[0].sourceOffset, 1.5)
         let timecode = tracks[0]
@@ -445,6 +714,108 @@ final class ReaperProjectImportTests: XCTestCase {
         XCTAssertEqual(resized.songs[0].tracks[0].clips[0].duration, 10)
         XCTAssertEqual(resized.songs[0].tracks[0].clips[0].timecode, timecode.clips[0].timecode)
     }
+    func testOverlappingSpecialItemsRecoverWithoutDiscardingTheProject() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        func item(_ start: Double, _ length: Double, _ text: String?) -> String {
+            "<ITEM\nPOSITION \(start)\nLENGTH \(length)\n" +
+                (text.map { "<NOTES\n|\($0)\n>\n" } ?? "") + ">\n"
+        }
+        // Source order differs from timeline order. Keep the earliest compatible
+        // item, preserve its timing, and recover later compatible items as well.
+        let items = item(10, 2, "Later") + item(0, 4, "First") +
+            item(2, 5, "Conflicting") + item(0, 1, "Duplicate") +
+            item(4, 2, "Next") + item(20, 3, nil) + item(21, 3, nil)
+        var body = ["Teleprompt 1", "Teleprompt 2", "CIFRAS"].map {
+            "<TRACK\nNAME \"\($0)\"\n\(items)>\n"
+        }.joined()
+        // Text and projection media are independent layers of a teleprompter.
+        body += "<TRACK\nNAME \"Teleprompt 1\"\n" + item(0, 4, "Lyrics")
+        for start in [0, 2, 4] {
+            body += "<ITEM\nPOSITION \(start)\nLENGTH 4\n<SOURCE VIDEO\nFILE \"video\(start).mp4\"\n>\n>\n"
+        }
+        body += ">\n<TRACK\nNAME Audio\n" + item(0, 4, nil) + item(2, 4, nil) + ">\n"
+        let source = try fixture("<REAPER_PROJECT 0.1\n\(body)>\n", in: directory)
+        let original = try Data(contentsOf: source)
+        let result = try ReaperProjectImporter.read(source)
+        let tracks = result.project.songs[0].tracks
+        XCTAssertEqual(tracks.count, 5)
+        for track in tracks where track.clips.contains(where: { $0.text == "First" }) {
+            XCTAssertEqual(track.clips.first { $0.text == "First" }?.duration, 4)
+            if track.kind.isTeleprompter {
+                XCTAssertEqual(track.clips.map(\.startTime).sorted(), [0, 0, 2, 4, 10, 20, 21])
+                XCTAssertEqual(track.clips.first { $0.text == "Conflicting" }?.duration, 5)
+                XCTAssertEqual(track.clips.first { $0.text == "Duplicate" }?.startTime, 0)
+                XCTAssertEqual(TrackLanes(track: track).count, 2)
+            } else {
+                XCTAssertEqual(track.clips.map(\.startTime).sorted(), [0, 4, 10, 20])
+                XCTAssertFalse(track.clips.contains { $0.text == "Conflicting" || $0.text == "Duplicate" })
+            }
+        }
+        XCTAssertFalse(result.warnings.contains { $0.contains("Teleprompter") && $0.contains("Conflicting") })
+        let mediaTrack = try XCTUnwrap(tracks.first { $0.clips.contains { $0.text == "Lyrics" } })
+        XCTAssertEqual(mediaTrack.clips.count, 3)
+        XCTAssertEqual(mediaTrack.clips.filter(\.isProjectionMedia).map(\.startTime).sorted(), [0, 4])
+        XCTAssertEqual(tracks.first { $0.name == "Audio" }?.clips.count, 0, "Empty audio placeholders are ignored")
+        XCTAssertTrue(result.warnings.contains { $0.contains("Conflicting") && $0.contains("overlap") })
+        XCTAssertEqual(try ProjectDocumentCodec.decode(ProjectDocumentCodec.encode(result.project)), result.project)
+        XCTAssertEqual(try Data(contentsOf: source), original)
+    }
+    func testItemsWithoutRegionsOrMarkersDoNotCreateThem() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = try fixture("""
+        <REAPER_PROJECT 0.1
+          TEMPO 120 4 4
+          <TRACK
+            NAME Piano
+            <ITEM
+              POSITION 3
+              LENGTH 10
+              NAME Piano.wav
+              <SOURCE WAVE
+                FILE missing.wav
+              >
+            >
+          >
+        >
+        """, in: directory)
+        let result = try ReaperProjectImporter.read(source)
+        let song = try XCTUnwrap(result.project.songs.first)
+        XCTAssertTrue(song.parts.isEmpty)
+        XCTAssertTrue(song.markers?.isEmpty ?? true)
+        XCTAssertEqual(song.duration, 13)
+        XCTAssertEqual(song.tracks.flatMap(\.clips).count, 1)
+        try result.project.validate()
+    }
+    func testClientUnityRateProjectWhenProvided() throws {
+        guard let path = ProcessInfo.processInfo.environment["JARAS_REAPER_UNITY_RATE_FIXTURE"] else { return }
+        let source = URL(fileURLWithPath: path)
+        let original = try Data(contentsOf: source)
+        let imported = try ReaperProjectImporter.read(source).project
+        var opened = try ProjectDocumentCodec.decode(ProjectDocumentCodec.encode(imported))
+        for index in opened.songs.indices { opened.songs[index].ensureInitialTempoMarker() }
+        GlobalProjectTiming(bpm: 120).applyOnOpen(to: &opened)
+        let song = try XCTUnwrap(opened.songs.first)
+        let clips = song.tracks.flatMap(\.clips).filter { $0.audioFile != nil }
+        XCTAssertFalse(clips.isEmpty)
+        XCTAssertEqual(song.bpm, 140)
+        XCTAssertEqual(clips.count, imported.songs[0].tracks.flatMap(\.clips).filter { $0.audioFile != nil }.count)
+        var rates = Set<Double>()
+        let sections = song.tempoSections(until: song.duration)
+        for clip in clips {
+            XCTAssertEqual(clip.audioRate, 1, accuracy: 1e-9, clip.name)
+            let fragments = song.tempoAudioSegments(clip, sections: sections)
+            XCTAssertFalse(fragments.isEmpty, clip.name)
+            for fragment in fragments {
+                rates.insert(fragment.audioRate)
+                XCTAssertEqual(fragment.audioRate, 1, accuracy: 1e-9, clip.name)
+            }
+        }
+        XCTAssertEqual(opened, imported, "Opening must not rescale positions, lengths, offsets or the tempo map")
+        XCTAssertEqual(try Data(contentsOf: source), original)
+        print("RPP rate check: \(clips.count) audio items; base BPM \(song.bpm); effective rates \(rates.sorted())")
+    }
     func testRealProjectsWhenProvided() throws {
         guard let files = ProcessInfo.processInfo.environment["JARAS_REAPER_FIXTURES"] else { return }
         for path in files.components(separatedBy: "\n") where !path.isEmpty {
@@ -454,7 +825,6 @@ final class ReaperProjectImportTests: XCTestCase {
             try result.project.validate()
             let song = result.project.songs[0]
             XCTAssertFalse(song.tracks.isEmpty)
-            XCTAssertFalse(song.parts.isEmpty)
             XCTAssertEqual(try Data(contentsOf: source), original)
             print("RPP fixture: \(source.lastPathComponent): \(song.tracks.count) tracks, \(song.tracks.flatMap(\.clips).count) items, \(song.parts.count) regions, \(song.markers?.count ?? 0) markers, \(result.media.count) files")
         }

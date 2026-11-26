@@ -1,8 +1,8 @@
 import Foundation
 
 /// Frame-rate presentation of the last authoritative transport sample. This
-/// never predicts engine transitions: loop wraps, queues and Sub Play promotion
-/// remain the engine's responsibility.
+/// never predicts engine transitions: an available output clock supplies the
+/// audible position, otherwise interpolation waits at the engine's boundary.
 public struct TimelinePlaybackPresentation: Equatable, Sendable {
     public enum Source: Equatable, Sendable { case main, sub }
 
@@ -23,9 +23,16 @@ public struct TimelinePlaybackPresentation: Equatable, Sendable {
     }
 
     public init(transport: TransportState, elapsed: Double, songDuration: Double,
-                mainBoundary: Double? = nil) {
+                mainBoundary: Double? = nil, audibleMainPosition: Double? = nil,
+                audibleSubPosition: Double? = nil) {
         let delta = elapsed.isFinite ? min(Self.maximumExtrapolation, max(0, elapsed)) : 0
         var mainEnd = songDuration
+        if let edit = transport.editPosition, edit >= songDuration, transport.position >= songDuration,
+           transport.regionId == nil, mainBoundary == nil {
+            // Free playback started in the empty tail; interpolate its clock as
+            // smoothly as a head running over audio, without extending the song.
+            mainEnd = .greatestFiniteMagnitude
+        }
         // A loop owns its boundary even when a region ends earlier. Once the
         // engine releases it, the regular region/queue boundary applies again.
         if let loop = transport.multiLoop, !loop.released,
@@ -38,15 +45,20 @@ public struct TimelinePlaybackPresentation: Equatable, Sendable {
             mainEnd = min(mainEnd, boundary)
         }
         mainPosition = Self.advance(transport.position, playing: transport.playing,
-                                    delta: delta, end: mainEnd)
+                                    delta: delta, end: mainEnd, audiblePosition: audibleMainPosition)
         subPosition = Self.advance(transport.subPlay.position, playing: transport.subPlay.playing,
-                                   delta: delta, end: songDuration)
+                                   delta: delta, end: songDuration, audiblePosition: audibleSubPosition)
         followSource = transport.subPlay.playing ? .sub : transport.playing ? .main : nil
     }
 
-    private static func advance(_ position: Double, playing: Bool, delta: Double, end: Double) -> Double {
+    private static func advance(_ position: Double, playing: Bool, delta: Double, end: Double,
+                                audiblePosition: Double?) -> Double {
         let sample = position.isFinite ? max(0, position) : 0
         guard playing else { return sample }
+        // This value already describes this frame's output time, including any
+        // scheduled handoff since the last transport tick. Do not advance it
+        // twice or constrain it with the previous region/loop's stale boundary.
+        if let audiblePosition, audiblePosition.isFinite { return max(0, audiblePosition) }
         // An authoritative sample always wins over stale/malformed limits. Do
         // not pull a cursor backwards or extrapolate beyond a terminal point.
         guard end.isFinite else { return sample }
@@ -69,7 +81,11 @@ public struct TransportSongDisplays {
         let root = selected?.parentRegionID ?? selected?.id
         let running = transport.playing ? song?.playingSetlistRegion(transport.regionId, position: transport.position,
             expanded: Set(root.map { [$0] } ?? [])) : nil
-        current = transport.ignoreNextRegionId.flatMap { id in parts.first { $0.id == id } } ?? running ?? selected
+        let cursor = transport.editPosition ?? transport.position
+        let stopped = selected.flatMap { cursor >= $0.startTime && cursor < $0.endTime ? $0 : nil } ?? song?.sectionRegion(at: cursor)
+        current = transport.playing
+            ? transport.ignoreNextRegionId.flatMap { id in parts.first { $0.id == id } } ?? running ?? selected
+            : stopped
         next = transport.playing && transport.ignoreNextAfter == nil ? song?.nextDrawerRegion(transport.regionId, position: transport.position) : nil
         queued = transport.subPlay.playing ? song?.sectionRegion(at: transport.subPlay.position) : parts.first { $0.id == transport.queuedRegionId }
         func bpm(_ region: Part?, at position: Double? = nil) -> Double? {
@@ -82,6 +98,39 @@ public struct TransportSongDisplays {
         currentBPM = bpm(current, at: transport.playing ? transport.position : nil)
         nextBPM = bpm(next)
         queuedBPM = bpm(queued, at: transport.subPlay.playing ? transport.subPlay.position : nil)
+    }
+}
+
+public enum TransportTitleMode: String, CaseIterable {
+    case none = "None"
+    case region = "Region"
+    case markers = "Markers"
+    case nextMarker = "Next Marker"
+    case nextTimelineRegion = "Next Region Timeline"
+    case nextSetlistRegion = "Next Region Setlist"
+    case queue = "Fila de espera"
+
+    public static let preferenceKey = "jaras.transport.titleMode"
+
+    public var followsCursor: Bool {
+        self == .markers || self == .nextMarker || self == .nextTimelineRegion
+    }
+
+    public func cursorTitle(in song: Song?, transport: TransportState) -> String? {
+        guard let song else { return nil }
+        let position = transport.playing || transport.paused == true
+            ? transport.position : transport.editPosition ?? transport.position
+        if self == .nextTimelineRegion {
+            return song.parts.lazy.filter { $0.parentRegionID == nil && $0.startTime > position }
+                .min { $0.startTime < $1.startTime }?.displayName
+        }
+        guard self == .markers || self == .nextMarker else { return nil }
+        let eligible = (song.markers ?? []).lazy.filter { $0.isNavigationMarker }
+        let marker = self == .markers
+            ? eligible.filter { $0.position <= position }.max { $0.position < $1.position }
+            : eligible.filter { $0.position > position }.min { $0.position < $1.position }
+        guard let marker else { return nil }
+        return song.parts.first { $0.id == marker.sourceRegionID }?.displayName ?? marker.name
     }
 }
 
@@ -98,6 +147,10 @@ public extension TransportState {
 /// the intersecting ranges without scanning the complete arrangement.
 struct SetlistLivePlaybackTracker {
     static let threshold: Double = 10
+    static func previewMarks(project: Project) -> Set<UUID> {
+        guard project.regionSetlist?.liveEnabled == true else { return [] }
+        return normalizedMarks(project: project, marked: Set(project.regionSetlist?.playedLiveRegionIDs ?? []))
+    }
     /// A drawer's history belongs to its songs. The wrapper is complete only
     /// when every current child is complete, including after project edits.
     static func normalizedMarks(project: Project, marked: Set<UUID>) -> Set<UUID> {
@@ -204,5 +257,96 @@ struct SetlistLivePlaybackTracker {
             }
         }
         return newlyMarked
+    }
+}
+
+/// Preview rows contain real songs only; unified wrappers expand their drawer.
+struct TeleprompterPreviewEntry {
+    let id: UUID
+    let region: Part
+    let playlistEntry: UUID
+    let blockAnchors: [UUID]
+    static func childID(_ child: UUID, parent: UUID, occurrence: UUID) -> UUID {
+        let digits = "0123456789ABCDEF"
+        let value = zip(zip(child.uuidString, parent.uuidString), occurrence.uuidString).map { pair, entry -> String in
+            guard pair.0 != "-" else { return "-" }
+            let n = Int(String(pair.0), radix: 16)! ^ Int(String(pair.1), radix: 16)! ^ Int(String(entry), radix: 16)!
+            return String(digits[digits.index(digits.startIndex, offsetBy: n)])
+        }.joined()
+        return UUID(uuidString: value)!
+    }
+    static func make(song: Song, playlist: RegionPlaylist?) -> [Self] {
+        let byID = Dictionary(uniqueKeysWithValues: song.parts.map { ($0.id, $0) })
+        let children = Dictionary(grouping: song.parts.filter { $0.parentRegionID != nil }, by: { $0.parentRegionID! })
+            .mapValues { $0.sorted { $0.startTime < $1.startTime } }
+        let roots: [(UUID, Part)] = playlist.map { list in
+            list.regionIds.compactMap { entry in byID[list.regionSourceID(forEntry: entry)].map { (entry, $0) } }
+        } ?? song.parts.filter { $0.parentRegionID == nil }.sorted { $0.startTime < $1.startTime }.map { ($0.id, $0) }
+        var rows: [Self] = []
+        func append(_ part: Part, id: UUID, root: UUID, anchors: [UUID], visited: Set<UUID>) {
+            guard !visited.contains(part.id) else { return }
+            let nested = children[part.id] ?? []
+            if nested.isEmpty {
+                rows.append(.init(id: id, region: part, playlistEntry: root, blockAnchors: anchors))
+            } else {
+                for (index, child) in nested.enumerated() {
+                    append(child, id: childID(child.id, parent: part.id, occurrence: id), root: root,
+                           anchors: (index == 0 ? anchors : []) + [child.id], visited: visited.union([part.id]))
+                }
+            }
+        }
+        for (entry, part) in roots { append(part, id: entry, root: entry, anchors: [entry], visited: []) }
+        return rows
+    }
+}
+
+/// Playback advances in the current song; the queued row counts down to entry.
+struct TeleprompterPreviewPlayback: Equatable {
+    var playingEntry: UUID?
+    var queuedEntry: UUID?
+    var playedFraction = 0.0
+    var remainingFraction = 0.0
+    init() {}
+    init(song: Song, transport: TransportState, playlist: RegionPlaylist? = nil) {
+        guard transport.playing || transport.paused == true else { return }
+        let entries = TeleprompterPreviewEntry.make(song: song, playlist: playlist)
+        let current = song.parts.filter { transport.position >= $0.startTime && transport.position < $0.endTime }
+            .min { $0.endTime - $0.startTime < $1.endTime - $1.startTime }
+        let candidates = entries.filter { $0.region.id == current?.id }
+        let active = candidates.first { $0.playlistEntry == transport.playlistEntryId } ?? candidates.first
+        let owner = song.parts.first { $0.id == transport.regionId } ?? current
+        let end = transport.ignoreNextEnd ?? owner?.endTime ?? song.duration
+        if let active {
+            playingEntry = active.id
+            let regionEnd = transport.ignoreNextEnd ?? active.region.endTime
+            playedFraction = min(1, max(0, (transport.position - active.region.startTime) / max(0.001, regionEnd - active.region.startTime)))
+        }
+        let waiting = transport.queuedRegionId.map { id in entries.filter { $0.region.id == id || $0.region.parentRegionID == id } } ?? []
+        queuedEntry = (waiting.first { $0.playlistEntry == transport.queuedPlaylistEntryId } ?? waiting.first)?.id
+        remainingFraction = min(1, max(0, (end - transport.position) / max(0.001, end - (transport.queueStartedAt ?? transport.position))))
+    }
+    func progress(for entry: UUID) -> Double {
+        if playingEntry == entry { return playedFraction }
+        if queuedEntry == entry { return remainingFraction }
+        return 0
+    }
+}
+
+/// Clear only the occurrence that just finished; browsing another row is independent.
+public enum FinishedSetlistSelection {
+    public static func shouldClear(_ focused: UUID?, song: Song, playlist: RegionPlaylist?,
+                                   before: TransportState, after: TransportState) -> Bool {
+        guard let focused, before.playing, after.paused != true else { return false }
+        let source = playlist?.regionSourceID(forEntry: focused) ?? focused
+        func matches(_ state: TransportState) -> Bool {
+            guard state.songId == song.id,
+                  let root = song.playingSetlistRegion(state.regionId, position: state.position, expanded: []) else { return false }
+            if source == root.id {
+                if let entry = state.playlistEntryId { return focused == entry }
+                return focused == source
+            }
+            return source == song.playingSetlistRegion(state.regionId, position: state.position, expanded: [root.id])?.id
+        }
+        return matches(before) && (!after.playing || !matches(after))
     }
 }

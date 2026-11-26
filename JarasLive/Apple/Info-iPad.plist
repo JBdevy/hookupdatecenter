@@ -2,10 +2,14 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+  <key>UIApplicationSupportsIndirectInputEvents</key>
+  <true/>
 	<!-- Encryption is provided by Apple's CryptoKit and system networking. -->
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
-	<key>NSMicrophoneUsageDescription</key>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+<string>O CatLive conecta teclados e controladores MIDI Bluetooth para tocar e controlar o transporte. / CatLive connects Bluetooth MIDI keyboards and controllers to play and control the transport.</string>
+<key>NSMicrophoneUsageDescription</key>
 	<string>O CatLive usa a entrada de áudio para gravar e monitorar as pistas no modo Nativo. / CatLive uses the audio input to record and monitor tracks in Native mode.</string>
 	<key>UIBackgroundModes</key>
 	<array>
@@ -17,6 +21,10 @@
 	<array>
 		<string>_jaras-live._tcp</string>
 	</array>
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+	</array>
 	<key>UISupportedInterfaceOrientations~ipad</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
@@ -24,8 +32,58 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
+	<key>UTImportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeIdentifier</key><string>com.cockos.reaper.project</string>
+			<key>UTTypeDescription</key><string>REAPER Project</string>
+			<key>UTTypeConformsTo</key><array><string>public.data</string></array>
+			<key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key><array><string>rpp</string></array></dict>
+		</dict>
+		<dict>
+			<key>UTTypeIdentifier</key><string>com.apple.logicx.project</string>
+			<key>UTTypeDescription</key><string>Logic Project</string>
+			<key>UTTypeConformsTo</key><array><string>com.apple.package</string></array>
+			<key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key><array><string>logicx</string></array></dict>
+		</dict>
+	</array>
 	<key>UTExportedTypeDeclarations</key>
 	<array>
+        <dict>
+            <key>UTTypeIdentifier</key><string>com.catlive.workspace-file</string>
+            <key>UTTypeConformsTo</key><array><string>public.data</string></array>
+            <key>UTTypeDescription</key><string>CatLive Workspace File</string>
+        </dict>
+        <dict>
+            <key>UTTypeIdentifier</key><string>com.catlive.library-effect</string>
+            <key>UTTypeConformsTo</key><array><string>public.data</string></array>
+        </dict>
+        <dict>
+            <key>UTTypeIdentifier</key><string>com.catlive.library-sampler</string>
+            <key>UTTypeConformsTo</key><array><string>public.data</string></array>
+        </dict>
+        <dict>
+            <key>UTTypeIdentifier</key><string>com.hookdeveloper.catlive.jllyrics</string>
+            <key>UTTypeDescription</key><string>CatLive Lyrics</string>
+            <key>UTTypeConformsTo</key><array><string>public.json</string></array>
+            <key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key><array><string>jllyrics</string></array></dict>
+        </dict>
+<dict>
+<key>UTTypeIdentifier</key><string>com.hookdeveloper.catlive.zipfx</string>
+<key>UTTypeDescription</key><string>CatLive Pads Presets</string>
+<key>UTTypeConformsTo</key><array><string>public.zip-archive</string></array>
+<key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key><array><string>zipfx</string></array></dict>
+</dict>
+        <dict>
+            <key>UTTypeIdentifier</key>
+            <string>com.hookdeveloper.jaraslive.project</string>
+            <key>UTTypeDescription</key>
+            <string>CatLive project</string>
+            <key>UTTypeConformsTo</key>
+            <array><string>public.data</string></array>
+            <key>UTTypeTagSpecification</key>
+            <dict><key>public.filename-extension</key><array><string>jl</string><string>bkjl</string></array></dict>
+        </dict>
 		<dict>
 			<key>UTTypeIdentifier</key>
 			<string>com.hookdeveloper.catlive.ziplive</string>
@@ -43,7 +101,7 @@
 				</array>
 			</dict>
 		</dict>
-	</array>
+</array>
 	<key>CFBundleDocumentTypes</key>
 	<array>
 		<dict>

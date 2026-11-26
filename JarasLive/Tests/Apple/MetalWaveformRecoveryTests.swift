@@ -85,15 +85,15 @@ for (name, scene, previous) in cases {
 // Structural replacement must retire obsolete pixels even when Metal cannot
 // immediately provide a drawable. Retaining fine detail from the same clip is
 // useful; retaining deleted tracks or a previous project's rows is incorrect.
-for reason in ["PROJECT_REPLACEMENT", "ITEM_DELETION"] {
-    func scene(revision: Int, rows: [CGFloat], gray: Float = 0.7) -> MetalWaveformFrame {
+for reason in ["PROJECT_REPLACEMENT", "ITEM_DELETION", "PROJECTION_REPLACEMENT"] {
+    func scene(revision: Int, rows: [CGFloat], gray: Float = 0.7, scale: Double = 100) -> MetalWaveformFrame {
         let strokes = rows.map { y in
             MetalWaveformStroke(block: block, channel: 0, scale: SIMD2(100, 1),
                 translation: SIMD2(14, Float(y)), clip: CGRect(x: 0, y: y - 4, width: 128, height: 8),
                 color: SIMD4(gray, gray, gray, 1), itemRect: CGRect(x: 0, y: y - 4, width: 128, height: 8))
         }
         return MetalWaveformFrame(size: size, strokes: strokes,
-            coordinateSpace: .init(documentOrigin: .zero, pixelsPerSecond: 100, contentRevision: revision))
+            coordinateSpace: .init(documentOrigin: .zero, pixelsPerSecond: scale, contentRevision: revision))
     }
     let original = scene(revision: 10, rows: [25, 64, 105])
     surface.submit(original)
@@ -107,7 +107,7 @@ for reason in ["PROJECT_REPLACEMENT", "ITEM_DELETION"] {
     surface.submit(retired)
     check(surface.submittedFrameCount == originalCount + 1, "fixture submits a deferred old-content presentation")
     MetalDrawableRecoveryProbe.blocked = true
-    let replacement = scene(revision: 11, rows: [25])
+    let replacement = scene(revision: reason == "PROJECTION_REPLACEMENT" ? 10 : 11, rows: [25], scale: reason == "PROJECTION_REPLACEMENT" ? 200 : 100)
     let firstAttempt = MetalDrawableRecoveryProbe.attempts
     surface.submit(replacement)
     check(surface.subviews.first?.alphaValue == 0,
@@ -173,4 +173,54 @@ for (name, scene, _) in cases {
     check(surface.submittedFrameCount == repaired, "redraw recovery must not create continuous GPU work")
     print("METAL_\(name.uppercased())_SYSTEM_INVALIDATION_RECOVERS_CACHED_SCENE_WITHOUT_SCROLL_OK")
 }
+
+// A valid drawable should replace the old projection without a hide/show
+// cycle. Missing drawables still use the retirement paths tested above.
+var opacityChanges: [CGFloat] = []
+let opacityObserver = surface.subviews[0].observe(\.alphaValue, options: [.new]) { _, change in
+    if let value = change.newValue { opacityChanges.append(value) }
+}
+for index in 0..<8 {
+    let scene = MetalWaveformFrame(size: size, strokes: [stroke],
+        coordinateSpace: .init(documentOrigin: CGPoint(x: index * 20, y: 0),
+                               pixelsPerSecond: Double(100 + index * 10), contentRevision: 20))
+    opacityChanges.removeAll(keepingCapacity: true)
+    surface.submit(scene)
+    check(surface.presentedForRecoveryTest?.hasSameContent(as: scene) == true)
+    check(!opacityChanges.contains(0), "Ready zoom frames must replace the previous drawable without clearing it")
+    settle()
+}
+opacityObserver.invalidate()
+print("METAL_ZOOM_PRESENTS_CURRENT_PROJECTION_WITHOUT_OPACITY_CYCLE_OK")
 window.close()
+
+// The first drawable of a visible project can lag behind both the window's
+// visibility notification and the next main-queue turn. The native grid
+// retains its projection here: there is no second submit or zoom.
+// Supply the shown-window occlusion state even on headless CI.
+final class OpeningProjectWindow: NSWindow {
+    override var occlusionState: NSWindow.OcclusionState { [.visible] }
+}
+let openingWindow = OpeningProjectWindow(contentRect: NSRect(x: -10000, y: -10000, width: 128, height: 128),
+    styleMask: [.borderless], backing: .buffered, defer: false)
+openingWindow.isReleasedWhenClosed = false
+let openingSurface = MetalWaveformSurface()
+openingWindow.contentView = openingSurface
+openingWindow.orderBack(nil)
+settle()
+let openingFrame = MetalWaveformFrame(size: size, strokes: [stroke])
+MetalDrawableRecoveryProbe.blocked = true
+let openingAttempts = MetalDrawableRecoveryProbe.attempts
+openingSurface.submit(openingFrame)
+awaitValue("first draw and next-turn retry must run") { MetalDrawableRecoveryProbe.attempts >= openingAttempts + 2 }
+settle(0.25)
+check(openingSurface.pendingForRecoveryTest)
+MetalDrawableRecoveryProbe.blocked = false
+awaitValue("opening waveform must appear with no input or additional submit") {
+    openingSurface.presentedForRecoveryTest?.hasSameContent(as: openingFrame) == true
+}
+let openingSubmissions = openingSurface.submittedFrameCount
+settle(0.6)
+check(openingSurface.submittedFrameCount == openingSubmissions, "automatic recovery must stop after presentation")
+openingWindow.close()
+print("METAL_VISIBLE_PROJECT_OPEN_PRESENTS_WAVEFORM_WITHOUT_ZOOM_OK")

@@ -2,8 +2,33 @@ import SwiftUI
 import Combine
 
 #if os(macOS)
+@MainActor struct TeleprompterTimerToolbarButton: View {
+    @ObservedObject private var timer = TeleprompterTimerController.shared
+    var body: some View {
+        Button { timer.showConfiguration() } label: {
+            DesktopToolbarLabel(title: "Timer", systemImage: "stopwatch", active: timer.configurationOpen || timer.running)
+        }.buttonStyle(.plain).accessibilityLabel("Timer").help(Text(verbatim: "Timer"))
+    }
+}
+
+/// Updates only the central readout; the project and toolbar do not tick.
+@MainActor struct TeleprompterTimerToolbarReadout: View {
+    @ObservedObject var timer: TeleprompterTimerController = .shared
+    var body: some View {
+        Group {
+            if timer.running {
+                TimelineView(.periodic(from: .now, by: 0.5)) { _ in
+                    TimerReadout(text: timer.displayText(), expired: timer.expired(), fontSize: 16)
+                        .opacity(timer.displayOpacity())
+                }.frame(width: 132, height: 24)
+            }
+        }.allowsHitTesting(false)
+    }
+}
+
 /// Only this small control redraws with the independent timer clock.
 @MainActor struct TeleprompterTimerControl: View {
+    private let compact: Bool
     @ObservedObject private var timer: TeleprompterTimerController
     @State private var tick = Date()
     private let clock = Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()
@@ -14,14 +39,14 @@ import Combine
     @State private var confirmStop = false
     @State private var stopRunID: UUID?
     @FocusState private var focused: Int?
-    init() { timer = .shared }
-    init(timer: TeleprompterTimerController) { self.timer = timer }
+    init(compact: Bool = false) { timer = .shared; self.compact = compact }
+    init(timer: TeleprompterTimerController, compact: Bool = false) { self.timer = timer; self.compact = compact }
     var body: some View {
         HStack(spacing: 3) {
             timerField(at: tick)
             timerButton
         }.fixedSize(horizontal: true, vertical: false)
-            .padding(4)
+            .padding(compact ? 2 : 4)
             .background(JarasTheme.display, in: RoundedRectangle(cornerRadius: 4))
             .overlay(RoundedRectangle(cornerRadius: 4).stroke(JarasTheme.line).allowsHitTesting(false))
             .onReceive(clock) { if timer.running { tick = $0 } }
@@ -52,7 +77,7 @@ import Combine
         return HStack(spacing: 2) {
             ForEach(0..<3, id: \.self) { index in
                 Group {
-                    if timer.running {
+                    if timer.running || timer.mode == .progressive {
                         TimerReadout(text: values.indices.contains(index) ? values[index] : "00", expired: expired)
                             .opacity(opacity)
                     } else {
@@ -62,14 +87,14 @@ import Combine
                             .onExitCommand { refresh(); focused = nil }
                     }
                 }
-                .multilineTextAlignment(.center).frame(width: 30, height: 35)
+                .multilineTextAlignment(.center).frame(width: compact ? 23 : 30, height: compact ? 20 : 35)
                 .background(JarasTheme.display).clipShape(RoundedRectangle(cornerRadius: 5))
                 .overlay(RoundedRectangle(cornerRadius: 5).stroke(invalid ? Color.red : JarasTheme.line))
                 .accessibilityLabel(LocalizedStringKey(["Hours", "Minutes", "Seconds"][index]))
                 .immediateRightClick { timer.showConfiguration() }
             }
         }
-        .font(.system(size: 12, weight: .semibold, design: .monospaced))
+        .font(.jarasSystem(size: 12, weight: .semibold, design: .monospaced))
         .modifier(InputValidationShake(animatableData: shake))
         .jarasHelp("Timer settings · Right-click")
     }
@@ -79,7 +104,7 @@ import Combine
             else if commit() { focused = nil; timer.start() }
         } label: {
             Text(LocalizedStringKey(timer.running ? "Stop" : "Start"))
-                .font(.system(size: 12, weight: .semibold)).frame(width: 52, height: 35)
+                .font(.jarasSystem(size: 12, weight: .semibold)).frame(width: compact ? 48 : 52, height: compact ? 20 : 35)
                 .foregroundStyle(timer.running ? Color.white : JarasTheme.green)
                 .background(timer.running ? Color.red.opacity(0.65) : JarasTheme.display)
                 .clipShape(RoundedRectangle(cornerRadius: 5))
@@ -95,6 +120,7 @@ import Combine
         invalid = false
     }
     @discardableResult private func commit() -> Bool {
+        if timer.mode == .progressive { return true }
         guard timer.setTargetText(draft) else {
             invalid = true
             withAnimation(.linear(duration: 0.3)) { shake += 1 }
@@ -107,10 +133,11 @@ import Combine
 private struct TimerReadout: NSViewRepresentable {
     let text: String
     let expired: Bool
+    var fontSize: CGFloat = 12
     func makeNSView(context: Context) -> NSTextField {
         let field = NSTextField(labelWithString: text)
         field.alignment = .center
-        field.font = .monospacedDigitSystemFont(ofSize: 12, weight: .semibold)
+        field.font = .jarasMonospacedSystemFont(ofSize: fontSize, weight: .semibold)
         field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         return field
     }

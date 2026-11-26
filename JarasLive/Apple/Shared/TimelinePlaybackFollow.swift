@@ -42,7 +42,7 @@ struct TimelinePlaybackFollowPolicy {
     }
 
     mutating func destination(position: Double?, pixelsPerSecond: CGFloat, contentWidth: CGFloat,
-                              viewport: CGRect, source: String, backingScale: CGFloat = 0) -> CGFloat? {
+                              viewport: CGRect, source: String, backingScale: CGFloat = 0, firstOffset: CGFloat = 0) -> CGFloat? {
         guard let position else { reset(); return nil }
         guard position.isFinite, pixelsPerSecond.isFinite, pixelsPerSecond > 0,
               contentWidth.isFinite, contentWidth > 0, viewport.minX.isFinite,
@@ -54,14 +54,14 @@ struct TimelinePlaybackFollowPolicy {
         previousSource = source
         previousPosition = position
         guard changedHead || movedBackward || x < viewport.minX || x > viewport.midX else { return nil }
-        let limit = max(0, contentWidth - viewport.width)
-        var origin = min(max(0, x - viewport.width / 2), limit)
+        let limit = max(firstOffset, contentWidth - viewport.width)
+        var origin = min(max(firstOffset, x - viewport.width / 2), limit)
         // At distant zoom levels the viewport moves only a few physical pixels
         // per second. Do not invalidate every hosting/tracking subtree at 60 Hz
         // for movement smaller than a display pixel. The needle still paints
         // continuously, independently of this viewport offset.
         if backingScale.isFinite && backingScale > 0 {
-            origin = min(limit, max(0, (origin * backingScale).rounded() / backingScale))
+            origin = min(limit, max(firstOffset, (origin * backingScale).rounded() / backingScale))
         }
         return abs(origin - viewport.minX) > 0.0000001 ? origin : nil
     }
@@ -92,14 +92,17 @@ final class TimelinePlaybackFollowView: NSView {
     private var policy = TimelinePlaybackFollowPolicy()
     private var needsApply = false
     private var pending: UUID?
+    private var applying = false
 
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
-    func update(position: Double?, pixelsPerSecond: CGFloat, contentWidth: CGFloat, source: String) {
+    func update(position: Double?, pixelsPerSecond: CGFloat, contentWidth: CGFloat, source: String,
+                onDisplayTick: Bool = false) {
         let next = Sample(position: position, pixelsPerSecond: pixelsPerSecond, contentWidth: contentWidth, source: source)
         guard sample != next || needsApply else { return }
         sample = next
         guard position != nil else {
+            horizontalScroll?.setPlaybackFollowing(false)
             TimelineFollowCadenceDiagnostics.stopped()
             pending = nil
             needsApply = false
@@ -108,7 +111,12 @@ final class TimelinePlaybackFollowView: NSView {
         }
         TimelineFollowCadenceDiagnostics.requested()
         needsApply = true
-        scheduleApply()
+        if onDisplayTick && !applying {
+            // The native display timer is outside SwiftUI's view update.
+            // Move the viewport in the same display pass as its needle.
+            pending = nil
+            applyLatestSample()
+        } else { scheduleApply() }
     }
 
     override func viewDidMoveToWindow() {
@@ -141,23 +149,36 @@ final class TimelinePlaybackFollowView: NSView {
     }
 
     private func geometryMatches(_ sample: Sample, clip: NSClipView) -> Bool {
-        let width = clip.documentRect.width
+        let width = clip.documentRect.maxX
         let tolerance = max(0.0000001, max(abs(width).ulp, abs(sample.contentWidth).ulp) * 8)
         return sample.contentWidth.isFinite && sample.contentWidth > 0 &&
             abs(width - sample.contentWidth) <= tolerance
     }
 
     private func applyLatestSample() {
+        guard !applying else { return }
+        applying = true
+        defer { applying = false }
+        if horizontalScroll?.permitsPlaybackFollow != true { horizontalScroll?.setPlaybackFollowing(false) }
         guard needsApply, let sample, sample.position != nil, let window,
               window.attachedSheet == nil, !NativeTimelineInputGate.shared.isBlocked(window),
               let scroll = horizontalScroll, scroll.permitsPlaybackFollow,
               scroll.documentView != nil, geometryMatches(sample, clip: scroll.contentView) else { return }
         let clip = scroll.contentView
         let viewport = clip.bounds
+        if viewport.minX >= sample.contentWidth - viewport.width { scroll.setPlaybackFollowing(false) }
         var nextPolicy = policy
         guard let x = nextPolicy.destination(position: sample.position, pixelsPerSecond: sample.pixelsPerSecond,
                                              contentWidth: sample.contentWidth, viewport: viewport, source: sample.source,
-                                             backingScale: window.backingScaleFactor) else {
+                                             backingScale: window.backingScaleFactor, firstOffset: clip.documentRect.minX) else {
+            // A seek/head handoff can leave playback before the midpoint.
+            // Preserve hiding only while still centered, including rounded
+            // subpixel frames at distant zoom; stopping follow restores names.
+            let tolerance = 0.5 / max(1, window.backingScaleFactor) + 0.000001
+            if let position = sample.position,
+               abs(CGFloat(position) * sample.pixelsPerSecond - viewport.midX) > tolerance {
+                scroll.setPlaybackFollowing(false)
+            }
             policy = nextPolicy
             needsApply = false
             return
@@ -172,8 +193,8 @@ final class TimelinePlaybackFollowView: NSView {
               geometryMatches(sample, clip: clip), clip.bounds == viewport else { return }
         policy = nextPolicy
         needsApply = false
-        clip.scroll(to: CGPoint(x: x, y: viewport.minY))
-        scroll.reflectScrolledClipView(clip)
+        scroll.setPlaybackFollowing(x > clip.documentRect.minX && x < sample.contentWidth - viewport.width)
+        scroll.scrollToPreparedHorizontalOrigin(CGPoint(x: x, y: viewport.minY))
         TimelineFollowCadenceDiagnostics.applied()
     }
 }

@@ -4,11 +4,42 @@
 #include "../Mixer/MixerState.hpp"
 namespace jaras {
 struct Setlist { ID id; std::string name; std::vector<ID> songIds; };
-struct RegionPlaylist { ID id; std::string name; ID songId; std::vector<ID> regionIds; };
+struct RegionPlaylistDuplicate {
+    ID id, regionId;
+    bool operator==(const RegionPlaylistDuplicate& other) const { return id == other.id && regionId == other.regionId; }
+};
+struct RegionPlaylist {
+    ID id; std::string name; ID songId; std::vector<ID> regionIds;
+    // regionIds is the ordered list of unique ROW IDs. Originals retain their
+    // physical region ID; duplicates resolve to the existing grid via aliases.
+    std::optional<std::vector<RegionPlaylistDuplicate>> duplicates;
+    ID resolvedRegionId(const ID& entry) const {
+        if (duplicates) for (const auto& duplicate : *duplicates) if (duplicate.id == entry) return duplicate.regionId;
+        return entry;
+    }
+    bool isDuplicate(const ID& entry) const {
+        if (duplicates) for (const auto& duplicate : *duplicates) if (duplicate.id == entry) return true;
+        return false;
+    }
+    bool containsEntry(const ID& entry) const {
+        for (const auto& id : regionIds) if (id == entry) return true;
+        return false;
+    }
+};
 struct SetlistBlock { ID id; ID songId; std::optional<ID> playlistId; std::string name; unsigned color = 0; std::optional<ID> beforeRegionId; std::optional<bool> symbol; };
-struct RegionSetlist { std::vector<RegionPlaylist> playlists; std::optional<ID> selectedId; bool autoAdvance = false; std::optional<std::vector<SetlistBlock>> blocks; std::optional<bool> stopAtRegionEnd; std::optional<bool> prepareWithoutPlayback; std::optional<bool> automaticSubplay; std::optional<double> automaticSubplaySeconds; std::optional<bool> liveEnabled; std::optional<std::vector<ID>> playedLiveRegionIDs; bool autoUntilBlockEnd = false; };
+struct RegionSetlist { std::vector<RegionPlaylist> playlists; std::optional<ID> selectedId; bool autoAdvance = false; std::optional<std::vector<SetlistBlock>> blocks; std::optional<bool> stopAtRegionEnd; std::optional<bool> prepareWithoutPlayback; std::optional<bool> automaticSubplay; std::optional<double> automaticSubplaySeconds; std::optional<bool> liveEnabled; std::optional<std::vector<ID>> playedLiveRegionIDs; bool autoUntilBlockEnd = false; std::optional<int> automaticSubplayBars; std::optional<bool> automaticSubplayNext; std::optional<std::vector<ID>> subplayExclusiveTrackIDs; };
 struct SavedProjectCursor { ID songID; double position = 0; };
+struct TimelineLocks {
+    static constexpr int regions = 1, itemPosition = 2, legacyItemMix = 4;
+    static constexpr int itemVolume = 8, itemPan = 16, itemMute = 32;
+    static constexpr int all = regions | itemPosition | itemVolume | itemPan | itemMute;
+    static constexpr int normalize(int options) noexcept {
+        return (options & all) | ((options & legacyItemMix) ? itemVolume | itemPan : 0);
+    }
+};
 struct Project {
+    std::optional<std::string> reductionDraftJSON;
+    std::optional<ID> projectSyncID;
     std::optional<SavedProjectCursor> savedCursor;
     ID id; std::string name;
     int projectFormatVersion = 1;
@@ -22,17 +53,37 @@ struct Project {
     double masterPan = 0;
     bool masterMute = false, masterSolo = false, masterMono = false;
     std::optional<bool> masterPhaseInverted;
+    static constexpr unsigned defaultMasterColor = 0x414141;
     std::optional<unsigned> masterColor;
+    std::optional<bool> timelineMovementLocked;
+    std::optional<int> timelineLockOptions;
+    int configuredTimelineLocks() const noexcept { return TimelineLocks::normalize(timelineLockOptions.value_or(TimelineLocks::all)); }
+    int effectiveTimelineLocks() const noexcept { return timelineMovementLocked.value_or(false) ? configuredTimelineLocks() : 0; }
+    // Preserve imported timing through engine snapshots and project saves.
+    std::optional<bool> importedTimeline;
+    std::optional<std::vector<ID>> partialImportIDs;
 };
 // Control-thread validation; never called from an audio callback.
 void validateRegionSetlist(const Project& project, const RegionSetlist& state);
 void validateClipFXJSON(const std::string& json);
 void validateClipText(const std::string& text);
+void selectLineInput(Song& song, Track& track, OutputPatch input);
+void selectMIDIInput(Song& song, Track& track, std::optional<int> slot, bool clearLineInput = false);
+void reconcileTrackInputs(Project& project);
 void orderSpecialTracks(Project& project);
 void validateRouting(const Song&);
 void validate(const Project& project);
 void synchronizeTimecode(Project& project);
 std::optional<ID> regionOwnerAt(const Song& song, double start, std::optional<double> end = {});
+std::optional<ID> dominantUnifiedOwner(const Song& song, const Part& root, double start, double end,
+                                      const std::optional<ID>& preferred);
+std::optional<ID> regionOwnerForMedia(const Song& song, double start, double end,
+                                     const std::optional<ID>& preferred = {});
 bool regionOwns(const Song& song, const ID& root, const std::optional<ID>& owner);
+std::optional<ID> regionMovementOwner(const Song&, double start, std::optional<double> end = {},
+                                    const std::optional<ID>& preferred = {});
+bool markerMovesWithRegion(const Song&, const TimelineMarker&, const ID& root);
+const Part* chordRegion(const Song&, double position);
+const ChordMarker* chordAt(const Song&, double position);
 void synchronizeRegionOwnership(Project& project, const Project* previous = nullptr);
 }

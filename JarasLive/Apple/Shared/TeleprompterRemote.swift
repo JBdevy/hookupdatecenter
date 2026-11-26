@@ -13,23 +13,37 @@ struct TeleprompterRemoteSong: Codable {
     var name: String
     var color: UInt32
     var duration: Double
+    var liveExecuted: Bool? = nil
+    var playing: Bool? = nil
+    var queued: Bool? = nil
+    var playbackProgress: Double? = nil
 }
 struct TeleprompterRemoteBlock: Codable {
     var name: String
     var color: UInt32
     var duration: Double
     var songs: [TeleprompterRemoteSong]
+    var nameColor: UInt32? = nil
 }
 struct TeleprompterRemotePayload: Codable {
+    struct Notice: Codable {
+        let id: String
+        let message: String, imageID: String?, font: String, scale: Double
+        let textColor: UInt32, backgroundColor: UInt32, flashColor: UInt32
+        let elapsed: Double
+    }
     var text = "", chords = "", song = "", queued = ""
+    var textStyled: String? = nil, chordsStyled: String? = nil
     var progress = 0.0, preview = false
+    var loopActive: Bool? = nil
+    var loopLabel: String? = nil
     var blocks: [TeleprompterRemoteBlock] = []
     var settings = TeleprompterSettings()
     var timer = "00:00:00", expired = false
     var localTime = ""
     var mediaID: String?, mediaKind: String?
-    var mediaTime = 0.0, mediaRate = 0.0
     var mediaStretch = false
+    var notice: Notice?
 }
 
 /// The audio callback never touches networking. The worker serves immutable
@@ -41,6 +55,7 @@ final class TeleprompterHTTPServer {
     private var waitingForHeaders: Set<ObjectIdentifier> = []
     private var state = Data("{}".utf8)
     private var media: (id: String, url: URL)?
+    private var noticeImage: (id: String, data: Data)?
     private var stopped = false
     func start(port: UInt16 = 10101, ready: @escaping (UInt16) -> Void, failed: @escaping (String) -> Void) {
         queue.async { [self] in
@@ -79,14 +94,16 @@ final class TeleprompterHTTPServer {
     private func stopOnQueue() {
         stopped = true; listener?.cancel(); listener = nil
         for connection in connections.values { connection.cancel() }
-        connections.removeAll(); waitingForHeaders.removeAll(); media = nil
+        connections.removeAll(); waitingForHeaders.removeAll(); media = nil; noticeImage = nil
     }
     var path: String { "/" }
-    func publish(_ payload: TeleprompterRemotePayload, mediaURL: URL?) {
+    func publish(_ payload: TeleprompterRemotePayload, mediaURL: URL?, image: Data? = nil) {
         queue.async { [self] in
             guard !stopped, let data = try? JSONEncoder().encode(payload) else { return }
             state = data
             media = payload.mediaID.flatMap { id in mediaURL.map { (id, $0) } }
+            if let id = payload.notice?.imageID, let image { noticeImage = (id, image) }
+            else { noticeImage = nil }
         }
     }
     private func receive(_ connection: NWConnection, accumulated: Data) {
@@ -114,6 +131,8 @@ final class TeleprompterHTTPServer {
             respond(connection, body: state, type: "application/json; charset=utf-8", head: head)
         } else if let media, endpoint == path + "media/" + media.id {
             stream(connection, url: media.url, headers: lines, head: head)
+        } else if let noticeImage, endpoint == path + "notice/" + noticeImage.id {
+            respond(connection, body: noticeImage.data, type: "image/jpeg", head: head)
         } else { respond(connection, status: "404 Not Found", body: Data()) }
     }
     private func respond(_ connection: NWConnection, status: String = "200 OK", body: Data, type: String = "text/plain", head: Bool = false) {
@@ -166,59 +185,170 @@ final class TeleprompterHTTPServer {
 #lyrics{white-space:pre-wrap;line-height:1.16;padding:6px;border:2px solid transparent;border-radius:6px;max-width:100%}
 .row{display:flex;align-items:center;gap:8px}.timer,.clock{padding:5px 10px;border:2px solid transparent;border-radius:6px;font-weight:bold;white-space:nowrap;font-variant-numeric:tabular-nums}
 .clock{padding:5px;border-width:1px;line-height:1.15}
-.title,.chords{text-align:center;padding:4px;overflow:hidden}.title{white-space:nowrap;text-overflow:ellipsis}.chords{border:1px solid transparent;border-radius:6px;white-space:pre-wrap}
-.progress{height:5px;background:#ffffff20}.progress div{height:100%}#blocks{display:none;width:100%;height:100%;gap:8px;align-items:start}.block{padding:6px;border:1px solid;border-radius:6px;overflow:hidden}
-video,img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;z-index:0}#connection{position:absolute;bottom:10px;right:10px;z-index:4;color:#ffdc52;font-size:12px;display:none}
+.title,.chords{text-align:center;padding:4px;overflow:hidden}.title{white-space:nowrap;text-overflow:ellipsis}.chords{border:1px solid transparent;border-radius:6px;white-space:pre-wrap;width:max-content;max-width:100%;margin-inline:auto;overflow-wrap:anywhere}
+.loop-active{height:24px;background:#ffff00;color:#000;font:700 14px Arial,sans-serif;display:flex;align-items:center;justify-content:center;overflow:hidden;flex-shrink:0}
+.progress{height:5px;background:#ffffff20}.progress div{height:100%}#blocks{display:none;width:100%;height:100%;gap:8px;align-items:stretch;min-height:0}.block{font-weight:bold;padding:6px;border:1px solid;border-radius:6px;overflow:hidden;min-width:0;min-height:0;line-height:1.2;box-sizing:border-box}.block-title{border-bottom:2px solid;padding-bottom:6px;margin-bottom:6px}.preview-song{padding:0 3px 4px;margin-bottom:4px}
+video,img{position:fixed;inset:0;width:100%;height:100%;object-fit:contain;z-index:0}#connection{position:absolute;bottom:10px;right:10px;z-index:4;color:#ffdc52;font-size:12px;display:none}
 @keyframes blink{0%,49%{opacity:1}50%,100%{opacity:.25}}.expired{animation:blink 1s infinite}
-</style></head><body><div id="screen"><video id="video" muted playsinline></video><img id="image" hidden><div id="top"></div><div id="content"><div id="lyrics"></div><div id="blocks"></div></div><div id="bottom"></div><div id="connection">Connecting…</div></div>
+#notice{position:absolute;inset:0;z-index:3;display:flex;align-items:center;justify-content:center;padding:24px;text-align:center;overflow:hidden}
+#notice[hidden],#notice img[hidden],#noticeText[hidden]{display:none}
+@keyframes notice-flash{0%{background-color:var(--notice-flash)}50%,100%{background-color:var(--notice-background)}}
+#notice.flashing{animation:notice-flash .35s step-end 3}
+#notice img{width:100%;height:100%;object-fit:contain}
+#noticeText{width:100%;max-height:100%;font-weight:700;white-space:pre-wrap;overflow-wrap:anywhere}
+</style></head><body><div id="screen"><img id="image" hidden><div id="top"></div><div id="content"><div id="lyrics"></div><div id="blocks"></div></div><div id="bottom"></div><div id="notice" hidden><div id="noticeText"></div><img id="noticeImage" alt="" hidden></div><div id="connection">Connecting…</div></div>
 <script>
 const $=id=>document.getElementById(id),hex=n=>'#'+Number(n).toString(16).padStart(6,'0');
 const fonts={system:'Arial,sans-serif',arial:'Arial,sans-serif',mono:'monospace',georgia:'Georgia,serif',verdana:'Verdana,sans-serif',tahoma:'Tahoma,sans-serif',impact:'Impact,sans-serif',trebuchet:'Trebuchet MS,sans-serif',segoe:'Segoe UI,sans-serif',bahnschrift:'Bahnschrift,sans-serif'};
-let current=null,lastBody='',mediaID='',lastStamp=performance.now();
+let current=null,lastBody='',mediaID='',lastNoticeID=null,noticeStateSeen=false;
 function color(n,rgb){return rgb?'hsl('+((Date.now()/6000*360)%360)+',90%,55%)':hex(n)}
 function duration(v){let n=Math.ceil(v);return (n>=3600?Math.floor(n/3600)+':':'')+String(Math.floor(n/60)%60).padStart(2,'0')+':'+String(n%60).padStart(2,'0')}
 function applyCase(v,s){return s.textCase==='uppercase'?v.toUpperCase():s.textCase==='lowercase'?v.toLowerCase():v}
+function coloredText(e,plain,encoded,s){
+ e.replaceChildren();let runs=[{text:plain}];
+ if(typeof encoded==='string'&&encoded.startsWith('\\x1eCatLiveText/1\\n')){try{const value=JSON.parse(encoded.slice(15));if(Array.isArray(value)&&value.every(r=>typeof r.text==='string'&&(r.color==null||(Number.isInteger(r.color)&&r.color>=0&&r.color<=0xffffff))))runs=value}catch{}}
+ for(const run of runs){const span=document.createElement('span');span.textContent=applyCase(run.text,s);if(run.color!=null)span.style.color=hex(run.color);e.append(span)}
+}
+function lyricColumns(d,s,alongside){
+ const host=$('lyrics');host.style.width=alongside?'100%':'';host.style.height='';host.style.padding='6px';host.style.boxSizing='border-box';
+ const prefix='\\x1eCatLiveColumns/1\\n';let values;
+ try{if(typeof d.textStyled==='string'&&d.textStyled.startsWith(prefix))values=JSON.parse(d.textStyled.slice(prefix.length))}catch{}
+ if(!Array.isArray(values)||values.length!==2||!values.every(v=>typeof v==='string'&&!v.startsWith(prefix)))return;
+ host.replaceChildren();host.style.display=(!alongside&&(s.clearMode||d.preview))?'none':'flex';host.style.flexDirection=!alongside&&innerWidth>=innerHeight?'row':'column';host.style.gap='8px';host.style.width='100%';host.style.height='100%';host.style.padding='0';host.style.borderColor='transparent';
+ const horizontal=!alongside&&innerWidth>=innerHeight,width=Math.max(1,(host.clientWidth-4-(horizontal?8:0))/(horizontal?2:1)),height=Math.max(1,((alongside?host.clientHeight:$('content').clientHeight)-4-(horizontal?0:8))/(horizontal?1:2));
+ for(const value of values){
+  let plain=value;try{const p='\\x1eCatLiveText/1\\n';if(value.startsWith(p)){const runs=JSON.parse(value.slice(p.length));if(Array.isArray(runs)&&runs.every(r=>typeof r.text==='string'))plain=runs.map(r=>r.text).join('')}}catch{}
+  const cell=document.createElement('div');cell.className='lyric-column';cell.style.cssText='flex:1;min-width:0;min-height:0;overflow:hidden;border:2px solid transparent;border-radius:6px;padding:6px;box-sizing:border-box;white-space:pre-wrap;display:flex;align-items:center';
+  cell.style.borderColor=s.textBoxEnabled?color(s.textBoxColor,s.rgbTextBoxBorderEnabled):'transparent';
+  const text=document.createElement('div');text.style.width='100%';coloredText(text,plain,value,s);cell.append(text);
+  const lines=applyCase(plain,s).split('\\n'),longest=Math.max(1,...lines.map(v=>v.length));cell.style.fontSize=Math.max(1,Math.min((width-16)/(longest*.64),(height-16)/(Math.max(1,lines.length)*1.2))*s.textScale/100)+'px';host.append(cell);
+ }
+}
 function textNode(tag,cls,text){const e=document.createElement(tag);e.className=cls;e.textContent=text;return e}
-function decorations(d,position){const s=d.settings,host=$(position);host.replaceChildren();if(s.clearMode)return;
+function appendLoopBar(d,position,host){if(d.loopActive&&position==='bottom')host.append(textNode('div','loop-active',d.loopLabel||'Loop ativo'))}
+function decorations(d,position){const s=d.settings,host=$(position);host.replaceChildren();if(s.clearMode&&!d.preview){appendLoopBar(d,position,host);return;}
  const clockHere=s.clockEnabled&&s.clockPosition.endsWith(position),localHere=s.localClockEnabled&&(s.clockEnabled?clockHere:position==='top');
  if(clockHere||localHere){const row=document.createElement('div');row.className='row';
  const timerFont=Math.max(innerHeight>innerWidth?15:18,Math.min((innerWidth-16)/11,innerHeight/8)*s.clockScale/100);
  if(clockHere){const e=textNode('div','timer'+(d.expired?' expired':''),d.timer);e.style.color=hex(d.expired?s.clockExpiredColor:s.clockColor);e.style.fontSize=timerFont+'px';if(s.clockBorderEnabled)e.style.borderColor=color(s.clockBorderColor,s.rgbClockBorderEnabled);if(d.expired)e.style.animationDelay='-'+Date.now()%1000+'ms';row.append(e)}
- if(localHere){const e=textNode('div','clock',d.localTime);e.style.color=hex(s.localClockColor);const side=clockHere&&!s.clockPosition.startsWith('center');e.style.fontSize=(side?Math.max(innerHeight>innerWidth?15:18,Math.min((innerWidth-16)/11,innerHeight/8)*s.localClockScale/100):Math.max(10,Math.min(24,innerHeight/28)*s.localClockScale/100))+'px';if(s.localClockBorderEnabled)e.style.borderColor=hex(s.localClockBorderColor);if(s.localClockPosition==='left')row.prepend(e);else row.append(e)}
+ if(localHere){const e=textNode('div','clock',d.localTime);e.style.color=hex(s.localClockColor);const side=clockHere&&!s.clockPosition.startsWith('center');e.style.fontSize=(side?timerFont:Math.max(10,Math.min(24,innerHeight/28)*s.localClockScale/100))+'px';if(s.localClockBorderEnabled)e.style.borderColor=hex(s.localClockBorderColor);if(s.localClockPosition==='left')row.prepend(e);else row.append(e)}
  row.style.justifyContent=s.clockPosition.startsWith('left')?'flex-start':s.clockPosition.startsWith('right')?'flex-end':'center';
- if(clockHere&&localHere){const timer=row.querySelector('.timer'),clock=row.querySelector('.clock');if(s.clockPosition.startsWith('center')){clock.style.position='absolute';clock.style[s.localClockPosition==='left'?'left':'right']='0';clock.style[s.clockPosition.endsWith('bottom')?'bottom':'top']='0';clock.style.maxWidth='calc((100% - '+(timer.textContent.length*parseFloat(timer.style.fontSize)*.65+36)+'px) / 2 - 8px)';clock.style.overflow='hidden'}else if(s.clockPosition.startsWith(s.localClockPosition)){row.replaceChildren(timer,clock);row.style.flexDirection='column';row.style.alignItems=s.localClockPosition==='left'?'flex-start':'flex-end'}else{row.replaceChildren(...(s.clockPosition.startsWith('right')?[clock,timer]:[timer,clock]));for(const e of [timer,clock]){e.style.flex='1';e.style.textAlign='center'}}}
- else if(localHere){row.style.justifyContent=s.localClockPosition==='left'?'flex-start':'flex-end'}
+ if(clockHere&&localHere){const timer=row.querySelector('.timer'),clock=row.querySelector('.clock');if(s.clockPosition.startsWith('center')){clock.style.position='absolute';clock.style[s.localClockPosition==='left'?'left':'right']='0';clock.style[s.clockPosition.endsWith('bottom')?'bottom':'top']='0';clock.style.maxWidth='calc((100% - '+(timer.textContent.length*parseFloat(timer.style.fontSize)*.65+36)+'px) / 2 - 8px)';clock.style.overflow='hidden'}else{row.replaceChildren(...(s.clockPosition.startsWith('right')?[clock,timer]:[timer,clock]));for(const e of [timer,clock]){e.style.flex='0 0 calc((100% - 8px)/2)';e.style.minWidth='0';e.style.height='100%';e.style.boxSizing='border-box';e.style.display='flex';e.style.alignItems='center';e.style.justifyContent='center';e.style.lineHeight='1';e.style.textAlign='center';e.style.overflow='hidden'}}}
+ else {row.style.justifyContent='center'}
  const side=clockHere&&localHere&&!s.clockPosition.startsWith('center');
- const sameSide=side&&s.clockPosition.startsWith(s.localClockPosition),localFont=localHere?parseFloat(row.querySelector('.clock').style.fontSize):0;
- row.style.height=(sameSide?timerFont+localFont+24:Math.max(28,(side?Math.max(timerFont,localFont):timerFont)+(side?10:18)))+'px';
- host.append(row)}
- for(const [enabled,pos,value,col,scale,font] of [[s.songNameEnabled,s.songNamePosition,d.song,s.songNameColor,s.songNameScale,s.songNameFontFamily],[s.queueNameEnabled,s.queueNamePosition,d.queued,s.queueNameColor,s.queueNameScale,s.queueNameFontFamily]])if(enabled&&value&&pos===position){const e=textNode('div','title',applyCase(value,s));e.style.color=hex(col);e.style.fontSize=22*scale/100+'px';e.style.fontFamily=fonts[font];host.append(e)}
- if(!d.preview&&s.chordsEnabled&&d.chords&&s.chordPosition===position){const e=textNode('div','chords',applyCase(d.chords,s));e.style.color=hex(s.chordColor);e.style.fontSize=s.chordScale+'px';e.style.fontFamily=fonts[s.chordFontFamily];e.style.borderColor=color(s.chordColor,s.rgbChordBorderEnabled);host.append(e)}
- if(s.progressEnabled&&s.progressPosition===position){const e=document.createElement('div');e.className='progress';const fill=document.createElement('div');fill.style.width=Math.max(0,Math.min(1,d.progress))*100+'%';fill.style.background=hex(s.progressColor);e.append(fill);host.append(e)}
+ const localFont=localHere?parseFloat(row.querySelector('.clock').style.fontSize):0;
+ row.style.height=(clockHere?Math.max(28,(side?Math.max(timerFont,localFont):timerFont)+(side?10:18)):localFont+10)+'px';
+ host.append(row);if(side){for(const e of row.children){const wanted=parseFloat(e.style.fontSize),available=e.clientWidth-24;const measure=document.createElement('canvas').getContext('2d');measure.font='bold '+wanted+'px Arial';const actual=measure.measureText(e.textContent).width;e.style.fontSize=Math.min(wanted,Math.max(1,e.clientHeight-10),wanted*Math.max(1,available)/Math.max(1,actual))+'px'}}}
+ for(const [enabled,pos,value,col,scale,font] of [[s.songNameEnabled,s.songNamePosition,d.song,s.songNameColor,s.songNameScale,s.songNameFontFamily],[s.queueNameEnabled,s.queueNamePosition,d.queued,s.queueNameColor,s.queueNameScale,s.queueNameFontFamily]])if(!d.preview&&enabled&&value&&pos===position){const e=textNode('div','title',applyCase(value,s));e.style.color=hex(col);e.style.fontSize=22*scale/100+'px';e.style.fontFamily=fonts[font];host.append(e)}
+ if(!d.preview&&s.chordsEnabled&&d.chords&&s.chordPosition===position){const e=textNode('div','chords','');coloredText(e,d.chords,d.chordsStyled,s);e.style.color=hex(s.chordColor);e.style.fontSize=s.chordScale+'px';e.style.fontFamily=fonts[s.chordFontFamily];e.style.borderColor=color(s.chordColor,s.rgbChordBorderEnabled);host.append(e)}
+ if(!d.loopActive&&!d.preview&&s.progressEnabled&&s.progressPosition===position){const e=document.createElement('div');e.className='progress';const fill=document.createElement('div');fill.style.width=Math.max(0,Math.min(1,d.progress))*100+'%';fill.style.background=hex(s.progressColor);e.append(fill);host.append(e)}
+ appendLoopBar(d,position,host);
 }
-function render(d){current=d;const s=d.settings;$('screen').style.borderColor=!s.clearMode&&s.windowBorderEnabled?color(s.borderColor,s.rgbWindowBorderEnabled):'transparent';decorations(d,'top');decorations(d,'bottom');
- $('lyrics').style.display=s.clearMode||d.preview?'none':'block';$('blocks').style.display=!s.clearMode&&d.preview?'grid':'none';$('lyrics').textContent=applyCase(d.text,s);
- $('lyrics').style.color=hex(s.textColor);$('lyrics').style.fontFamily=fonts[s.fontFamily];$('lyrics').style.textAlign=s.textAlignment;
- $('lyrics').style.borderColor=s.textBoxEnabled&&d.text?color(s.textBoxColor,s.rgbTextBoxBorderEnabled):'transparent';
- $('content').style.justifyContent=s.textAlignment==='left'?'flex-start':s.textAlignment==='right'?'flex-end':'center';
- const lines=d.text.split('\n'),longest=Math.max(1,...lines.map(v=>v.length));$('lyrics').style.fontSize=Math.max(9,Math.min(120,($('content').clientWidth-20)/(longest*.64),($('content').clientHeight-20)/(lines.length*1.2))*s.textScale/100)+'px';
- $('blocks').replaceChildren();$('blocks').style.gridTemplateColumns='repeat('+Math.max(1,d.blocks.length)+',minmax(0,1fr))';
- const maxSongs=Math.max(1,...d.blocks.map(b=>b.songs.length+(b.name?1:0)));const font=Math.max(9,Math.min((innerWidth/Math.max(1,d.blocks.length)-20)/13,($('content').clientHeight-20)/maxSongs/1.1)*s.previewScale/100);
- for(const b of d.blocks){const e=document.createElement('div');e.className='block';e.style.borderColor=hex(b.color);e.style.fontSize=font+'px';e.style.fontFamily=fonts[s.previewFontFamily];if(b.name){const t=textNode('div','',applyCase(b.name,s)+(s.previewBlockDurationEnabled&&b.duration?' • '+duration(b.duration):''));t.style.color=hex(b.color);e.append(t)}for(const song of b.songs){const t=textNode('div','',applyCase(song.name,s)+(s.previewSongDurationEnabled?' • '+duration(song.duration):''));t.style.color=hex(song.color);if(s.previewUnderlineEnabled)t.style.textDecoration='underline';e.append(t)}$('blocks').append(e)}
- const v=$('video'),im=$('image');v.hidden=(d.preview&&!s.clearMode)||d.mediaKind!=='video';im.hidden=(d.preview&&!s.clearMode)||d.mediaKind!=='image';
- for(const media of [v,im]){media.style.objectFit=d.mediaStretch?'fill':'contain';media.style.transform='scale('+s.mediaScale/100+')'}
- if((d.preview&&!s.clearMode)||!d.mediaID){v.pause();if(mediaID){v.removeAttribute('src');v.load();im.removeAttribute('src');mediaID=''}}
- else if(mediaID!==d.mediaID){mediaID=d.mediaID;if(d.mediaKind==='video'){v.src='media/'+encodeURIComponent(mediaID);v.load()}else {v.pause();im.src='media/'+encodeURIComponent(mediaID)}}
- if(!v.hidden){if(v.readyState>=1&&Math.abs(v.currentTime-d.mediaTime)>.3)v.currentTime=d.mediaTime;if(d.mediaRate>0){v.playbackRate=d.mediaRate;v.play().catch(()=>{})}else v.pause()}
+const previewLayouts=new Map();
+function previewLine(value,heading,s){
+ const row=document.createElement('div');
+ row.className=heading?'block-title':'preview-song';
+ row.style.display='flex';row.style.alignItems='baseline';row.style.justifyContent='space-between';row.style.gap='5px';
+ const name=textNode('span','preview-name',applyCase(value.name,s));
+ name.style.minWidth='0';name.style.overflowWrap='anywhere';
+ row.append(name);
+ if((heading?s.previewBlockDurationEnabled:s.previewSongDurationEnabled)&&value.duration>0){
+  const length=textNode('span','preview-duration',duration(value.duration));
+  length.style.whiteSpace='nowrap';length.style.fontVariantNumeric='tabular-nums';
+  row.append(length);
+ }
+ return row;
 }
-async function poll(){try{const r=await fetch('state',{cache:'no-store'});if(!r.ok)throw Error();const body=await r.text(),d=JSON.parse(body);if(!d.settings)throw Error();$('connection').style.display='none';lastStamp=performance.now();if(body!==lastBody){lastBody=body;render(d)}}catch{ $('connection').style.display='block';$('video').pause()}finally{setTimeout(poll,250)}}
+function showingNotice(d){return !!(d&&!d.preview&&d.notice)}
+function updateNoticeFlash(layer,n){
+ const watching=noticeStateSeen;noticeStateSeen=true;
+ if(!n){layer.classList.remove('flashing');return}
+ const background=hex(n.backgroundColor),flash=hex(n.flashColor);
+ layer.style.backgroundColor=background;
+ layer.style.setProperty('--notice-background',background);
+ layer.style.setProperty('--notice-flash',flash);
+ if(n.id===lastNoticeID)return;
+ lastNoticeID=n.id;layer.classList.remove('flashing');
+ if(watching||n.elapsed<1.05){void layer.offsetWidth;layer.classList.add('flashing')}
+}
+function render(d){current=d;const s=d.settings,notice=showingNotice(d);$('notice').hidden=!notice;updateNoticeFlash($('notice'),notice?d.notice:null);$('screen').style.borderColor=(notice||!s.clearMode)&&s.windowBorderEnabled?color(s.borderColor,s.rgbWindowBorderEnabled):'transparent';
+ for(const id of ['top','content','bottom'])$(id).style.display=notice?'none':'';
+ if(notice){
+  $('image').hidden=true;
+  const n=d.notice,t=$('noticeText'),im=$('noticeImage');t.hidden=!!n.imageID;im.hidden=!n.imageID;
+  if(n.imageID){const path='notice/'+encodeURIComponent(n.imageID);if(im.getAttribute('src')!==path)im.setAttribute('src',path)}
+  else {
+   t.textContent=n.message;t.style.fontFamily=fonts[n.font.toLowerCase()]||n.font;t.style.color=hex(n.textColor);
+   let size=Math.min(72,Math.max(24,innerWidth*.078))*n.scale/100;t.style.fontSize=size+'px';
+   while(size>9&&t.scrollHeight>t.clientHeight){size=Math.max(9,size*.9);t.style.fontSize=size+'px'}
+  }
+  return;
+ }
+ decorations(d,'top');decorations(d,'bottom');
+ const alongside=!!(d.preview&&s.previewLyricsEnabled),lyrics=$('lyrics'),blockHost=$('blocks'),content=$('content');
+ const stacked=alongside&&innerHeight>innerWidth;
+ content.style.gap=alongside?'8px':'';
+ content.style.flexDirection=stacked?'column':'';
+ lyrics.style.display=alongside||(!s.clearMode&&!d.preview)?'block':'none';
+ blockHost.style.display=d.preview?'grid':'none';
+ for(const element of [lyrics,blockHost]){
+  element.style.flex=alongside?'0 0 calc((100% - 8px)/2)':'';
+  element.style.minWidth=alongside?'0':'';
+  element.style.minHeight=alongside?'0':'';
+ }
+ coloredText(lyrics,d.text,d.textStyled,s);
+ lyrics.style.color=hex(s.textColor);lyrics.style.fontFamily=fonts[s.fontFamily];lyrics.style.textAlign=s.textAlignment;
+ lyrics.style.borderColor=s.textBoxEnabled&&d.text?color(s.textBoxColor,s.rgbTextBoxBorderEnabled):'transparent';
+ content.style.justifyContent=alongside?'center':s.textAlignment==='left'?'flex-start':s.textAlignment==='right'?'flex-end':'center';
+ const lines=d.text.split('\n'),longest=Math.max(1,...lines.map(v=>v.length));
+ const lyricsWidth=alongside&&!stacked?(content.clientWidth-8)/2:content.clientWidth;
+ const lyricsHeight=stacked?(content.clientHeight-8)/2:content.clientHeight;
+ lyrics.style.fontSize=Math.max(1,Math.min(120,(lyricsWidth-20)/(longest*.64),(lyricsHeight-20)/(lines.length*1.2))*s.textScale/100)+'px';
+ lyricColumns(d,s,alongside);
+ $('blocks').replaceChildren();const blocks=d.blocks.slice(0,4),columns=Math.min(2,Math.max(1,blocks.length));$('blocks').style.gridTemplateColumns='repeat('+columns+',minmax(0,1fr))';$('blocks').style.gridTemplateRows='repeat('+Math.max(1,Math.ceil(blocks.length/columns))+',minmax(0,1fr))';
+ const previewCells=[];
+ for(const b of blocks){const e=document.createElement('div');e.className='block';e.style.borderColor=hex(b.color);e.style.fontFamily=fonts[s.previewFontFamily];if(b.name){const t=previewLine(b,true,s);t.style.color=hex(b.nameColor??0x69ed91);t.style.borderColor=hex(b.color);e.append(t)}for(const song of b.songs){const t=previewLine(song,false,s);t.style.color=song.liveExecuted?'#ff4040':song.playing||song.queued?'#ffffff':hex(song.color);t.style.textDecoration=[s.previewUnderlineEnabled?'underline':'',song.liveExecuted?'line-through':''].filter(Boolean).join(' ');if(song.playing||song.queued){t.style.background=song.playing?'#701818':'#665000';t.style.padding='0 3px 4px';t.style.position='relative';const bar=document.createElement('div');bar.style.cssText='position:absolute;bottom:0;left:0;height:3px';bar.style.background=song.playing?'#ff4040':'#ffdf40';bar.style.width=(Math.max(0,Math.min(1,song.playbackProgress||0))*100)+'%';t.append(bar)}e.append(t)}$('blocks').append(e);
+ previewCells.push(e);}
+ if(previewCells.length){
+ const available=Math.max(1,$('blocks').clientHeight-(Math.ceil(blocks.length/columns)-1)*8);
+ const scales=[s.previewScale??100,s.previewRegionDurationScale??100,s.previewBlockScale??100,s.previewBlockDurationScale??100];
+ const applyScales=(cell,font,scaled)=>{
+  cell.style.fontSize=font+'px';
+  for(const row of cell.children){
+   const index=row.classList.contains('block-title')?2:0;
+   row.querySelector('.preview-name').style.fontSize=scaled?scales[index]+'%':'';
+   const length=row.querySelector('.preview-duration');
+   if(length)length.style.fontSize=scaled?scales[index+1]+'%':'';
+  }
+ };
+ const key=JSON.stringify([scales,blocks.map(b=>[b.name,b.duration,b.songs.map(v=>[v.name,v.duration])]),$('blocks').clientWidth,available,s.previewFontFamily,s.previewBlockDurationEnabled,s.previewSongDurationEnabled,s.textCase]);
+ let layout=previewLayouts.get(key);
+ if(!layout){
+  $('blocks').style.gridTemplateRows='none';$('blocks').style.alignContent='start';
+  const heights=(font,scaled=false)=>{const rows=Array(Math.ceil(blocks.length/columns)).fill(1);previewCells.forEach((e,i)=>{e.style.height='auto';e.style.alignSelf='start';applyScales(e,font,scaled);rows[Math.floor(i/columns)]=Math.max(rows[Math.floor(i/columns)],e.scrollHeight+2)});return rows};
+  let low=1,high=96;for(let n=0;n<12;n++){const mid=(low+high)/2;if(heights(mid).reduce((a,b)=>a+b,0)<=available)low=mid;else high=mid}
+  const font=Math.max(1,Math.floor(low*2)/2);layout={font,heights:heights(font,true)};if(previewLayouts.size>256)previewLayouts.clear();previewLayouts.set(key,layout);
+ }
+ const total=layout.heights.reduce((a,b)=>a+b,0);
+ $('blocks').style.gridTemplateRows=layout.heights.map(h=>(available*h/total)+'px').join(' ');
+ for(const e of previewCells){e.style.height='100%';e.style.alignSelf='stretch';applyScales(e,layout.font,true)}
+ }
+
+ const im=$('image');im.hidden=d.preview||d.mediaKind!=='image';
+ im.style.objectFit=d.mediaStretch?'fill':'contain';im.style.transform='scale('+s.mediaScale/100+')';
+ if(im.hidden){if(mediaID){im.removeAttribute('src');mediaID=''}}
+ else if(mediaID!==d.mediaID){mediaID=d.mediaID;im.src='media/'+encodeURIComponent(mediaID)}
+}
+async function poll(){try{const r=await fetch('state',{cache:'no-store'});if(!r.ok)throw Error();const body=await r.text(),d=JSON.parse(body);if(!d.settings)throw Error();$('connection').style.display='none';if(body!==lastBody){lastBody=body;render(d)}}catch{ $('connection').style.display='block';$('video').pause()}finally{setTimeout(poll,250)}}
 addEventListener('resize',()=>{if(current)render(current)});addEventListener('dblclick',()=>{if(document.fullscreenElement)document.exitFullscreen();else document.documentElement.requestFullscreen().catch(()=>{})});
-$('video').addEventListener('loadedmetadata',()=>{if(current)$('video').currentTime=current.mediaTime});poll();
-setInterval(()=>{if(!current)return;const s=current.settings;if(s.clearMode)return;
+poll();
+setInterval(()=>{if(!current)return;const s=current.settings;
+ if(showingNotice(current)){if(s.windowBorderEnabled&&s.rgbWindowBorderEnabled)$('screen').style.borderColor=color(s.borderColor,true);return;}
+ if(s.clearMode&&!current.preview)return;
  if(s.windowBorderEnabled&&s.rgbWindowBorderEnabled)$('screen').style.borderColor=color(s.borderColor,true);
  const timer=document.querySelector('.timer'),chords=document.querySelector('.chords');
  if(timer&&s.clockBorderEnabled&&s.rgbClockBorderEnabled)timer.style.borderColor=color(s.clockBorderColor,true);
- if(s.textBoxEnabled&&s.rgbTextBoxBorderEnabled&&current.text)$('lyrics').style.borderColor=color(s.textBoxColor,true);
+ if(s.textBoxEnabled&&s.rgbTextBoxBorderEnabled&&current.text){const cells=$('lyrics').querySelectorAll('.lyric-column');if(cells.length)cells.forEach(e=>e.style.borderColor=color(s.textBoxColor,true));else $('lyrics').style.borderColor=color(s.textBoxColor,true);}
  if(chords&&s.rgbChordBorderEnabled)chords.style.borderColor=color(s.chordColor,true);
 },200);
 </script></body></html>
@@ -245,6 +375,8 @@ setInterval(()=>{if(!current)return;const s=current.settings;if(s.clearMode)retu
     private var directory: URL?
     private var payload = TeleprompterRemotePayload()
     private var mediaURL: URL?
+    private var noticeImageData: Data?
+    private var noticeImageDate = Date.distantPast
     private var heartbeat: Timer?
     private var lastPublish = 0.0
     func configure(directory: URL?, refresh: @escaping () -> Void) { self.directory = directory; self.refresh = refresh }
@@ -289,20 +421,24 @@ setInterval(()=>{if(!current)return;const s=current.settings;if(s.clearMode)retu
     func clear() { payload = TeleprompterRemotePayload(); mediaURL = nil; publish() }
     func update(text: String, chords: String, song: String, queued: String, progress: Double, preview: Bool, blocks: [TeleprompterRemoteBlock], snapshot: ShowSnapshot) {
         guard enabled, ProcessInfo.processInfo.systemUptime - lastPublish >= 0.1 else { return }
-        payload.text = text; payload.chords = chords; payload.song = song; payload.queued = queued
+        payload.text = ItemTextColors.plain(text); payload.chords = ItemTextColors.plain(chords); payload.textStyled = text; payload.chordsStyled = chords; payload.song = song; payload.queued = queued
         payload.progress = progress; payload.preview = preferences.settings.displaysPreview(preview); payload.blocks = blocks
+        payload.loopActive = snapshot.transport.loop.enabled
+        payload.loopLabel = JarasLocalization.string("Loop ativo")
         payload.mediaStretch = preferences.settings.stretchesMedia
         mediaURL = nil; payload.mediaID = nil; payload.mediaKind = nil
         let t = snapshot.transport, position = t.playing || t.paused == true ? t.position : t.editPosition ?? t.position
-        if !payload.preview || preferences.settings.isClear, let directory,
-           let song = snapshot.project.songs.first(where: { $0.id == t.songId }),
-           let clip = song.tracks.lazy.filter({ $0.kind == (self.index == 2 ? .teleprompt2 : .teleprompt) && !$0.mute }).flatMap(\.clips).first(where: { $0.isProjectionMedia && $0.muted != true && position >= $0.startTime && position < $0.startTime + $0.duration }),
+        if !payload.preview, let directory,
+           let song = snapshot.project.songs.first(where: { $0.id == t.songId }) ?? snapshot.project.songs.first,
+           let clip = song.tracks.lazy.filter({ $0.kind == (self.index == 2 ? .teleprompt2 : .teleprompt) && !$0.mute }).flatMap(\.clips).first(where: {
+               guard $0.isProjectionMedia, $0.muted != true, position >= $0.startTime, position < $0.startTime + $0.duration,
+                     let path = $0.audioFile?.path else { return false }
+               return UTType(filenameExtension: (path as NSString).pathExtension)?.conforms(to: .image) == true
+           }),
            let file = clip.audioFile {
             mediaURL = directory.appendingPathComponent(file.path)
             payload.mediaID = clip.id.uuidString
-            payload.mediaKind = UTType(filenameExtension: mediaURL!.pathExtension)?.conforms(to: .image) == true ? "image" : "video"
-            payload.mediaTime = max(0, clip.sourceOffset + (position - clip.startTime) * clip.audioRate)
-            payload.mediaRate = t.playing ? clip.audioRate : 0
+            payload.mediaKind = "image"
         }
         publish()
     }
@@ -313,8 +449,25 @@ setInterval(()=>{if(!current)return;const s=current.settings;if(s.clearMode)retu
         payload.expired = TeleprompterTimerController.shared.expired()
         let values = Calendar.current.dateComponents([.hour, .minute, .second], from: Date())
         payload.localTime = String(format: "%02d:%02d:%02d", values.hour ?? 0, values.minute ?? 0, values.second ?? 0)
+        let notice = TPNoticeController.shared
+        let appearance = notice.appearance
+        if noticeImageDate != notice.sentAt {
+            noticeImageDate = notice.sentAt
+            noticeImageData = notice.remoteImage.flatMap { value in
+                value.split(separator: ",", maxSplits: 1).last.flatMap { Data(base64Encoded: String($0)) }
+            }
+        }
+        if !payload.preview, notice.active, (index == 1 ? appearance.window1 : appearance.window2) {
+            let text = notice.message.uppercased()
+            payload.notice = .init(id: String(notice.sentAt.timeIntervalSince1970),
+                message: appearance.emojiEnabled ? "\(appearance.emoji) \(text) \(appearance.emoji)" : text,
+                imageID: noticeImageData == nil ? nil : String(notice.sentAt.timeIntervalSince1970),
+                font: appearance.font, scale: appearance.scale, textColor: appearance.text,
+                backgroundColor: appearance.background, flashColor: appearance.flash,
+                elapsed: min(1.05, max(0, Date().timeIntervalSince(notice.sentAt))))
+        } else { payload.notice = nil }
         lastPublish = ProcessInfo.processInfo.systemUptime
-        server?.publish(payload, mediaURL: mediaURL)
+        server?.publish(payload, mediaURL: mediaURL, image: noticeImageData)
     }
     private static func qr(_ link: String) -> CGImage? {
         guard let filter = CIFilter(name: "CIQRCodeGenerator") else { return nil }
@@ -350,19 +503,19 @@ struct TeleprompterRemoteView: View {
     var body: some View {
         VStack(spacing: 16) {
             HStack {
-                Text(verbatim: "TP \(remote.index) · " + JarasLocalization.string("TP Remoto")).font(.headline)
+                Text(verbatim: "TP \(remote.index) · " + JarasLocalization.string("TP Remoto")).font(.jarasHeadline)
                 Spacer()
                 Toggle("Enabled", isOn: Binding(get: { remote.enabled }, set: { remote.setEnabled($0); copied = false })).toggleStyle(.switch).tint(JarasTheme.green).accessibilityLabel("Enabled")
             }
             if let image = remote.qrCode {
                 Image(decorative: image, scale: 1).interpolation(.none).resizable().scaledToFit().frame(width: 190, height: 190).padding(10).background(Color.white).cornerRadius(6)
             } else {
-                Image(systemName: "qrcode").font(.system(size: 100)).foregroundStyle(JarasTheme.secondary).frame(width: 210, height: 210)
+                Image(systemName: "qrcode").font(.jarasSystem(size: 100)).foregroundStyle(JarasTheme.secondary).frame(width: 210, height: 210)
             }
             Text(remote.enabled ? "Open this link on a device connected to the same network." : "Enable TP Remote to share the teleprompter.")
-                .font(.caption).foregroundStyle(JarasTheme.secondary).multilineTextAlignment(.center)
+                .font(.jarasCaption).foregroundStyle(JarasTheme.secondary).multilineTextAlignment(.center)
             HStack(spacing: 8) {
-                Text(remote.link.isEmpty ? "—" : remote.link).font(.system(size: 11, design: .monospaced)).lineLimit(2).textSelection(.enabled)
+                Text(remote.link.isEmpty ? "—" : remote.link).font(.jarasSystem(size: 11, design: .monospaced)).lineLimit(2).textSelection(.disabled)
                     .frame(maxWidth: .infinity, alignment: .leading).padding(8).background(JarasTheme.display).cornerRadius(5)
                 Button(copied ? "Copied" : "Copy link") {
                     #if os(macOS)
@@ -373,8 +526,10 @@ struct TeleprompterRemoteView: View {
                     copied = true
                 }.disabled(remote.link.isEmpty)
             }
-            if !remote.message.isEmpty { Text(LocalizedStringKey(remote.message)).font(.caption).foregroundStyle(JarasTheme.yellow) }
+            if !remote.message.isEmpty { Text(LocalizedStringKey(remote.message)).font(.jarasCaption).foregroundStyle(JarasTheme.yellow) }
+            #if os(iOS)
             HStack { Spacer(); Button("Close", action: close).keyboardShortcut(.cancelAction) }
+            #endif
         }.padding(20).frame(maxWidth: 420).background(JarasTheme.panel).foregroundStyle(JarasTheme.text)
             .environment(\.locale, Locale(identifier: language)).preferredColorScheme(.dark)
     }

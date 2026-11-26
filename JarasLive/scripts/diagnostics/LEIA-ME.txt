@@ -1,0 +1,30 @@
+Diagnóstico de áudio do CatLive no Mac
+
+Use na versão 1.30 que já está instalada. O pacote funciona em Mac Intel e Apple
+Silicon com macOS 12 ou posterior. O coletor não precisa de Xcode nem de instalação.
+
+1. Extraia a pasta inteira do ZIP.
+2. Abra “Coletar audio CatLive.command”.
+3. Deixe o mesmo projeto tocando no CatLive, com a SSL selecionada no app.
+4. Siga as três etapas de 30 segundos no Terminal. Ele pede para comparar:
+   - saída do macOS na SSL, Safari fechado;
+   - saída do macOS na SSL, Safari aberto no site de letras;
+   - saída do macOS nos alto-falantes internos, Safari aberto.
+5. Em cada etapa, informe se o áudio picotou. Ao terminar, o Finder mostra o ZIP
+   do relatório na pasta Downloads. Envie esse ZIP para análise.
+
+O relatório registra o modelo do Mac, versão do macOS/CatLive, nomes dos
+dispositivos, buffer e taxa reais de áudio, uso de memória/CPU dos processos
+envolvidos e avisos filtrados do Core Audio. Não grava áudio nem copia projetos
+ou letras. Não altera a configuração de áudio automaticamente e não envia
+arquivos pela internet.
+
+O coletor mede mudanças do dispositivo; ausência de avisos no log do macOS não
+prova ausência de cortes. O campo “running” indica uso do dispositivo por algum
+processo, não identifica qual processo o ativou. Os valores de CPU de ps usam
+uma escala diferente do medidor do CatLive.
+
+Compilação do coletor (para desenvolvimento):
+clang -fobjc-arc -fblocks -O2 -arch arm64 -arch x86_64 \
+  -mmacosx-version-min=12.0 AudioDeviceSnapshot.m \
+  -framework Foundation -framework CoreAudio -o audio-device-snapshot

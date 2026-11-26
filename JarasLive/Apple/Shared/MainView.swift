@@ -1,27 +1,81 @@
 import SwiftUI
 import UniformTypeIdentifiers
 import Combine
+#if os(iOS)
+import UIKit
+#endif
 enum SidebarWidthLimits {
+    static let trackMixer: CGFloat = 277.921875
     #if os(macOS)
-    static let trackMixer: CGFloat = 280.7578125
+    static let trackMixerDefault: CGFloat = 280.7578125
     #else
-    static let trackMixer: CGFloat = 230
+    static let nativeTrackMixer: CGFloat = 327.921875
+    static let trackMixerDefault = trackMixer
     #endif
     static let setlistDefault: CGFloat = 335.63671875
     #if os(macOS)
-    static let setlist: CGFloat = setlistDefault - 30
+    static let setlist: CGFloat = (setlistDefault - 30) * 0.70
     #else
     static let setlist: CGFloat = setlistDefault
     #endif
+}
+struct TrackMixerColumnGeometry {
+    static let iconWidth: CGFloat = 40
+    static let spacing: CGFloat = 4
+    let bodyWidth: CGFloat
+    let iconExtension: CGFloat
+    var totalWidth: CGFloat { bodyWidth > 0 ? bodyWidth + iconExtension : 0 }
+
+    init(requestedWidth: CGFloat, maximum: CGFloat, showsIcons: Bool, extraWidth: CGFloat = 0) {
+        bodyWidth = requestedWidth <= 0 ? 0 : min(maximum, max(SidebarWidthLimits.trackMixer, requestedWidth))
+        iconExtension = (showsIcons ? Self.iconWidth + Self.spacing : 0) + extraWidth
+    }
+
+    func storedWidth(for total: CGFloat) -> CGFloat { max(0, total - iconExtension) }
+}
+private struct FooterDisplayIdentity: Hashable {
+    let show: ObjectIdentifier
+    let theme: JarasInterfaceTheme
+    let showsSetlist: Bool
+    let showsNotices: Bool
 }
 private struct WorkspaceProjectIdentity: Hashable {
     let project: UUID
     let document: URL?
     let missingAudioPaths: Set<String>
     let remotePresentation: Bool
-    let sectionsListOpen: Bool
+    let midiPreviewDetached: Bool
+    let padsDetached: Bool
+    let setlistPlacement: SetlistPlacement
+    let interfaceTheme: JarasInterfaceTheme
 }
+private struct WorkspaceSetlistIdentity: Hashable {
+    let controller: ObjectIdentifier
+    let project: UUID
+    let document: URL?
+    let partsOpen: Bool
+    let theme: JarasInterfaceTheme
+}
+#if os(macOS)
+private final class DesktopPerformanceDocks: ObservableObject {
+    @Published var keyboardOpen = false
+    let midiPreview = MIDIPreviewVisibility()
+    let rightSidebar = DesktopRightSidebarVisibility()
+    @Published var focusOpen = false
+}
+private final class DesktopRightSidebarVisibility: ObservableObject {
+    @Published private(set) var visible = false
+    func setVisible(_ value: Bool) { if visible != value { visible = value } }
+}
+private struct DesktopRightSidebarLayout<Content: View>: View {
+    @ObservedObject var sidebar: DesktopRightSidebarVisibility
+    @ViewBuilder var content: (Bool) -> Content
+    var body: some View { content(sidebar.visible) }
+}
+private let desktopLibraryVisibilityKey = "jaras.layout.library.open"
+#endif
 struct MainView: View {
+    @Environment(\.gridInteractionBlocked) private var workspaceInputBlocked
     @ObservedObject private var recording = TrackRecording.shared
     @ObservedObject private var mappings = ControlMappings.shared
     let show: ShowController
@@ -29,6 +83,7 @@ struct MainView: View {
     let auth: AuthService
     let backend: any BackendClient
     @ObservedObject var documents: ProjectDocuments
+    private let showProjects: (Bool) -> Void
     private var desktopExtras: Bool {
         #if os(macOS)
         return !remotePresentation
@@ -49,71 +104,250 @@ struct MainView: View {
     @State private var clipFXTargets: [UUID] = []
     #endif
     @State private var textItemTarget: UUID?
+    @State private var fullLyricsTarget: FullLyricsTarget?
     @State private var lastObservedProjectID: UUID?
     @State private var presentedSessionID: UUID?
+    @AppStorage(JarasInterfaceTheme.preferenceKey) private var interfaceTheme = JarasInterfaceTheme.defaultTheme
     @AppStorage("jaras.language") private var language = "en"
-    @State private var navigationOpen = false
-    @State private var footerMixerOpen = false
     #if os(macOS)
+    private var footerMixerPreferenceKey: String { remotePresentation ? "jaras.remote.layout.mixer.open" : "jaras.layout.mixer.open" }
+    private var footerMixerOpen: Bool {
+        get { WorkspaceLayoutPreferences.storage.bool(forKey: footerMixerPreferenceKey) }
+        nonmutating set { WorkspaceLayoutPreferences.storage.set(newValue, forKey: footerMixerPreferenceKey) }
+    }
+    private var libraryOpen: Bool {
+        get { WorkspaceLayoutPreferences.storage.bool(forKey: desktopLibraryVisibilityKey) }
+        nonmutating set { WorkspaceLayoutPreferences.storage.set(newValue, forKey: desktopLibraryVisibilityKey) }
+    }
+    @State private var performanceDockState = DesktopPerformanceDocks()
+    private var focusOpen: Bool {
+        get { performanceDockState.focusOpen }
+        nonmutating set { if newValue != focusOpen { performanceDockState.focusOpen = newValue } }
+    }
+    private var midiPreviewOpen: Bool {
+        get { performanceDockState.midiPreview.active }
+        nonmutating set { performanceDockState.midiPreview.setActive(newValue) }
+    }
+    @State private var proNotesOpen = false
+    @State private var proNotesTab = WorkspaceNotesDock.Tab.notes
+    @State private var proSamplersOpen = false
+    @StateObject private var midiPreviewWindow = RecordingPianoWindow()
     @StateObject private var detachedMixer = DetachedMixerWindow()
+    @StateObject private var detachedParts = DetachedPartsWindow()
+    @StateObject private var detachedSetlist = DetachedSetlistWindow()
+    @State private var toolWindows = WorkspaceToolWindows()
+    @State private var timelineToolbar = DesktopTimelineToolbar()
+    @State private var showingFileExport = false
+    @State private var showingProjectShare = false
+    #else
+    @AppStorage("jaras.layout.mixer.open", store: WorkspaceLayoutPreferences.storage) private var footerMixerOpen = false
     #endif
+    #if os(macOS)
+    private var keyboardOpen: Bool {
+        get { performanceDockState.keyboardOpen }
+        nonmutating set { if newValue != keyboardOpen { performanceDockState.keyboardOpen = newValue } }
+    }
+    #else
     @State private var keyboardOpen = false
-    private enum SectionsPresentation { case list, footer }
-    @State private var sectionsPresentation: SectionsPresentation?
-    private var horizontalSectionsVisible: Bool { sectionsPresentation == .footer && setlistWidth > 0 }
+    #endif
+    #if os(macOS)
+    private var vinhetasOpen: Bool {
+        get { WorkspaceLayoutPreferences.storage.bool(forKey: "jaras.vinhetas.visible") }
+        nonmutating set {
+            if newValue != vinhetasOpen { WorkspaceLayoutPreferences.storage.set(newValue, forKey: "jaras.vinhetas.visible") }
+        }
+    }
+    @StateObject private var vinhetasWindow = VinhetasWindow()
+    #endif
+    @AppStorage("jaras.layout.parts.open", store: WorkspaceLayoutPreferences.storage) private var partsLeftOpen = false
+    @AppStorage("jaras.layout.parts.horizontal", store: WorkspaceLayoutPreferences.storage) private var partsLeftHorizontal = false
+    @AppStorage("jaras.layout.parts.heightScale", store: WorkspaceLayoutPreferences.storage) private var partsHeightScale = 1.0
+    @AppStorage("jaras.layout.partsRight.open", store: WorkspaceLayoutPreferences.storage) private var partsRightOpen = false
+    @AppStorage("jaras.layout.setlist.placement", store: WorkspaceLayoutPreferences.storage) private var setlistPlacement: SetlistPlacement = .right
+    @AppStorage("jaras.layout.setlist.dockSide", store: WorkspaceLayoutPreferences.storage) private var setlistDockPlacement: SetlistPlacement = .right
     @State private var keyboardSettings = false
-    @AppStorage("catlive.footerDisplayHeight") private var storedFooterHeight = 27.0
-    @AppStorage("jaras.footerMixerHeight") private var footerMixerHeight = 232.0
+    @AppStorage("jaras.footerMixerHeight", store: WorkspaceLayoutPreferences.storage) private var footerMixerHeight = 303.0
     @State private var footerResizeCoordinator = FooterVerticalResizeCoordinator()
     private func maximumFooterHeight(workspaceHeight: CGFloat) -> CGFloat {
         min(161.046875, max(27, workspaceHeight - 150 - (keyboardOpen ? 108 : 0)
-            - (horizontalSectionsVisible ? SmoothSeekPanelLayout.height : 0)
-            - (footerMixerOpen ? min(723.55859375, max(232, footerMixerHeight)) : 0)))
+            - (footerMixerOpen ? min(723.55859375, max(FooterHorizontalMixer.minimumDockHeight, footerMixerHeight)) : 0)))
     }
-    @AppStorage("jaras.trackColumnWidth") private var mixerWidth = Double(SidebarWidthLimits.trackMixer)
-    @AppStorage("jaras.trackColumnRestoreWidth") private var mixerRestoreWidth = Double(SidebarWidthLimits.trackMixer)
+    @AppStorage("jaras.trackColumnWidth", store: WorkspaceLayoutPreferences.storage) private var mixerWidth = Double(SidebarWidthLimits.trackMixerDefault)
+    @AppStorage("jaras.trackColumnRestoreWidth", store: WorkspaceLayoutPreferences.storage) private var mixerRestoreWidth = Double(SidebarWidthLimits.trackMixerDefault)
     #if os(macOS)
     @State private var setlistScrollController = SidebarScrollController()
     #endif
-    @AppStorage("jaras.setlistWidth") private var setlistWidth = Double(SidebarWidthLimits.setlistDefault)
-    @AppStorage("jaras.setlistRestoreWidth") private var setlistRestoreWidth = 240.0
-    init(show: ShowController, remotePresentation: Bool = false, auth: AuthService, backend: any BackendClient, documents: ProjectDocuments) {
+    @AppStorage("jaras.setlistWidth", store: WorkspaceLayoutPreferences.storage) private var setlistWidth = Double(SidebarWidthLimits.setlistDefault)
+    @AppStorage("jaras.setlistRestoreWidth", store: WorkspaceLayoutPreferences.storage) private var setlistRestoreWidth = 240.0
+    init(show: ShowController, remotePresentation: Bool = false, auth: AuthService, backend: any BackendClient, documents: ProjectDocuments,
+         showProjects: @escaping (Bool) -> Void = { _ in }) {
         self.show = show; self.remotePresentation = remotePresentation
-        self.auth = auth; self.backend = backend; self.documents = documents
+        self.auth = auth; self.backend = backend; self.documents = documents; self.showProjects = showProjects
         let prefix = remotePresentation ? "jaras.remote." : "jaras."
-        _mixerWidth = AppStorage(wrappedValue: remotePresentation ? 280 : Double(SidebarWidthLimits.trackMixer), prefix + "trackColumnWidth")
-        _mixerRestoreWidth = AppStorage(wrappedValue: remotePresentation ? 280 : Double(SidebarWidthLimits.trackMixer), prefix + "trackColumnRestoreWidth")
-        _setlistWidth = AppStorage(wrappedValue: remotePresentation ? 370 : Double(SidebarWidthLimits.setlistDefault), prefix + "setlistWidth")
-        _setlistRestoreWidth = AppStorage(wrappedValue: remotePresentation ? 370 : 240, prefix + "setlistRestoreWidth")
+        #if !os(macOS)
+        _footerMixerOpen = AppStorage(wrappedValue: false, prefix + "layout.mixer.open", store: WorkspaceLayoutPreferences.storage)
+        #endif
+        _partsLeftOpen = AppStorage(wrappedValue: false, prefix + "layout.parts.open", store: WorkspaceLayoutPreferences.storage)
+        _partsRightOpen = AppStorage(wrappedValue: false, prefix + "layout.partsRight.open", store: WorkspaceLayoutPreferences.storage)
+        _setlistPlacement = AppStorage(wrappedValue: .right, prefix + "layout.setlist.placement", store: WorkspaceLayoutPreferences.storage)
+        _setlistDockPlacement = AppStorage(wrappedValue: .right, prefix + "layout.setlist.dockSide", store: WorkspaceLayoutPreferences.storage)
+        _mixerWidth = AppStorage(wrappedValue: remotePresentation ? 280 : Double(SidebarWidthLimits.trackMixerDefault), prefix + "trackColumnWidth", store: WorkspaceLayoutPreferences.storage)
+        _mixerRestoreWidth = AppStorage(wrappedValue: remotePresentation ? 280 : Double(SidebarWidthLimits.trackMixerDefault), prefix + "trackColumnRestoreWidth", store: WorkspaceLayoutPreferences.storage)
+        _setlistWidth = AppStorage(wrappedValue: remotePresentation ? 370 : Double(SidebarWidthLimits.setlistDefault), prefix + "setlistWidth", store: WorkspaceLayoutPreferences.storage)
+        _setlistRestoreWidth = AppStorage(wrappedValue: remotePresentation ? 370 : 240, prefix + "setlistRestoreWidth", store: WorkspaceLayoutPreferences.storage)
+    }
+    private func toggleBarMixer() {
+        #if os(macOS)
+        if detachedMixer.isDetached {
+            if detachedMixer.isVisible { detachedMixer.hide() }
+            else { showDetachedMixer() }
+            return
+        }
+        #endif
+        footerMixerOpen.toggle()
     }
     private func toggleMixer() {
         Self.togglePanel(width: $mixerWidth, restore: $mixerRestoreWidth, minimum: SidebarWidthLimits.trackMixer)
     }
+    private func openSettings(_ section: SettingsView.Section? = nil) {
+        #if os(macOS)
+        toolWindows.openSettings(auth: auth, show: show, backend: backend, section: section)
+        #else
+        panel = section == .audio ? .audioSettings : .settings
+        #endif
+    }
+    private func openAdvanced() {
+        #if os(macOS)
+        toolWindows.openAdvanced(show: show, documents: documents)
+        #endif
+    }
+    private var setlistCollapsed: Bool {
+        #if os(macOS)
+        if setlistPlacement == .detached { return !detachedSetlist.isVisible }
+        #endif
+        return setlistWidth <= 0
+    }
     private func toggleSetlist() {
+        #if os(macOS)
+        if setlistCollapsed && proNotesOpen { proNotesTab = .notes }
+        #endif
+        #if os(macOS)
+        if setlistPlacement == .detached {
+            if detachedSetlist.isVisible { detachedSetlist.hide() }
+            else { openDetachedSetlist() }
+            return
+        }
+        #endif
         Self.togglePanel(width: $setlistWidth, restore: $setlistRestoreWidth, minimum: SidebarWidthLimits.setlist)
     }
-    private func toggleSections(_ presentation: SectionsPresentation) {
-        sectionsPresentation = sectionsPresentation == presentation ? nil : presentation
-        if sectionsPresentation != nil {
-            footerMixerOpen = false
-            #if os(macOS)
-            detachedMixer.hide()
-            #endif
+    private func placeSetlist(_ placement: SetlistPlacement) {
+        #if os(macOS)
+        if proNotesOpen { proNotesTab = .notes }
+        if placement == .left { partsLeftOpen = false }
+        if placement == .detached {
+            setlistPlacement = .detached
+            openDetachedSetlist()
+        } else {
+            detachedSetlist.close()
+            setlistPlacement = placement; setlistDockPlacement = placement
+            if setlistWidth <= 0 { setlistWidth = max(Double(SidebarWidthLimits.setlist), setlistRestoreWidth) }
         }
+        #endif
+    }
+    private func setRightPartsOpen(_ visible: Bool) {
+        if visible && partsLeftHorizontal { partsLeftOpen = false }
+        partsRightOpen = visible
+    }
+    private func toggleRightParts() { setRightPartsOpen(!partsRightOpen) }
+    private func setLeftPartsOpen(_ visible: Bool) {
+        if visible && partsLeftHorizontal { partsRightOpen = false }
+        #if os(macOS)
+        if visible && !partsLeftHorizontal { focusOpen = false }
+        #endif
+        partsLeftOpen = visible
     }
     #if os(macOS)
+    private func closePads() {
+        if vinhetasOpen { vinhetasOpen = false }
+        if vinhetasWindow.visible { vinhetasWindow.hide() }
+    }
+
+    private func closePanelsForPads() {
+        keyboardOpen = false
+        midiPreviewOpen = false
+        if midiPreviewWindow.visible { midiPreviewWindow.hide() }
+    }
+
+    private func toggleFocus() {
+        setFocusOpen(!focusOpen)
+    }
+    private func setFocusOpen(_ visible: Bool) {
+        focusOpen = visible
+        if visible && !partsLeftHorizontal {
+            partsLeftOpen = false
+            if detachedParts.isVisible { detachedParts.hide() }
+        }
+    }
+    private func showLeftDetachedParts() {
+        focusOpen = false
+        detachedParts.open(show: show)
+    }
+    private func restoreGlobalPanels() {
+        guard !remotePresentation, DesktopProjectTabs.shared.isForeground(show) else { return }
+        let defaults = WorkspaceLayoutPreferences.storage
+        if partsLeftOpen && (!partsLeftHorizontal || partsRightOpen) { setLeftPartsOpen(true) }
+        if defaults.bool(forKey: "jaras.layout.vinhetas.detached") {
+            let visible = defaults.object(forKey: "jaras.layout.vinhetas.visible") as? Bool ?? true
+            if visible { closePanelsForPads() }; vinhetasOpen = false; vinhetasWindow.open(show: show)
+            if !visible { vinhetasWindow.hide() }
+        }
+        if defaults.bool(forKey: "jaras.layout.mixer.detached") {
+            let visible = defaults.object(forKey: "jaras.layout.mixer.visible") as? Bool ?? true
+            showDetachedMixer()
+            if !visible { detachedMixer.hide() }
+        }
+        if !partsLeftHorizontal, defaults.bool(forKey: "jaras.layout.parts.detached") {
+            let visible = defaults.object(forKey: "jaras.layout.parts.visible") as? Bool ?? true
+            partsLeftOpen = false; detachedParts.open(show: show)
+            if !visible || focusOpen { detachedParts.hide() }
+        }
+        if setlistPlacement == .detached {
+            let visible = defaults.object(forKey: "jaras.layout.setlist.visible") as? Bool ?? true
+            openDetachedSetlist()
+            if !visible { detachedSetlist.hide() }
+        }
+    }
+    private func openDetachedSetlist() {
+        detachedSetlist.setPartsVisible(partsRightOpen)
+        detachedSetlist.open(onDock: { placeSetlist(setlistDockPlacement) }) {
+            DetachedSetlistContent(show: show, mediaDirectory: documents.currentURL?.deletingLastPathComponent(),
+                                   partsOpen: Binding(get: { partsRightOpen }, set: setRightPartsOpen))
+                .environment(\.multitrackAction, documents.openMultitrackExport)
+        }
+    }
     private func showDetachedMixer() {
-        footerMixerOpen = false; sectionsPresentation = nil
-        detachedMixer.open(show: show, openFX: { track, effect in
-            FXWindows.shared.open(show: show, track: track, effect: effect, language: language)
-        }, editTrack: { request in
+        footerMixerOpen = false
+        detachedMixer.open(show: show, openFX: openDesktopFX, editTrack: { request in
             guard request.project == show.snapshot.project.id else { return }
             trackEdit = request
         })
     }
+    private func openDesktopFX(_ track: UUID?, _ effect: String) {
+        if effect == "Chain" {
+            if let track { show.setMixerTrackSelection([track], anchor: track) }
+            setFocusOpen(true)
+        } else if effect == "Library" {
+            libraryOpen = true
+        } else {
+            FXWindows.shared.open(show: show, track: track, effect: effect, language: language)
+        }
+    }
     #endif
     private static func togglePanel(width: Binding<Double>, restore: Binding<Double>, minimum: CGFloat) {
-        if width.wrappedValue > 0 { restore.wrappedValue = width.wrappedValue; width.wrappedValue = 0 }
+        if width.wrappedValue > 0 {
+            if restore.wrappedValue != width.wrappedValue { restore.wrappedValue = width.wrappedValue }
+            width.wrappedValue = 0
+        }
         else { width.wrappedValue = max(Double(minimum), restore.wrappedValue) }
     }
     var body: some View {
@@ -121,87 +355,234 @@ struct MainView: View {
         // transport actions or tool rail. Keep those values outside the reader
         // so a resize does not recreate their closures and invalidate every
         // control. Their own layouts still receive the current proposed size.
+        #if os(macOS)
+        let share: (() -> Void)? = shareProject
+        let notesOpen = proNotesOpen, samplersOpen = proSamplersOpen
+        let notesAction = {
+            proNotesOpen.toggle()
+            if proNotesOpen { proSamplersOpen = false; proNotesTab = .notes }
+            performanceDockState.rightSidebar.setVisible(proNotesOpen || proSamplersOpen)
+        }
+        let samplersAction = {
+            proSamplersOpen.toggle()
+            if proSamplersOpen { proNotesOpen = false }
+            performanceDockState.rightSidebar.setVisible(proNotesOpen || proSamplersOpen)
+        }
+        #else
+        let share: (() -> Void)? = nil
+        let notesOpen = false, samplersOpen = false
+        let notesAction: () -> Void = {}, samplersAction: () -> Void = {}
+        #endif
+        #if os(macOS)
+        let masterWorkspaceButtons: AnyView? = desktopExtras ? AnyView(desktopFileButton.buttonStyle(.plain)) : nil
+        let timerReadout: AnyView? = desktopExtras ? AnyView(desktopTimerReadout) : nil
+        let statusControls: AnyView? = desktopExtras ? AnyView(desktopStatusControls) : nil
+        #else
+        let masterWorkspaceButtons: AnyView? = nil
+        let timerReadout: AnyView? = nil
+        let statusControls: AnyView? = nil
+        #endif
         let transport = TransportView(show: show, documents: documents, remotePresentation: remotePresentation,
             mediaDirectory: documents.currentURL?.deletingLastPathComponent(),
-            toggleNavigation: { withAnimation(.easeOut(duration: 0.16)) { navigationOpen.toggle() } },
-            openSettings: { navigationOpen = false; panel = .settings },
-            mixerCollapsed: mixerWidth <= 0, setlistCollapsed: setlistWidth <= 0,
-            toggleMixer: toggleMixer, toggleSetlist: toggleSetlist)
-        #if os(macOS)
-        let tools = leftToolRail
-        #else
-        let tools = EmptyView()
-        #endif
-        return presentWorkspace(GeometryReader { geometry in
-            workspace(height: geometry.size.height, transport: transport, tools: tools)
-        })
-    }
-    private func workspace<Transport: View, Tools: View>(height workspaceHeight: CGFloat,
-                                                       transport: Transport, tools: Tools) -> some View {
-        HStack(spacing: 0) {
+            toggleNavigation: openProjects,
+            mixerCollapsed: mixerWidth <= 0, setlistCollapsed: setlistCollapsed,
+            toggleMixer: toggleMixer, toggleSetlist: toggleSetlist,
+            setlistPlacement: setlistPlacement, placeSetlist: placeSetlist,
+            shareProject: share, proNotesOpen: notesOpen, proSamplersOpen: samplersOpen,
+            toggleProNotes: notesAction, toggleProSamplers: samplersAction,
+            masterWorkspaceButtons: masterWorkspaceButtons, timerReadout: timerReadout, statusControls: statusControls)
+        let editor = VStack(spacing: 0) {
             #if os(macOS)
-            tools
+            if desktopExtras && documents.projectTabCount > 1 { DesktopProjectTabBar().frame(height: 24) }
+            if remotePresentation { desktopToolBar.fixedSize(horizontal: false, vertical: true) }
             #endif
+            GeometryReader { geometry in
+                workspace(width: geometry.size.width, height: geometry.size.height, transport: transport)
+            }
+        }
+        #if os(macOS)
+        return presentWorkspace(editor.environment(\.desktopTimelineToolbar, timelineToolbar))
+            .workspaceEditor("Export", isPresented: $showingFileExport) {
+                AudioExportView(project: show.snapshot.project, song: show.current, mediaDirectory: documents.currentURL?.deletingLastPathComponent())
+            }
+            .sheet(isPresented: $showingProjectShare) { PortableProjectExportView(documents: documents) }
+        #else
+        return presentWorkspace(editor)
+        #endif
+    }
+    #if os(macOS)
+    private func shareProject() {
+        guard documents.ready, !documents.busy, !TrackRecording.shared.recording, !TrackRecording.shared.busy else { return }
+        showingProjectShare = true
+    }
+    @ViewBuilder private func timelineDocks(mixerLimit: CGFloat, horizontalPartsVisible: Bool) -> some View {
+        if desktopExtras {
+            DesktopHozMixerDock(show: show, maximumHeight: mixerLimit, resizeCoordinator: footerResizeCoordinator)
+            if horizontalPartsVisible {
+                HorizontalPartsDock(heightScale: $partsHeightScale) {
+                    SmoothSeekPanel(show: show, placement: .left, horizontal: true)
+                }
+            }
+
+        }
+    }
+    @ViewBuilder private func performanceDocks(keyboardOpen: Bool, padsOpen: Bool) -> some View {
+        if desktopExtras {
+            if keyboardOpen { FooterPianoKeyboard().frame(height: 108) }
+            FooterNativeHeightHost(storedHeight: 240, minimum: 240, maximum: 240,
+                active: padsOpen,
+                identity: AnyHashable(ObjectIdentifier(show)), role: .auxiliary) {
+                VinhetasPanel(createTrack: { _ = show.createVinhetasTrack() })
+                    .onAppear { VinhetasController.shared.bind(show: show) }
+            }
+        }
+    }
+    #endif
+    private func workspace<Transport: View>(width workspaceWidth: CGFloat, height workspaceHeight: CGFloat, transport: Transport) -> some View {
+        VStack(spacing: 0) {
             VStack(spacing: 0) {
+                #if os(macOS)
+                transport.frame(height: TransportView.desktopHeight(width: workspaceWidth, remote: remotePresentation,
+                                                                     multipleProjects: documents.projectTabCount > 1))
+                if !remotePresentation {
+                    DesktopTimelineEditingBar(show: show, mixerButtons: AnyView(desktopMixerButtons),
+                        workspaceButtons: AnyView(desktopEditingWorkspaceButtons), liveButtons: AnyView(desktopEditingLiveButtons))
+                }
+                #else
                 transport
+                #endif
                     #if os(macOS)
                     GeometryReader { geometry in
-                        SectionListDock(visible: sectionsPresentation == .list && setlistWidth > 0, storageKey: "catlive.sections.width", minimumPrimaryWidth: 620, defaultFraction: 0.22) {
+                        let proDockOpen = proNotesOpen || proSamplersOpen
+                        let preferredMixer = mixerWidth > 0 ? min(486.5, max(SidebarWidthLimits.trackMixer, CGFloat(mixerWidth))) : 0
+                        DesktopRightDockEditorWidth(enabled: proDockOpen, show: show, docks: performanceDockState,
+                            baseWidth: preferredMixer + 90) { minimumEditorWidth in
+                        SectionListDock(visible: proDockOpen, storageKey: "catlive.proDock.width",
+                                        minimumPrimaryWidth: max(700, minimumEditorWidth + (setlistWidth > 0 ? SidebarWidthLimits.setlist : 0)),
+                                        defaultFraction: 0.22, enforcesMinimumPrimaryWidth: true,
+                                        maximumSidebarWidth: 558.80078125,
+                                        usesNativeResizeHandle: true, retainsTrailingPane: true) {
+                        SectionListDock(visible: partsRightOpen && setlistWidth > 0 && setlistPlacement != .detached, storageKey: "catlive.sections.width", minimumPrimaryWidth: 620, defaultFraction: 0.22, retainedSectionID: ObjectIdentifier(show)) {
                         NativeWorkspaceSplit(width: CGFloat(setlistWidth), restoreWidth: CGFloat(setlistRestoreWidth),
-                            minimum: SidebarWidthLimits.setlist, scrollController: setlistScrollController,
+                            minimum: SidebarWidthLimits.setlist, minimumTimelineWidth: proDockOpen ? max(420, minimumEditorWidth) : 420,
+                            scrollController: setlistScrollController,
+                            sidebarLeading: setlistPlacement == .left, sidebarDetached: setlistPlacement == .detached,
                             contentIdentity: WorkspaceProjectIdentity(project: show.snapshot.project.id, document: documents.currentURL,
                                 missingAudioPaths: documents.missingAudioPaths, remotePresentation: remotePresentation,
-                                sectionsListOpen: sectionsPresentation == .list),
+                                midiPreviewDetached: midiPreviewWindow.detached, padsDetached: vinhetasWindow.detached,
+                                setlistPlacement: setlistPlacement,
+                                interfaceTheme: interfaceTheme),
+                            trailingContentIdentity: WorkspaceSetlistIdentity(controller: ObjectIdentifier(show),
+                                project: show.snapshot.project.id, document: documents.currentURL,
+                                partsOpen: partsRightOpen, theme: interfaceTheme),
                             onToggle: toggleSetlist, onEnd: { finalWidth in
-                                if finalWidth > 0 { setlistRestoreWidth = finalWidth }
+                                if finalWidth > 0 {
+                                    setlistRestoreWidth = finalWidth
+                                    if proNotesOpen { proNotesTab = .notes }
+                                }
                                 setlistWidth = finalWidth
                             }) {
-                            TimelineGridView(show: show, documents: documents, remotePresentation: remotePresentation, toggleMixer: toggleMixer)
-                                .foregroundStyle(JarasTheme.text)
+                            DesktopPartsLayout(remote: remotePresentation, detached: detachedParts) { leftParts, bottomParts, partsHeight in
+                            GeometryReader { editing in
+                                DesktopWorkspaceDocks(show: show, desktopExtras: desktopExtras,
+                                    availableHeight: editing.size.height,
+                                    performanceDockState: performanceDockState,
+                                    midiPreviewDetached: midiPreviewWindow.detached, padsDetached: vinhetasWindow.detached,
+                                    partsHeight: partsHeight,
+                                    resizeCoordinator: footerResizeCoordinator
+                                ) { panels, preview in
+                                    DesktopRightSidebarLayout(sidebar: performanceDockState.rightSidebar) { rightSidebarVisible in
+                                    HStack(alignment: .top, spacing: 0) {
+                                        if desktopExtras {
+                                            let reserved = rightSidebarVisible ? preferredMixer + 90 : 220
+                                            let available = max(100, editing.size.width - panels.focusWidth - reserved)
+                                            DesktopLibraryDock(theme: interfaceTheme, show: show, available: available)
+                                            RetainedWorkspacePane(width: panels.focusWidth, visible: panels.focusWidth > 0,
+                                                identity: AnyHashable(ObjectIdentifier(show))) {
+                                                FooterHorizontalMixer(show: show, focused: true)
+                                            }
+                                            .frame(width: panels.focusWidth, alignment: .leading)
+                                            .accessibilityHidden(panels.focusWidth == 0)
+                                        }
+                                        VStack(spacing: 0) {
+                                            VStack(spacing: 0) {
+                                                SectionListDock(visible: leftParts, storageKey: "catlive.parts.left.width",
+                                                                minimumPrimaryWidth: 260 + max(0, CGFloat(mixerWidth)), defaultFraction: 0.24, leading: true, retainedSectionID: ObjectIdentifier(show)) {
+                                                    TimelineGridView(show: show, documents: documents, remotePresentation: remotePresentation,
+                                                                     isSetlistVisible: { !setlistCollapsed }, toggleMixer: toggleMixer).equatable()
+                                                        .environment(\.minimumTimelineBodyWidth, rightSidebarVisible ? 84 : 260)
+                                                        .foregroundStyle(JarasTheme.text)
+                                                } sections: { SmoothSeekPanel(show: show, placement: .left) }
+                                                timelineDocks(mixerLimit: panels.spareHeight, horizontalPartsVisible: bottomParts)
+                                            }.frame(maxHeight: .infinity, alignment: .top).clipped()
+                                            preview
+                                        }
+                                    }
+                                    }
+                                } lowerDocks: { keyboardOpen, padsOpen in
+                                    performanceDocks(keyboardOpen: keyboardOpen, padsOpen: padsOpen)
+                                }
+                            }
+                            }
                         } trailing: {
                             SongListView(show: show, mediaDirectory: documents.currentURL?.deletingLastPathComponent(), sidebarScrollController: setlistScrollController,
-                                partsOpen: sectionsPresentation == .list, toggleParts: { toggleSections(.list) })
+                                partsOpen: partsRightOpen, toggleParts: toggleRightParts)
+                                .environment(\.multitrackAction, documents.openMultitrackExport)
                                 .foregroundStyle(JarasTheme.text)
                         }
-                        } sections: { SmoothSeekPanel(show: show, verticalList: true) }
+                        } sections: { SmoothSeekPanel(show: show) }
+                        } sections: {
+                            ZStack {
+                                DesktopSamplerPane(theme: interfaceTheme, show: show, visible: proSamplersOpen)
+                                if proNotesOpen {
+                                    WorkspaceNotesDock(theme: interfaceTheme, show: show, tab: $proNotesTab) {
+                                        if !setlistCollapsed { toggleSetlist() }
+                                    }
+                                }
+                            }
+                        }
                         .frame(width: geometry.size.width, height: geometry.size.height)
-                    }.overlay(alignment: .topLeading) { navigationLayer }
+                        }
+                    }
                     #else
-                    SectionListDock(visible: sectionsPresentation == .list, storageKey: "catlive.local.sections.width",
+                    SectionListDock(visible: partsRightOpen, storageKey: "catlive.local.sections.width",
                                     minimumPrimaryWidth: 480, defaultFraction: 0.22) {
                         HStack(spacing: 1) {
-                            TimelineGridView(show: show, documents: documents, remotePresentation: remotePresentation, toggleMixer: toggleMixer)
-                            SongListView(show: show, mediaDirectory: documents.currentURL?.deletingLastPathComponent(), partsOpen: sectionsPresentation == .list,
-                                toggleParts: { toggleSections(.list) }).frame(width: 220)
+                            TimelineGridView(show: show, documents: documents, remotePresentation: remotePresentation, toggleMixer: toggleMixer).equatable()
+                            SongListView(show: show, mediaDirectory: documents.currentURL?.deletingLastPathComponent(), partsOpen: partsRightOpen,
+                                toggleParts: toggleRightParts).frame(width: 220)
                         }
                     } sections: {
-                        SmoothSeekPanel(show: show, verticalList: true)
-                    }.overlay(alignment: .topLeading) { navigationLayer }
+                        SmoothSeekPanel(show: show)
+                    }
                     #endif
-                // Preserve the mixer's established expansion range while leaving
-                // space for the transport and the top of the timeline/Setlist.
-                if desktopExtras {
-                FooterMixerPanel(show: show, active: footerMixerOpen,
-                    maximumHeight: max(180, workspaceHeight - 240 - (keyboardOpen ? 108 : 0) - (horizontalSectionsVisible ? SmoothSeekPanelLayout.height : 0)),
-                    resizeCoordinator: footerResizeCoordinator)
-                if horizontalSectionsVisible { SmoothSeekPanel(show: show).frame(height: SmoothSeekPanelLayout.height) }
-                if keyboardOpen { FooterPianoKeyboard().frame(height: 108) }
-                }
                 #if os(macOS)
-                FooterNativeHeightHost(storedHeight: CGFloat(storedFooterHeight), minimum: 27, maximum: 161.046875,
-                    active: true, identity: AnyHashable(ObjectIdentifier(show)), role: .display,
+                let showsFooterSetlist = !setlistCollapsed
+                DesktopFooterDockInputs(docks: performanceDockState, mixerKey: footerMixerPreferenceKey) { keyboardOpen, mixerOpen, footerHeight in
+                FooterNativeHeightHost(storedHeight: showsFooterSetlist ? CGFloat(footerHeight.wrappedValue) : 27,
+                    minimum: 27, maximum: showsFooterSetlist ? 161.046875 : 27,
+                    active: true, identity: AnyHashable(FooterDisplayIdentity(show: ObjectIdentifier(show), theme: interfaceTheme,
+                        showsSetlist: showsFooterSetlist, showsNotices: !remotePresentation)), role: .display,
                     resizeCoordinator: footerResizeCoordinator,
-                    displayAvailableHeight: workspaceHeight - 150 - (keyboardOpen ? 108 : 0) - (horizontalSectionsVisible ? SmoothSeekPanelLayout.height : 0),
-                    fallbackMixerHeight: footerMixerOpen ? min(723.55859375, max(232, footerMixerHeight)) : 0) {
+                    displayAvailableHeight: workspaceHeight - 150 - (keyboardOpen ? 108 : 0),
+                    fallbackMixerHeight: mixerOpen ? min(723.55859375, max(FooterHorizontalMixer.minimumDockHeight, footerMixerHeight)) : 0) {
                     GeometryReader { geometry in
                         HStack(spacing: 14) {
-                            ResourceUsageView().fixedSize(horizontal: true, vertical: false)
-                            FooterPlaylistDisplay(show: show, scalesToAvailableHeight: true).frame(maxWidth: .infinity)
-                                .overlay(FooterDisplayResizeInput(height: geometry.size.height, maximum: maximumFooterHeight(workspaceHeight: workspaceHeight),
-                                    changed: { _ in }, ended: { storedFooterHeight = $0 }))
-                            AudioStatusView { navigationOpen = false; panel = .audioSettings }.fixedSize(horizontal: true, vertical: false)
-                        }.buttonStyle(.plain).frame(height: geometry.size.height)
-                    }.font(.system(size: 9, weight: .medium, design: .monospaced)).padding(.horizontal, 14).background(JarasTheme.panel)
+                            if showsFooterSetlist {
+                                FooterPlaylistDisplay(show: show, scalesToAvailableHeight: true, showsNotices: !remotePresentation)
+                                    .frame(maxWidth: .infinity)
+                                    .overlay(FooterDisplayResizeInput(height: geometry.size.height, maximum: maximumFooterHeight(workspaceHeight: workspaceHeight),
+                                        changed: { _ in }, ended: { footerHeight.wrappedValue = $0 }))
+                            }
+                        }.buttonStyle(.plain).frame(maxWidth: .infinity, alignment: .leading).frame(height: geometry.size.height)
+                        .overlay {
+                            if !showsFooterSetlist && !remotePresentation {
+                                FooterInformationDisplay(show: show, embedded: true, alignment: .center)
+                                    .padding(.horizontal, 140)
+                            }
+                        }
+                    }.font(.jarasSystem(size: 9, weight: .medium, design: .monospaced)).padding(.horizontal, 14).background(interfaceTheme.panel)
+                }
                 }
                 #else
                 GeometryReader { geometry in
@@ -210,10 +591,9 @@ struct MainView: View {
                     let audioWidth = min(230, max(100, sideWidth * 0.4))
                     HStack(spacing: 0) {
                         HStack(spacing: 8) {
-                            ResourceUsageView().fixedSize(horizontal: true, vertical: false)
                             #if os(macOS)
                             Text(verbatim: "|").foregroundStyle(JarasTheme.secondary)
-                            AudioStatusView { navigationOpen = false; panel = .audioSettings }.frame(width: audioWidth, alignment: .leading)
+                            AudioStatusView { openSettings(.audio) }.frame(width: audioWidth, alignment: .leading)
                             #endif
                             FooterProjectNameDisplay(show: show, documents: documents)
                                 #if os(macOS)
@@ -222,14 +602,15 @@ struct MainView: View {
                                 .frame(maxWidth: .infinity)
                                 #endif
                         }.buttonStyle(.plain).padding(.trailing, 14).frame(width: sideWidth, alignment: .leading).clipped()
-                        FooterInformationDisplay(show: show).frame(width: displayWidth)
+                        FooterInformationDisplay(show: show, embedded: true, alignment: .center)
+                            .frame(width: displayWidth)
                         #if os(macOS)
                         Color.clear.frame(width: sideWidth)
                         #else
-                        AudioStatusView { navigationOpen = false; panel = .audioSettings }.frame(width: sideWidth, alignment: .trailing)
+                        AudioStatusView { openSettings(.audio) }.frame(width: sideWidth, alignment: .trailing)
                         #endif
                     }.frame(height: 27)
-                }.font(.system(size: 9, weight: .medium, design: .monospaced)).padding(.horizontal, 14).frame(height: 27).background(JarasTheme.panel)
+                }.font(.jarasSystem(size: 9, weight: .medium, design: .monospaced)).padding(.horizontal, 14).frame(height: 27).background(JarasTheme.panel)
                 #endif
 
             }
@@ -239,7 +620,10 @@ struct MainView: View {
     // changing geometry. Rebuilding these modifiers inside GeometryReader
     // publishes new action closures through every nested hosting boundary.
     private func presentWorkspace<Content: View>(_ content: Content) -> some View {
-        content.background(JarasTheme.background).foregroundStyle(JarasTheme.text).jarasHideScrollIndicators()
+        #if os(macOS)
+        toolWindows.updateItemActions(show: show, library: Binding(get: { libraryOpen }, set: { libraryOpen = $0 }))
+        #endif
+        return content.background(interfaceTheme.background).foregroundStyle(JarasTheme.text).jarasHideScrollIndicators()
             #if os(macOS)
             .background(ProjectTitlebarContent {
                 FooterProjectNameDisplay(show: show, documents: documents, titlebar: true)
@@ -253,8 +637,8 @@ struct MainView: View {
                 if documents.importingAudio {
                     VStack(spacing: 14) {
                         Text(LocalizedStringKey(documents.status))
-                            .font(.callout).multilineTextAlignment(.center).lineLimit(3)
-                        ProgressView(value: documents.audioImportProgress).progressViewStyle(.linear).tint(JarasTheme.green)
+                            .font(.jarasCallout).multilineTextAlignment(.center).lineLimit(3)
+                        ProgressView(value: documents.audioImportProgress).progressViewStyle(JarasProgressBarStyle()).tint(JarasTheme.green)
                     }
                     .padding(24).frame(width: 360)
                     .background(JarasTheme.panel).clipShape(RoundedRectangle(cornerRadius: 10))
@@ -273,21 +657,28 @@ struct MainView: View {
                 Button("OK") { documents.audioImportError = "" }
             } message: { Text(LocalizedStringKey(documents.audioImportError)) }
 
+            .environment(\.multitrackAction, documents.openMultitrackExport)
+            .modifier(MultitrackSheet(presentation: documents.multitrack))
             .environment(\.openFX, { track, effect in
                 #if os(macOS)
-                FXWindows.shared.open(show: show, track: track, effect: effect, language: language)
+                openDesktopFX(track, effect)
                 #else
                 let target = FXTarget(track: track, effect: effect)
                 if !fxTargets.contains(where: { $0.id == target.id }) { fxTargets.append(target) }
                 #endif
             })
+            #if os(macOS)
+            .environment(\.openClipFXChain, toolWindows.clipFXAction)
+            #else
             .environment(\.openClipFXChain, { clip in
-                #if os(macOS)
-                FXWindows.shared.openClipChain(show: show, clip: clip)
-                #else
                 if !clipFXTargets.contains(clip) { clipFXTargets.append(clip) }
-                #endif
             })
+            #endif
+            #if os(macOS)
+            .onReceive(NotificationCenter.default.publisher(for: .catLiveOpenPluginSettings, object: show)) { _ in
+                openSettings(.plugins)
+            }
+            #endif
             .onReceive(show.$snapshot.map { $0.project.id }.removeDuplicates()) { projectID in
                 // A recreated publisher immediately emits its current ID. Only
                 // a different project dismisses an existing editing panel.
@@ -299,34 +690,53 @@ struct MainView: View {
                 }
                 if lastObservedProjectID != projectID { lastObservedProjectID = projectID }
             }
-            .environment(\.editTextItem, { textItemTarget = $0 })
             #if os(macOS)
-            .background(NativeTimelineModalGate(blocked: navigationOpen || textItemTarget != nil || trackEdit != nil || mappings.editing != nil))
+            .environment(\.editTextItem, toolWindows.editTextAction)
+            .environment(\.addFullLyrics, toolWindows.fullLyricsAction)
             #else
-            .environment(\.gridInteractionBlocked, navigationOpen || textItemTarget != nil || trackEdit != nil || mappings.editing != nil)
+            .environment(\.editTextItem, { id in
+                textItemTarget = id
+            })
+            .environment(\.addFullLyrics, { track in
+                do { fullLyricsTarget = try FullLyricsTarget(show: show, track: track) }
+                catch { show.message = error.localizedDescription }
+            })
+            #endif
+            #if os(macOS)
+            .background(NativeTimelineModalGate(blocked: workspaceInputBlocked || panel != nil || textItemTarget != nil || trackEdit != nil || mappings.editing != nil))
+            #else
+            .environment(\.gridInteractionBlocked, panel != nil || textItemTarget != nil || trackEdit != nil || mappings.editing != nil)
             #endif
             .environment(\.editTrackDetails, { request in
                 guard request.project == show.snapshot.project.id, !request.tracks.isEmpty else { return }
                 trackEdit = request
             })
+            #if os(macOS)
+            .onChange(of: partsRightOpen) { visible in detachedSetlist.setPartsVisible(visible) }
+            #endif
             .onChange(of: show.snapshot.project.id) { _ in
                 trackEdit = nil
                 #if os(macOS)
-                detachedMixer.close()
+                detachedMixer.close(preserveState: true); detachedSetlist.close(preserveState: true); detachedParts.close(preserveState: true); vinhetasWindow.hide(preserveState: true)
+                toolWindows.closeAll()
+                restoreGlobalPanels()
+                VinhetasController.shared.bind(show: show)
                 #endif
             }
             .overlay {
                 if let edit = trackEdit {
                     ZStack {
                         Color.black.opacity(0.25).contentShape(Rectangle()).onTapGesture { trackEdit = nil }
-                        NameColorEditor(title: "Editar pista", initialName: edit.name, initialColor: edit.color, save: { name, color in
-                            guard edit.project == show.snapshot.project.id else { return }
-                            if edit.nameEditable, let track = edit.tracks.first {
-                                show.editTrack(track, name: name, color: color)
+                        Group {
+                            if edit.iconOnly {
+                                TrackInstrumentPickerModal(show: show, request: edit, close: { trackEdit = nil })
                             } else {
-                                show.editTrackColors(edit.tracks, color: color, project: edit.project)
+                                NameColorEditor(title: "Editar pista", initialName: edit.name, initialColor: edit.color,
+                                    save: { _, color in
+                                        show.editTrackColors(edit.tracks, color: color, project: edit.project)
+                                    }, close: { trackEdit = nil }, nameEditable: false, showsName: false)
                             }
-                        }, close: { trackEdit = nil }, nameEditable: edit.nameEditable, showsName: edit.nameEditable)
+                        }
                         .background(JarasTheme.panel)
                         .clipShape(RoundedRectangle(cornerRadius: 10))
                         .shadow(color: .black.opacity(0.4), radius: 18)
@@ -352,42 +762,84 @@ struct MainView: View {
                 guard !remotePresentation else { return }
                 presentedSessionID = show.projectSessionID
                 #if os(macOS)
+                restoreGlobalPanels()
+                // MIDI/SMK/Remote pads must be ready before their UI is opened.
+                if DesktopProjectTabs.shared.isForeground(show) {
+                    VinhetasController.shared.bind(show: show)
+                }
                 DAWRemoteHostBridge.bind(show)
                 ResolumeController.shared.bind(show)
                 #endif
                 mappings.bind(show)
-                show.togglePartsPanel = { toggleSections(.list) }
-                show.toggleTracksPanel = { [width = $mixerWidth, restore = $mixerRestoreWidth] in
-                    Self.togglePanel(width: width, restore: restore, minimum: SidebarWidthLimits.trackMixer)
-                }
-                show.toggleSetlistPanel = { [width = $setlistWidth, restore = $setlistRestoreWidth] in
-                    Self.togglePanel(width: width, restore: restore, minimum: SidebarWidthLimits.setlist)
-                }
-            }
-            .onChange(of: textItemTarget != nil || trackEdit != nil || mappings.editing != nil) { blocked in
                 #if os(macOS)
-                if !remotePresentation { RightClickRouter.shared.interactionBlocked = blocked }
+                show.smkPartsVisibility = { (partsLeftOpen || detachedParts.isVisible, partsRightOpen) }
+                #else
+                show.smkPartsVisibility = { (false, partsRightOpen) }
                 #endif
+                show.smkRecord = { recording.toggle(show: show) }
+                show.togglePartsPanel = toggleRightParts
+                show.showPartsPanel = {
+                    #if os(macOS)
+                    if detachedParts.isDetached { showLeftDetachedParts() }
+                    else if !partsLeftOpen {
+                        setRightPartsOpen(true)
+                        if setlistCollapsed { toggleSetlist() }
+                    }
+                    #else
+                    setRightPartsOpen(true)
+                    #endif
+                }
+                #if os(macOS)
+                show.toggleFocusPanel = { toggleFocus() }
+                show.toggleLibraryPanel = { libraryOpen.toggle() }
+                #endif
+                show.toggleTracksPanel = { toggleMixer() }
+                #if os(macOS)
+                show.showTrackFocus = { openDesktopFX($0, "Chain") }
+                #endif
+                show.toggleBarMixerPanel = { toggleBarMixer() }
+                show.toggleSetlistPanel = { toggleSetlist() }
             }
+            #if os(macOS)
+            .onChange(of: documents.projectTabIndex) { _ in
+                if !DesktopProjectTabs.shared.isForeground(show) {
+                    detachedMixer.close(preserveState: true); detachedSetlist.close(preserveState: true); detachedParts.close(preserveState: true); vinhetasWindow.hide(preserveState: true)
+                    toolWindows.closeAll()
+                    WorkspaceToolWindows.closePatch(for: show)
+                } else { restoreGlobalPanels(); VinhetasController.shared.bind(show: show) }
+            }
+            #endif
             .onDisappear {
+                #if os(macOS)
+                toolWindows.closeAll(); midiPreviewWindow.dock()
+                WorkspaceToolWindows.closePatch(for: show)
+                #endif
                 guard !remotePresentation else { return }
                 #if os(macOS)
-                detachedMixer.close()
+                detachedMixer.close(preserveState: true); detachedSetlist.close(preserveState: true); detachedParts.close(preserveState: true); vinhetasWindow.hide(preserveState: true)
+                guard DesktopProjectTabs.shared.isForeground(show) else { return }
                 #endif
                 // SwiftUI presents the replacement .id before removing the old
                 // workspace. The old view must not erase the new callbacks.
                 guard presentedSessionID == show.projectSessionID else { return }
-                show.toggleTracksPanel = {}; show.toggleSetlistPanel = {}; show.togglePartsPanel = {}
+                show.toggleFocusPanel = {}; show.toggleLibraryPanel = {}
+                show.toggleTracksPanel = {}; show.toggleBarMixerPanel = {}; show.toggleSetlistPanel = {}; show.togglePartsPanel = {}; show.showPartsPanel = {}
+                show.showTrackFocus = { _ in }
                 #if os(macOS)
                 ResolumeController.shared.stop()
                 FXWindows.shared.closeAll()
-                RightClickRouter.shared.interactionBlocked = false
                 #endif
             }
             .alert(Text(verbatim: recording.error.isEmpty ? "" : JarasLocalization.string("Recording")), isPresented: Binding(get: { !recording.error.isEmpty }, set: { if !$0 { recording.error = "" } })) { Button("OK") { recording.error = "" } } message: { Text(LocalizedStringKey(recording.error)) }
             .overlay {
-                if mappings.editing != nil && mappings.editing?.fxParameter == nil && panel == nil {
-                    ZStack { Color.black.opacity(0.25).contentShape(Rectangle()).onTapGesture { mappings.editing = nil }; ControlMappingEditor() }
+                if mappings.editing != nil && mappings.editing?.presentedInline != true && mappings.editing?.fxParameter == nil && panel == nil {
+                    #if os(macOS)
+                    WorkspaceToolStateView(windows: toolWindows) { windows in
+                        if !windows.settingsOpen { mappingOverlay }
+                    }
+                    #else
+                    mappingOverlay
+                    #endif
                 }
             }
             .overlay {
@@ -403,10 +855,14 @@ struct MainView: View {
                     }
                 }
             }
+            .sheet(item: $fullLyricsTarget) { target in
+                FullLyricsEditor(show: show, target: target, close: { fullLyricsTarget = nil })
+            }
+            #if !os(macOS)
             .sheet(item: $panel) { selected in
                 VStack(spacing: 0) {
                     HStack {
-                        Text(LocalizedStringKey(selected.isSettings ? "Configurações" : "Projetos")).font(.headline)
+                        Text(LocalizedStringKey(selected.isSettings ? "Configurações" : "Home")).font(.jarasHeadline)
                         Spacer()
                         Button { panel = nil } label: { Image(systemName: "xmark").frame(width: 44, height: 44).contentShape(Rectangle()) }.buttonStyle(.plain).accessibilityLabel("Fechar").keyboardShortcut(.cancelAction)
                     }.padding(16)
@@ -414,110 +870,351 @@ struct MainView: View {
                     if selected.isSettings {
                         SettingsView(auth: auth, show: show, backend: backend, initialSection: selected == .audioSettings ? .audio : .general)
                     } else {
-                        ProjectBrowserView(documents: documents, completed: { panel = nil })
+                        ProjectBrowserView(documents: documents, completed: { panel = nil }, homeModal: true)
                     }
                 }
                 .frame(width: selected.isSettings ? 940 : documents.folderReview == nil ? 560 : 840, height: selected.isSettings ? 540 : 500)
-                .background(JarasTheme.background).foregroundStyle(JarasTheme.text)
+                .background(selected.isSettings ? interfaceTheme.background : interfaceTheme.homeBackground).foregroundStyle(JarasTheme.text)
                 .environment(\.locale, Locale(identifier: language))
             }
+            #endif
+    }
+    private var mappingOverlay: some View {
+        ZStack {
+            Color.black.opacity(0.25).contentShape(Rectangle()).onTapGesture { mappings.editing = nil }
+            ControlMappingEditor()
+        }
+    }
+    private func openProjects() {
+        #if os(macOS)
+        showProjects(false)
+        #else
+        panel = .projects
+        #endif
     }
     #if os(macOS)
-    private var leftToolRail: some View {
-        VStack(spacing: 8) {
-            Button {
-                withAnimation(.easeOut(duration: 0.16)) { navigationOpen.toggle() }
-            } label: {
-                Image(systemName: "line.3.horizontal")
-                    .font(.system(size: 16))
-                    .frame(width: 30, height: 32)
-                    .contentShape(Rectangle())
+    private var desktopToolBar: some View {
+        DesktopToolbarDockInputs(docks: performanceDockState, detachedPreview: midiPreviewWindow.visibility, mixerKey: footerMixerPreferenceKey,
+            content: desktopToolBarContent)
+    }
+    private func desktopToolBarContent(_ indicators: DesktopDockIndicators) -> some View {
+        Group {
+            if #available(macOS 13, *) {
+                ViewThatFits(in: .horizontal) {
+                    desktopToolbarRow(compact: false, indicators: indicators)
+                    desktopToolbarRow(compact: true, indicators: indicators)
+                    VStack(spacing: 0) {
+                        HStack(spacing: 3) { desktopToolButtons; Spacer(minLength: 0) }
+                            .frame(height: 28)
+                        HStack(spacing: 3) {
+                            TeleprompterTimerToolbarReadout().fixedSize()
+                            Spacer(minLength: 0)
+                            desktopLiveButtons
+                            desktopToolbarSettings
+                        }.frame(height: 28)
+                    }.padding(.horizontal, 4)
+                        .environment(\.compactDesktopToolbar, true)
+                }
+            } else {
+                desktopToolbarRow(compact: true, indicators: indicators)
             }
-            .accessibilityLabel("Menu")
-            .jarasHelp("Menu")
-            Button(action: toggleMixer) {
-                Image(systemName: "slider.horizontal.3")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(mixerWidth <= 0 ? Color(hex: 0xc44545) : JarasTheme.green)
-                    .frame(width: 30, height: 30)
-                    .contentShape(Rectangle())
-            }
-            .accessibilityLabel(mixerWidth <= 0 ? "Expandir Track-Mixer" : "Recolher Track-Mixer")
-            .jarasHelp(mixerWidth <= 0 ? "Restaurar largura anterior do Track-Mixer" : "Ocultar Track-Mixer")
-            MacProjectionRail(show: show)
+        }
+        .frame(maxWidth: .infinity)
+        .buttonStyle(.plain)
+        .background(interfaceTheme.titlebar)
+        .overlay(alignment: .bottom) { Rectangle().fill(JarasTheme.secondary.opacity(0.2)).frame(height: 1) }
+    }
+    private func desktopToolbarRow(compact: Bool, indicators: DesktopDockIndicators) -> some View {
+        HStack(spacing: compact ? 3 : 6) {
+            desktopToolButtons
             Spacer(minLength: 0)
-            if desktopExtras {
+            TeleprompterTimerToolbarReadout().fixedSize()
+            desktopLiveButtons
+            desktopToolbarSettings
+        }
+        .padding(.horizontal, 4)
+        .frame(height: 28)
+        .environment(\.compactDesktopToolbar, compact)
+    }
+
+    @ViewBuilder private var desktopLiveButtons: some View {
+        if desktopExtras {
+            let directory = documents.currentURL?.deletingLastPathComponent()
+            TeleprompterToggleButton(show: show, directory: directory, index: 1)
+            TeleprompterToggleButton(show: show, directory: directory, index: 2)
+            TeleprompterPreviewButton()
+            VideoToggleButton()
+            RemoteToggleButton(show: show)
+        }
+    }
+
+    @ViewBuilder private var desktopToolbarSettings: some View {
+        AudioStatusView(showsDeviceName: false) { openSettings(.audio) }
+            .font(.jarasSystem(size: 9, weight: .medium, design: .monospaced))
+            .fixedSize(horizontal: true, vertical: false).frame(height: 24)
+        WorkspaceToolStateView(windows: toolWindows) { windows in
+            Button { openSettings() } label: {
+                toolbarLabel("Settings", "gearshape", active: windows.settingsOpen)
+            }.accessibilityLabel("Configurações")
+        }
+    }
+
+    private var desktopFileButton: some View {
+        DesktopFileMenu(show: show, documents: documents, session: openProjects,
+                        label: { toolbarLabel("File", "line.3.horizontal") }, export: { showingFileExport = true },
+                        share: shareProject)
+    }
+    private var desktopTimerReadout: some View {
+        TeleprompterTimerToolbarReadout().fixedSize()
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+    private var desktopStatusControls: some View {
+        HStack(spacing: 6) { desktopToolbarSettings }.buttonStyle(.plain)
+    }
+    private func desktopTrackMixerButton(showsTitle: Bool = false) -> some View {
+        Button(action: toggleMixer) {
+            toolbarLabel("Track Mixer", "trackMixer", active: mixerWidth > 0, showsTitle: showsTitle)
+        }
+        .accessibilityLabel(mixerWidth <= 0 ? "Expandir Track-Mixer" : "Recolher Track-Mixer").help(Text("Track Mixer"))
+    }
+    private var desktopMixerButtons: some View {
+        DesktopToolbarDockInputs(docks: performanceDockState, detachedPreview: midiPreviewWindow.visibility, mixerKey: footerMixerPreferenceKey) { indicators in
+            HStack(spacing: 6) {
+                Button { libraryOpen.toggle() } label: {
+                    toolbarLabel("Library", "books.vertical", active: indicators.library, showsTitle: true)
+                }.accessibilityIdentifier("workspace-library")
+                Button(action: toggleFocus) {
+                    toolbarLabel("Track - I", "trackInspector", active: indicators.focus, showsTitle: true)
+                }.accessibilityIdentifier("workspace-focus")
+                desktopTrackMixerButton(showsTitle: true)
+                Button(action: toggleBarMixer) {
+                    toolbarLabel("Hoz Mixer", "hozMixer", active: indicators.mixer || detachedMixer.isVisible, showsTitle: true)
+                }.accessibilityLabel("Hoz-Mixer").help(Text("Hoz Mixer"))
+                    .contextMenu {
+                        Button(LocalizedStringKey(detachedMixer.isDetached ? "Dock mixer" : "Undock mixer")) {
+                            if detachedMixer.isDetached {
+                                detachedMixer.close(); footerMixerOpen = true
+                            } else { showDetachedMixer() }
+                        }
+                    }
+            }.buttonStyle(.plain)
+        }
+    }
+    private var desktopEditingWorkspaceButtons: some View {
+        DesktopToolbarDockInputs(docks: performanceDockState, detachedPreview: midiPreviewWindow.visibility, mixerKey: footerMixerPreferenceKey) { indicators in
+            HStack(spacing: 6) { desktopWorkspaceToolButtons(indicators: indicators) }
+                .buttonStyle(.plain)
+        }
+    }
+    private var desktopEditingLiveButtons: some View {
+        HStack(spacing: 6) {
+            MacProjectionRail(show: show)
+            TeleprompterTimerToolbarButton()
+            desktopLiveButtons
+        }.buttonStyle(.plain)
+    }
+    private var desktopToolButtons: some View {
+        Group {
+            desktopFileButton
+            desktopTrackMixerButton()
+            MacProjectionRail(show: show)
+            TeleprompterTimerToolbarButton()
+        }
+    }
+    @ViewBuilder private func desktopWorkspaceToolButtons(indicators: DesktopDockIndicators) -> some View {
+        if desktopExtras {
+            WorkspaceToolStateView(windows: toolWindows) { windows in
+                Button { windows.openMatrixPatch(show: show) } label: {
+                    toolbarLabel("Matrix Patch", "square.grid.3x3", active: windows.matrixPatchOpen)
+                }
+                .accessibilityLabel("Matrix Patch").help(Text("Matrix Patch"))
+            }
             Button {
-                if detachedMixer.isDetached {
-                    if detachedMixer.isVisible { detachedMixer.hide() }
-                    else { showDetachedMixer() }
-                } else {
-                    footerMixerOpen.toggle()
-                    if footerMixerOpen { sectionsPresentation = nil }
-                }
+                if detachedParts.isDetached {
+                    if detachedParts.isVisible { detachedParts.hide() }
+                    else { showLeftDetachedParts() }
+                } else { setLeftPartsOpen(!partsLeftOpen) }
             } label: {
-                Image(systemName: "slider.vertical.3")
-                    .font(.system(size: 16, weight: .semibold))
-                    .frame(width: 30, height: 32)
-                    .contentShape(Rectangle())
+                toolbarLabel("Parts", "list.bullet.indent", active: partsLeftOpen || detachedParts.isVisible)
             }
-            .foregroundStyle((footerMixerOpen || detachedMixer.isVisible) ? JarasTheme.green : JarasTheme.text)
-            .accessibilityLabel("Barra Mixer")
-            .jarasHelp("Barra Mixer")
-            .contextMenu {
-                Button(detachedMixer.isDetached ? "Dock mixer" : "Undock mixer") {
-                    if detachedMixer.isDetached {
-                        detachedMixer.close(); footerMixerOpen = true; sectionsPresentation = nil
-                    } else { showDetachedMixer() }
+                .accessibilityLabel("Parts à esquerda").help(Text("Parts"))
+                .contextMenu {
+                    Button(LocalizedStringKey(detachedParts.isDetached ? "Dock Parts" : "Undock Parts")) {
+                        if detachedParts.isDetached { detachedParts.close(); setLeftPartsOpen(true) }
+                        else { partsLeftOpen = false; showLeftDetachedParts() }
+                    }.disabled(partsLeftHorizontal)
+                    Button(partsLeftHorizontal ? "Vert-Parts" : "Hoz-Parts") {
+                        partsLeftHorizontal.toggle()
+                        setLeftPartsOpen(true)
+                    }.disabled(detachedParts.isDetached)
                 }
+        }
+        if desktopExtras {
+            Button {
+                if !keyboardOpen { closePads() }
+                keyboardOpen.toggle()
+            } label: {
+                toolbarLabel("Keyboard", "pianokeys", active: indicators.keyboard)
             }
-            Button { keyboardOpen.toggle() } label: {
-                Image(systemName: "pianokeys")
-                    .font(.system(size: 16, weight: .semibold))
-                    .frame(width: 30, height: 32)
-                    .contentShape(Rectangle())
-            }
-            .foregroundStyle(keyboardOpen ? JarasTheme.green : JarasTheme.text)
-            .accessibilityLabel("Keyboard")
-            .jarasHelp("Keyboard")
-            .immediateRightClick { keyboardSettings = true }
+
+            .immediateRightClick { keyboardSettings = true }.help(Text(verbatim: "Keyboard"))
             .sheet(isPresented: $keyboardSettings) { KeyboardSettingsView() }
             Button {
-                toggleSections(.footer)
+                VinhetasController.shared.bind(show: show)
+                if !(vinhetasWindow.detached ? vinhetasWindow.visible : vinhetasOpen) { closePanelsForPads() }
+                if vinhetasWindow.detached { vinhetasWindow.toggle(show: show) }
+                else { vinhetasOpen.toggle() }
             } label: {
-                SectionButtonsIcon()
-                    .font(.system(size: 16, weight: .semibold)).frame(width: 30, height: 32)
-                    .contentShape(Rectangle())
-            }.foregroundStyle(sectionsPresentation == .footer ? JarasTheme.green : JarasTheme.text)
-                .accessibilityLabel("Smooth Seek").jarasHelp("Smooth Seek")
+                toolbarLabel("Pads", "square.grid.3x2.fill", active: indicators.pads || vinhetasWindow.visible)
             }
-        }
-        .buttonStyle(.plain)
-        .padding(.vertical, 7)
-        .frame(width: 32)
-        .frame(maxHeight: .infinity)
-        .background(JarasTheme.panel)
-        .overlay(alignment: .trailing) { Rectangle().fill(JarasTheme.secondary.opacity(0.2)).frame(width: 1) }
-    }
-    #endif
-    private var navigationLayer: some View {
-        Group {
-            if navigationOpen {
-                ZStack(alignment: .topLeading) {
-                    Color.black.opacity(0.16).contentShape(Rectangle())
-                        .onTapGesture { navigationOpen = false }
-                    SidebarView(close: { navigationOpen = false }, openProjects: { panel = .projects })
-                        .frame(width: 210).frame(maxHeight: .infinity)
-                        .shadow(color: .black.opacity(0.3), radius: 10, x: 4)
+                .accessibilityLabel("Pads").help(Text("Pads")).contextMenu {
+                    Button(vinhetasWindow.detached ? "Indexar" : "Desindexar") {
+                        closePanelsForPads()
+                        if vinhetasWindow.detached { vinhetasWindow.dock(); vinhetasOpen = true }
+                        else { vinhetasOpen = false; vinhetasWindow.open(show: show) }
+                    }
+                }
+
+            Button {
+                if !(midiPreviewWindow.detached ? midiPreviewWindow.visible : midiPreviewOpen) { closePads() }
+                if midiPreviewWindow.detached {
+                    if midiPreviewWindow.visible { midiPreviewWindow.hide() } else { midiPreviewWindow.present(show) }
+                } else { midiPreviewOpen.toggle() }
+            } label: {
+                toolbarLabel("MIDI Preview", "midiPreview", active: indicators.midiPreview)
+            }.accessibilityLabel(Text(verbatim: "MIDI Preview")).accessibilityIdentifier("workspace-midi-preview").help(Text(verbatim: "MIDI Preview")).contextMenu {
+                Button(midiPreviewWindow.detached ? "Indexar" : "Desindexar") {
+                    closePads()
+                    if midiPreviewWindow.detached { midiPreviewWindow.dock(); midiPreviewOpen = true }
+                    else { midiPreviewOpen = false; midiPreviewWindow.present(show) }
                 }
             }
+            WorkspaceToolStateView(windows: toolWindows) { windows in
+                Button(action: openAdvanced) { toolbarLabel("Advanced", "info.circle", active: windows.advancedOpen) }
+                    .help(Text(verbatim: "Advanced"))
+            }
+            WorkspaceToolStateView(windows: toolWindows) { windows in
+                Button { windows.openGrandMA2(show: show) } label: {
+                    toolbarLabel("grandMA2", "stageLights", active: windows.grandMA2Open)
+                }.help(Text(verbatim: "grandMA2"))
+                Button { windows.openResolume(show: show) } label: {
+                    toolbarLabel("Resolume", "projection", active: windows.resolumeOpen)
+                }.help(Text(verbatim: "Resolume"))
+            }
         }
     }
+    private func toolbarLabel(_ title: String, _ symbol: String, active: Bool = false, showsTitle: Bool = false) -> some View {
+        DesktopToolbarLabel(title: title, systemImage: symbol, active: active, showsTitle: showsTitle)
+    }
+    #endif
 }
 struct MainPreview: PreviewProvider { static var previews: some View { let container = try! AppContainer(preview: true); MainView(show: container.show, auth: container.auth, backend: container.backend, documents: container.documents).frame(width: 1360, height: 800) } }
 
 #if os(macOS)
 import AppKit
+
+private struct WorkspaceToolStateView<Content: View>: View {
+    @ObservedObject var windows: WorkspaceToolWindows
+    @ViewBuilder let content: (WorkspaceToolWindows) -> Content
+    var body: some View { content(windows) }
+}
+
+private struct DesktopDockIndicators {
+    let pads: Bool
+    let library: Bool
+    let mixer: Bool
+    let focus: Bool
+    let keyboard: Bool
+    let midiPreview: Bool
+}
+
+/// Dock toggles update their indicators and layout consumers independently of MainView.
+private struct DesktopToolbarDockInputs<Content: View>: View {
+    @ObservedObject var docks: DesktopPerformanceDocks
+    @ObservedObject private var midiPreview: MIDIPreviewVisibility
+    @ObservedObject private var detachedPreview: MIDIPreviewVisibility
+    @AppStorage(desktopLibraryVisibilityKey, store: WorkspaceLayoutPreferences.storage) private var libraryOpen = false
+    @AppStorage("jaras.vinhetas.visible", store: WorkspaceLayoutPreferences.storage) private var padsOpen = false
+    @AppStorage private var mixerOpen: Bool
+    let content: (DesktopDockIndicators) -> Content
+
+    init(docks: DesktopPerformanceDocks, detachedPreview: MIDIPreviewVisibility, mixerKey: String, content: @escaping (DesktopDockIndicators) -> Content) {
+        self.docks = docks; self.content = content
+        _midiPreview = ObservedObject(wrappedValue: docks.midiPreview)
+        _detachedPreview = ObservedObject(wrappedValue: detachedPreview)
+        _mixerOpen = AppStorage(wrappedValue: false, mixerKey, store: WorkspaceLayoutPreferences.storage)
+    }
+
+    var body: some View {
+        content(DesktopDockIndicators(pads: padsOpen, library: libraryOpen, mixer: mixerOpen, focus: docks.focusOpen,
+            keyboard: docks.keyboardOpen, midiPreview: midiPreview.active || detachedPreview.active))
+    }
+}
+
+private struct DesktopFooterDockInputs<Content: View>: View {
+    let docks: DesktopPerformanceDocks
+    @AppStorage private var mixerOpen: Bool
+    @AppStorage("catlive.footerDisplayHeight", store: WorkspaceLayoutPreferences.storage) private var storedFooterHeight = 27.0
+    @State private var keyboardOpen: Bool?
+    @ViewBuilder let content: (Bool, Bool, Binding<Double>) -> Content
+
+    init(docks: DesktopPerformanceDocks, mixerKey: String, @ViewBuilder content: @escaping (Bool, Bool, Binding<Double>) -> Content) {
+        self.docks = docks; self.content = content
+        _mixerOpen = AppStorage(wrappedValue: false, mixerKey, store: WorkspaceLayoutPreferences.storage)
+    }
+
+    var body: some View {
+        content(keyboardOpen ?? docks.keyboardOpen, mixerOpen, $storedFooterHeight)
+            .onReceive(docks.$keyboardOpen.removeDuplicates()) { if keyboardOpen != $0 { keyboardOpen = $0 } }
+    }
+}
+
+private struct DesktopRightDockEditorWidth<Content: View>: View {
+    let enabled: Bool
+    let show: ShowController
+    let docks: DesktopPerformanceDocks
+    let baseWidth: CGFloat
+    @ViewBuilder let content: (CGFloat) -> Content
+    @AppStorage(desktopLibraryVisibilityKey, store: WorkspaceLayoutPreferences.storage) private var libraryOpen = false
+    @State private var focusWidth: CGFloat?
+
+    private var updates: AnyPublisher<CGFloat, Never> {
+        guard enabled else { return Empty().eraseToAnyPublisher() }
+        let selection = show.projectPresentation.objectWillChange
+            .merge(with: show.trackSelectionPresentation.objectWillChange)
+            .map { FooterHorizontalMixer.hasFocusSelection(in: show) }
+            .prepend(FooterHorizontalMixer.hasFocusSelection(in: show))
+            .removeDuplicates()
+        return docks.$focusOpen.removeDuplicates().combineLatest(selection)
+            .map { open, selected in open ? FooterHorizontalMixer.focusWidth(hasSelectedTrack: selected) : 0 }
+            .removeDuplicates().eraseToAnyPublisher()
+    }
+
+    var body: some View {
+        let library = enabled && libraryOpen
+        let focus = enabled ? (focusWidth ?? (docks.focusOpen
+            ? FooterHorizontalMixer.focusWidth(hasSelectedTrack: FooterHorizontalMixer.hasFocusSelection(in: show)) : 0)) : 0
+        content(baseWidth + focus + (library ? 122 : 0))
+            .onReceive(updates) { if focusWidth != $0 { focusWidth = $0 } }
+            .onChange(of: enabled) { if !$0 { focusWidth = nil } }
+    }
+}
+
+private struct DetachedSetlistContent: View {
+    let show: ShowController
+    let mediaDirectory: URL?
+    @Binding var partsOpen: Bool
+    @AppStorage("jaras.language") private var language = "en"
+    var body: some View {
+        SectionListDock(visible: partsOpen, storageKey: "catlive.parts.detached.width",
+                        minimumPrimaryWidth: SidebarWidthLimits.setlist, defaultFraction: 0.42) {
+            SongListView(show: show, mediaDirectory: mediaDirectory, partsOpen: partsOpen,
+                         toggleParts: { partsOpen.toggle() })
+        } sections: { SmoothSeekPanel(show: show) }
+            .environment(\.locale, Locale(identifier: language))
+            .preferredColorScheme(.dark).foregroundStyle(JarasTheme.text).background(JarasTheme.panel)
+    }
+}
 
 /// Hover redraws only the divider, without publishing changes to the timeline.
 class ResizeHoverIndicatorView: NSView {
@@ -544,9 +1241,14 @@ class ResizeHoverIndicatorView: NSView {
 
 private struct AudioStatusView: View {
     @ObservedObject private var audio = AudioDeviceSettings.shared
+    var showsDeviceName = true
     let openSettings: () -> Void
     @State private var hovering = false
-    private var status: String { "\(audio.deviceName) · \(audio.bufferFrames) · \(Int(audio.sampleRate)) Hz" }
+    private var status: String {
+        guard audio.channels > 0, audio.devices.contains(where: { $0.id == audio.selectedUID }) else { return "No Device" }
+        let format = "\(audio.bufferFrames) · \(Int(audio.sampleRate)) Hz"
+        return showsDeviceName ? "\(audio.deviceName) · \(format)" : format
+    }
     var body: some View {
         Button(action: openSettings) {
             Text(verbatim: status)
@@ -573,10 +1275,11 @@ private struct AudioDropOptions: View {
     @FocusState private var gapFocused: Bool
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text("Import audio").font(.headline)
+            Text("Import audio").font(.jarasHeadline)
             Picker("Placement", selection: $layout) {
                 Text("One track per item").tag(AudioDropLayout.separateTracks)
-                Text("All items on the same track").tag(AudioDropLayout.sameTrack)
+                Text("Same track, in sequence").tag(AudioDropLayout.sameTrack)
+                Text("Same track, same start time").tag(AudioDropLayout.stacked)
             }
             #if os(macOS)
             .pickerStyle(.radioGroup)
@@ -624,12 +1327,15 @@ private struct AudioDropOptions: View {
 /// Reuses the per-song pitch state and target editor in the transport.
 struct RegionTunerControl: View {
     let show: ShowController
+    let panelWidth: CGFloat?
+    let panelHeight: CGFloat
     @StateObject private var updates: ShowPresentationObserver
-    init(show: ShowController) {
-        self.show = show
+    init(show: ShowController, panelWidth: CGFloat? = nil, panelHeight: CGFloat = TransportControlMetrics.detailHeight) {
+        self.show = show; self.panelWidth = panelWidth; self.panelHeight = panelHeight
         _updates = StateObject(wrappedValue: show.presentationObserver)
     }
     @State private var editing: Part?
+    @State private var hoveredStep: Int?
     private func step(_ delta: Int) {
         guard let song = show.current, let region = show.pitchRegion else { return }
         let targets = song.pitchTargets(region)
@@ -637,63 +1343,84 @@ struct RegionTunerControl: View {
     }
     var body: some View {
         HStack(spacing: 3) {
-            Text(verbatim: "Tuner").font(.system(size: 9, weight: .semibold)).foregroundStyle(JarasTheme.text)
-            Button { step(-1) } label: { Image(systemName: "minus").frame(width: 20, height: 25).contentShape(Rectangle()) }
+            Text(verbatim: "Tuner").font(.jarasSystem(size: 9, weight: .semibold)).foregroundStyle(JarasTheme.text)
+                .fixedSize(horizontal: true, vertical: false)
+            Button { step(-1) } label: { tunerStepLabel("minus", step: -1) }
                 .disabled(show.pitchRegion == nil || (show.pitchRegion?.semitones ?? 0) <= -12).jarasHelp("Lower song pitch")
+                .onHover { updateHover(-1, inside: $0) }
             Text(String(format: "%dst", show.pitchRegion?.semitones ?? 0))
-                .font(.system(size: 11, weight: .semibold, design: .monospaced)).monospacedDigit()
-                .frame(width: 34, height: 23).background(JarasTheme.display).cornerRadius(4)
+                .font(.jarasSystem(size: 11, weight: .semibold, design: .monospaced)).monospacedDigit()
+                .frame(width: 34, height: 23)
+                #if os(macOS)
                 .immediateRightClick { editing = show.pitchRegion }
+                #else
+                .modifier(NativeTunerTargets(show: show))
+                #endif
                 .accessibilityLabel("Song pitch").accessibilityValue(String(show.pitchRegion?.semitones ?? 0) + "st")
-            Button { step(1) } label: { Image(systemName: "plus").frame(width: 20, height: 25).contentShape(Rectangle()) }
+            Button { step(1) } label: { tunerStepLabel("plus", step: 1) }
                 .disabled(show.pitchRegion == nil || (show.pitchRegion?.semitones ?? 0) >= 12).jarasHelp("Raise song pitch")
+                .onHover { updateHover(1, inside: $0) }
         }.buttonStyle(.plain).foregroundStyle(JarasTheme.green)
-        .padding(.horizontal, 6).frame(height: 25)
-        .background(JarasTheme.display, in: RoundedRectangle(cornerRadius: 4))
-        .overlay(RoundedRectangle(cornerRadius: 4).stroke(JarasTheme.line).allowsHitTesting(false))
+        .padding(.horizontal, 6).frame(width: panelWidth, height: panelHeight)
+        .background(TransportDetailSurface())
         .sheet(item: $editing) { region in
             if let song = show.current {
                 RegionPitchTargets(show: show, song: song, region: region, close: { editing = nil })
             }
         }
     }
+    private func tunerStepLabel(_ symbol: String, step: Int) -> some View {
+        Image(systemName: symbol).font(.jarasSystem(size: TransportControlMetrics.stepSymbolSize, weight: .medium))
+            .frame(width: 20, height: 23)
+            .overlay(RoundedRectangle(cornerRadius: 3)
+                .strokeBorder(hoveredStep == step ? JarasTheme.secondary.opacity(0.65) : .clear)
+                .allowsHitTesting(false))
+            .contentShape(Rectangle())
+    }
+    private func updateHover(_ step: Int, inside: Bool) {
+        if inside { hoveredStep = step }
+        else if hoveredStep == step { hoveredStep = nil }
+    }
 }
-private struct RegionPitchTargets: View {
+struct RegionPitchTargets: View {
     let show: ShowController
     let song: Song
     let region: Part
     let close: () -> Void
     @State private var tab = 0
     @State private var tracks: Set<UUID>
-    @State private var groups: Set<UUID>
+    private let groupTracks: [UUID: Set<UUID>]
     init(show: ShowController, song: Song, region: Part, close: @escaping () -> Void) {
         self.show = show; self.song = song; self.region = region; self.close = close
+        let hierarchy = TrackHierarchy(song.tracks)
+        var contents: [UUID: Set<UUID>] = [:]
+        for track in song.pitchTracks {
+            for parent in hierarchy.ancestors(of: track.id) {
+                contents[parent, default: []].insert(track.id)
+            }
+        }
+        groupTracks = contents
         let selection = song.pitchTargets(region)
-        _tracks = State(initialValue: selection.tracks); _groups = State(initialValue: selection.groups)
+        _tracks = State(initialValue: selection.groups.reduce(into: selection.tracks) { result, group in
+            result.formUnion(contents[group] ?? [])
+        })
     }
     private var visibleTracks: [Track] { tab == 0 ? song.pitchTracks : song.pitchGroups }
     private var allSelected: Bool { !visibleTracks.isEmpty && visibleTracks.allSatisfy(isSelected) }
+    private func targetIDs(_ track: Track) -> Set<UUID> {
+        tab == 0 ? [track.id] : groupTracks[track.id] ?? []
+    }
     private func isSelected(_ track: Track) -> Bool {
-        if tab == 0 { return tracks.contains(track.id) || track.parentTrackID.map(groups.contains) == true }
-        let members = song.tracks.filter { $0.parentTrackID == track.id }
-        return groups.contains(track.id) || (!members.isEmpty && members.allSatisfy { tracks.contains($0.id) })
+        let targets = targetIDs(track)
+        return !targets.isEmpty && targets.isSubset(of: tracks)
     }
     private func setSelected(_ track: Track, _ selected: Bool) {
-        if tab == 0 {
-            // Deselecting one child keeps its siblings selected.
-            if !selected, let parent = track.parentTrackID, groups.remove(parent) != nil {
-                tracks.insert(parent)
-                tracks.formUnion(song.tracks.filter { $0.parentTrackID == parent && $0.id != track.id }.map(\.id))
-            }
-            if selected { tracks.insert(track.id) } else { tracks.remove(track.id) }
-        } else {
-            tracks.subtract(song.tracks.filter { $0.parentTrackID == track.id || $0.id == track.id }.map(\.id))
-            if selected { groups.insert(track.id) } else { groups.remove(track.id) }
-        }
+        let targets = targetIDs(track)
+        if selected { tracks.formUnion(targets) } else { tracks.subtract(targets) }
     }
     var body: some View {
         VStack(spacing: 14) {
-            HStack { Text("Pitch · " + region.displayName).font(.headline).lineLimit(1); Spacer(); Button(action: close) { Image(systemName: "xmark").frame(width: 32, height: 32).contentShape(Rectangle()) }.buttonStyle(.plain) }
+            HStack { Text("Pitch · " + region.displayName).font(.jarasHeadline).lineLimit(1); Spacer(); Button(action: close) { Image(systemName: "xmark").frame(width: 32, height: 32).contentShape(Rectangle()) }.buttonStyle(.plain).accessibilityLabel("Close").keyboardShortcut(.cancelAction) }
             Picker("", selection: $tab) { Text("Tracks").tag(0); Text("Groups").tag(1) }.pickerStyle(.segmented).labelsHidden()
             HStack {
                 Spacer()
@@ -707,23 +1434,31 @@ private struct RegionPitchTargets: View {
                     ForEach(visibleTracks) { track in
                         Toggle(track.name, isOn: Binding(get: { isSelected(track) }, set: { setSelected(track, $0) }))
                             .toggleStyle(.automatic).tint(JarasTheme.green)
+                            .disabled(targetIDs(track).isEmpty)
                     }
                 }.frame(maxWidth: .infinity, alignment: .leading).padding(8)
             }.frame(height: 245)
-            HStack { Spacer(); Button("Cancel", action: close).keyboardShortcut(.cancelAction); Button("Apply") {
-                let current = show.current?.parts.first { $0.id == region.id } ?? region
-                show.setRegionPitch(region.id, semitones: current.semitones, tracks: tracks, groups: groups); close()
+            HStack { Spacer(); Button("Apply") {
+                if let current = show.current?.parts.first(where: { $0.id == region.id }),
+                   current.pitchTrackIDs.map(Set.init) != tracks || current.pitchGroupIDs != [] {
+                    show.setRegionPitch(region.id, semitones: current.semitones, tracks: tracks, groups: [])
+                }
+                close()
             }.keyboardShortcut(.defaultAction) }
         }.padding(20).frame(width: 410).background(JarasTheme.panel).foregroundStyle(JarasTheme.text)
     }
 }
 
-private struct FooterPianoKeyboard: View {
+struct FooterPianoKeyboard: View {
     var active = true
     @ObservedObject private var state = KeyboardMIDIMonitor.shared
     @AppStorage("jaras.keyboard.whiteColor") private var whiteColor = 0x54ff93
     @AppStorage("jaras.keyboard.blackColor") private var blackColor = 0x54ff93
-    @State private var pressed: UInt8?
+    @AppStorage("jaras.keyboard.style") private var style = "default"
+    @State private var pressed: Set<UInt8> = []
+    #if os(iOS)
+    @Environment(\.scenePhase) private var scenePhase
+    #endif
     private let whiteNotes = (21...108).filter { ![1,3,6,8,10].contains($0 % 12) }
     private func keyRect(_ note: Int, size: CGSize) -> CGRect {
         let width = size.width / CGFloat(whiteNotes.count)
@@ -738,43 +1473,85 @@ private struct FooterPianoKeyboard: View {
         }
         return whiteNotes.first(where: { keyRect($0, size: size).contains(point) }).map(UInt8.init)
     }
-    private func release() { if let pressed { StemAudioPlayback.shared.releaseKeyboardNote(pressed) }; pressed = nil }
+    private func setPressed(_ next: Set<UInt8>) {
+        guard next != pressed else { return }
+        for note in pressed.subtracting(next) { StemAudioPlayback.shared.releaseKeyboardNote(note) }
+        for note in next.subtracting(pressed) { StemAudioPlayback.shared.playKeyboardNote(note) }
+        pressed = next
+    }
     var body: some View {
         GeometryReader { geometry in
             Canvas { context, size in
                 for black in [false, true] {
                     for note in 21...108 where (!whiteNotes.contains(note)) == black {
                         let rect = keyRect(note, size: size).insetBy(dx: 0.5, dy: 0)
-                        let active = state.notes.contains(UInt8(note)) || pressed == UInt8(note)
-                        context.fill(Path(roundedRect: rect, cornerRadius: 2), with: .color(active ? Color(hex: UInt32(black ? blackColor : whiteColor)) : (black ? Color(white: 0.08) : Color(white: 0.89))))
+                        let active = state.notes.contains(UInt8(note)) || pressed.contains(UInt8(note))
+                        context.fill(Path(roundedRect: rect, cornerRadius: 2), with: .color(active ? Color(hex: UInt32(black ? blackColor : whiteColor)) : ((black != (style == "black")) ? Color(white: 0.08) : Color(white: 0.89))))
                         if note == 21 || note % 12 == 0 {
                             let label = note == 21 ? "A-1" : "C\(note / 12 - 2)"
-                            context.draw(Text(verbatim: label).font(.system(size: 9, weight: .medium)).foregroundColor(.black), at: CGPoint(x: rect.midX, y: rect.maxY - 11))
+                            context.draw(Text(verbatim: label).font(.jarasSystem(size: 9, weight: .medium)).foregroundColor(style == "black" && !active ? .white : .black), at: CGPoint(x: rect.midX, y: rect.maxY - 11))
                         }
                     }
                 }
             }.contentShape(Rectangle())
+                #if os(iOS)
+                .overlay {
+                    FooterKeyboardTouchInput { points in
+                        setPressed(active && scenePhase == .active ? Set(points.compactMap { note(at: $0, size: geometry.size) }) : [])
+                    }
+                }
+                #else
                 .gesture(DragGesture(minimumDistance: 0).onChanged { event in
-                    let next = note(at: event.location, size: geometry.size)
-                    guard pressed != next else { return }
-                    release(); pressed = next
-                    if let next { StemAudioPlayback.shared.playKeyboardNote(next) }
-                }.onEnded { _ in release() })
+                    setPressed(note(at: event.location, size: geometry.size).map { [$0] } ?? [])
+                }.onEnded { _ in setPressed([]) })
+                #endif
         }.padding(.horizontal, 6).padding(.vertical, 4).background(JarasTheme.panel)
-            .onDisappear { release(); StemAudioPlayback.shared.releaseKeyboardNotes() }
-            .onChange(of: active) { if !$0 { release(); StemAudioPlayback.shared.releaseKeyboardNotes() } }
+            .onDisappear { setPressed([]); StemAudioPlayback.shared.releaseKeyboardNotes() }
+            .onChange(of: active) { if !$0 { setPressed([]); StemAudioPlayback.shared.releaseKeyboardNotes() } }
             #if os(macOS)
-            .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in release(); StemAudioPlayback.shared.releaseKeyboardNotes() }
+            .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in setPressed([]); StemAudioPlayback.shared.releaseKeyboardNotes() }
+            #else
+            .onChange(of: scenePhase) { if $0 != .active { setPressed([]) } }
             #endif
             .accessibilityLabel("88-key keyboard")
     }
 }
 
+#if os(iOS)
+private struct FooterKeyboardTouchInput: UIViewRepresentable {
+    let changed: ([CGPoint]) -> Void
+
+    func makeUIView(context: Context) -> TouchView {
+        let view = TouchView()
+        view.isMultipleTouchEnabled = true
+        return view
+    }
+
+    func updateUIView(_ view: TouchView, context: Context) { view.changed = changed }
+
+    final class TouchView: UIView {
+        var changed: (([CGPoint]) -> Void)?
+        private var points: [ObjectIdentifier: CGPoint] = [:]
+
+        private func update(_ touches: Set<UITouch>, finished: Bool = false) {
+            for touch in touches {
+                points[ObjectIdentifier(touch)] = finished ? nil : touch.location(in: self)
+            }
+            changed?(Array(points.values))
+        }
+
+        override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) { update(touches) }
+        override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) { update(touches) }
+        override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) { update(touches, finished: true) }
+        override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) { update(touches, finished: true) }
+    }
+}
+#endif
+
 private struct KeyboardSettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @AppStorage("jaras.keyboard.whiteColor") private var whiteColor = 0x54ff93
     @AppStorage("jaras.keyboard.blackColor") private var blackColor = 0x54ff93
-    @State private var channel = KeyboardMIDIMonitor.shared.channel
     private func color(_ value: Binding<Int>) -> Binding<Color> {
         Binding(get: { Color(hex: UInt32(value.wrappedValue)) }, set: { color in
             #if os(macOS)
@@ -789,14 +1566,12 @@ private struct KeyboardSettingsView: View {
     }
     var body: some View {
         VStack(spacing: 18) {
-            Text("Keyboard").font(.headline)
+            Text("Keyboard").font(.jarasHeadline)
             ColorPicker("White key highlight", selection: color($whiteColor), supportsOpacity: false)
             ColorPicker("Black key highlight", selection: color($blackColor), supportsOpacity: false)
-            Picker("MIDI channel", selection: $channel) {
-                ForEach(1...16, id: \.self) { Text(String($0)).tag($0) }
-            }.onChange(of: channel) { KeyboardMIDIMonitor.shared.channel = $0 }
+            AdvancedKeyboardSettings()
             Button("Close") { dismiss() }.keyboardShortcut(.defaultAction)
-        }.font(.body).padding(24).frame(width: 340).background(JarasTheme.panel)
+        }.font(.jarasBody).padding(24).frame(width: 340).background(JarasTheme.panel)
             #if os(macOS)
             .onExitCommand { dismiss() }
             #endif
@@ -829,13 +1604,13 @@ private struct FooterProjectNameDisplay: View {
         self.show = show; self.documents = documents; self.titlebar = titlebar
         _updates = StateObject(wrappedValue: show.presentationObserver)
     }
-    @State private var showingBackups = false
-    @State private var backups: [(url: URL, date: Date)] = []
-    @State private var loadingBackups = false
-    @State private var backupError = ""
     @State private var savedDate = ""
     private var timestamp: String { show.lastSavedAt ?? show.snapshot.project.updatedAt }
-    private var label: String { "\(JarasLocalization.string("Session")) - \(show.snapshot.project.name) - \(savedDate)" }
+    private var label: String { "\(show.snapshot.project.name) - \(savedDate)" }
+    fileprivate static func formatted(_ timestamp: String, withSeconds: Bool = false) -> String {
+        guard let date = iso.date(from: timestamp) ?? fractional.date(from: timestamp) else { return "—" }
+        return (withSeconds ? backupDate : displayDate).string(from: date)
+    }
     private static let iso = ISO8601DateFormatter()
     private static let fractional: ISO8601DateFormatter = {
         let value = ISO8601DateFormatter(); value.formatOptions = [.withInternetDateTime, .withFractionalSeconds]; return value
@@ -843,80 +1618,262 @@ private struct FooterProjectNameDisplay: View {
     private static let displayDate: DateFormatter = {
         let value = DateFormatter(); value.locale = Locale(identifier: "en_US_POSIX"); value.dateFormat = "dd/MM/yyyy HH:mm"; return value
     }()
-    private func updateDate() {
-        savedDate = (Self.iso.date(from: timestamp) ?? Self.fractional.date(from: timestamp)).map { Self.displayDate.string(from: $0) } ?? "—"
-    }
-    private func loadBackups() async {
-        guard let document = documents.currentURL else { backups = []; return }
-        loadingBackups = true; backupError = ""
-        defer { loadingBackups = false }
-        do {
-            backups = try await Task.detached(priority: .userInitiated) {
-                try ProjectBackups.migrateLegacyNames(for: document)
-                let folder = ProjectBackups.mediaDirectory(for: document).appendingPathComponent("backups", isDirectory: true)
-                guard FileManager.default.fileExists(atPath: folder.path) else { return [(url: URL, date: Date)]() }
-                let entries = try FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey])
-                return try entries.filter { $0.pathExtension.lowercased() == "bkjl" }.compactMap { url -> (url: URL, date: Date)? in
-                    let properties = try url.resourceValues(forKeys: [.contentModificationDateKey, .isRegularFileKey])
-                    guard properties.isRegularFile == true else { return nil }
-                    return (url, ProjectBackups.date(for: url))
-                }.sorted { $0.date == $1.date ? $0.url.lastPathComponent > $1.url.lastPathComponent : $0.date > $1.date }.prefix(10).map { $0 }
-            }.value
-        } catch { backupError = error.localizedDescription }
-    }
-    private var backupList: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Recent backups").font(.headline)
-            if loadingBackups { ProgressView() }
-            else if !backupError.isEmpty { Text(verbatim: backupError).foregroundStyle(.red) }
-            else if backups.isEmpty { Text("No backups found").foregroundStyle(.secondary) }
-            else {
-                ScrollView {
-                    VStack(spacing: 5) {
-                        ForEach(backups, id: \.url) { backup in
-                            Button {
-                                showingBackups = false
-                                documents.open(backup.url)
-                            } label: {
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text(verbatim: backup.url.lastPathComponent).lineLimit(1).truncationMode(.middle)
-                                    Text(verbatim: Self.displayDate.string(from: backup.date)).font(.caption).monospacedDigit().foregroundStyle(.secondary)
-                                }.frame(maxWidth: .infinity, alignment: .leading).padding(8)
-                                    .background(Color.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 4)).contentShape(Rectangle())
-                            }.buttonStyle(.plain).disabled(documents.busy || show.isPlaying || TrackRecording.shared.recording || TrackRecording.shared.busy)
-                        }
-                    }
-                }.frame(height: min(410, CGFloat(backups.count) * 56))
-            }
-        }.padding(16).frame(width: 430).task { await loadBackups() }
-    }
+    fileprivate static let backupDate: DateFormatter = {
+        let value = DateFormatter(); value.locale = Locale(identifier: "en_US_POSIX"); value.dateFormat = "dd/MM/yy, HH:mm:ss"; return value
+    }()
+    private func updateDate() { savedDate = Self.formatted(timestamp) }
     var body: some View {
-        Button { showingBackups.toggle() } label: {
         HStack(spacing: 3) {
-            Text("Session").fixedSize()
-            Text(verbatim: "-").fixedSize()
             Text(verbatim: show.snapshot.project.name).lineLimit(1).truncationMode(.middle)
             Text(verbatim: "- \(savedDate)").fixedSize()
-        }.font(.system(size: titlebar ? 11 : 10, weight: titlebar ? .medium : .bold)).lineLimit(1)
+        }.font(.jarasSystem(size: titlebar ? 11 : 10, weight: titlebar ? .medium : .bold)).lineLimit(1)
             .padding(.horizontal, titlebar ? 0 : 7).frame(maxWidth: .infinity, alignment: .leading).frame(height: 21)
             .background(titlebar ? Color.clear : JarasTheme.display, in: RoundedRectangle(cornerRadius: 4))
             .overlay(RoundedRectangle(cornerRadius: 4).stroke(titlebar ? Color.clear : JarasTheme.line))
-            .jarasHelp(label)
             .accessibilityElement(children: .ignore).accessibilityLabel("Project name").accessibilityValue(label)
             .onAppear(perform: updateDate).onChange(of: timestamp) { _ in updateDate() }
-        }.buttonStyle(.plain)
-            .popover(isPresented: $showingBackups, arrowEdge: titlebar ? .bottom : .top) { backupList }
     }
 }
 
 #if os(macOS)
-enum FooterHeightRole { case display, mixer }
+private struct DesktopFileMenu<Label: View>: View {
+    let show: ShowController
+    @ObservedObject var documents: ProjectDocuments
+    let session: () -> Void
+    @ViewBuilder let label: () -> Label
+    let export: () -> Void
+    let share: () -> Void
+    @State private var backups: [(url: URL, date: Date)] = []
+    @State private var backupError: String?
+    @State private var savedAt: String?
+    @State private var saveAsNotice = false
+    @State private var confirmingBackup = false
+    @State private var pendingBackup: URL?
+
+    var body: some View {
+        Menu {
+            Button(action: session) { Text("Home") }
+            Button { documents.browse(onlyCatLiveProject: true) } label: { Text(verbatim: "Open") }
+            Button { documents.createTemporary(fromFileMenu: true) } label: { Text(verbatim: "New Session") }
+                .disabled(documents.busy || show.saving || TrackRecording.shared.recording || TrackRecording.shared.busy)
+            Menu {
+                if documents.recent.isEmpty { Text("No recent projects found.") }
+                ForEach(documents.recent, id: \.self) { url in
+                    Button { documents.open(url, fromFileRecents: true) } label: { Text(verbatim: url.deletingPathExtension().lastPathComponent) }
+                }
+            } label: { Text(verbatim: "Project Recents") }
+                .disabled(documents.busy || TrackRecording.shared.recording || TrackRecording.shared.busy)
+            Button {
+                documents.chooseStems(adding: true)
+                if documents.folderReview != nil { session() }
+            } label: { Text(verbatim: "Add Stems") }
+                .disabled(!documents.ready || documents.currentURL == nil || documents.busy || TrackRecording.shared.recording || TrackRecording.shared.busy)
+            Divider()
+            Button { Task { await show.save() } } label: { Text(verbatim: "Save") }
+                .disabled(!documents.ready || documents.busy)
+            Button { saveAsNotice = true } label: { Text(verbatim: "Save As") }
+                .disabled(!documents.ready || documents.busy)
+            Menu {
+                Text(verbatim: "Saved     " + FooterProjectNameDisplay.formatted(savedAt ?? show.snapshot.project.updatedAt, withSeconds: true))
+                Divider()
+                if let backupError { Text(verbatim: backupError) }
+                else if backups.isEmpty { Text("No backups found") }
+                else {
+                    ForEach(backups.indices, id: \.self) { index in
+                        Button {
+                            pendingBackup = backups[index].url
+                            confirmingBackup = true
+                        } label: {
+                            Text(verbatim: "Backup \(index + 1)     " + FooterProjectNameDisplay.backupDate.string(from: backups[index].date))
+                        }.disabled(documents.busy || TrackRecording.shared.recording || TrackRecording.shared.busy)
+                    }
+                }
+            } label: { Text(verbatim: "Backups") }
+            Divider()
+            Menu {
+                Button { documents.importTimelineFile(.audio) } label: { Text(verbatim: "Audio to File") }
+                Button { documents.importTimelineFile(.movie) } label: { Text(verbatim: "Movie to File") }
+                Button { documents.importTimelineFile(.midi) } label: { Text(verbatim: "MIDI to File") }
+            } label: { Text(verbatim: "Import") }
+            Button(action: export) { Text(verbatim: "Export") }.disabled(!documents.ready)
+            Button(action: share) { Text(verbatim: "Share") }
+                .disabled(!documents.ready || documents.busy || TrackRecording.shared.recording || TrackRecording.shared.busy)
+            Divider()
+            Button { (NSApp.mainWindow ?? NSApp.keyWindow)?.performClose(nil) } label: { Text(verbatim: "Quit") }
+        } label: { label().fixedSize().contentShape(Rectangle()) }
+        .menuStyle(.borderlessButton)
+        .modifier(DesktopFileMenuIndicator())
+        .accessibilityLabel(Text(verbatim: "File"))
+        .accessibilityIdentifier("workspace-file")
+        .task(id: documents.currentURL) { await loadBackups() }
+        .onReceive(show.$lastSavedAt) { value in
+            savedAt = value
+            if value != nil { Task { await loadBackups() } }
+        }
+        .alert(Text(verbatim: "Save As"), isPresented: $saveAsNotice) {
+            Button("Cancel", role: .cancel) {}
+            Button("Continue") { Task { await documents.saveAs() } }.keyboardShortcut(.defaultAction)
+        } message: {
+            Text("The .jl project and all its media files will be copied to a different folder.")
+        }
+        .alert("Open backup?", isPresented: $confirmingBackup, presenting: pendingBackup) { url in
+            Button("Cancel", role: .cancel) { pendingBackup = nil }
+            Button("Open") { pendingBackup = nil; documents.open(url) }
+        } message: { url in
+            Text("Open this backup as a recovered project?") + Text(verbatim: "\n\n" + url.lastPathComponent)
+        }
+    }
+
+    private func loadBackups() async {
+        guard let document = documents.currentURL else { backups = []; backupError = nil; return }
+        do {
+            let entries = try await Task.detached(priority: .utility) {
+                try ProjectBackups.migrateLegacyNames(for: document)
+                let folder = ProjectBackups.mediaDirectory(for: document).appendingPathComponent("backups", isDirectory: true)
+                let fileManager = FileManager.default
+                guard fileManager.fileExists(atPath: folder.path) else { return [(url: URL, date: Date)]() }
+                let urls = try fileManager.contentsOfDirectory(at: folder, includingPropertiesForKeys: [.isRegularFileKey])
+                return try urls.filter { $0.pathExtension.lowercased() == "bkjl" }.compactMap { url -> (url: URL, date: Date)? in
+                    guard try url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true else { return nil }
+                    return (url, ProjectBackups.date(for: url))
+                }.sorted {
+                    $0.date == $1.date ? $0.url.lastPathComponent > $1.url.lastPathComponent : $0.date > $1.date
+                }.prefix(10).map { $0 }
+            }.value
+            guard documents.currentURL == document else { return }
+            backups = entries
+            backupError = nil
+        } catch {
+            guard documents.currentURL == document else { return }
+            backups = []
+            backupError = error.localizedDescription
+        }
+    }
+}
+
+private struct DesktopFileMenuIndicator: ViewModifier {
+    @ViewBuilder func body(content: Content) -> some View {
+        if #available(macOS 12, *) { content.menuIndicator(.hidden) }
+        else { content }
+    }
+}
+#endif
+
+#if os(macOS)
+/// Keep the live height inside the retained workspace root so a drag moves
+/// the grid boundary without replacing the AppKit split view's hosted content.
+private struct DesktopWorkspacePanels {
+    let focusWidth: CGFloat
+    let spareHeight: CGFloat
+}
+private struct DesktopHozMixerDock: View {
+    let show: ShowController
+    let maximumHeight: CGFloat
+    let resizeCoordinator: FooterVerticalResizeCoordinator
+    @AppStorage("jaras.layout.mixer.open", store: WorkspaceLayoutPreferences.storage) private var visible = false
+
+    var body: some View {
+        FooterMixerPanel(show: show, active: visible, maximumHeight: maximumHeight, resizeCoordinator: resizeCoordinator)
+    }
+}
+// Parts changes the available space, while the workspace and timeline keep their identities.
+private struct DesktopPartsLayout<Content: View>: View {
+    @AppStorage private var open: Bool
+    @AppStorage("jaras.layout.parts.horizontal", store: WorkspaceLayoutPreferences.storage) private var horizontal = false
+    @AppStorage("jaras.layout.parts.heightScale", store: WorkspaceLayoutPreferences.storage) private var heightScale = 1.0
+    @ObservedObject var detached: DetachedPartsWindow
+    @ViewBuilder var content: (Bool, Bool, CGFloat) -> Content
+    init(remote: Bool, detached: DetachedPartsWindow, @ViewBuilder content: @escaping (Bool, Bool, CGFloat) -> Content) {
+        _open = AppStorage(wrappedValue: false, (remote ? "jaras.remote." : "jaras.") + "layout.parts.open",
+                           store: WorkspaceLayoutPreferences.storage)
+        self.detached = detached
+        self.content = content
+    }
+    var body: some View {
+        let bottom = open && horizontal && !detached.isDetached
+        content(open && !horizontal, bottom, bottom ? 192 * min(1.5, max(1, heightScale)) : 0)
+    }
+}
+private struct DesktopWorkspaceDocks<Upper: View, Lower: View>: View {
+    let show: ShowController
+    let desktopExtras: Bool
+    let availableHeight: CGFloat
+    @ObservedObject var performanceDockState: DesktopPerformanceDocks
+    let midiPreviewDetached: Bool
+    let padsDetached: Bool
+    let partsHeight: CGFloat
+    let resizeCoordinator: FooterVerticalResizeCoordinator
+    @ViewBuilder let upper: (DesktopWorkspacePanels, DesktopMIDIPreviewDock) -> Upper
+    @ViewBuilder let lowerDocks: (Bool, Bool) -> Lower
+    @AppStorage("jaras.vinhetas.visible", store: WorkspaceLayoutPreferences.storage) private var padsOpen = false
+    @AppStorage("jaras.midiPreview.height", store: WorkspaceLayoutPreferences.storage) private var savedHeight = 273.0
+    @State private var focusHasSelectedTrack: Bool?
+
+    var body: some View {
+        let showsPads = desktopExtras && padsOpen && !padsDetached
+        let showsKeyboard = desktopExtras && performanceDockState.keyboardOpen
+        let otherDocks: CGFloat = (showsPads ? 240 : 0) + (showsKeyboard ? 108 : 0)
+        let spare = max(0, availableHeight - otherDocks - partsHeight - 128)
+        let workspaceHeight = max(0, availableHeight - otherDocks)
+        let focused = desktopExtras && performanceDockState.focusOpen
+        let panels = DesktopWorkspacePanels(focusWidth: focused ? FooterHorizontalMixer.focusWidth(
+                hasSelectedTrack: focusHasSelectedTrack ?? FooterHorizontalMixer.hasFocusSelection(in: show)) : 0,
+            spareHeight: spare)
+        VStack(spacing: 0) {
+            upper(panels, DesktopMIDIPreviewDock(show: show, visibility: performanceDockState.midiPreview,
+                enabled: desktopExtras && !midiPreviewDetached,
+                storedHeight: $savedHeight, spareHeight: spare,
+                resizeCoordinator: resizeCoordinator))
+                .frame(height: workspaceHeight, alignment: .top).clipped()
+            lowerDocks(showsKeyboard, showsPads)
+        }
+        .onReceive(show.projectPresentation.objectWillChange
+            .merge(with: show.trackSelectionPresentation.objectWillChange)
+                .map { FooterHorizontalMixer.hasFocusSelection(in: show) }.removeDuplicates()) { selected in
+            if focusHasSelectedTrack != selected { focusHasSelectedTrack = selected }
+        }
+    }
+}
+
+private struct DesktopMIDIPreviewDock: View {
+    let show: ShowController
+    @ObservedObject var visibility: MIDIPreviewVisibility
+    let enabled: Bool
+    @Binding var storedHeight: Double
+    let spareHeight: CGFloat
+    let resizeCoordinator: FooterVerticalResizeCoordinator
+    @AppStorage("jaras.layout.mixer.open", store: WorkspaceLayoutPreferences.storage) private var mixerVisible = false
+
+    var body: some View {
+        let active = enabled && visibility.active
+        let mixerReserve = mixerVisible ? min(160, spareHeight / 2) : 0
+        let maximum = min(723.55859375, spareHeight - mixerReserve)
+        let minimum = min(273, maximum)
+        return FooterNativeHeightHost(storedHeight: storedHeight, minimum: minimum, maximum: maximum,
+            active: active, identity: AnyHashable(ObjectIdentifier(show)), role: .midiPreview,
+            resizeCoordinator: resizeCoordinator, workspaceSpareHeight: spareHeight) {
+            VStack(spacing: 0) {
+                FooterMixerResizeInput(height: storedHeight, minimum: minimum, maximum: maximum,
+                    changed: { _ in }, ended: { storedHeight = $0 })
+                    .frame(height: 10)
+                    .accessibilityLabel("Resize MIDI Preview")
+                DesktopRecordingPianoPreview(show: show, visibility: visibility)
+                    .frame(maxHeight: .infinity)
+                    .clipped()
+            }
+        }.clipped().allowsHitTesting(active).accessibilityHidden(!active)
+    }
+}
+
+enum FooterHeightRole { case display, mixer, midiPreview, auxiliary }
 
 /// Shares only native geometry. No publications, project edits or preferences
 /// are emitted while a divider is moving.
 final class FooterVerticalResizeCoordinator {
     private weak var display: FooterHeightContainerView?
     private weak var mixer: FooterHeightContainerView?
+    private weak var midiPreview: FooterHeightContainerView?
+    private var workspaceSpareHeight: CGFloat?
     private var availableHeight: CGFloat = 900
     private var fallbackMixerHeight: CGFloat = 0
     func configure(availableHeight: CGFloat, mixerHeight: CGFloat) {
@@ -924,14 +1881,30 @@ final class FooterVerticalResizeCoordinator {
         display?.refreshHeight()
     }
     func register(_ view: FooterHeightContainerView, role: FooterHeightRole) {
-        if role == .display { display = view } else { mixer = view }
+        switch role {
+        case .display: display = view
+        case .mixer: mixer = view
+        case .midiPreview: midiPreview = view; mixer?.refreshHeight()
+        case .auxiliary: break
+        }
         display?.refreshHeight()
     }
+    func configureMixerBudget(_ height: CGFloat) {
+        guard workspaceSpareHeight != height else { return }
+        workspaceSpareHeight = height
+        mixer?.refreshHeight()
+    }
+    var mixerMaximum: CGFloat? {
+        workspaceSpareHeight.map { max(0, $0 - (midiPreview?.effectiveHeight ?? 0)) }
+    }
     var displayMaximum: CGFloat {
-        let mixerHeight = mixer.map { $0.active ? max(232, $0.effectiveHeight) : 0 } ?? fallbackMixerHeight
+        let mixerHeight = mixer.map { $0.active ? $0.effectiveHeight : 0 } ?? fallbackMixerHeight
         return min(161.046875, max(27, availableHeight - mixerHeight))
     }
-    func heightChanged(role: FooterHeightRole) { if role == .mixer { display?.refreshHeight() } }
+    func heightChanged(role: FooterHeightRole) {
+        if role == .midiPreview { mixer?.refreshHeight() }
+        if role == .mixer { display?.refreshHeight() }
+    }
 }
 
 struct FooterNativeHeightHost<Content: View>: NSViewRepresentable {
@@ -944,6 +1917,7 @@ struct FooterNativeHeightHost<Content: View>: NSViewRepresentable {
     var resizeCoordinator: FooterVerticalResizeCoordinator? = nil
     var displayAvailableHeight: CGFloat? = nil
     var fallbackMixerHeight: CGFloat = 0
+    var workspaceSpareHeight: CGFloat? = nil
     @ViewBuilder let content: () -> Content
     @Environment(\.locale) private var locale
     @Environment(\.colorScheme) private var colorScheme
@@ -971,6 +1945,7 @@ struct FooterNativeHeightHost<Content: View>: NSViewRepresentable {
         if let displayAvailableHeight {
             resizeCoordinator?.configure(availableHeight: displayAvailableHeight, mixerHeight: fallbackMixerHeight)
         }
+        if let workspaceSpareHeight { resizeCoordinator?.configureMixerBudget(workspaceSpareHeight) }
         view.configure(storedHeight: storedHeight, minimum: minimum, maximum: maximum, active: active,
                        role: role, coordinator: resizeCoordinator)
         view.openFX = openFX; view.editTrackDetails = editTrackDetails
@@ -979,7 +1954,8 @@ struct FooterNativeHeightHost<Content: View>: NSViewRepresentable {
             // Copying the entire environment hides this nested host's accessible
             // descendants. Forward presentation and actions explicitly instead.
             AnyView(content().environment(\.locale, environment.locale)
-                .environment(\.colorScheme, environment.colorScheme)
+                    .environment(\.colorScheme, environment.colorScheme)
+                .workspaceControlsAppearActive()
                 .environment(\.font, environment.font)
                 .environment(\.controlSize, environment.controlSize).environment(\.isEnabled, environment.isEnabled)
                 .environment(\.layoutDirection, environment.layoutDirection).environment(\.dynamicTypeSize, environment.dynamicTypeSize)
@@ -994,6 +1970,13 @@ struct FooterNativeHeightHost<Content: View>: NSViewRepresentable {
     }
 }
 
+private final class RetainedFooterHostingView: NSHostingView<AnyView> {
+    override func layout() {
+        guard !isHiddenOrHasHiddenAncestor else { return }
+        super.layout()
+    }
+    override func viewDidUnhide() { super.viewDidUnhide(); needsLayout = true }
+}
 final class FooterHeightContainerView: NSView {
     private var storedHeight: CGFloat = 27
     private var minimum: CGFloat = 27
@@ -1009,29 +1992,41 @@ final class FooterHeightContainerView: NSView {
     var editTrackDetails: (TrackDetailsEditRequest) -> Void = { _ in }
     private(set) var contentAssignments = 0
     private(set) var effectiveHeight: CGFloat = 27
-    private let host = NSHostingView(rootView: AnyView(EmptyView()))
+    private let host = RetainedFooterHostingView(rootView: AnyView(EmptyView()))
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         if #available(macOS 13, *) { host.sizingOptions = [] }
         if #available(macOS 13.3, *) { host.safeAreaRegions = [] }
-        host.autoresizingMask = [.width, .height]; addSubview(host)
+        // Keep the retained content at its last real size while this container is hidden.
+        // Autoresizing it to height zero reflows every mixer control on close and again on open.
+        host.autoresizingMask = []; addSubview(host)
         setContentHuggingPriority(.required, for: .vertical)
         setContentCompressionResistancePriority(.required, for: .vertical)
     }
     required init?(coder: NSCoder) { fatalError() }
     override var isFlipped: Bool { true }
     override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: effectiveHeight) }
-    var heightMaximum: CGFloat { role == .display ? min(maximum, coordinator?.displayMaximum ?? maximum) : maximum }
+    var heightMaximum: CGFloat {
+        if role == .display { return min(maximum, coordinator?.displayMaximum ?? maximum) }
+        if role == .mixer { return min(maximum, coordinator?.mixerMaximum ?? maximum) }
+        return maximum
+    }
     var heightMinimum: CGFloat { min(minimum, heightMaximum) }
     func configure(storedHeight: CGFloat, minimum: CGFloat, maximum: CGFloat, active: Bool,
                    role: FooterHeightRole, coordinator: FooterVerticalResizeCoordinator?) {
         if let pendingCommit, storedHeight != pendingCommit.previous || !active { self.pendingCommit = nil }
         self.storedHeight = storedHeight; self.minimum = minimum; self.maximum = maximum
         self.active = active; self.role = role; self.coordinator = coordinator
-        // A zero-height frame still leaves the complete mixer in AppKit's
-        // tracking/layout traversal. Hide the retained native root as well.
-        host.isHidden = !active
-        if !active { FooterVerticalResizeView.cancelDrags(in: self); preview = nil }
+        // Once opened, keep the controls in their original window. Detaching
+        // this hosting root tears down nested SwiftUI window environments on
+        // close and forces cold preparation again on every reopen.
+        if host.isHidden == active { host.isHidden = !active }
+        if active {
+            if host.superview !== self { addSubview(host) }
+        } else {
+            FooterVerticalResizeView.cancelDrags(in: self); preview = nil
+            if contentAssignments == 0, host.superview === self { host.removeFromSuperview() }
+        }
         refreshHeight(); coordinator?.register(self, role: role)
     }
     func setContent(identity: AnyHashable, environment: EnvironmentValues, make: () -> AnyView) {
@@ -1077,14 +2072,19 @@ struct FooterDisplayResizeInput: NSViewRepresentable {
     }
 }
 class FooterVerticalResizeView: NSView, NativeTimelineInputObserver {
+    var defersWindowLayoutDuringDrag: Bool { false }
     var height: CGFloat = 27
     var minimum: CGFloat = 27
     var maximum: CGFloat = 900
     var changed: ((CGFloat) -> Void)?
     var ended: ((CGFloat) -> Void)?
+    var cancelled: (() -> Void)?
     private var origin: (y: CGFloat, height: CGFloat)?
     private weak var dragBoundary: FooterHeightContainerView?
     private var lastHeight: CGFloat?
+    private var pendingHeight: CGFloat?
+    private var resizeTimer: Timer?
+    private var lastResizeTime: TimeInterval?
     private var keyMonitor: Any?
     private var notifications: [NSObjectProtocol] = []
     private(set) var cursorPushed = false
@@ -1116,8 +2116,20 @@ class FooterVerticalResizeView: NSView, NativeTimelineInputObserver {
         guard event.buttonNumber == 0, !isHiddenOrHasHiddenAncestor,
               !NativeTimelineInputGate.shared.isBlocked(window), boundary?.active != false else { return }
         dragBoundary = boundary
+        cancelPendingHeight(); lastResizeTime = nil
         origin = (event.locationInWindow.y, boundary?.effectiveHeight ?? height)
         lastHeight = origin?.height
+        if defersWindowLayoutDuringDrag { beginResize() }
+    }
+    private func beginResizeIfMoved(to value: CGFloat) -> Bool {
+        if cursorPushed { return true }
+        guard let origin, abs(value - origin.height) >= 1 else { return false }
+        beginResize()
+        return true
+    }
+    private func beginResize() {
+        NativeSidebarResizeActivity.shared.begin(owner: self, retainsTimelineHeight: defersWindowLayoutDuringDrag)
+        NotificationCenter.default.post(name: Notification.Name("CatLiveFooterResizeBegan"), object: window)
         NSCursor.resizeUpDown.push(); cursorPushed = true
         if let window, !(window.firstResponder is TimelineGridKeyboardTarget) { window.makeFirstResponder(self) }
     }
@@ -1125,35 +2137,78 @@ class FooterVerticalResizeView: NSView, NativeTimelineInputObserver {
         guard let origin else { return nil }
         let upper = boundary?.heightMaximum ?? max(minimum, maximum)
         let lower = boundary?.heightMinimum ?? minimum
-        return min(upper, max(lower, origin.height + event.locationInWindow.y - origin.y))
+        return min(upper, max(lower, origin.height + (event.locationInWindow.y - origin.y) / max(0.01, abs(convert(NSSize(width: 1, height: 1), to: nil).height))))
     }
     private func apply(_ value: CGFloat) {
         guard lastHeight != value else { return }
         lastHeight = value
-        CATransaction.begin(); CATransaction.setDisableActions(true)
+        let disabled = CATransaction.disableActions()
+        CATransaction.setDisableActions(true)
+        defer { CATransaction.setDisableActions(disabled) }
         boundary?.previewHeight(value); changed?(value)
-        window?.contentView?.layoutSubtreeIfNeeded()
-        CATransaction.commit()
+        // Invalidate the real viewport now; AppKit presents it in its normal
+        // display pass. Synchronously walking the whole project here repeats
+        // that pass inside every pointer event, before the next event can run.
+        if !defersWindowLayoutDuringDrag { window?.contentView?.layoutSubtreeIfNeeded() }
+    }
+    private func cancelPendingHeight() {
+        resizeTimer?.invalidate(); resizeTimer = nil; pendingHeight = nil
+    }
+    private func commitPendingHeight() {
+        resizeTimer?.invalidate(); resizeTimer = nil
+        guard let value = pendingHeight, origin != nil else { pendingHeight = nil; return }
+        pendingHeight = nil; lastResizeTime = ProcessInfo.processInfo.systemUptime
+        apply(value)
+    }
+    private func scheduleHeight(_ value: CGFloat) {
+        pendingHeight = value
+        let interval = 1.0 / 60
+        let elapsed = lastResizeTime.map { ProcessInfo.processInfo.systemUptime - $0 } ?? .infinity
+        guard elapsed < interval else { commitPendingHeight(); return }
+        guard resizeTimer == nil else { return }
+        // A burst of pointer events has one newest destination. Reflow the
+        // real viewport once per display frame rather than once per sample.
+        let timer = Timer(timeInterval: interval - elapsed, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated { self?.commitPendingHeight() }
+        }
+        resizeTimer = timer; RunLoop.main.add(timer, forMode: .common)
     }
     override func mouseDragged(with event: NSEvent) {
-        guard let value = resizedHeight(event) else { return }
-        apply(value)
+        // scheduleHeight already retains the newest pointer destination. Reading
+        // NSApplication's event queue here reenters Ventura's display/layout
+        // cycle inside the drag callback, before the pending height is applied.
+        guard let value = resizedHeight(event), beginResizeIfMoved(to: value) else { return }
+        scheduleHeight(value)
     }
     override func mouseUp(with event: NSEvent) {
         guard let value = resizedHeight(event) else { return }
+        guard beginResizeIfMoved(to: value) else {
+            origin = nil; dragBoundary = nil
+            return
+        }
+        let finalHeightChanged = value != lastHeight
+        cancelPendingHeight()
         apply(value); origin = nil
-        boundary?.finishHeight(commit: true); dragBoundary = nil; finishCursor(); ended?(value)
+        boundary?.finishHeight(commit: true); dragBoundary = nil; finishCursor()
+        // A mixer release can arrive at a new position before its pending
+        // drag frame. The display already applies its final geometry in apply.
+        if finalHeightChanged && defersWindowLayoutDuringDrag { window?.contentView?.layoutSubtreeIfNeeded() }
+        ended?(value)
     }
     func cancelDrag() {
         guard origin != nil else { return }
+        cancelPendingHeight()
         origin = nil; lastHeight = nil
+        guard cursorPushed else { dragBoundary = nil; return }
         CATransaction.begin(); CATransaction.setDisableActions(true)
         let container = boundary
         container?.finishHeight(commit: false)
         (container?.window ?? window)?.contentView?.layoutSubtreeIfNeeded(); dragBoundary = nil
-        CATransaction.commit(); finishCursor()
+        CATransaction.commit(); finishCursor(); cancelled?()
     }
     private func finishCursor() {
+        NativeSidebarResizeActivity.shared.end(owner: self)
+        NotificationCenter.default.post(name: Notification.Name("CatLiveFooterResizeEnded"), object: window)
         if cursorPushed { NSCursor.pop(); cursorPushed = false }
         window?.invalidateCursorRects(for: self)
     }
@@ -1181,6 +2236,7 @@ class FooterVerticalResizeView: NSView, NativeTimelineInputObserver {
         }
     }
     deinit {
+        resizeTimer?.invalidate()
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
         notifications.forEach(NotificationCenter.default.removeObserver)
         if cursorPushed { NSCursor.pop() }
@@ -1190,15 +2246,19 @@ final class FooterDisplayResizeView: FooterVerticalResizeView {}
 
 struct FooterMixerResizeInput: NSViewRepresentable {
     let height: CGFloat
+    var minimum: CGFloat = 273
     let maximum: CGFloat
     let changed: (CGFloat) -> Void
     let ended: (CGFloat) -> Void
+    var cancelled: (() -> Void)? = nil
     func makeNSView(context: Context) -> FooterMixerResizeView { FooterMixerResizeView() }
     func updateNSView(_ view: FooterMixerResizeView, context: Context) {
-        view.height = height; view.minimum = 232; view.maximum = maximum; view.changed = changed; view.ended = ended
+        view.height = height; view.minimum = minimum; view.maximum = maximum; view.changed = changed; view.ended = ended
+        view.cancelled = cancelled
     }
 }
 final class FooterMixerResizeView: FooterVerticalResizeView {
+    override var defersWindowLayoutDuringDrag: Bool { true }
     private var tracking: NSTrackingArea?
     private var hovered = false { didSet { if hovered != oldValue { needsDisplay = true } } }
     override func updateTrackingAreas() {

@@ -1,0 +1,7 @@
+﻿{
+    "license":  "MPL-2.0",
+    "source":  "registry+https://github.com/rust-lang/crates.io-index",
+    "name":  "audio_thread_priority",
+    "version":  "0.34.0",
+    "repository":  "https://github.com/padenot/audio_thread_priority"
+}

@@ -7,8 +7,8 @@ python3 - "$test_dir/router.swift" <<'PY'
 from pathlib import Path
 import sys
 source=Path('Apple/Shared/TrackMixerRow.swift').read_text()
-source=source[source.index('struct EditorSelectionArea: NSViewRepresentable {'):]
-source=source.rsplit('#endif',1)[0]
+start=source.index('struct EditorSelectionArea: NSViewRepresentable {')
+source=source[start:source.index('\n#endif',start)]
 stubs='''import SwiftUI
 @MainActor final class NativeTimelineInputGate {
  static let shared = NativeTimelineInputGate()

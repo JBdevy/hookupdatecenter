@@ -15,13 +15,13 @@ setbuf(stdout, nil)
         var envelope = TrackEnvelope(target: AutomationTarget(kind), name: kind.rawValue, defaultValue: kind == .volume ? TrackEnvelope.normalizedGain(1) : 0.5)
         envelope.points = values.map { EnvelopePoint(time: $0.0, value: $0.1, shape: .square) }; return envelope
     }
-    func render(_ project: Project, bypassAt: Double? = nil, hideLanesAt: Double? = nil, showLanesAt: Double? = nil) throws -> ([Float], [Float], Int) {
+    func render(_ project: Project, bypassAt: Double? = nil, hideLanesAt: Double? = nil, showLanesAt: Double? = nil, editOtherFXAt: Double? = nil) throws -> ([Float], [Float], Int) {
         let engine = AVAudioEngine(); try engine.enableManualRenderingMode(.offline, format: format, maximumFrameCount: 256)
         let audio = StemAudioPlayback(engine: engine, realtime: false); audio.open(directory: directory)
         defer { audio.prepareForClosing() }
         var state = ShowSnapshot(project: project, transport: TransportState(playing: true, songId: project.songs[0].id, position: 0, queue: QueueState(), loop: LoopState(enabled: false), subPlay: SubPlayState(playing: false, position: 0)))
         var left: [Float] = [], right: [Float] = [], revision: UInt64 = 1
-        var didBypass = false, didHideLanes = false, didShowLanes = false
+        var didBypass = false, didHideLanes = false, didShowLanes = false, didEditOtherFX = false
         try audio.update(state, revision: revision)
         let originalNodes = engine.attachedNodes
         let pcm = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 256)!
@@ -48,6 +48,13 @@ setbuf(stdout, nil)
                 revision += 1; didShowLanes = true
             }
             try audio.update(state, revision: revision)
+            if let editOtherFXAt, time >= editOtherFXAt, !didEditOtherFX {
+                let other = state.project.songs[0].tracks[1]
+                var settings = other.fx!
+                settings.bands[0].gain = 8
+                audio.previewFX(other.id, settings: settings)
+                didEditOtherFX = true
+            }
             precondition(engine.attachedNodes == originalNodes, "Envelope playback must not recreate audio nodes")
             if try engine.renderOffline(256, to: pcm) == .success {
                 left += Array(UnsafeBufferPointer(start: pcm.floatChannelData![0], count: Int(pcm.frameLength)))
@@ -79,6 +86,16 @@ setbuf(stdout, nil)
     print("AUTOMATION_PCM", rate, a, b, c)
     precondition(a > 0.003 && abs(a/b-2)<0.06 && abs(b/c-1)<0.06, "Track/master envelopes must affect actual PCM gain")
     precondition(rms(result.1,0.5)<0.00001 && rms(result.0,2.5)<0.00001, "Pan envelopes must route channels")
+    var editingProject = project
+    var otherTrack = Track(id: UUID(), name: "Unrelated EQ edit", role: .other)
+    var otherFX = NativeFXSettings(); _ = otherFX.appendNative("EQ")
+    otherTrack.fx = otherFX; editingProject.songs[0].tracks.append(otherTrack)
+    let withoutEdit = try render(editingProject)
+    let duringEdit = try render(editingProject, editOtherFXAt: 0.75)
+    assertSamePCM(duringEdit, withoutEdit, at: 1.2,
+                  "Changing an unrelated EQ must preserve the sounding track's automated pan and gain")
+    assertSamePCM(duringEdit, withoutEdit, at: 2.7,
+                  "FX parameter edits must preserve later automation and routing")
     var hiddenPanProject = project
     hiddenPanProject.songs[0].tracks[0].automation?.envelopes[1].visible = false
     let hiddenPan = try render(hiddenPanProject)

@@ -1,4 +1,5 @@
 #pragma once
+#include "Localization.h"
 #include "StageState.h"
 #include "ModalSheet.h"
 #include "NoticeAppearancePanel.h"
@@ -6,9 +7,9 @@ namespace catlive {
 class NoticePanel final : public Component, private Timer {
   public:
     explicit NoticePanel(StageState &s) : state(s) {
-        for (auto *b : {&send, &withdraw, &pin, &save, &image, &removeImage})
+        for (auto *b : {&send, &withdraw, &pin, &pinStopped, &save, &image, &removeImage})
             addAndMakeVisible(b);
-        for (auto *b : {&withdraw, &pin, &save, &image, &removeImage}) {
+        for (auto *b : {&withdraw, &pin, &pinStopped, &save, &image, &removeImage}) {
             b->getProperties().set("flat", true);
             b->setColour(TextButton::buttonColourId, Colour(0xff505050));
         }
@@ -22,10 +23,20 @@ class NoticePanel final : public Component, private Timer {
         editor.submit = send.onClick;
         withdraw.onClick = [this] { state.clearNotice(); };
         pin.onClick = [this] { state.togglePin(); };
+        pinStopped.onClick = [this] {
+            state.setPinWhenStopped(!state.pinWhenStopped, editor.getText(), slot < 0 ? Image() : slotImage());
+            timerCallback();
+        };
+        pinStopped.getProperties().set("fontSize", 12.f);
+        pinStopped.setColour(TextButton::buttonOnColourId, theme::green);
+        pinStopped.setColour(TextButton::textColourOnId, Colours::black);
         addAndMakeVisible(editor);
         editor.setMultiLine(true);
         editor.setReturnKeyStartsNewLine(true);
         editor.setFont(theme::font(18));
+        editor.setColour(TextEditor::backgroundColourId, Colour(0xff101010));
+        editor.setColour(TextEditor::textColourId, Colours::white);
+        editor.setBorder(BorderSize<int>(8));
         editor.setInputRestrictions(500);
         addAndMakeVisible(remaining);
         addAndMakeVisible(count);
@@ -60,7 +71,7 @@ class NoticePanel final : public Component, private Timer {
         g.fillAll(theme::panel);
         g.setColour(Colours::white);
         g.setFont(theme::font(13));
-        g.drawText("Recado", 16, 92, 76, 26, Justification::centredRight);
+        g.drawText(localization::translate("Recado"), 16, 92, 76, 26, Justification::centredRight);
     }
     bool keyPressed(const KeyPress &key) override {
         if (retryEditorShortcut(key))
@@ -77,6 +88,7 @@ class NoticePanel final : public Component, private Timer {
         send.setBounds(16, 16, 88, 30);
         withdraw.setBounds(112, 16, 72, 30);
         pin.setBounds(192, 16, 62, 30);
+        pinStopped.setBounds(262, 16, std::max(120,getWidth()-342), 30);
         remaining.setBounds(getWidth() - 72, 16, 56, 30);
         for (int i = 0; i < 4; ++i)
             slots[i]->setBounds(100 + i * ((getWidth() - 116) / 4), 92, (getWidth() - 116) / 4, 26);
@@ -105,8 +117,8 @@ class NoticePanel final : public Component, private Timer {
             return TextEditor::keyPressed(key);
         }
     } editor;
-    TextButton send{"Enviar"}, withdraw{"Retirar"}, pin{"Fixar"}, save{"Salvar"},
-        image{"Add imagem"}, removeImage{"Remover imagem"};
+    TextButton send{localization::translate("Enviar")}, withdraw{localization::translate("Retirar")}, pin{localization::translate("Fixar")}, save{localization::translate("Salvar")},
+        pinStopped{localization::translate("Pin while transport is stopped")}, image{"Add imagem"}, removeImage{"Remover imagem"};
     OwnedArray<TextButton> slots;
     Label remaining, count;
     std::unique_ptr<FileChooser> chooser;
@@ -139,7 +151,7 @@ class NoticePanel final : public Component, private Timer {
     void chooseImage() {
         if (slot < 0)
             return;
-        chooser = std::make_unique<FileChooser>("Imagem", File(), "*.png;*.jpg;*.jpeg;*.bmp", true);
+        chooser = std::make_unique<FileChooser>(localization::translate("Imagem"), File(), "*.png;*.jpg;*.jpeg;*.bmp", true);
         chooser->launchAsync(
             FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles,
             [safe = SafePointer<NoticePanel>(this), index = slot](const FileChooser &fc) {
@@ -165,14 +177,15 @@ class NoticePanel final : public Component, private Timer {
         count.setText(String(editor.getText().length()) + " / 500", dontSendNotification);
         withdraw.setEnabled(state.noticeActive());
         pin.setToggleState(state.pinned, dontSendNotification);
+        pinStopped.setToggleState(state.pinWhenStopped, dontSendNotification);
         send.setEnabled(editor.getText().trim().isNotEmpty() || slot >= 0 && slotImage().isValid());
         removeImage.setVisible(slot >= 0 && slotImage().isValid());
     }
 };
 class StageConfigPanel final : public Component {
   public:
-    StageConfigPanel(StageState &s, int target, std::function<void()> timerAction)
-        : state(s), index(target), configureTimer(std::move(timerAction)) {
+    StageConfigPanel(StageState &s, int target)
+        : state(s), index(target) {
         for (int i = 0; i < 3; ++i) {
             auto *b =
                 tabs.add(new TextButton(i == 2 ? "Recados" : "Teleprompter " + String(i + 1)));
@@ -187,7 +200,7 @@ class StageConfigPanel final : public Component {
                 build();
             };
         }
-        for (auto *b : {&night, &day, &timer, &close})
+        for (auto *b : {&night, &day, &close})
             addAndMakeVisible(b);
         for (auto *b : {&night, &day}) {
             b->getProperties().set("flat", true);
@@ -196,10 +209,8 @@ class StageConfigPanel final : public Component {
             b->setColour(TextButton::buttonOnColourId, Colour(0xff64b64a));
             b->setColour(TextButton::textColourOnId, Colours::white);
         }
-        for (auto *b : {&timer, &close}) {
-            b->getProperties().set("flat", true);
-            b->setColour(TextButton::buttonColourId, Colour(0xff505050));
-        }
+        close.getProperties().set("flat", true);
+        close.setColour(TextButton::buttonColourId, Colour(0xff505050));
         night.onClick = [this] {
             state.selectPreset(index, "night");
             build();
@@ -208,7 +219,6 @@ class StageConfigPanel final : public Component {
             state.selectPreset(index, "day");
             build();
         };
-        timer.onClick = configureTimer;
         close.onClick = [this] {
             if (findParentComponentOfClass<ModalSheet>())
                 ModalSheet::dismiss(*this);
@@ -253,16 +263,14 @@ class StageConfigPanel final : public Component {
         }
         for (int i = 0; i < headings.size(); ++i)
             headings[i]->setBounds(10, headingY[(size_t)i], content.getWidth() - 20, 24);
-        timer.setBounds(16, getHeight() - 38, 220, 26);
         close.setBounds(getWidth() - 82, getHeight() - 38, 66, 26);
     }
 
   private:
     StageState &state;
     int index = 1, contentHeight = 0;
-    std::function<void()> configureTimer;
     OwnedArray<TextButton> tabs;
-    TextButton night{"NOITE"}, day{"DIA"}, timer{String::fromUTF8("Configurações do cronômetro")},
+    TextButton night{localization::translate("NOITE")}, day{localization::translate("DIA")},
         close{"Fechar"}, headerClose{"Fechar"};
     Viewport viewport;
     class SectionContent final : public Component {
@@ -290,6 +298,9 @@ class StageConfigPanel final : public Component {
     void change(String key, var value) {
         if (index != 3) {
             state.set(index, key, value);
+            if (key == "previewRegionColorSource")
+                for (auto *component : cards)
+                    if (auto *card = dynamic_cast<Card *>(component)) card->updatePreviewColor(value.toString());
             return;
         }
         auto p = current().clone();
@@ -307,6 +318,7 @@ class StageConfigPanel final : public Component {
             const auto settings = parent.current();
             if (kind == "color") {
                 addAndMakeVisible(swatch);
+                updatePreviewColor(str(settings, "previewRegionColorSource", "region"));
                 swatch.getProperties().set("colourWell", true);
                 swatch.setColour(
                     TextButton::buttonColourId,
@@ -346,7 +358,8 @@ class StageConfigPanel final : public Component {
                 const auto selected = str(settings, Identifier(key), str(field, "default"));
                 int n = 1;
                 for (const auto &option : list(get(field, "options"))) {
-                    choice.addItem(localization::translate(str(option, "label")), n);
+                    const auto name = str(option, "label");
+                    choice.addItem(key == "previewRegionColorSource" ? name : localization::translate(name), n);
                     if (selected == str(option, "value"))
                         choice.setSelectedId(n, dontSendNotification);
                     ++n;
@@ -357,6 +370,9 @@ class StageConfigPanel final : public Component {
                         parent.change(key, str(options[choice.getSelectedId() - 1], "value"));
                 };
             }
+        }
+        void updatePreviewColor(const String &mode) {
+            if (key == "previewRegionColor") swatch.setEnabled(mode == "user");
         }
         void paint(Graphics &g) override {
             g.setColour(theme::display);
@@ -401,7 +417,7 @@ class StageConfigPanel final : public Component {
                 apply.setBounds(getWidth() - 94, getHeight() - 32, 84, 26);
             }
             ColourSelector selector;
-            TextButton apply{"Aplicar"};
+            TextButton apply{localization::translate("Aplicar")};
             std::function<void(Colour)> commit;
         };
         StageConfigPanel &parent;
@@ -409,7 +425,7 @@ class StageConfigPanel final : public Component {
         String key, kind;
         Label label;
         TextButton swatch;
-        Slider slider;
+        ParameterSlider slider;
         ToggleButton toggle;
         ComboBox choice;
     };

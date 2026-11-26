@@ -20,6 +20,12 @@ private struct NeedleFixtureHost: NSViewRepresentable {
     override func layout() { layouts += 1; super.layout() }
 }
 MainActor.assumeIsolated {
+    let previousFollow = UserDefaults.standard.object(forKey: "jaras.timeline.continuousScroll")
+    UserDefaults.standard.set(true, forKey: "jaras.timeline.continuousScroll")
+    defer {
+        if let previousFollow { UserDefaults.standard.set(previousFollow, forKey: "jaras.timeline.continuousScroll") }
+        else { UserDefaults.standard.removeObject(forKey: "jaras.timeline.continuousScroll") }
+    }
     setbuf(stdout, nil)
     let app = NSApplication.shared; app.setActivationPolicy(.accessory); app.finishLaunching()
     let window = NSWindow(contentRect: CGRect(x: 80, y: 80, width: 800, height: 240), styleMask: [.titled], backing: .buffered, defer: false)
@@ -67,8 +73,18 @@ MainActor.assumeIsolated {
         precondition(scroll.contentView.bounds.minX >= minimum - 0.00001 && scroll.contentView.bounds.minX <= minimum + 1,
             "native scroll follows the active needle")
     }
-    show.publish(main: 700, sub: 120, subPlaying: true); unchangedProjection(); pump(0.12); expectOrigin(120)
+    show.publish(main: 700, sub: 120, subPlaying: true); show.snapshot.transport.queuedRegionId = UUID()
+    unchangedProjection(); pump(0.12); expectOrigin(120)
     precondition(!needles.layer!.sublayers![2].isHidden, "Sub Play is visible")
+    for root in needles.layer!.sublayers!.prefix(3) {
+        let head = (root.sublayers![2] as! CAShapeLayer).path!
+        precondition(head.boundingBoxOfPath.minY == 32 && head.boundingBoxOfPath.maxY == 48,
+                     "Each head fills the tick lane through the start of its stem")
+        var roundedCorners = 0
+        head.applyWithBlock { if $0.pointee.type == .addQuadCurveToPoint { roundedCorners += 1 } }
+        precondition(roundedCorners == 4, "Each triangular head rounds its shoulders and tip")
+    }
+    print("NATIVE_NEEDLE_HEADS_FILL_RULER_TICK_LANE_WITH_ROUNDED_CORNERS_OK")
     show.publish(main: 800, sub: 130, subPlaying: true); unchangedProjection(); pump(0.12); expectOrigin(130)
     show.publish(main: 300, sub: 130, subPlaying: false); unchangedProjection(); pump(0.12); expectOrigin(300)
     show.publish(main: 500, playing: false); unchangedProjection(); pump(0.12)

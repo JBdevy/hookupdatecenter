@@ -1,3 +1,7 @@
+final class NativeSelectionGeometryRoot: NSView {
+    var hitTestCalls = 0
+    override func hitTest(_ point: NSPoint) -> NSView? { hitTestCalls += 1; return super.hitTest(point) }
+}
 final class BorderWheelDocument: NSView { override var isFlipped: Bool { true } }
 final class BorderWheelScrollView: NSScrollView {
     var receivedWheels = 0
@@ -11,7 +15,7 @@ MainActor.assumeIsolated {
 _ = NSApplication.shared
 let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 320, height: 120), styleMask: [.titled], backing: .buffered, defer: false)
 window.isReleasedWhenClosed = false
-let host = NSView(frame: NSRect(x: 0, y: 0, width: 320, height: 120))
+let host = NativeSelectionGeometryRoot(frame: NSRect(x: 0, y: 0, width: 320, height: 120))
 window.contentView = host
 let row = TrackRightClickView(frame: host.bounds)
 let originalTrack = UUID(), newTrack = UUID(), originalProject = UUID()
@@ -32,11 +36,13 @@ RunLoop.main.run(until: Date().addingTimeInterval(0.02))
 precondition(originalSelections == 1 && newSelections == 0, "deferred selection uses the click's captured action even if its native row has rebound")
 router.handle(pointer(.leftMouseUp))
 precondition(router.pinnedTracks.isEmpty, "release allows the row slot to be recycled again")
+row.selected = true // Collapsing an existing selection is committed on release.
 router.handle(pointer(.leftMouseDown))
 row.project = UUID()
 RunLoop.main.run(until: Date().addingTimeInterval(0.02))
 precondition(newSelections == 0, "a queued row click cannot cross a project switch")
 router.handle(pointer(.leftMouseUp))
+row.selected = false
 
 for (index, control) in ["REC", "M", "S", "Fader", "Pan"].enumerated() {
     let excluded = TrackControlSelectionExclusionView(frame: CGRect(x: 30 + index * 45, y: 40, width: 40, height: 40))
@@ -54,12 +60,22 @@ RunLoop.main.run(until: Date().addingTimeInterval(0.02))
 precondition(newSelections == 1, "Clicking the track body still selects it")
 router.handle(pointer(.leftMouseUp))
 
+precondition(host.hitTestCalls == 0, "Selecting or operating a track must not hit-test the complete hosted window")
 var originalPatch = 0, replacementPatch = 0, originalFX = 0, replacementFX = 0
 row.patch = { originalPatch += 1 }; row.fx = { originalFX += 1 }
 let snapshot = row.makeMenu()
 row.patch = { replacementPatch += 1 }; row.fx = { replacementFX += 1 }
 snapshot.actions[0].invoke(); snapshot.actions[1].invoke()
 precondition(originalPatch == 1 && originalFX == 1 && replacementPatch == 0 && replacementFX == 0, "a menu retains the handlers of the track that opened it")
+var originalDuplicates = 0, recycledDuplicates = 0
+row.duplicateTracks = { originalDuplicates += 1 }; row.deleteTrackCount = 2
+let duplicateMenu = row.makeMenu()
+row.duplicateTracks = { recycledDuplicates += 1 }
+precondition(duplicateMenu.menu.items.last?.title == JarasLocalization.string("Duplicate tracks"), "the track menu exposes complete multi-track duplication")
+duplicateMenu.actions.last?.invoke()
+precondition(originalDuplicates == 1 && recycledDuplicates == 0, "duplicate uses the original track selection even after row recycling")
+row.duplicateTracks = nil; row.deleteTrackCount = 1
+precondition(!row.makeMenu().menu.items.contains { $0.title == JarasLocalization.string("Duplicate track") }, "special lanes and Master do not acquire duplicate handlers")
 router.withPinnedTrack(originalTrack) {
     precondition(router.pinnedTracks == [originalTrack], "context menu tracking pins its original row")
     router.withPinnedTrack(originalTrack) { precondition(router.pinnedTracks.contains(originalTrack)) }
@@ -84,7 +100,7 @@ precondition(dragState.starts == 0, "a pending title press cannot cross a projec
 let heightInput = TimelineTrackHeightResizeView(frame: host.bounds)
 heightInput.configure(project: row.project, song: UUID(), tracks: [newTrack], offsets: [0], heights: [64],
                       laneCounts: [1], scales: [1], baseHeight: 64, top: 20,
-                      verticalOffset: 0, excludedX: 290...310, blocked: false)
+                      verticalOffset: 0, mixerWidth: 290, blocked: false)
 host.addSubview(heightInput)
 var heightPreviews: [Double] = [], heightCommits = 0, heightCancels = 0
 heightInput.change = { _, scale, ended in if ended { heightCommits += 1 } else { heightPreviews.append(scale) } }
@@ -106,7 +122,9 @@ heightInput.mouseDown(with: edgePress)
 precondition(NSCursor.current === NSCursor.resizeUpDown)
 precondition(window.firstResponder === heightInput && window.firstResponder is TimelineGridKeyboardTarget, "height edits retain grid keyboard shortcuts")
 for y in stride(from: CGFloat(84), through: 112, by: 2) { heightInput.mouseDragged(with: heightPointer(.leftMouseDragged, 100, y)) }
-precondition(heightCommits == 0 && heightPreviews.count > 1, "live resizing remains a local preview")
+precondition(heightCommits == 0 && heightPreviews.count == 1, "high-rate pointer events coalesce without repeated layout")
+heightInput.flushHeightPreview()
+precondition(heightPreviews.count == 2 && heightPreviews.last == 94.0 / 64, "one frame publishes only the latest pointer height")
 heightInput.mouseUp(with: heightPointer(.leftMouseUp, 100, 112))
 RunLoop.main.run(until: Date().addingTimeInterval(0.02))
 precondition(heightCommits == 1 && newSelections == selectionsBefore && TrackReorderState.shared.starts == 0)
@@ -116,7 +134,9 @@ heightInput.mouseDown(with: edgePress)
 heightInput.mouseDragged(with: heightPointer(.leftMouseDragged, 100, 95))
 precondition(TimelineTrackHeightResizeView.cancelActiveDrag(in: window))
 heightInput.mouseUp(with: heightPointer(.leftMouseUp, 100, 95))
-precondition(heightCommits == 1 && heightCancels == 1, "Escape cancels preview without a project commit")
+let afterCancel = heightPreviews.count
+RunLoop.main.run(until: Date().addingTimeInterval(0.04))
+precondition(heightPreviews.count == afterCancel && heightCommits == 1 && heightCancels == 1, "Escape discards queued previews without a delayed commit")
 precondition(NSCursor.current === cursorBeforeHeightDrag, "Escape releases the resize cursor")
 heightInput.mouseDown(with: edgePress)
 NativeTimelineInputGate.shared.setBlocked(true, for: window)
@@ -125,33 +145,44 @@ NativeTimelineInputGate.shared.setBlocked(false, for: window)
 heightInput.mouseDown(with: edgePress)
 heightInput.removeFromSuperview()
 precondition(heightCancels == 3 && !TimelineTrackHeightResizeView.cancelActiveDrag(in: window), "detach releases cursor and gesture")
-// Upper and lower handles share bounds, including rows with overlapping lanes.
+// Only the footer resizes: row tops and the aligned grid area pass through.
 host.addSubview(heightInput)
 let topPress = heightPointer(.leftMouseDown, 100, 21)
+let previewsBeforeTop = heightPreviews.count
 heightInput.mouseDown(with: topPress)
 heightInput.mouseDragged(with: heightPointer(.leftMouseDragged, 100, 10))
-precondition(heightPreviews.last == 75.0 / 64, "pulling the upper edge up expands its own row")
-heightInput.mouseDragged(with: heightPointer(.leftMouseDragged, 100, -1000))
-precondition(heightPreviews.last == 240.0 / 64)
+heightInput.mouseUp(with: heightPointer(.leftMouseUp, 100, 10))
+precondition(heightPreviews.count == previewsBeforeTop && heightCommits == 1,
+             "the top of a row cannot resize it")
+precondition(!TimelineTrackHeightResizeView.handlesPointer(heightPointer(.leftMouseDown, 315, 82)),
+             "the grid cannot resize a row even at its footer's Y position")
+heightInput.mouseDown(with: edgePress)
 heightInput.mouseDragged(with: heightPointer(.leftMouseDragged, 100, 1000))
+heightInput.flushHeightPreview()
+precondition(heightPreviews.last == 240.0 / 64)
+heightInput.mouseDragged(with: heightPointer(.leftMouseDragged, 100, -1000))
+heightInput.flushHeightPreview()
 precondition(heightPreviews.last == 24.0 / 64)
-heightInput.mouseUp(with: heightPointer(.leftMouseUp, 100, 1000))
+heightInput.mouseUp(with: heightPointer(.leftMouseUp, 100, -1000))
 precondition(heightCommits == 2 && NSCursor.current === cursorBeforeHeightDrag)
 heightInput.configure(project: row.project, song: UUID(), tracks: [newTrack], offsets: [0], heights: [89.6],
                       laneCounts: [2], scales: [1], baseHeight: 64, top: 20,
-                      verticalOffset: 0, excludedX: 290...310, blocked: false)
+                      verticalOffset: 0, mixerWidth: 290, blocked: false)
 heightInput.mouseDown(with: heightPointer(.leftMouseDown, 100, 108))
 heightInput.mouseDragged(with: heightPointer(.leftMouseDragged, 100, 150))
+heightInput.flushHeightPreview()
 precondition(abs(heightPreviews.last! - 66 / (64 * 0.7)) < 1e-12, "row travel is divided among its existing lanes")
 heightInput.mouseDragged(with: heightPointer(.leftMouseDragged, 100, 1000))
+heightInput.flushHeightPreview()
 precondition(abs(heightPreviews.last! - 168 / (64 * 0.7)) < 1e-12)
 heightInput.mouseDragged(with: heightPointer(.leftMouseDragged, 100, -1000))
+heightInput.flushHeightPreview()
 precondition(abs(heightPreviews.last! - 26 / (64 * 0.7)) < 1e-12)
 precondition(TimelineTrackHeightResizeView.cancelActiveDrag(in: window) && heightCommits == 2)
 precondition(NSCursor.current === cursorBeforeHeightDrag)
 precondition(!TimelineTrackHeightResizeView.handlesPointer(heightPointer(.leftMouseDown, 300, 108)), "the mixer divider retains width resizing")
 heightInput.removeFromSuperview()
-print("TRACK_BORDER_BOTH_EDGES_SINGLE_OVERLAPPING_LANE_LIMITS_AND_CURSOR_CLEANUP_OK")
+print("TRACK_FOOTER_ONLY_GRID_EXCLUSION_SINGLE_OVERLAPPING_LANE_LIMITS_AND_CURSOR_CLEANUP_OK")
 print("TRACK_BORDER_PRIORITY_LOCAL_PREVIEW_SINGLE_COMMIT_ESCAPE_GATE_DETACH_OK")
 window.close()
 print("TRACK_ROW_RECYCLING_CAPTURED_SELECTION_MENU_GESTURE_PINNING_REC_EXCLUSION_AND_TITLE_RESET_OK")
@@ -175,15 +206,39 @@ var flippedSelections = 0
 flippedRow.select = { flippedSelections += 1 }
 wheelRoot.addSubview(flippedRow)
 let border = TimelineTrackHeightResizeView(frame: wheelRoot.bounds)
-border.configure(project: UUID(), song: UUID(), tracks: [UUID(), UUID()], offsets: [0, 64], heights: [64, 64],
+let borderTracks = [UUID(), UUID()]
+border.configure(project: UUID(), song: UUID(), tracks: borderTracks, offsets: [0, 64], heights: [64, 64],
                  laneCounts: [1, 1], scales: [1, 1], baseHeight: 64, top: 20,
-                 verticalOffset: 0, excludedX: 290...310, blocked: false)
+                 verticalOffset: 0, mixerWidth: 290, blocked: false)
+func footerEvent(_ type: NSEvent.EventType, _ x: CGFloat, _ y: CGFloat) -> NSEvent {
+    NSEvent.mouseEvent(with: type, location: border.convert(CGPoint(x: x, y: y), to: nil),
+        modifierFlags: [], timestamp: 10, windowNumber: wheelWindow.windowNumber,
+        context: nil, eventNumber: 1, clickCount: 1, pressure: 1)!
+}
 var borderPreviewCount = 0, borderCancelCount = 0
 border.change = { _, _, ended in if !ended { borderPreviewCount += 1 } }
 border.cancelled = { borderCancelCount += 1 }
 wheelRoot.addSubview(border)
 wheelRoot.layoutSubtreeIfNeeded()
 wheelWindow.orderFront(nil)
+var resizedTracks: [UUID] = []
+border.change = { id, _, _ in resizedTracks.append(id) }
+for y: CGFloat in [78, 82, 83] {
+    border.mouseDown(with: footerEvent(.leftMouseDown, 100, y))
+    precondition(resizedTracks.last == borderTracks[0], "every point inside the footer belongs to its own row")
+    _ = TimelineTrackHeightResizeView.cancelActiveDrag(in: wheelWindow)
+}
+let beforeInvalidPresses = resizedTracks.count
+for (x, y): (CGFloat, CGFloat) in [(100, 84), (100, 85), (100, 21), (315, 82)] {
+    border.mouseDown(with: footerEvent(.leftMouseDown, x, y))
+    border.mouseDragged(with: footerEvent(.leftMouseDragged, x, y + 20))
+    border.mouseUp(with: footerEvent(.leftMouseUp, x, y + 20))
+}
+precondition(resizedTracks.count == beforeInvalidPresses,
+             "crossing a footer cannot resize the next row or catch the aligned grid")
+borderCancelCount = 0
+border.change = { _, _, ended in if !ended { borderPreviewCount += 1 } }
+
 for y: CGFloat in [21, 82, 85] {
     let cg = CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 1,
                      wheel1: -3, wheel2: 0, wheel3: 0)!

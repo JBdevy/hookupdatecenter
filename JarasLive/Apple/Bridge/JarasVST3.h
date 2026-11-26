@@ -5,6 +5,7 @@
 #import <AppKit/AppKit.h>
 NS_ASSUME_NONNULL_BEGIN
 @interface JarasVST3 : NSObject
++ (NSArray<NSDictionary *> *)installedAudioUnits;
 + (NSArray<NSDictionary *> *)scan:(NSString *)path error:(NSError **)error;
 + (AVAudioUnitEffect *)makeNode;
 + (BOOL)configure:(AVAudioUnitEffect *)node plugins:(NSArray<NSDictionary *> *)plugins error:(NSError **)error;
@@ -15,9 +16,15 @@ NS_ASSUME_NONNULL_BEGIN
 + (void)silence:(AVAudioUnitEffect *)node;
 + (void)instrumentMIDIInput:(AVAudioUnitEffect *)node enabled:(BOOL)enabled;
 + (void)transport:(AVAudioUnitEffect *)node position:(double)position tempo:(double)tempo beats:(int)beats unit:(int)unit playing:(BOOL)playing;
+// Immutable tempo map and an audio-clock anchor, prepared by the graph owner.
++ (void)setTempoMap:(AVAudioUnitEffect *)node points:(NSArray<NSDictionary *> *)points;
++ (void)transportClock:(AVAudioUnitEffect *)node position:(double)position clock:(double)clock playing:(BOOL)playing loopStart:(double)start loopEnd:(double)end;
 + (void)onEdit:(AVAudioUnitEffect *)node identifier:(NSString *)identifier action:(void (^)(void))action;
++ (BOOL)isPluginLoaded:(AVAudioUnitEffect *)node identifier:(NSString *)identifier;
 + (NSDictionary * _Nullable)state:(AVAudioUnitEffect *)node identifier:(NSString *)identifier;
++ (void)rememberCapturedState:(AVAudioUnitEffect *)node identifier:(NSString *)identifier component:(NSString * _Nullable)component controller:(NSString * _Nullable)controller;
 + (void)onParameterEdit:(AVAudioUnitEffect *)node identifier:(NSString *)identifier action:(void (^)(unsigned int, double, BOOL))action;
++ (float)gainReduction:(AVAudioUnitEffect *)node identifier:(NSString *)identifier;
 + (NSArray<NSDictionary *> *)parameters:(AVAudioUnitEffect *)node identifier:(NSString *)identifier;
 + (void)setParameter:(AVAudioUnitEffect *)node identifier:(NSString *)identifier parameter:(unsigned int)parameter value:(double)value;
 + (NSView * _Nullable)editor:(AVAudioUnitEffect *)node identifier:(NSString *)identifier;

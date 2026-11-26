@@ -1,0 +1,97 @@
+#include "../../Windows/Source/TimelineSnapping.h"
+#include <iostream>
+
+using namespace catlive::timelineGrid;
+namespace {
+int failures = 0;
+void check(double actual, double expected, const char *label) {
+    if (std::abs(actual - expected) > 1e-8) {
+        std::cerr << label << ": got " << actual << ", expected " << expected << '\n';
+        ++failures;
+    }
+}
+jaras::AudioClip item(const char *id, double start, double duration) {
+    jaras::AudioClip clip; clip.id = id; clip.startTime = start; clip.duration = duration;
+    return clip;
+}
+std::vector<std::pair<jaras::ID,double>> edges(const jaras::Song &song) {
+    std::vector<std::pair<jaras::ID,double>> result;
+    for (const auto &track : song.tracks) for (const auto &clip : track.clips) {
+        result.emplace_back(clip.id, clip.startTime);
+        result.emplace_back(clip.id, clip.startTime + clip.duration);
+    }
+    std::sort(result.begin(), result.end(), [](const auto &a, const auto &b) {
+        return a.second == b.second ? a.first < b.first : a.second < b.second;
+    });
+    return result;
+}
+}
+int main() {
+    const MeasureLabels musical({{0, 5.25, 120, 4, 4}, {5.25, 25, 120, 6, 8}});
+    if (musical.label(0, 0, 0, 2) != "1" || musical.label(0, 0, 1, 2) != "1.1.2" ||
+        musical.label(0, 0, 2, 2) != "1.2" || musical.label(1, 0, 1, 1) != "4.2") {
+        std::cerr << "Expected continuous musical labels across a partial measure and meter change\n";
+        ++failures;
+    }
+    jaras::Song song; song.bpm = 120; song.duration = 10000;
+    song.timeSettings = jaras::ProjectTimeSettings{}; song.timeSettings->divisions = 0;
+    jaras::Track track; track.id = "track"; track.clips = {item("moving",100,50)};
+    song.tracks = {track};
+    jaras::TransportState transport; transport.editPosition = transport.position = 100;
+    const std::set<jaras::ID> selected{"moving"};
+    auto index = edges(song);
+    for (double scale : {.01, .05, .3, 1., 10., 100.}) {
+        const double drop = 100 + 30 / scale;
+        check(snapSelection(drop,song,scale,transport,false,&selected),drop,"distant drop cannot return to origin");
+        check(snapSelection(drop,song,scale,transport,false,&selected,&index),drop,"cached distant drop cannot return to origin");
+        check(snapSelection(drop,song,scale,transport,true,&selected,&index),drop,"Shift remains free");
+    }
+    song.tracks[0].clips = {item("first",100,20),item("second",160,20),item("other",1000,50)};
+    index = edges(song);
+    transport.editPosition = transport.position = 5000;
+    const std::set<jaras::ID> multi{"first","second"};
+    for (double scale : {.05,.3,1.,100.}) {
+        for (const auto *cache : {static_cast<const decltype(index)*>(nullptr), static_cast<const decltype(index)*>(&index)}) {
+            check(snapSelection(1000-7/scale,song,scale,transport,false,&multi,cache),1000,"nearby other item attracts");
+            check(snapSelection(1000-9/scale,song,scale,transport,false,&multi,cache),1000-9/scale,"outside eight pixels stays free");
+        }
+    }
+    check(snapSelection(163,song,1,transport,false,&multi,&index),163,"entire moving selection excluded");
+    song.tracks.clear(); song.timeSettings->divisions = 4;
+    song.timeSettings->divisions = 8;
+    const auto timing = rulerSections(song, scrollEnd(&song));
+    for(const auto [scale,target]:{std::pair{1.,8.}, {2.,12.}, {4.,10.}, {8.,11.}, {32.,10.75}, {64.,10.75}}) {
+        check(snapSelection(10.74,song,scale,transport,false),target,"item snaps to visible bars then beats and subdivisions");
+        check(snap(10.74,song,scale,false),target,"marker snaps to visible bars then beats and subdivisions");
+        for (const auto& tick : rulerTicks(timing,8,0,20,scale,true)) if (!tick.drawsInGrid) {
+            const auto click = tick.time + .2 / scale;
+            transport.editPosition = transport.position = tick.time + 2 / scale;
+            check(snapSelection(click,song,scale,transport,false,nullptr,nullptr,&timing),tick.time,"ruler-only tick accepts item snapping");
+        }
+        transport.editPosition = transport.position = 100;
+    }
+    check(visibleGridStep(2,4,4,8,20),1,"intermediate beat groups fill the zoom gap");
+    song.beatsPerBar=7; song.beatUnit=8;
+    check(snap(2.12,song,40,false),2,"odd meter subdivisions restart at each visible bar");
+    song.beatsPerBar=4; song.beatUnit=4;
+    song.timeSettings->divisions = 4;
+    check(snapSelection(1.12,song,60,transport,false),1,"nearby grid attracts");
+    check(snapSelection(1.24,song,60,transport,false),1,"enabled grid quantizes even beyond the edge capture radius");
+    check(snapCursor(1.24,song,60,false),1,"cursor click keeps division quantization");
+    check(snapCursor(2.28,song,1000,false),2.5,"close zoom can reach lines farther than 24 points");
+    song.timeSettings->divisions = 0;
+    for (double scale : {.05,.3,1.,100.}) {
+        transport.editPosition = transport.position = 1000;
+        check(snapSelection(1000+7/scale,song,scale,transport,false),1000,"nearby edit cursor remains magnetic");
+    }
+    song.timeSettings->divisions = 4;
+    jaras::Part region; region.id = "region"; region.startTime = 3.13; region.endTime = 7.17;
+    song.parts = {region};
+    jaras::TimelineMarker marker; marker.id = "marker"; marker.position = 9.23;
+    song.markers = std::vector<jaras::TimelineMarker>{marker};
+    transport.editPosition = transport.position = 5000;
+    for (double scale : {20.,100.,1000.}) for (double target : {3.13,7.17,9.23})
+        check(snapSelection(target+.001,song,scale,transport,false),target,"nearby region and marker preserved");
+    if (failures) { std::cerr << failures << " snapping failures\n"; return 1; }
+    std::cout << "WINDOWS_ITEM_SNAP_DISTANT_DROP_RADIUS_SELECTION_INDEX_SHIFT_CURSOR_PARITY_OK\n";
+}

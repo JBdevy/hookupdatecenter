@@ -1,15 +1,54 @@
 import Foundation
 
+public struct ItemRateSettings: Equatable, Sendable {
+    public let baseBPM: Double
+    public var rate: Double
+    private var rateStepOrigin: Double?
+    private var lastSteppedRate: Double?
+    private var rateSteps = 0
+    public init(baseBPM: Double, rate: Double = 1) { self.baseBPM = baseBPM > 0 && baseBPM.isFinite ? baseBPM : 120; self.rate = rate }
+    public var bpmOffset: Double {
+        get { baseBPM * (rate - 1) }
+        set { rate = (baseBPM + newValue) / baseBPM; rateStepOrigin = nil }
+    }
+    public var isValid: Bool { rate.isFinite && (1.0 / 32...32).contains(rate) }
+    public var rateText: String {
+        var text = String(rate)
+        guard !text.lowercased().contains("e"), rate.isFinite else { return text }
+        if !text.contains(".") { text += "." }
+        let decimals = text.split(separator: ".", omittingEmptySubsequences: false).last?.count ?? 0
+        text += String(repeating: "0", count: max(0, 6 - decimals))
+        return text
+    }
+    public mutating func stepRate(_ count: Int) {
+        if rateStepOrigin == nil || lastSteppedRate != rate { rateStepOrigin = rate; rateSteps = 0 }
+        rateSteps += count; rate = rateStepOrigin! + Double(rateSteps) / 100; lastSteppedRate = rate
+    }
+    public mutating func stepBPM(_ count: Int) { bpmOffset += Double(count) }
+    public mutating func reset() { rate = 1; rateStepOrigin = nil }
+}
+
 /// Item names expose the same source speed used by the playback fragments.
 /// A range describes items crossing several tempo sections without claiming
 /// that the entire item plays at its first section's rate.
+public enum TimelineItemMediaTitle {
+    public static func title(_ name: String, path: String?) -> String {
+        guard let path else { return name }
+        let ext = (path.replacingOccurrences(of: "\\", with: "/") as NSString).pathExtension.lowercased()
+        guard !ext.isEmpty else { return name }
+        if name.lowercased().hasSuffix(" - " + ext) { return name }
+        let base = name.lowercased().hasSuffix("." + ext) ? String(name.dropLast(ext.count + 1)) : name
+        return base + " - " + ext
+    }
+}
+
 public enum TimelineItemPlaybackRate {
     public static func title(_ name: String, rates: [Double], referenceRate: Double = 1) -> String {
         let values = rates.filter { $0.isFinite && $0 > 0 }
         guard let low = values.min(), let high = values.max(),
               values.contains(where: { abs($0 - referenceRate) > 0.0000005 }) else { return name }
         func formatted(_ rate: Double) -> String {
-            var result = String(format: "%.2f", locale: Locale(identifier: "en_US_POSIX"), rate)
+            var result = String(format: "%.3f", locale: Locale(identifier: "en_US_POSIX"), rate)
             while result.last == "0" { result.removeLast() }
             if result.last == "." { result.removeLast() }
             return result
@@ -58,7 +97,7 @@ public enum TimelineTempo {
     public static let beatUnits = [1, 2, 4, 8, 16, 32, 64]
     public static let minimumGridSpacing = 16.0
     public static func barStride(bar: Double, pixelsPerSecond: Double) -> Int {
-        Int(pow(2, max(0, ceil(log2(minimumGridSpacing / max(0.001, bar * pixelsPerSecond))))))
+        Int(pow(2, max(0, ceil(log2((minimumGridSpacing / 2) / max(0.001, bar * pixelsPerSecond))))))
     }
     /// Number the same bar starts used by the timeline grid, continuing across
     /// tempo and meter changes. A marker starts a new bar even mid-measure.
@@ -91,12 +130,11 @@ public enum TimelineTempo {
     }
     public static func gridStep(bar: Double, beats: Int, pixelsPerSecond: Double, divisions: Int? = nil, unit: Int = 4) -> Double {
         if divisions == 0 { return 0 }
-        let width = bar * pixelsPerSecond
-        if width >= minimumGridSpacing * 4 {
-            let step = bar / Double(beats) * Double(unit) / Double(divisions ?? unit)
-            return step * pow(2, max(0, ceil(log2(minimumGridSpacing / max(0.001, step * pixelsPerSecond)))))
-        }
-        return bar * Double(barStride(bar: bar, pixelsPerSecond: pixelsPerSecond))
+        let beat = bar / Double(beats)
+        let base = min(beat, beat * Double(unit) / Double(divisions ?? unit))
+        let step = base * pow(2, max(0, ceil(log2(minimumGridSpacing / max(0.001, base * pixelsPerSecond)))))
+        // Reveal groups of beats before every beat fits on screen.
+        return step < bar ? step : bar * Double(barStride(bar: bar, pixelsPerSecond: pixelsPerSecond))
     }
     public static func snap(_ time: Double, bar: Double, beats: Int, pixelsPerSecond: Double, divisions: Int? = nil, unit: Int = 4) -> Double {
         let step = gridStep(bar: bar, beats: beats, pixelsPerSecond: pixelsPerSecond, divisions: divisions, unit: unit)
@@ -130,9 +168,12 @@ public enum TimelineTempo {
 public struct TapTempo {
     private var last: Double?
     private var intervals: [Double] = []
+    private var source: UUID?
     public init() {}
-    public mutating func tap(at time: Double) -> Double? {
-        guard let previous = last, time > previous, time - previous <= 4 else {
+    public mutating func tap(at time: Double, source: UUID? = nil) -> Double? {
+        guard time.isFinite else { return nil }
+        guard self.source == source, let previous = last, time - previous <= 4 else {
+            self.source = source
             last = time; intervals.removeAll(keepingCapacity: true); return nil
         }
         let interval = time - previous
@@ -145,13 +186,159 @@ public struct TapTempo {
     }
 }
 
+public extension AudioClip {
+    func supportsRate(on track: Track) -> Bool {
+        !isImage && (midi != nil || (audioFile ?? track.audioFile) != nil || track.kind == .timecode || track.kind == .click)
+    }
+    /// Global BPM edits also update playbackRate. Generated clicks already use
+    /// the new BPM, so their independent item multiplier stays at its base.
+    var clickRate: Double { tempoBasePlaybackRate ?? audioRate }
+}
+
 public extension Song {
+    func restoringItemDuration(_ clip: AudioClip, sourceDuration: Double) -> AudioClip {
+        guard sourceDuration.isFinite, sourceDuration > 0 else { return clip }
+        let remaining = sourceDuration - clip.sourceOffset
+        guard remaining > 0 else { return clip }
+        var restored = clip
+        restored.loopStart = nil; restored.loopLength = nil
+        restored.duration = min(clip.duration, duration(forSourceSpan: remaining, item: restored))
+        restored.fadeIn = restored.fadeIn.map { min($0, restored.duration) }
+        restored.fadeOut = restored.fadeOut.map { min($0, restored.duration) }
+        return restored
+    }
+    func item(_ clip: AudioClip, withRate rate: Double, on track: Track? = nil) -> AudioClip {
+        guard rate.isFinite, (1.0 / 32...32).contains(rate) else { return clip }
+        let generatedClick = track?.kind == .click && clip.audioFile == nil
+        if rate == (generatedClick ? clip.clickRate : clip.audioRate) { return clip }
+        if generatedClick {
+            // Preserve the number of source beats through every tempo section,
+            // including Free Grid sections: a generated click always uses BPM.
+            let end = clip.startTime + clip.duration
+            let timing = tempoSections(until: max(duration, end, (markers ?? []).map(\.position).max() ?? 0) + 1)
+            let beats = timing.reduce(0.0) { total, section in
+                total + max(0, min(end, section.end) - max(clip.startTime, section.start)) * section.bpm / 60 * clip.clickRate
+            }
+            var remaining = beats, finish = clip.startTime
+            for section in timing where section.end > finish {
+                let first = max(finish, section.start), speed = section.bpm / 60 * rate
+                let available = (section.end - first) * speed
+                if remaining <= available { finish = first + remaining / speed; remaining = 0; break }
+                remaining -= available; finish = section.end
+            }
+            if remaining > 0 { finish += remaining / ((timing.last?.bpm ?? bpm) / 60 * rate) }
+            var result = clip; result.playbackRate = rate; result.tempoBasePlaybackRate = nil
+            result.duration = finish - clip.startTime
+            return result
+        }
+        let sourceSpan = clip.isProjectionMedia ? clip.duration * clip.audioRate : tempoAudioSegments(clip).reduce(0.0) { $0 + $1.duration * $1.audioRate }
+        var result = clip; result.playbackRate = rate; result.tempoBasePlaybackRate = nil
+        result.duration = duration(forSourceSpan: sourceSpan, item: result)
+        result.fadeIn = result.fadeIn.map { min($0, result.duration) }
+        result.fadeOut = result.fadeOut.map { min($0, result.duration) }
+        return result
+    }
+    private func duration(forSourceSpan sourceDuration: Double, item clip: AudioClip) -> Double {
+        if clip.isProjectionMedia { return sourceDuration / clip.audioRate }
+        var probe = clip
+        let lastMarker = (markers ?? []).map(\.position).max() ?? 0
+        probe.duration = max(duration, lastMarker, clip.startTime) - clip.startTime + sourceDuration / clip.audioRate
+        var remaining = sourceDuration, end = clip.startTime
+        let segments = tempoAudioSegments(probe)
+        for segment in segments {
+            let available = segment.duration * segment.audioRate
+            if remaining <= available {
+                end = segment.startTime + remaining / segment.audioRate; remaining = 0; break
+            }
+            remaining -= available; end = segment.startTime + segment.duration
+        }
+        if remaining > 0 { end += remaining / (segments.last?.audioRate ?? clip.audioRate) }
+        return end - clip.startTime
+    }
+    /// An outgoing region can overlap the next song. Its audio tail retains
+    /// ownership, but changing its BPM must stop at the next song's onset.
+    func tempoEditEnd(for region: Part) -> Double {
+        if parts.contains(where: { $0.parentRegionID == region.id }) { return region.endTime }
+        return min(region.endTime, tempoOwnerLimit(region))
+    }
+    func regionTempoChange(_ requestedDelta: Double, region: Part) -> [TimelineMarker] {
+        let end = tempoEditEnd(for: region)
+        var targets = (markers ?? []).filter { $0.isTempo && $0.position >= region.startTime && $0.position < end }
+        func boundary(_ position: Double) -> TimelineMarker {
+            let section = tempoSection(at: position), active = activeTempoMarker(at: position)
+            return TimelineMarker(id: UUID(), name: "TEMPO", position: position, color: 0x999999,
+                tempoBPM: section.bpm, tempoBeats: section.beats, tempoUnit: section.unit,
+                tempoTimebase: active?.tempoTimebase ?? .global, tempoReferenceBPM: active?.tempoReferenceBPM,
+                tempoPlaybackRate: active.map { tempoPlaybackRate(for: $0) } ?? 1)
+        }
+        if !targets.contains(where: { abs($0.position - region.startTime) < 0.000001 }) { targets.append(boundary(region.startTime)) }
+        let bpms = targets.compactMap(\.tempoBPM)
+        guard requestedDelta.isFinite else { return [] }
+        let delta = min(300 - (bpms.max() ?? 120), max(60 - (bpms.min() ?? 120), requestedDelta))
+        guard abs(delta) > 0.000000001 else { return [] }
+        targets = targets.map {
+            var marker = markerWithRegionOwnership($0)
+            if marker.regionOwnerID == nil { marker.regionOwnerID = tempoOwner(at: marker.position)?.id ?? region.id }
+            return marker
+        }.sorted {
+            $0.position == $1.position ? $0.id.uuidString > $1.id.uuidString : $0.position < $1.position
+        }
+        var regionRates: [UUID: Double] = [:]
+        var visitedOwners = Set<UUID>()
+        for i in targets.indices {
+            let previous = targets[i]
+            targets[i].tempoBPM! += delta
+            targets[i].tempoBeats = targets[i].tempoBeats ?? meterBeats
+            targets[i].tempoUnit = targets[i].tempoUnit ?? meterUnit
+            guard let owner = previous.regionOwnerID else { continue }
+            let first = visitedOwners.insert(owner).inserted
+            if let rate = regionRates[owner] {
+                targets[i].tempoPlaybackRate = rate
+                targets[i].regionTempoAnchor = false
+            } else {
+                let follows = (previous.tempoTimebase ?? .global).resolved(project: projectTime.timebase) == .relative
+                let prior = tempoPlaybackRate(for: previous)
+                guard first && (follows || previous.regionTempoAnchor == true) else {
+                    targets[i].tempoPlaybackRate = prior
+                    continue
+                }
+                let rate = follows ? prior * (targets[i].tempoBPM! / previous.tempoBPM!) : prior
+                regionRates[owner] = rate
+                targets[i].tempoPlaybackRate = rate
+                targets[i].regionTempoAnchor = true
+            }
+        }
+        return targets
+    }
+    /// Highlight actual source-speed processing, not a historical BPM/reference.
+    /// Re-render resets the source rate to unity; partial renders cannot clear
+    /// the indicator while another owned item still runs at a different rate.
+    func hasUnrenderedTempo(in region: Part? = nil) -> Bool {
+        let sections = tempoSections(until: duration)
+        return tracks.contains { track in
+            track.clips.contains { clip in
+                guard clip.audioFile != nil || clip.midi != nil || track.audioFile != nil else { return false }
+                if let region {
+                    let owner = tempoOwner(for: clip)
+                    if let owner {
+                        guard owner.id == region.id || owner.parentRegionID == region.id else { return false }
+                    } else if clip.startTime >= region.endTime || clip.startTime + clip.duration <= region.startTime { return false }
+                }
+                return tempoAudioSegments(clip, sections: sections).contains { abs($0.audioRate - 1) > 0.0000005 }
+            }
+        }
+    }
     mutating func followTempo(_ value: Double) {
         guard projectTime.timebase == .relative else { bpm = value; return }
         guard value != bpm else { return }
         let speed = value / bpm, scale = 1 / speed
         duration *= scale
         for track in tracks.indices {
+            tracks[track].automation?.mapTimelineTimes { $0 * scale }
+            if tracks[track].programChanges != nil {
+                for marker in tracks[track].programChanges!.indices { tracks[track].programChanges![marker].position *= scale }
+            }
+            for marker in (tracks[track].chordMarkers ?? []).indices { tracks[track].chordMarkers?[marker].offset *= scale }
             for clip in tracks[track].clips.indices {
                 let end = (tracks[track].clips[clip].startTime + tracks[track].clips[clip].duration) * scale
                 tracks[track].clips[clip].startTime *= scale
@@ -170,6 +357,7 @@ public extension Song {
         bpm = value
     }
     mutating func configureTiming(bpm value: Double, beats: Int, unit: Int, settings: ProjectTimeSettings) {
+        retainTempoPlaybackRates()
         timeSettings = settings
         if settings.timebase == .relative {
             followTempo(value)
@@ -189,6 +377,9 @@ public struct TimelineTempoSection: Equatable, Sendable {
     public let timebase: ProjectTimebase
     public var referenceBPM: Double? = nil
     public var regionOwnerID: UUID? = nil
+    public var playbackRate: Double? = nil
+    public var markerID: UUID? = nil
+    public func audioRate(baseBPM: Double) -> Double { playbackRate ?? (timebase == .relative ? bpm / (referenceBPM ?? baseBPM) : 1) }
     public var barSeconds: Double { 60 / bpm * Double(beats) * 4 / Double(unit) }
 }
 public extension Song {
@@ -196,10 +387,16 @@ public extension Song {
         guard marker.sourceRegionID == nil, marker.unifiedRegionID == nil else { return false }
         return !marker.isTempo || !parts.contains { marker.position >= $0.startTime && marker.position < $0.endTime }
     }
-    func markerDragPosition(_ marker: TimelineMarker, to value: Double, pixelsPerSecond: Double, free: Bool) -> Double {
+    func markerDragPosition(_ marker: TimelineMarker, to value: Double, pixelsPerSecond: Double, free: Bool,
+                            cursor: Double? = nil, rulerSections: [TimelineTempoSection]? = nil) -> Double {
         guard canDragMarker(marker), value.isFinite else { return marker.position }
-        let target = max(0, value)
-        if !marker.isTempo { return free ? target : TimelineTempo.snap(target, song: self, pixelsPerSecond: pixelsPerSecond, excludingMarker: marker.id) }
+        var target = max(0, value)
+        if !marker.isTempo {
+            return TimelineTempo.snap(target, song: self, pixelsPerSecond: pixelsPerSecond, cursor: cursor,
+                                      enabled: !free, excludingMarker: marker.id, rulerSections: rulerSections)
+        }
+        if !free, let cursor, cursor.isFinite, cursor >= 0, pixelsPerSecond.isFinite, pixelsPerSecond > 0,
+           abs(cursor - target) * pixelsPerSecond <= 12 + 1e-9 { target = cursor }
         var intervals: [(Double, Double)] = []
         for part in parts.sorted(by: { $0.startTime < $1.startTime }) {
             if let last = intervals.last, part.startTime <= last.1 {
@@ -211,30 +408,72 @@ public extension Song {
         }
         return target
     }
+    /// Owned tempo ends with its song. Restoration is derived, never saved as
+    /// another grid marker; audio tails retain their separate owner program.
+    func tempoMarkerEnd(_ marker: TimelineMarker) -> Double {
+        guard let id = marker.regionOwnerID, let owner = parts.first(where: { $0.id == id }) else { return .infinity }
+        return tempoEditEnd(for: owner)
+    }
     func activeTempoMarker(at position: Double) -> TimelineMarker? {
-        (markers ?? []).lazy.filter { $0.isTempo && $0.position <= position }.max {
+        (markers ?? []).lazy.filter { $0.isTempo && $0.position <= position && position < tempoMarkerEnd($0) }.max {
             $0.position == $1.position ? $0.id.uuidString < $1.id.uuidString : $0.position < $1.position
         }
     }
+    private func regionTempoAnchor(for owner: UUID) -> TimelineMarker? {
+        (markers ?? []).first { $0.regionOwnerID == owner && $0.regionTempoAnchor == true && $0.isTempo }
+    }
+    private func explicitTempoPlaybackRate(for marker: TimelineMarker) -> Double? {
+        if marker.regionTempoAnchor != true, let owner = marker.regionOwnerID,
+           let rate = regionTempoAnchor(for: owner)?.tempoPlaybackRate { return rate }
+        return marker.tempoPlaybackRate
+    }
+    func tempoPlaybackRate(for marker: TimelineMarker) -> Double {
+        explicitTempoPlaybackRate(for: marker) ?? ((marker.tempoTimebase ?? .global).resolved(project: projectTime.timebase) == .relative ? (marker.tempoBPM ?? bpm) / (marker.tempoReferenceBPM ?? bpm) : 1)
+    }
+    func retainingTempoRate(_ marker: TimelineMarker, previous: TimelineMarker?) -> TimelineMarker {
+        var result = marker
+        guard let newBPM = marker.tempoBPM else {
+            result.tempoPlaybackRate = nil; result.regionTempoAnchor = nil; return result
+        }
+        if let owner = previous?.regionOwnerID ?? marker.regionOwnerID ?? tempoOwner(at: marker.position)?.id,
+           let anchor = regionTempoAnchor(for: owner) {
+            result.regionTempoAnchor = previous?.regionTempoAnchor
+            result.tempoPlaybackRate = anchor.tempoPlaybackRate
+            return result
+        }
+        if let previous, let oldBPM = previous.tempoBPM {
+            let factor = (marker.tempoTimebase ?? .global).resolved(project: projectTime.timebase) == .relative ? newBPM / oldBPM : 1
+            result.tempoPlaybackRate = tempoPlaybackRate(for: previous) * factor
+        } else if result.tempoPlaybackRate == nil {
+            let active = activeTempoMarker(at: marker.position)
+            let oldBPM = active?.tempoBPM ?? bpm
+            let factor = (marker.tempoTimebase ?? .global).resolved(project: projectTime.timebase) == .relative ? newBPM / oldBPM : 1
+            result.tempoPlaybackRate = (active.map { tempoPlaybackRate(for: $0) } ?? 1) * factor
+        }
+        return result
+    }
+    mutating func retainTempoPlaybackRates() {
+        guard let original = markers else { return }
+        for i in original.indices where original[i].isTempo { markers![i].tempoPlaybackRate = tempoPlaybackRate(for: original[i]) }
+    }
     var tempoMarkersAffectAudio: Bool {
-        (markers ?? []).contains { $0.isTempo && ($0.tempoTimebase ?? .global).resolved(project: projectTime.timebase) == .relative }
+        (markers ?? []).contains { $0.isTempo && (($0.tempoTimebase ?? .global).resolved(project: projectTime.timebase) == .relative || $0.tempoPlaybackRate != nil) }
     }
     func tempoSections(until end: Double) -> [TimelineTempoSection] {
-        var result: [TimelineTempoSection] = []
-        var start = 0.0, tempo = bpm, beats = meterBeats, unit = meterUnit
-        var timebase = projectTime.timebase
-        var referenceBPM: Double? = nil
-        var regionOwnerID: UUID? = nil
-        for marker in (markers ?? []).filter(\.isTempo).sorted(by: { $0.position == $1.position ? $0.id.uuidString < $1.id.uuidString : $0.position < $1.position }) {
-            guard marker.position <= end else { break }
-            if marker.position > start { result.append(TimelineTempoSection(start: start, end: marker.position, bpm: tempo, beats: beats, unit: unit, timebase: timebase, referenceBPM: referenceBPM, regionOwnerID: regionOwnerID)) }
-            start = marker.position; tempo = marker.tempoBPM!; beats = marker.tempoBeats ?? 4; unit = marker.tempoUnit ?? 4
-            timebase = (marker.tempoTimebase ?? .global).resolved(project: projectTime.timebase)
-            referenceBPM = marker.tempoReferenceBPM
-            regionOwnerID = marker.regionOwnerID
+        guard end > 0 else { return [] }
+        let markers = (markers ?? []).filter(\.isTempo)
+        let limits = Dictionary(uniqueKeysWithValues: markers.map { ($0.id, tempoMarkerEnd($0)) })
+        let edges = Array(Set([0, end] + markers.map(\.position).filter { $0 >= 0 && $0 < end }
+            + limits.values.filter { $0.isFinite && $0 >= 0 && $0 < end })).sorted()
+        let ordered = markers.sorted { $0.position == $1.position ? $0.id.uuidString < $1.id.uuidString : $0.position < $1.position }
+        return zip(edges, edges.dropFirst()).map { start, end in
+            guard let marker = ordered.last(where: { $0.position <= start && start < limits[$0.id]! }) else {
+                return TimelineTempoSection(start: start, end: end, bpm: bpm, beats: meterBeats, unit: meterUnit, timebase: projectTime.timebase)
+            }
+            return TimelineTempoSection(start: start, end: end, bpm: marker.tempoBPM!, beats: marker.tempoBeats ?? 4, unit: marker.tempoUnit ?? 4,
+                timebase: (marker.tempoTimebase ?? .global).resolved(project: projectTime.timebase), referenceBPM: marker.tempoReferenceBPM,
+                regionOwnerID: marker.regionOwnerID, playbackRate: explicitTempoPlaybackRate(for: marker), markerID: marker.id)
         }
-        if end > start { result.append(TimelineTempoSection(start: start, end: end, bpm: tempo, beats: beats, unit: unit, timebase: timebase, referenceBPM: referenceBPM, regionOwnerID: regionOwnerID)) }
-        return result
     }
     func tempoSection(at position: Double) -> TimelineTempoSection {
         guard position.isFinite, position >= 0 else {
@@ -245,21 +484,24 @@ public extension Song {
         // project. Find its two boundaries without allocating or sorting on
         // every transport sample. Keep the same UUID order for equal markers.
         var active: TimelineMarker?
+        var reset = 0.0
         var end = max(duration, position + 1)
         for marker in markers ?? [] where marker.isTempo {
+            let limit = tempoMarkerEnd(marker)
+            if limit > position { end = min(end, limit) } else if limit.isFinite { reset = max(reset, limit) }
             if marker.position > position {
                 end = min(end, marker.position)
-            } else if active == nil || marker.position > active!.position ||
-                        (marker.position == active!.position && marker.id.uuidString > active!.id.uuidString) {
+            } else if position < limit && (active == nil || marker.position > active!.position ||
+                        (marker.position == active!.position && marker.id.uuidString > active!.id.uuidString)) {
                 active = marker
             }
         }
         guard let active else {
-            return TimelineTempoSection(start: 0, end: end, bpm: bpm, beats: meterBeats, unit: meterUnit, timebase: projectTime.timebase)
+            return TimelineTempoSection(start: reset, end: end, bpm: bpm, beats: meterBeats, unit: meterUnit, timebase: projectTime.timebase)
         }
-        return TimelineTempoSection(start: active.position, end: end, bpm: active.tempoBPM!,
+        return TimelineTempoSection(start: max(reset, active.position), end: end, bpm: active.tempoBPM!,
             beats: active.tempoBeats ?? 4, unit: active.tempoUnit ?? 4,
-            timebase: (active.tempoTimebase ?? .global).resolved(project: projectTime.timebase), referenceBPM: active.tempoReferenceBPM, regionOwnerID: active.regionOwnerID)
+            timebase: (active.tempoTimebase ?? .global).resolved(project: projectTime.timebase), referenceBPM: active.tempoReferenceBPM, regionOwnerID: active.regionOwnerID, playbackRate: explicitTempoPlaybackRate(for: active), markerID: active.id)
     }
     /// Persisted attachment wins over overlap or a trimmed start inside the next
     /// song. A unified-container attachment resolves only among its own songs.
@@ -296,8 +538,17 @@ public extension Song {
     func audioTempoSections(owner: Part?, until end: Double, sections: [TimelineTempoSection]? = nil) -> [TimelineTempoSection] {
         let all = sections ?? tempoSections(until: end)
         guard let owner else { return all }
+        if let anchor = regionTempoAnchor(for: owner.id), let rate = anchor.tempoPlaybackRate {
+            return [TimelineTempoSection(start: 0, end: end, bpm: anchor.tempoBPM ?? bpm,
+                beats: anchor.tempoBeats ?? meterBeats, unit: anchor.tempoUnit ?? meterUnit,
+                timebase: .free, regionOwnerID: owner.id, playbackRate: rate, markerID: anchor.id)]
+        }
         let limit = tempoOwnerLimit(owner)
+        let markerPositions = Dictionary(uniqueKeysWithValues: (markers ?? []).filter(\.isTempo).map { ($0.id, $0.position) })
         let owned = all.filter {
+            // An implicit restore belongs to the global grid, not to the
+            // owning item's audio tail, which keeps its last source speed.
+            $0.markerID.flatMap { markerPositions[$0] } == $0.start &&
             $0.start >= owner.startTime && $0.start < limit &&
                 ($0.regionOwnerID == nil || $0.regionOwnerID == owner.id || $0.regionOwnerID == owner.parentRegionID)
         }
@@ -306,22 +557,56 @@ public extension Song {
         var current = TimelineTempoSection(start: 0, end: end, bpm: bpm, beats: meterBeats, unit: meterUnit, timebase: .free)
         for section in owned where section.start < end {
             if section.start > start {
-                result.append(TimelineTempoSection(start: start, end: section.start, bpm: current.bpm, beats: current.beats, unit: current.unit, timebase: current.timebase, referenceBPM: current.referenceBPM))
+                result.append(TimelineTempoSection(start: start, end: section.start, bpm: current.bpm, beats: current.beats, unit: current.unit, timebase: current.timebase, referenceBPM: current.referenceBPM, playbackRate: current.playbackRate, markerID: current.markerID))
             }
             start = section.start; current = section
         }
-        if start < end { result.append(TimelineTempoSection(start: start, end: end, bpm: current.bpm, beats: current.beats, unit: current.unit, timebase: current.timebase, referenceBPM: current.referenceBPM)) }
+        if start < end { result.append(TimelineTempoSection(start: start, end: end, bpm: current.bpm, beats: current.beats, unit: current.unit, timebase: current.timebase, referenceBPM: current.referenceBPM, playbackRate: current.playbackRate, markerID: current.markerID)) }
         return result
+    }
+    /// Timecode advances in the same source clock as audio and MIDI, while its
+    /// configured FPS and absolute offset retain their protocol meanings.
+    func timecodePlaybackSegments(_ clip: AudioClip, origin: Double) -> [AudioClip] {
+        var item = clip
+        if origin != clip.startTime {
+            var prefix = clip; prefix.startTime = min(origin, clip.startTime)
+            prefix.duration = abs(clip.startTime - origin); prefix.sourceOffset = 0
+            let elapsed = tempoAudioSegments(prefix).reduce(0.0) { $0 + $1.duration * $1.audioRate }
+            item.sourceOffset += clip.startTime >= origin ? elapsed : -elapsed
+        }
+        return tempoAudioSegments(item)
     }
     /// Temporary playback fragments preserve item edits and source continuity.
     /// They do not split project items or create additional media files.
     func tempoAudioSegments(_ clip: AudioClip, sections: [TimelineTempoSection]? = nil) -> [AudioClip] {
         // Printed performances already contain their tempo changes.
-        guard clip.frozenMIDI != true, clip.renderedTiming != true, clip.renderedTempo != true else { return [clip] }
-        guard tempoMarkersAffectAudio else { return [clip] }
+        guard clip.frozenMIDI != true, clip.renderedTiming != true, clip.renderedTempo != true, tempoMarkersAffectAudio else {
+            return clip.elasticFragments([clip])
+        }
+        return tempoAudioSegments(clip, program: audioTempoSections(owner: tempoOwner(for: clip), until: clip.startTime + clip.duration, sections: sections))
+    }
+    func resettingItemRate(_ clip: AudioClip) -> AudioClip {
+        let sourceSpan = clip.isProjectionMedia ? clip.duration * clip.audioRate :
+            tempoAudioSegments(clip).reduce(0.0) { $0 + $1.duration * $1.audioRate }
+        var result = clip; result.playbackRate = 1; result.tempoBasePlaybackRate = nil
+        let references = (markers ?? []).filter(\.isTempo).map { ItemTempoReference(markerID: $0.id, rate: tempoPlaybackRate(for: $0)) }
+        result.tempoRateReferences = references.isEmpty ? nil : references
+        result.duration = duration(forSourceSpan: sourceSpan, item: result)
+        return result
+    }
+    func itemTempoReference(_ clip: AudioClip, at time: Double, program: [TimelineTempoSection]) -> Double {
+        guard let references = clip.tempoRateReferences, !references.isEmpty else { return 1 }
+        var result = 1.0
+        for section in program {
+            if section.start > time { break }
+            if let id = section.markerID, let reference = references.first(where: { $0.markerID == id }) { result = reference.rate }
+        }
+        return result
+    }
+    func tempoAudioSegments(_ clip: AudioClip, program: [TimelineTempoSection]) -> [AudioClip] {
         let end = clip.startTime + clip.duration
         var source = clip.sourceOffset, result: [AudioClip] = []
-        for section in audioTempoSections(owner: tempoOwner(for: clip), until: end, sections: sections) where section.end > clip.startTime && section.start < end {
+        for section in program where section.end > clip.startTime && section.start < end {
             let start = max(clip.startTime, section.start), finish = min(end, section.end)
             guard finish > start else { continue }
             var segment = clip
@@ -336,7 +621,7 @@ public extension Song {
             }
             segment.fadeTimelineStart = clip.startTime; segment.fadeTimelineDuration = clip.duration
             segment.startTime = start; segment.duration = finish - start
-            segment.playbackRate = section.timebase == .relative ? clip.audioRate * section.bpm / (section.referenceBPM ?? bpm) : clip.audioRate
+            segment.playbackRate = clip.audioRate * section.audioRate(baseBPM: bpm) / itemTempoReference(clip, at: section.start, program: program)
             segment.sourceOffset = source
             segment.automationSourceOffset = clip.automation == nil ? nil : source
             if let length = clip.loopLength, length > 0 {
@@ -348,6 +633,124 @@ public extension Song {
             } else { result.append(segment) }
             source += segment.duration * segment.audioRate
         }
+        return clip.elasticFragments(result)
+    }
+
+    func unwarpedSourceLength(_ clip: AudioClip) -> Double {
+        var base = clip
+        base.elasticPoints = nil
+        return tempoAudioSegments(base).reduce(0.0) { $0 + $1.duration * $1.audioRate }
+    }
+    func elasticReferenceRate(_ clip: AudioClip) -> Double {
+        guard clip.duration > 0 else { return 1 }
+        return unwarpedSourceLength(clip) * (clip.elasticSourceScale ?? 1) / clip.duration
+    }
+    /// Use the same source span for the drag preview and the committed edit.
+    func applyingElasticEdit(to clip: AudioClip, points: [ElasticPoint], durationRatio: Double,
+                             referenceRate: Double) -> AudioClip? {
+        var edited = clip
+        edited.duration *= durationRatio
+        edited.elasticPoints = points
+        if durationRatio != 1 {
+            let unwarpedLength = unwarpedSourceLength(edited)
+            guard unwarpedLength > 0 else { return nil }
+            edited.elasticSourceScale = referenceRate * clip.duration / unwarpedLength
+        }
+        return edited
+    }
+    func elasticSourceProgress(_ clip: AudioClip, at position: Double) -> Double? {
+        var base = clip
+        base.elasticPoints = nil
+        let unwarped = tempoAudioSegments(base)
+        let length = unwarped.reduce(0.0) { $0 + $1.duration * $1.audioRate }
+        guard length > 0, clip.duration > 0 else { return nil }
+        let progress = (position - clip.startTime) / clip.duration
+        let points = clip.elasticPoints ?? []
+        let span = points.firstIndex { $0.position > progress } ?? points.count
+        let left = span == 0 ? ElasticPoint(position: 0, source: 0) : points[span - 1]
+        let right = span == points.count ? ElasticPoint(position: 1, source: 1) : points[span]
+        if points.slopeForElasticSpan(span) != 0 {
+            let length = right.position - left.position
+            let fraction = min(1, max(0, (progress - left.position) / length))
+            return min(right.source, left.source + length * points.speedForElasticSpan(span).distance(at: fraction))
+        }
+        func distance(to time: Double) -> Double {
+            unwarped.reduce(0.0) { $0 + min($1.duration, max(0, time - $1.startTime)) * $1.audioRate }
+        }
+        let start = distance(to: clip.startTime + left.position * clip.duration)
+        let end = distance(to: clip.startTime + right.position * clip.duration)
+        guard end > start else { return left.source }
+        return left.source + (right.source - left.source) * min(1, max(0, (distance(to: position) - start) / (end - start)))
+    }
+}
+
+private extension AudioClip {
+    func elasticFragments(_ base: [AudioClip]) -> [AudioClip] {
+        guard let points = elasticPoints, !points.isEmpty, ElasticPoint.valid(points),
+              !base.isEmpty, duration > 0 else { return base }
+        let sourceLength = base.reduce(0.0) { $0 + $1.duration * $1.audioRate } * (elasticSourceScale ?? 1)
+        guard sourceLength > 0 else { return base }
+        var result: [AudioClip] = []
+        func append(_ template: AudioClip, from: Double, to: Double, source: Double, rate: Double) {
+            guard to > from, rate > 0 else { return }
+            var fragment = template
+            var bytes = id.uuid
+            if !result.isEmpty {
+                withUnsafeMutableBytes(of: &bytes) { values in
+                    let bits = from.bitPattern
+                    for i in 0..<8 { values[i + 8] ^= UInt8(truncatingIfNeeded: bits >> (i * 8)) }
+                    values[6] = (values[6] & 0x0f) | 0x40
+                    values[8] = (values[8] & 0x3f) | 0x80
+                }
+            }
+            fragment.id = UUID(uuid: bytes)
+            fragment.elasticPoints = nil
+            fragment.elasticSourceScale = nil
+            fragment.fadeTimelineStart = startTime; fragment.fadeTimelineDuration = duration
+            fragment.startTime = from; fragment.duration = to - from
+            fragment.playbackRate = rate; fragment.sourceOffset = source
+            fragment.automationSourceOffset = automation == nil ? nil : source
+            if let loopLength, loopLength > 0 {
+                let origin = loopStart ?? 0
+                if source >= origin { fragment.sourceOffset = origin + (source - origin).truncatingRemainder(dividingBy: loopLength) }
+            }
+            result.append(fragment)
+        }
+        var from = startTime, source = sourceOffset, index = 0
+        for (span, point) in (points + [ElasticPoint(position: 1, source: 1)]).enumerated() {
+            let end = startTime + point.position * duration
+            let sourceEnd = sourceOffset + point.source * sourceLength
+            if points.slopeForElasticSpan(span) != 0 {
+                let speed = points.speedForElasticSpan(span)
+                let baseRate = sourceLength / duration
+                let playback = ElasticSpeed(start: speed.start * baseRate, end: speed.end * baseRate)
+                playback.slices(duration: end - from) { a, b, rate in
+                    append(self, from: from + a, to: from + b, source: source, rate: rate)
+                    source += (b - a) * rate
+                }
+            } else {
+                var amount = 0.0
+                for piece in base[index...] {
+                    let finish = min(end, piece.startTime + piece.duration)
+                    amount += max(0, finish - max(from, piece.startTime)) * piece.audioRate
+                    if finish >= end { break }
+                }
+                guard amount > 0 else { return base }
+                let factor = (sourceEnd - source) / amount
+                while index < base.count && from < end {
+                    let piece = base[index], finish = min(end, piece.startTime + piece.duration)
+                    if finish > from {
+                        let rate = piece.audioRate * factor
+                        append(piece, from: from, to: finish, source: source, rate: rate)
+                        source += (finish - from) * rate
+                        from = finish
+                    }
+                    if finish >= piece.startTime + piece.duration { index += 1 } else { break }
+                }
+            }
+            while index < base.count, base[index].startTime + base[index].duration <= end { index += 1 }
+            from = end; source = sourceEnd
+        }
         return result
     }
 }
@@ -356,18 +759,32 @@ public extension TimelineTempo {
     static func snap(_ time: Double, song: Song, pixelsPerSecond: Double, regionEnds: Bool = true,
                      cursor: Double? = nil, enabled: Bool = true,
                      otherCursors: [Double] = [], excludingRegion: UUID? = nil, excludingMarker: UUID? = nil,
-                     includeHiddenDivisions: Bool = false) -> Double {
+                     includeItemEdges: Bool = false, excludingItems: Set<UUID> = [],
+                     maximumDistancePixels: Double? = nil, rulerSections: [TimelineTempoSection]? = nil) -> Double {
         guard time.isFinite, pixelsPerSecond.isFinite, pixelsPerSecond > 0 else { return 0 }
         let position = max(0, time)
         guard enabled else { return position }
-        let section = song.tempoSection(at: position)
-        // Cursor precision follows the configured musical division, independently
-        // of the drawing density. This computes one candidate, not hidden grid lines.
         let divisions = song.projectTime.divisions
-        let step = includeHiddenDivisions
-            ? (divisions > 0 ? section.barSeconds / Double(section.beats) * Double(section.unit) / Double(divisions) : 0)
-            : gridStep(bar: section.barSeconds, beats: section.beats, pixelsPerSecond: pixelsPerSecond,
-                       divisions: divisions, unit: section.unit)
+        let gridAnchor = divisions > 0 ? TimelineTimeRuler.nearestTick(to: position, pixelsPerSecond: pixelsPerSecond,
+            divisions: divisions, sections: rulerSections ?? song.tempoSections(until: song.timelineScrollEnd)) : nil
+        // A directly targeted line must be reachable even beside an item edge or cursor.
+        if let gridAnchor, abs(gridAnchor - position) * pixelsPerSecond <= 0.5 { return gridAnchor }
+        // Item drags use a finite screen-space magnet. Ordinary cursor placement
+        // can still request unconditional musical division quantization.
+        let maximumDistance = maximumDistancePixels.map { $0.isFinite ? max(0, $0) : 0 }
+        let strongRadius = min(12, maximumDistance ?? 12)
+        // Cursor and media edges win over musical divisions inside this radius.
+        var strong: Double?
+        func considerStrong(_ anchor: Double) {
+            guard anchor.isFinite, anchor >= 0, abs(anchor - position) * pixelsPerSecond <= strongRadius + 1e-9 else { return }
+            if strong == nil || abs(anchor - position) < abs(strong! - position) || (abs(anchor - position) == abs(strong! - position) && anchor < strong!) { strong = anchor }
+        }
+        if let cursor { considerStrong(cursor) }
+        for cursor in otherCursors { considerStrong(cursor) }
+        if includeItemEdges {
+            for track in song.tracks { for item in track.clips where !excludingItems.contains(item.id) { considerStrong(item.startTime); considerStrong(item.startTime + item.duration) } }
+        }
+        if let strong { return strong }
         var nearest: Double = 0
         var distance = position
         func consider(_ anchor: Double) {
@@ -377,18 +794,23 @@ public extension TimelineTempo {
                 nearest = anchor; distance = delta
             }
         }
-        // Work in absolute time: anchors before the active tempo section must
-        // remain candidates too. Shift bypasses every anchor above.
-        if step > 0 {
-            consider(min(section.end, section.start + ((position - section.start) / step).rounded() * step))
-        }
+        if let gridAnchor { consider(gridAnchor) }
         for part in song.parts where excludingRegion == nil || (part.id != excludingRegion && part.parentRegionID != excludingRegion) {
             consider(part.startTime)
             if regionEnds { consider(part.endTime) }
         }
         for marker in song.markers ?? [] where marker.id != excludingMarker { consider(marker.position) }
+        if includeItemEdges {
+            for track in song.tracks { for item in track.clips where !excludingItems.contains(item.id) {
+                consider(item.startTime)
+                consider(item.startTime + item.duration)
+            } }
+        }
         if let cursor { consider(cursor) }
         for cursor in otherCursors { consider(cursor) }
+        // A visible musical grid always quantizes the drop. With divisions
+        // disabled, retain the capture radius for cursor and media edges.
+        if gridAnchor == nil, let maximumDistance, distance * pixelsPerSecond > maximumDistance + 1e-9 { return position }
         return nearest
     }
 }
@@ -405,6 +827,58 @@ extension Song {
     }
 }
 
+/// One immutable song revision, with owned tempo programs reused by all stems.
+/// The renderer guards this value with its own lock; playback owns a local copy.
+struct AudioTempoPrograms {
+    private let song: Song
+    private let affectsAudio: Bool
+    private let parts: [UUID: Part]
+    private let children: [UUID: [Part]]
+    private let sections: [TimelineTempoSection]
+    private struct Key: Hashable { let owner: UUID; let end: Double }
+    private var owned: [Key: [TimelineTempoSection]] = [:]
+    init(song: Song) {
+        self.song = song; affectsAudio = song.tempoMarkersAffectAudio
+        parts = Dictionary(uniqueKeysWithValues: song.parts.map { ($0.id, $0) })
+        children = Dictionary(grouping: song.parts.filter { $0.parentRegionID != nil }, by: { $0.parentRegionID! })
+        sections = song.tempoSections(until: song.duration)
+    }
+    private func owner(for clip: AudioClip) -> Part? {
+        guard let id = clip.regionOwnerID else { return song.regionOwnershipInitialized == true ? nil : song.tempoOwner(at: clip.startTime) }
+        guard let part = parts[id] else { return nil }
+        return children[id]?.filter { $0.startTime <= clip.startTime }.max {
+            $0.startTime == $1.startTime ? $0.id.uuidString < $1.id.uuidString : $0.startTime < $1.startTime
+        } ?? part
+    }
+    mutating func program(for clip: AudioClip) -> [TimelineTempoSection] {
+        guard let owner = owner(for: clip) else { return sections }
+        let key = Key(owner: owner.id, end: max(song.duration, clip.startTime + clip.duration))
+        if let cached = owned[key] { return cached }
+        let value = song.audioTempoSections(owner: owner, until: key.end, sections: sections)
+        owned[key] = value
+        return value
+    }
+    mutating func fragments(for clip: AudioClip) -> [AudioClip] {
+        guard affectsAudio, clip.frozenMIDI != true, clip.renderedTiming != true, clip.renderedTempo != true else {
+            return clip.elasticFragments([clip])
+        }
+        return song.tempoAudioSegments(clip, program: program(for: clip))
+    }
+}
+
+private struct TempoRateLookup {
+    private var points: [(time: Double, rate: Double)] = []
+    init(song: Song) {
+        let end = max(song.duration, (song.markers ?? []).map(\.position).max() ?? 0) + 1
+        points = song.tempoSections(until: end).map { ($0.start, $0.audioRate(baseBPM: song.bpm)) }
+    }
+    func rate(at time: Double) -> Double {
+        var low = 0, high = points.count
+        while low < high { let mid = (low + high) / 2; if points[mid].time <= time { low = mid + 1 } else { high = mid } }
+        return low == 0 ? 1 : points[low - 1].rate
+    }
+}
+
 /// Maps a tempo edit without consuming or discarding source audio. Empty gaps
 /// remain seconds; occupied song/clip intervals retain their musical duration.
 struct TempoEditMap {
@@ -413,12 +887,23 @@ struct TempoEditMap {
     private var clipDurations: [UUID: Double] = [:]
     private var clipStarts: [UUID: Double] = [:]
     private var regionDurations: [UUID: Double] = [:]
+    private var tempoEndRegions: [UUID: UUID] = [:]
+    private var markerStarts: [UUID: Double] = [:]
     var changesTime: Bool { spans.contains { abs($0.scale - 1) > 1e-12 } }
     init(before: Song, after: Song) {
         let folderIDs = Set(before.parts.compactMap(\.parentRegionID))
+        // Owned overlapping tails can give a unified region a different end
+        // from the global time map. Keep its restoring tempo at that actual
+        // end, otherwise the next edit treats it as an internal tempo change.
+        let groups = before.parts.filter { folderIDs.contains($0.id) }
+        for marker in after.markers ?? [] where marker.isTempo && marker.regionOwnerID == nil {
+            guard !before.parts.contains(where: { abs($0.startTime - marker.position) < 0.000001 }),
+                  let group = groups.first(where: { abs($0.endTime - marker.position) < 0.000001 }) else { continue }
+            tempoEndRegions[marker.id] = group.id
+        }
         var occupied = before.parts.filter { !folderIDs.contains($0.id) }.map { ($0.startTime, $0.endTime) }
-        occupied += before.tracks.filter { $0.kind == .standard }.flatMap { track in
-            track.clips.filter { ($0.audioFile != nil || track.audioFile != nil) && before.tempoOwner(for: $0) == nil }.map { ($0.startTime, $0.startTime + $0.duration) }
+        occupied += before.tracks.flatMap { track in
+            track.clips.filter { $0.supportsRate(on: track) && before.tempoOwner(for: $0) == nil }.map { ($0.startTime, $0.startTime + $0.duration) }
         }
         occupied.sort { $0.0 == $1.0 ? $0.1 < $1.1 : $0.0 < $1.0 }
         var merged: [(Double, Double)] = []
@@ -428,21 +913,17 @@ struct TempoEditMap {
         }
         occupied = merged
         var points = [0.0, before.duration, after.duration]
+        points += (before.parts + after.parts).flatMap { [$0.startTime, $0.endTime] }
         points += occupied.flatMap { [$0.0, $0.1] }
         points += (before.markers ?? []).filter(\.isTempo).map(\.position)
         points += (after.markers ?? []).filter(\.isTempo).map(\.position)
         points = Array(Set(points.filter { $0.isFinite && $0 >= 0 })).sorted()
-        func rate(_ song: Song, _ time: Double) -> Double {
-            guard let marker = song.activeTempoMarker(at: time),
-                  (marker.tempoTimebase ?? .global).resolved(project: song.projectTime.timebase) == .relative,
-                  let bpm = marker.tempoBPM, bpm.isFinite, bpm > 0 else { return 1 }
-            return bpm / (marker.tempoReferenceBPM ?? song.bpm)
-        }
+        let oldRates = TempoRateLookup(song: before), newRates = TempoRateLookup(song: after)
         var output = 0.0
         for (start, end) in zip(points, points.dropFirst()) {
             let middle = start + (end - start) / 2
             let filled = occupied.contains { $0.0 <= middle && middle < $0.1 }
-            let scale = filled ? rate(before, middle) / rate(after, middle) : 1
+            let scale = filled ? oldRates.rate(at: middle) / newRates.rate(at: middle) : 1
             spans.append(Span(start: start, end: end, output: output, scale: scale))
             output += (end - start) * scale
         }
@@ -454,29 +935,39 @@ struct TempoEditMap {
         let oldSections = before.tempoSections(until: timelineEnd)
         let newSections = after.tempoSections(until: timelineEnd)
         let nextOwners = Dictionary(uniqueKeysWithValues: after.parts.map { ($0.id, $0) })
-        var ownerSections: [UUID: (old: [TimelineTempoSection], new: [TimelineTempoSection])] = [:]
+        var ownerSpans: [UUID: [Span]] = [:]
         func resizedDuration(start: Double, end: Double, owner: Part) -> Double {
-            if ownerSections[owner.id] == nil {
-                ownerSections[owner.id] = (
-                    before.audioTempoSections(owner: owner, until: timelineEnd, sections: oldSections),
-                    after.audioTempoSections(owner: nextOwners[owner.id] ?? owner, until: timelineEnd, sections: newSections))
+            if ownerSpans[owner.id] == nil {
+                let old = before.audioTempoSections(owner: owner, until: timelineEnd, sections: oldSections)
+                let new = after.audioTempoSections(owner: nextOwners[owner.id] ?? owner, until: timelineEnd, sections: newSections)
+                let edges = Array(Set([0, timelineEnd] + (old + new).flatMap { [$0.start, $0.end] })).sorted()
+                func speed(_ sections: [TimelineTempoSection], _ time: Double, _ song: Song) -> Double {
+                    guard let section = sections.last(where: { $0.start <= time }) else { return 1 }
+                    return section.audioRate(baseBPM: song.bpm)
+                }
+                var program: [Span] = [], output = 0.0
+                for (first, last) in zip(edges, edges.dropFirst()) {
+                    let middle = first + (last - first) / 2
+                    let scale = speed(old, middle, before) / speed(new, middle, after)
+                    program.append(Span(start: first, end: last, output: output, scale: scale))
+                    output += (last - first) * scale
+                }
+                ownerSpans[owner.id] = program
             }
-            let (old, new) = ownerSections[owner.id]!
-            let edges = Array(Set([start, end] + (old + new).flatMap { [$0.start, $0.end] }.filter { $0 > start && $0 < end })).sorted()
-            func speed(_ sections: [TimelineTempoSection], _ time: Double, _ song: Song) -> Double {
-                guard let section = sections.last(where: { $0.start <= time }), section.timebase == .relative else { return 1 }
-                return section.bpm / (section.referenceBPM ?? song.bpm)
-            }
-            return zip(edges, edges.dropFirst()).reduce(0) { total, edge in
-                let middle = edge.0 + (edge.1 - edge.0) / 2
-                return total + (edge.1 - edge.0) * speed(old, middle, before) / speed(new, middle, after)
-            }
+            let program = ownerSpans[owner.id]!
+            return Self.position(end, in: program) - Self.position(start, in: program)
         }
         let folders = Set(before.parts.compactMap(\.parentRegionID))
+        for marker in after.markers ?? [] {
+            guard let ownerID = marker.regionOwnerID,
+                  let owner = before.parts.first(where: { $0.id == ownerID }), !folders.contains(ownerID) else { continue }
+            let offset = resizedDuration(start: min(owner.startTime, marker.position), end: max(owner.startTime, marker.position), owner: owner)
+            markerStarts[marker.id] = position(owner.startTime) + (marker.position < owner.startTime ? -offset : offset)
+        }
         for part in before.parts where !folders.contains(part.id) {
             regionDurations[part.id] = resizedDuration(start: part.startTime, end: part.endTime, owner: part)
         }
-        for track in before.tracks where track.kind == .standard {
+        for track in before.tracks {
             for clip in track.clips {
                 if let owner = before.tempoOwner(for: clip) {
                     clipDurations[clip.id] = resizedDuration(start: clip.startTime, end: clip.startTime + clip.duration, owner: owner)
@@ -486,7 +977,8 @@ struct TempoEditMap {
             }
         }
     }
-    func position(_ time: Double) -> Double {
+    func position(_ time: Double) -> Double { Self.position(time, in: spans) }
+    private static func position(_ time: Double, in spans: [Span]) -> Double {
         guard time.isFinite, time >= 0, let last = spans.last else { return time }
         var low = 0, high = spans.count
         while low < high { let mid = (low + high) / 2; if spans[mid].end <= time { low = mid + 1 } else { high = mid } }
@@ -497,19 +989,26 @@ struct TempoEditMap {
     func apply(to song: inout Song) {
         guard changesTime else { return }
         for track in song.tracks.indices {
-            if var automation = song.tracks[track].automation {
-                for envelope in automation.envelopes.indices {
-                    for point in automation.envelopes[envelope].points.indices {
-                        automation.envelopes[envelope].points[point].time = position(automation.envelopes[envelope].points[point].time)
-                    }
+            song.tracks[track].automation?.mapTimelineTimes { position($0) }
+            if song.tracks[track].programChanges != nil {
+                for marker in song.tracks[track].programChanges!.indices {
+                    song.tracks[track].programChanges![marker].position = position(song.tracks[track].programChanges![marker].position)
                 }
-                song.tracks[track].automation = automation
             }
             for item in song.tracks[track].clips.indices {
                 let clip = song.tracks[track].clips[item]
                 let start = clipStarts[clip.id] ?? position(clip.startTime), end = position(clip.startTime + clip.duration)
+                let duration = clipDurations[clip.id] ?? (end - start)
+                // A printed source already contains the former tempo map. Keep
+                // that map bypassed, but follow later tempo edits by preserving
+                // the source span while its timeline duration changes.
+                if (clip.renderedTempo == true || clip.renderedTiming == true || clip.frozenMIDI == true),
+                   duration > 0, clip.duration > 0, abs(duration - clip.duration) > 0.000000001 {
+                    song.tracks[track].clips[item].tempoBasePlaybackRate = clip.tempoBasePlaybackRate ?? clip.audioRate
+                    song.tracks[track].clips[item].playbackRate = clip.audioRate * clip.duration / duration
+                }
                 song.tracks[track].clips[item].startTime = start
-                song.tracks[track].clips[item].duration = clipDurations[clip.id] ?? (end - start)
+                song.tracks[track].clips[item].duration = duration
             }
         }
         for i in song.parts.indices {
@@ -520,7 +1019,23 @@ struct TempoEditMap {
             let children = song.parts.filter { $0.parentRegionID == song.parts[i].id }
             if let end = children.map(\.endTime).max() { song.parts[i].endTime = end }
         }
-        if song.markers != nil { for i in song.markers!.indices { song.markers![i].position = position(song.markers![i].position) } }
+        // Persist mapped edges before the engine regenerates native timecode
+        // items from their owning regions and these two offsets.
+        for row in song.tracks.indices where song.tracks[row].kind == .timecode && song.tracks[row].importedTimecodeItems != true {
+            for index in song.tracks[row].clips.indices {
+                let clip = song.tracks[row].clips[index]
+                guard clip.audioFile == nil, let part = song.parts.first(where: { Project.timecodeItemID($0.id) == clip.id }) else { continue }
+                song.tracks[row].clips[index].timecodeStartOffset = clip.startTime - part.startTime
+                song.tracks[row].clips[index].timecodeEndOffset = clip.startTime + clip.duration - part.endTime
+            }
+        }
+        if song.markers != nil {
+            let ends = Dictionary(uniqueKeysWithValues: song.parts.map { ($0.id, $0.endTime) })
+            for i in song.markers!.indices {
+                song.markers![i].position = tempoEndRegions[song.markers![i].id].flatMap { ends[$0] }
+                    ?? markerStarts[song.markers![i].id] ?? position(song.markers![i].position)
+            }
+        }
         song.duration = position(song.duration)
         for track in song.tracks { for clip in track.clips { song.duration = max(song.duration, clip.startTime + clip.duration) } }
         for part in song.parts { song.duration = max(song.duration, part.endTime) }
@@ -564,15 +1079,17 @@ public struct GlobalProjectTiming: Codable, Equatable, Sendable {
         preferences.set(data, forKey: "jaras.advanced.globalTiming")
     }
     public func applyOnOpen(to project: inout Project) {
-        guard project.importedTimeline != true else { return }
-        apply(to: &project)
+        // Saved documents own their tempo map and item rates. Global timing
+        // is a default for new projects, never a migration on document open.
+        // Keep this entry point for older import callers without retiming them.
+
     }
     public func apply(to project: inout Project) {
         for i in project.songs.indices { project.songs[i].configureTiming(bpm: bpm, beats: beats, unit: unit, settings: settings) }
     }
 }
 
-/// One set of musical positions for both the grid and its elapsed-time ruler.
+/// One set of positions for the grid and its musical or elapsed-time ruler.
 public enum TimelineTimeRuler {
     public static let labelGap = 14.0
     /// Monospaced ruler text can include milliseconds and more than two hour
@@ -598,100 +1115,168 @@ public enum TimelineTimeRuler {
     public struct Tick {
         public let time: Double
         public let primary: Bool
+        public let drawsInGrid: Bool
         /// Empty when the next label would be too close. The tick is still drawn.
         public let label: String
     }
+    public struct MusicalLabels {
+        private let firstMeasures: [Int]
+        public let spacing: Double
+
+        public init(sections: [TimelineTempoSection]) {
+            var next = 1
+            firstMeasures = sections.map { section in
+                let first = next
+                let count = (section.end - section.start) / section.barSeconds
+                if count.isFinite && count > 0 {
+                    next += max(1, Int(ceil(count - 1e-9)))
+                }
+                return first
+            }
+            // Reserve the widest label through the end of the timeline.
+            // A constant width prevents labels from shifting during scroll.
+            spacing = Double(String(next).count + 5) * 8.5 + TimelineTimeRuler.labelGap
+        }
+
+        fileprivate func label(section: Int, bar: Int, subdivision: Int, divisionsPerBeat: Int) -> String {
+            let measure = String(firstMeasures[section] + bar)
+            guard subdivision > 0 else { return measure }
+            let beat = subdivision / divisionsPerBeat + 1
+            let withinBeat = subdivision % divisionsPerBeat
+            return withinBeat == 0 ? "\(measure).\(beat)" : "\(measure).\(beat).\(withinBeat + 1)"
+        }
+
+        public func position(at seconds: Double, sections: [TimelineTempoSection], divisions: Int)
+            -> (bar: Int, beat: Int, division: Int, tick: Int) {
+            guard seconds.isFinite, seconds >= 0, !sections.isEmpty else { return (1, 1, 1, 1) }
+            let index = min(sections.count - 1, TimelineTimeRuler.firstSection(endingAfter: seconds, in: sections))
+            let section = sections[index]
+            let perBeat = max(1, divisions / section.unit)
+            let ticksPerDivision = max(1, 3840 / section.unit / perBeat)
+            let elapsed = max(0, seconds - section.start) / section.barSeconds * Double(section.beats)
+            let ticks = Int(floor(elapsed * Double(perBeat * ticksPerDivision) + 1e-7))
+            let subdivisions = ticks / ticksPerDivision
+            let beat = subdivisions / perBeat
+            return (firstMeasures[index] + beat / section.beats, beat % section.beats + 1,
+                    subdivisions % perBeat + 1, ticks % ticksPerDivision + 1)
+        }
+    }
+    static func nearestTick(to position: Double, pixelsPerSecond: Double, divisions: Int,
+                            sections: [TimelineTempoSection]) -> Double? {
+        // Bar stride is rounded up to a power of two from six points.
+        // At close zoom one musical subdivision can cover many more points.
+        let index = firstSection(endingAfter: position, in: sections)
+        guard let section = index < sections.count ? sections[index] : sections.last else { return nil }
+        let subdivision = 60 / section.bpm * 4 / Double(max(section.unit, divisions))
+        let radius = max(24 / pixelsPerSecond, subdivision)
+        return ticks(in: sections, from: position - radius, to: position + radius,
+                     pixelsPerSecond: pixelsPerSecond, divisions: divisions, labels: false,
+                     musical: MusicalLabels(sections: sections))
+            .lazy.map(\.time).min { abs($0 - position) < abs($1 - position) }
+    }
+    private static func firstSection(endingAfter time: Double, in sections: [TimelineTempoSection]) -> Int {
+        var low = 0, high = sections.count
+        while low < high {
+            let middle = (low + high) / 2
+            if sections[middle].end <= time { low = middle + 1 } else { high = middle }
+        }
+        return low
+    }
     public static func ticks(in sections: [TimelineTempoSection], from start: Double, to end: Double,
                              pixelsPerSecond scale: Double, divisions: Int = 4, labels: Bool = true,
-                             minimumLabelSpacing: Double? = nil) -> [Tick] {
+                             minimumLabelSpacing: Double? = nil, musical: MusicalLabels? = nil) -> [Tick] {
         guard start.isFinite, end.isFinite, scale.isFinite, scale > 0, end >= start else { return [] }
         let spacing = minimumLabelSpacing.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
+            ?? musical?.spacing
             ?? labelSpacing(through: sections.last?.end ?? end, pixelsPerSecond: scale)
         let labelSeconds = spacing / scale
-        // Tempo sections are ordered, non-overlapping intervals. Keep a fixed
-        // screen-space density across their boundaries: restarting the grid at
-        // each tiny ramp segment must not draw thousands of coincident lines.
-        let columnWidth = TimelineTempo.minimumGridSpacing / 2
-        let columnSeconds = columnWidth / scale
+        let musicalGrid = musical != nil
+        let barLineSpacing = 6.0, beatLineSpacing = 32.0, rulerTickSpacing = 5.0
+        let columnSeconds = (musicalGrid ? rulerTickSpacing : TimelineTempo.minimumGridSpacing / 2) / scale
         let densityStart = floor(max(0, start) / columnSeconds) * columnSeconds
+        // Finish the last column before clipping, so tiled/scrolling views
+        // choose the same representative even at the viewport's right edge.
+        let densityEnd = (floor(end / columnSeconds) + 1) * columnSeconds
         var result: [Tick] = []
-        var previousLabel = -Double.infinity
         var lastColumn: Double?
-        func firstSection(endingAfter time: Double, from first: Int) -> Int {
-            var low = first, high = sections.count
-            while low < high {
-                let middle = (low + high) / 2
-                if sections[middle].end <= time { low = middle + 1 } else { high = middle }
-            }
-            return low
-        }
-        var sectionIndex = labels ? 0 : firstSection(endingAfter: densityStart, from: 0)
+        var lastColumnRank = 0
+        // Every reference has fixed higher-priority neighbours. Its visibility
+        // depends only on their distance and zoom, never on which other labels
+        // happened to be drawn first. This preserves references across tempo
+        // boundaries as well as within a bar (8 -> 4 -> 2 -> 1 subdivisions).
+        func hierarchyStep(_ index: Int) -> Int { index & (~index + 1) }
+        var sectionIndex = firstSection(endingAfter: densityStart, in: sections)
         while sectionIndex < sections.count {
+            let indexOfSection = sectionIndex
             let section = sections[sectionIndex]
-            if section.start > end { break }
+            if section.start > densityEnd { break }
             sectionIndex += 1
-            if let lastColumn, section.end <= (lastColumn + 1) * columnSeconds {
-                sectionIndex = firstSection(endingAfter: (lastColumn + 1) * columnSeconds, from: sectionIndex)
-                continue
-            }
             let bar = section.barSeconds
             guard bar.isFinite, bar > 0, section.start.isFinite, section.end.isFinite,
                   section.end > section.start else { continue }
-            let strideBars = TimelineTempo.barStride(bar: bar, pixelsPerSecond: scale)
+            let boundaryEnd = sectionIndex < sections.count ? section.end : Double.infinity
+            let strideBars = musicalGrid
+                ? Int(pow(2, max(0, ceil(log2(barLineSpacing / max(0.001, bar * scale))))))
+                : TimelineTempo.barStride(bar: bar, pixelsPerSecond: scale)
             let first = max(0, Int(floor((densityStart - section.start) / bar)) / strideBars * strideBars)
-            let last = max(first, Int(ceil((min(section.end, end) - section.start) / bar)))
-            let distant = bar * scale < TimelineTempo.minimumGridSpacing * 4
-            let minor = distant ? bar * Double(strideBars) / 2 :
-                TimelineTempo.gridStep(bar: bar, beats: section.beats, pixelsPerSecond: scale,
-                                       divisions: divisions == 0 ? 4 : divisions, unit: section.unit)
-            guard minor > 0, minor.isFinite else { continue }
-            let labelBars = max(strideBars, Int(pow(2, max(0, ceil(log2(spacing / (bar * scale)))))))
-            let labelMinor = max(1, Int(ceil(spacing / (minor * scale))))
-            let firstAllowedLabel = previousLabel + labelSeconds
-            // Account for earlier sections without scanning their offscreen bars.
-            // Candidates within a section already have the required separation;
-            // only its first candidates can conflict with the preceding section.
-            if labels {
-                let lastBar = max(0, Int(ceil((section.end - section.start) / bar)) - 1)
-                var lastCandidate = section.start + Double(lastBar / labelBars * labelBars) * bar
-                if !distant {
-                    let labelStep = minor * Double(labelMinor)
-                    for index in stride(from: lastBar, through: max(0, lastBar - 1), by: -1) {
-                        let origin = section.start + Double(index) * bar
-                        let available = min(bar - labelSeconds, (section.end - origin).nextDown)
-                        if available >= labelStep {
-                            lastCandidate = max(lastCandidate, origin + floor(available / labelStep) * labelStep)
-                        }
-                    }
-                }
-                if lastCandidate >= firstAllowedLabel { previousLabel = lastCandidate }
+            let last = max(first, Int(ceil((min(section.end, densityEnd) - section.start) / bar)))
+            let beat = bar / Double(section.beats)
+            // Reveal groups of beats as space opens between bar lines.
+            // Finer configured divisions follow at closer zoom.
+            let base = min(beat, beat * Double(section.unit) / Double(divisions == 0 ? 4 : divisions))
+            let minor = musicalGrid
+                ? base * pow(2, max(0, ceil(log2(rulerTickSpacing / max(0.001, base * scale)))))
+                : TimelineTempo.gridStep(bar: bar, beats: section.beats, pixelsPerSecond: scale,
+                                         divisions: divisions == 0 ? 4 : divisions, unit: section.unit)
+            guard base > 0, base.isFinite, minor > 0, minor.isFinite else { continue }
+            let divisionsPerBeat = max(1, Int((beat / base).rounded()))
+            let boundaryClearance: Double
+            if indexOfSection == 0 { boundaryClearance = .infinity }
+            else {
+                let step = hierarchyStep(indexOfSection)
+                let left = sections[indexOfSection - step].start
+                let right = indexOfSection + step < sections.count ? sections[indexOfSection + step].start : Double.infinity
+                boundaryClearance = min(section.start - left, right - section.start)
             }
-            guard section.end > densityStart else { continue }
-            func append(_ time: Double, primary: Bool, labeled: Bool) {
-                guard time >= densityStart, time <= end, time < section.end else { return }
+            func append(_ time: Double, bar: Int, subdivision: Int, clearance: Double) {
+                guard time >= densityStart, time <= densityEnd, time < section.end else { return }
+                let labeled = clearance + 1e-9 >= labelSeconds
+                let primary = subdivision == 0
+                let room = clearance * scale + 1e-9
+                // Label spacing only decides which of the same ticks have text.
+                // At close zoom, beat lines reach the tracks and finer marks stay in the ruler.
+                let drawsInGrid = musicalGrid
+                    ? room >= barLineSpacing && (primary || (subdivision % divisionsPerBeat == 0 && beat * scale >= beatLineSpacing))
+                    : primary && room >= 24
+                let rank = labeled ? 3 : !musicalGrid ? 0 : drawsInGrid ? 2 : primary ? 1 : 0
                 let column = floor(time / columnSeconds + 1e-9)
-                guard column != lastColumn else { return }
-                lastColumn = column
-                guard time >= max(0, start) else { return }
-                result.append(Tick(time: time, primary: primary,
-                                   label: labels && labeled && time >= firstAllowedLabel ? timeLabel(time) : ""))
+                if column == lastColumn {
+                    guard rank > lastColumnRank else { return }
+                    result.removeLast()
+                }
+                lastColumn = column; lastColumnRank = rank
+                let title = labels && labeled
+                    ? (musical?.label(section: indexOfSection, bar: bar, subdivision: subdivision, divisionsPerBeat: divisionsPerBeat) ?? timeLabel(time))
+                    : ""
+                result.append(Tick(time: time, primary: primary, drawsInGrid: drawsInGrid, label: title))
             }
             for index in stride(from: first, through: last, by: strideBars) {
                 let time = section.start + Double(index) * bar
                 guard time < section.end else { continue }
-                append(time, primary: true, labeled: index % labelBars == 0)
-                if distant {
-                    append(time + minor, primary: false, labeled: false)
-                } else {
-                    var subdivision = 1
+                let barClearance = index == 0 ? boundaryClearance :
+                    min(Double(hierarchyStep(index)) * bar, boundaryEnd - time)
+                append(time, bar: index, subdivision: 0, clearance: barClearance)
+                if minor < bar {
                     for offset in stride(from: minor, to: min(bar, section.end - time) - 1e-9, by: minor) {
-                        append(time + offset, primary: false,
-                               labeled: subdivision % labelMinor == 0 && (bar - offset) * scale >= spacing)
-                        subdivision += 1
+                        let subdivision = max(1, Int((offset / base).rounded()))
+                        let clearance = min(Double(hierarchyStep(subdivision)) * base,
+                                            bar - offset, boundaryEnd - time - offset)
+                        append(time + offset, bar: index, subdivision: subdivision, clearance: clearance)
                     }
                 }
             }
         }
+        result.removeAll { $0.time < max(0, start) || $0.time > end }
         return result
     }
     private static func timeLabel(_ time: Double) -> String {
@@ -699,5 +1284,18 @@ public enum TimelineTimeRuler {
         let whole = milliseconds / 1000
         let base = String(format: "%02d:%02d:%02d", whole / 3600, whole / 60 % 60, whole % 60)
         return milliseconds % 1000 == 0 ? base : base + String(format: ".%03d", milliseconds % 1000)
+    }
+}
+
+/// Admission only: rejected controls never create delayed work or move the deadline.
+struct LiveTempoEditGate {
+    private var lastAccepted: TimeInterval?
+    mutating func reset() { lastAccepted = nil }
+    mutating func accept(running: Bool, at now: TimeInterval) -> Bool {
+        guard now.isFinite else { return false }
+        guard running else { reset(); return true }
+        if let lastAccepted, now >= lastAccepted, now - lastAccepted < 0.5 - 1e-9 { return false }
+        lastAccepted = now
+        return true
     }
 }

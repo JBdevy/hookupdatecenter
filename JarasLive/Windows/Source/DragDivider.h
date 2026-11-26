@@ -1,0 +1,134 @@
+#pragma once
+#include "Common.h"
+namespace catlive {
+// The same narrow sidebar rail scrolls vertically and resizes horizontally.
+class DragDivider final : public Component, private Timer {
+  public:
+    struct ScrollMetrics { int offset=0, viewport=0, document=0; };
+    explicit DragDivider(bool horizontalMotion = true) : alongX(horizontalMotion) {
+        setMouseCursor(alongX ? MouseCursor::LeftRightResizeCursor : MouseCursor::UpDownResizeCursor);
+    }
+    std::function<void()> started, ended, doubleClicked;
+    std::function<void(int)> moved, scrollTo;
+    std::function<ScrollMetrics()> scrollMetrics;
+    void setThinRail(bool value) { thinRail=value;repaint(); }
+    void setRailVisible(bool value) { railVisible=value;repaint(); }
+    void setScrollRailVisible(bool value) { scrollRailVisible=value;repaint(); }
+    void setCoalescedResize(bool value) { coalescedResize=value; }
+    void refreshScroll() {
+        const auto next = scrollMetrics ? scrollMetrics() : ScrollMetrics{};
+        if (metrics.offset != next.offset || metrics.viewport != next.viewport || metrics.document != next.document) {
+            metrics=next; repaint();
+        }
+    }
+    void mouseDown(const MouseEvent &e) override {
+        if (!e.mods.isLeftButtonDown()) return;
+        stopTimer();pendingResize.reset();lastResize.reset();
+        refreshScroll(); origin=e.getScreenPosition(); initialScroll=metrics.offset; axis=Axis::pending;
+        const auto thumb=thumbBounds();
+        const float travel=getHeight()-4.f-thumb.getHeight();
+        scrollPerPoint=travel>0 && metrics.document>metrics.viewport ? (metrics.document-metrics.viewport)/travel : 0;
+    }
+    void mouseDrag(const MouseEvent &e) override {
+        if (!e.mods.isLeftButtonDown()) return;
+        const auto delta=e.getScreenPosition()-origin;
+        if (axis==Axis::pending) {
+            if (std::max(std::abs(delta.x),std::abs(delta.y))<3) return;
+            if (scrollRailVisible && alongX && scrollPerPoint>0 && std::abs(delta.y)>std::abs(delta.x)) axis=Axis::scroll;
+            else if (!alongX || std::abs(delta.x)>=std::abs(delta.y)) { axis=Axis::resize; if(started)started(); }
+            else return;
+        }
+        if(axis==Axis::scroll && scrollTo) { scrollTo(initialScroll+roundToInt(delta.y*scrollPerPoint)); refreshScroll(); }
+        if(axis==Axis::resize && moved) {
+            const int value=alongX?delta.x:delta.y;
+            if(coalescedResize) {
+                pendingResize=value;
+                if(!isTimerRunning())startTimerHz(60);
+            } else moved(value);
+        }
+    }
+    void mouseUp(const MouseEvent &event) override {
+        stopTimer();
+        if(axis==Axis::resize) {
+            if(coalescedResize) {
+                const auto delta=event.getScreenPosition()-origin;
+                pendingResize=alongX?delta.x:delta.y;
+                flushResize();
+            }
+            if(ended)ended();
+        }
+        pendingResize.reset();axis=Axis::pending;
+    }
+    void mouseDoubleClick(const MouseEvent &) override { if(doubleClicked)doubleClicked(); }
+    void mouseWheelMove(const MouseEvent &, const MouseWheelDetails &wheel) override {
+        refreshScroll(); if(scrollTo) { scrollTo(metrics.offset-roundToInt(wheel.deltaY*320));refreshScroll(); }
+    }
+    void mouseEnter(const MouseEvent &) override { repaint(); }
+    void mouseExit(const MouseEvent &) override { repaint(); }
+    void paint(Graphics &g) override {
+        if (!railVisible) return;
+        g.setColour(Colour::fromFloatRGBA(.18f,.18f,.18f,1));
+        if(alongX) {
+            const float width=thinRail?2.f:4.f;
+            g.fillRect(getWidth()/2.f-width/2,0.f,width,(float)getHeight());
+            if(scrollRailVisible && metrics.document>metrics.viewport && metrics.viewport>0) {
+                const auto green=Colour::fromFloatRGBA(.22f,1,.55f,1);
+                g.setColour(green.withAlpha(.25f));g.fillRect(getWidth()/2.f-1,0.f,2.f,(float)getHeight());
+                g.setColour(green);g.fillRoundedRectangle(thumbBounds(),3);
+            } else {
+                g.setColour(Colour::fromFloatRGBA(.55f,.55f,.55f,1));
+                g.fillRoundedRectangle(getWidth()/2.f-1,getHeight()/2.f-14,2,28,1);
+            }
+        } else {
+            g.fillRect(0,getHeight()/2,getWidth(),1);
+            g.setColour(isMouseOverOrDragging()?theme::green:theme::secondary);
+            g.fillRoundedRectangle(getWidth()/2.f-24,getHeight()/2.f-1,48,2,1);
+        }
+    }
+  private:
+    void timerCallback() override { flushResize(); }
+    void flushResize() {
+        if(!pendingResize)return;
+        const auto value=*pendingResize;pendingResize.reset();
+        if(lastResize==value)return;
+        lastResize=value;
+        if(moved)moved(value);
+    }
+    bool coalescedResize=false;
+    std::optional<int> pendingResize,lastResize;
+    enum class Axis { pending, resize, scroll };
+    Axis axis=Axis::pending;
+    bool alongX,thinRail=false,scrollRailVisible=true,railVisible=true; Point<int> origin; ScrollMetrics metrics;
+    int initialScroll=0;float scrollPerPoint=0;
+    juce::Rectangle<float> thumbBounds() const {
+        const float height=std::max(0,getHeight()-4),width=std::min(thinRail?2:6,getWidth());
+        const float thumb=std::min(height,std::max(24.f,height*metrics.viewport/std::max(1,metrics.document)));
+        const float fraction=jlimit(0.f,1.f,(float)metrics.offset/std::max(1,metrics.document-metrics.viewport));
+        return {getWidth()/2.f-width/2,2+(height-thumb)*fraction,width,thumb};
+    }
+};
+// The footer previews only a later child of the current unified region.
+// The separately armed queue is shown in its own display.
+inline const jaras::Part *nextUnifiedSong(const jaras::Song &song, const jaras::TransportState &state) {
+    if (!state.playing || state.ignoreNextAfter || !state.regionId) return nullptr;
+    const auto current = std::find_if(song.parts.begin(),song.parts.end(),[&](const auto &p){return p.id == *state.regionId;});
+    if (current == song.parts.end()) return nullptr;
+    const auto parent = current->parentRegionID.value_or(current->id);
+    const jaras::Part *next = nullptr;
+    for (const auto &part : song.parts)
+        if (part.parentRegionID == parent && part.startTime > state.position &&
+            (!next || part.startTime < next->startTime || (part.startTime == next->startTime && part.id < next->id))) next = &part;
+    return next;
+}
+inline String regionCaption(const jaras::Song &song, const jaras::Part *part, std::optional<double> at = {}) {
+    if (!part) return String::fromUTF8("—");
+    const jaras::TimelineMarker *first = nullptr, *active = nullptr;
+    if (song.markers) for (const auto &marker : *song.markers)
+        if (marker.tempoBPM && marker.position >= part->startTime && marker.position < part->endTime) {
+            if (!first || marker.position < first->position) first = &marker;
+            if (at && marker.position <= *at && (!active || marker.position > active->position)) active = &marker;
+        }
+    auto *tempo = active ? active : first;
+    return text(part->name) + (tempo ? " - " + String(*tempo->tempoBPM, *tempo->tempoBPM == std::floor(*tempo->tempoBPM) ? 0 : 1) + " bpm" : String());
+}
+}

@@ -18,7 +18,7 @@
     container.configure([target(0, 100_000)])
     container.project(scale: 1, viewport: viewport)
     let view = container.viewForTest(wide)!
-    precondition(view.projectedInputBounds == CGRect(x: viewport.minX, y: -4, width: viewport.width, height: 24))
+    precondition(view.projectedInputBounds == CGRect(x: viewport.minX, y: -4, width: viewport.width, height: 32))
     precondition(view.layer!.masksToBounds, "a partial selection outline clips to the bounded native surface")
     let initial = view.frame
     let invalidations = view.projectionInvalidationsForTest
@@ -76,7 +76,7 @@
                 guard projected.inputLocalBoundsForTest.width > 0 else { continue }
                 let selection = container.selectionForTest(wide)!
                 let reference = CGRect(x: original.minX - projected.projectedInputBounds.minX + padding,
-                    y: padding > 0 ? 4 : 0, width: max(1, original.width - padding * 2), height: 16)
+                    y: padding > 0 ? 4 : 0, width: max(1, original.width - padding * 2), height: 24)
                     .insetBy(dx: 0.75, dy: 0.75)
                 for density: CGFloat in [1, 2] {
                     let pixelWidth = Int(ceil(projected.inputLocalBoundsForTest.width * density))
@@ -154,7 +154,7 @@ MainActor.assumeIsolated { runClippedRegionTests() }
         first.updateTrackingAreas(); second.updateTrackingAreas()
         precondition(first.trackingAreas.isEmpty && second.trackingAreas.isEmpty,
             "only the region parent may own tracking; per-target areas must be absent")
-        precondition(container.trackingAreas.count == 1 && container.trackingAreas[0].rect.maxY == 20,
+        precondition(container.trackingAreas.count == 1 && container.trackingAreas[0].rect.maxY == 28,
             "region tracking must stop at the band and never cover marker/grid lanes")
         precondition(!container.trackingAreas[0].options.contains(.inVisibleRect),
             "inVisibleRect would silently expand tracking across the entire timeline")

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Sign an already-built CatLive package without letting productbuild hang forever."""
+"""Sign the branded product archive without replacing its Distribution/resources."""
 
 import os
 from pathlib import Path
@@ -13,8 +13,8 @@ def sign_package(source: Path, destination: Path, identity: str, keychain: str) 
     for attempt in range(1, 4):
         destination.unlink(missing_ok=True)
         command = [
-            "/usr/bin/productbuild", "--timestamp", "--sign", identity,
-            "--keychain", keychain, "--package", str(source), str(destination),
+            "/usr/bin/productsign", "--timestamp", "--sign", identity,
+            "--keychain", keychain, str(source), str(destination),
         ]
         print(f"Signing installer (attempt {attempt}/3, {source.stat().st_size} bytes)", flush=True)
         process = subprocess.Popen(
@@ -29,12 +29,12 @@ def sign_package(source: Path, destination: Path, identity: str, keychain: str) 
             except ProcessLookupError:
                 pass
             output, _ = process.communicate()
-            print(f"productbuild timed out after 240 seconds.\n{output[-8000:]}", flush=True)
+            print(f"productsign timed out after 240 seconds.\n{output[-8000:]}", flush=True)
         else:
             print(output[-8000:], flush=True)
             if process.returncode == 0 and destination.is_file():
                 return
-            print(f"productbuild exited with status {process.returncode}.", flush=True)
+            print(f"productsign exited with status {process.returncode}.", flush=True)
         if attempt < 3:
             time.sleep(10)
     raise RuntimeError("Could not sign the CatLive installer with a trusted timestamp")

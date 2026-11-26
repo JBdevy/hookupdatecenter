@@ -106,7 +106,7 @@ final class VSHookProjectImportTests: XCTestCase {
         let loops = try XCTUnwrap(part.multiLoops)
         XCTAssertEqual(loops.map(\.name), ["*1", "*2", "*3", "*4"])
         XCTAssertEqual(loops.map(\.isEnabled), [true, false, true, false])
-        XCTAssertEqual(loops.map(\.usesMixer), [false, true, true, false])
+        XCTAssertEqual(loops.map(\.usesMixer), [true, true, true, true])
         XCTAssertEqual(song.markers?.count, 9)
         XCTAssertEqual(song.markers?.first(where: { $0.position == 5 })?.name, "ENTRADA")
         XCTAssertEqual(song.markers?.first(where: { $0.position == 90 })?.name, "PONTE")
@@ -251,7 +251,7 @@ final class VSHookProjectImportTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: directory) }
         let result = try read([region(1, 0, 20, "Canção"), "MARKER 4 2 \"*1\" 0", "MARKER 5 6 \"*1\" 0"].joined(separator: "\n"), in: directory)
         let loop = try XCTUnwrap(result.project.songs[0].parts[0].multiLoops?.first)
-        XCTAssertFalse(loop.isEnabled); XCTAssertFalse(loop.usesMixer)
+        XCTAssertFalse(loop.isEnabled); XCTAssertTrue(loop.usesMixer)
     }
 
     func testLoopAutofaderWithoutExplicitLimitFadesToSilence() throws {
@@ -321,7 +321,10 @@ final class VSHookProjectImportTests: XCTestCase {
     func testInvalidBinaryMetadataFailsInsteadOfSilentlyLosingConfiguration() throws {
         let directory = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
-        XCTAssertThrowsError(try read(region(1, 0, 10, "Canção") + "\n" + metadata("<BIN PLAYLISTS_DB_V3\nnot-base64!!\n>"), in: directory))
+        let recovered = try read(region(1, 0, 10, "Canção") + "\n" + metadata("<BIN PLAYLISTS_DB_V3\nnot-base64!!\n>"), in: directory)
+        XCTAssertTrue(recovered.warnings.contains { $0.contains("metadata") })
+        XCTAssertFalse(recovered.project.songs[0].parts.isEmpty)
+        try recovered.project.validate()
     }
 }
 #endif

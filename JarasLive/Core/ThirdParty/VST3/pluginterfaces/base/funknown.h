@@ -227,9 +227,9 @@ inline SMTG_CONSTEXPR14 void copyTUID (char* dst, const char* src)
 namespace FUnknownPrivate {
 SMTG_ALWAYS_INLINE bool iidEqual (const void* iid1, const void* iid2)
 {
-	const uint64* p1 = reinterpret_cast<const uint64*> (iid1);
-	const uint64* p2 = reinterpret_cast<const uint64*> (iid2);
-	return p1[0] == p2[0] && p1[1] == p2[1];
+	// TUID is a byte array: callers and packed interface identifiers need not
+	// provide uint64 alignment. Compare the same 16 bytes without typed loads.
+	return std::memcmp (iid1, iid2, sizeof (TUID)) == 0;
 }
 
 int32 PLUGIN_API atomicAdd (int32& value, int32 amount);

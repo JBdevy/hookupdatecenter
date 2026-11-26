@@ -1,9 +1,8 @@
 // Uses the actual controller projection blocks, real tick model and native
 // renderers. The omitted controller responsibilities continue on every scroll.
-private let markerLaneHeight: CGFloat = 16
-private let tempoLaneHeight: CGFloat = 16
-private struct ProjectionFixtureRows {
+private struct ProjectionFixtureRows: Equatable {
     var offsets: [CGFloat] = [0, 44, 88]
+    var heights: [CGFloat] = [44, 44, 44]
     var totalHeight: CGFloat = 132
     var baseHeight: CGFloat = 44
 }
@@ -11,10 +10,11 @@ private struct ProjectionFixtureContent {
     var extent: Double = 1_000_000
     var contentHeight: CGFloat = 700
     var layoutWidth: CGFloat = 2_000_000
-    var rulerHeight: CGFloat = 71
+    var headerBands = TimelineHeaderBands(regionRows: 1)
+    var rulerHeight: CGFloat { headerBands.height }
     var viewportSize = CGSize(width: 320, height: 100)
     var rows = ProjectionFixtureRows()
-    var regionLanes = 1
+    var editPosition: Double = 0
     var sections = [TimelineTempoSection(start: 0, end: 1_000_000, bpm: 120, beats: 4, unit: 4, timebase: .free)]
     var divisions = 4
     var bands = [TimelineNativeGridBand(rect: CGRect(x: 0, y: 120, width: 100, height: 40), color: CGColor(gray: 0.3, alpha: 0.2))]
@@ -24,7 +24,6 @@ private struct ProjectionFixtureStyle {
     var displayScale: CGFloat = 2
     var background = CGColor(gray: 0.05, alpha: 1)
     var primary = CGColor(gray: 0.3, alpha: 1)
-    var secondary = CGColor(gray: 0.2, alpha: 0.85)
     var row = CGColor(gray: 0.4, alpha: 0.8)
     var panel = CGColor(gray: 0.1, alpha: 1)
     var headerLine = CGColor(gray: 0.5, alpha: 1)
@@ -33,20 +32,31 @@ private final class ProjectionFixtureHeader {
     var calls = 0
     func project(scale: CGFloat, viewport: CGRect, layoutWidth: CGFloat, displayScale: CGFloat) { calls += 1 }
 }
+precondition(timelineTrackSeparators(in: 98...220, offsets: [10, 40, 40, 90],
+    heights: [30, 0, 50, 60], top: 70) == [110, 160, 220],
+    "Only visible track edges get separators, including the final edge")
 private final class ProjectionFixtureController {
     let backdrop = TimelineNativeGridView()
     let ruler = TimelineNativeRulerView()
     let header = ProjectionFixtureHeader()
+    let selection = NSView()
     var zoom = 0.1203
     var pixelsPerSecond: CGFloat { zoom * 10 }
     var value = ProjectionFixtureContent()
     var style = ProjectionFixtureStyle()
 PRODUCTION_PROJECTION_STATE
     func contentChanged() { revision &+= 1 }
+    func configure(_ value: ProjectionFixtureContent) {
+        let previous: ProjectionFixtureContent? = self.value
+PRODUCTION_DRAWING_INVALIDATION
+        if drawingChanged { revision &+= 1 }
+        self.value = value
+    }
     func project(_ viewport: CGRect) {
         let value = value, style = style
         let nativeBounds = viewport, left = viewport.minX
         let width = value.extent * pixelsPerSecond
+PRODUCTION_SELECTION_VIEWPORT
 PRODUCTION_TILE_PROJECTION
     }
 }
@@ -92,6 +102,36 @@ for scale: CGFloat in [1, 2] {
                      "ruler ticks, labels and rows match an uncached projection: \(label)")
     }
     matchesFresh("continuous scroll")
+    let rulerLayer = controller.ruler.layer!
+    let ticksLayer = rulerLayer.sublayers!.first { $0.name == "timelineTicks" } as! CAShapeLayer
+    let gridLayer = rulerLayer.sublayers!.first { $0.name == "timelinePrimaryLines" } as! CAShapeLayer
+    let headerBands = controller.value.headerBands
+    precondition(!gridLayer.isHidden && gridLayer.path!.boundingBoxOfPath.minY == headerBands.numberTop &&
+                 gridLayer.path!.boundingBoxOfPath.maxY == controller.value.rulerHeight,
+                 "Primary grid lines begin at the numbers below the optional lanes")
+    precondition(ticksLayer.path!.boundingBoxOfPath.minY >= headerBands.numberTop + rulerNumberLaneHeight)
+    precondition(headerBands.markerTop(tempo: false) == 24)
+    precondition(headerBands.tempoTop == 48)
+    precondition(headerBands.numberTop == 48)
+    precondition(headerBands.markerTop(tempo: true) == headerBands.numberTop,
+                 "Tempo heads share the lane used by ruler numbers")
+    precondition(headerBands.separators == [0.5, 23.5, 47.5, 63.5, 79.5])
+    let gridBeforeVertical = controller.backdrop.fixtureUpdates
+    for y: CGFloat in [8, 20, 5, 0] {
+        viewport.origin.y = y; controller.project(viewport)
+        let ink = controller.backdrop.foregroundInk
+        precondition(ink.layer!.mask!.frame.minY + ink.frame.minY == y + controller.value.rulerHeight,
+                     "The foreground clip follows the pinned ruler inside retained tile coverage")
+        precondition(controller.backdrop.fixtureUpdates == gridBeforeVertical,
+                     "Clipping the foreground must retain the prepared grid tile")
+    }
+    let beforeCursor = (controller.backdrop.fixtureUpdates, controller.ruler.fixtureUpdates, TimelineTimeRuler.fixtureTickBuilds)
+    for position in [20.0, 4, 35, 0] {
+        var value = controller.value; value.editPosition = position
+        controller.configure(value); controller.project(viewport)
+    }
+    precondition(controller.backdrop.fixtureUpdates == beforeCursor.0 && controller.ruler.fixtureUpdates == beforeCursor.1 && TimelineTimeRuler.fixtureTickBuilds == beforeCursor.2,
+                 "arming/cancelling a section must not rebuild static timeline tiles")
     viewport.origin.y = 600
     controller.project(viewport)
     precondition(controller.backdrop.fixtureUpdates == initialBackdrop + 1 && controller.ruler.fixtureUpdates == initialRuler,
@@ -113,7 +153,13 @@ for scale: CGFloat in [1, 2] {
     controller.style.panel = CGColor(gray: 0.2, alpha: 1)
     controller.contentChanged(); controller.project(viewport)
     matchesFresh("grid visibility and palette")
-    controller.value.regionLanes = 0; controller.value.rulerHeight = 55
+    controller.value.headerBands.showRegions = false
+    controller.contentChanged(); controller.project(viewport)
+    matchesFresh("only tempo and ruler")
+    controller.value.headerBands.showTempo = false
+    controller.contentChanged(); controller.project(viewport)
+    matchesFresh("only ruler")
+    controller.value.headerBands = TimelineHeaderBands(regionRows: 0)
     controller.value.rows.offsets = []; controller.value.rows.totalHeight = 0
     controller.value.contentHeight = 100; controller.value.bands = []
     viewport.origin.y = 0
@@ -122,7 +168,21 @@ for scale: CGFloat in [1, 2] {
     controller.style.displayScale = scale == 1 ? 2 : 1
     controller.contentChanged(); controller.project(viewport)
     matchesFresh("backing scale")
+    let savedViewportWidth = controller.value.viewportSize.width
+    for liveWidth: CGFloat in [480, 180, 650, 320] {
+        viewport.size.width = liveWidth
+        controller.project(viewport)
+        precondition(controller.value.viewportSize.width == savedViewportWidth,
+                     "a native divider drag does not publish the saved SwiftUI viewport per pixel")
+        precondition(controller.selection.frame.width == liveWidth && controller.selection.frame.height == controller.value.viewportSize.height,
+                     "the selection input surface follows the actual clip even while the saved width is unchanged")
+        precondition(controller.selection.hitTest(CGPoint(x: liveWidth - 1, y: 10)) === controller.selection &&
+                     controller.selection.hitTest(CGPoint(x: liveWidth + 1, y: 10)) == nil,
+                     "newly exposed grid pixels accept input and the input surface stops at the real sidebar boundary")
+        matchesFresh("native divider viewport")
+    }
     precondition((controller.backdrop.layer!.sublayers! + controller.ruler.layer!.sublayers!).allSatisfy { $0.animationKeys()?.isEmpty != false },
                  "cache invalidation never introduces implicit animation")
 }
 print("NATIVE_BASE_REUSES_TILES_BEFORE_TICK_BUILD_AND_INVALIDATES_COVERAGE_ZOOM_CONTENT_STYLE_RETINA_PIXELS_OK")
+print("NATIVE_BASE_SELECTION_INPUT_FOLLOWS_LIVE_CLIP_WITHOUT_SAVED_WIDTH_PUBLICATION_OK")

@@ -1,4 +1,5 @@
 #include "ProjectMigration.h"
+#include "VSHookMigration.h"
 namespace catlive {
 namespace {
 using migration::require;
@@ -8,14 +9,14 @@ struct Bytes {
     const uint8 *data() const { return static_cast<const uint8 *>(storage->getData()) + begin; }
     uint64 integer(size_t offset, size_t width = 4, bool big = false) const {
         require(width > 0 && width <= 8 && offset <= count && width <= count - offset,
-                "Logic: truncated data.");
+                migration::message("Logic: truncated data."));
         uint64 value = 0;
         for (size_t i = 0; i < width; ++i)
             value |= (uint64)data()[offset + i] << (8 * (big ? width - i - 1 : i));
         return value;
     }
     Bytes slice(size_t offset, size_t length) const {
-        require(offset <= count && length <= count - offset, "Logic: truncated data.");
+        require(offset <= count && length <= count - offset, migration::message("Logic: truncated data."));
         return {storage, begin + offset, length};
     }
     String string(size_t offset, bool utf16 = false) const {
@@ -33,13 +34,13 @@ struct Bytes {
 };
 Bytes readBytes(const File &file, size_t maximum) {
     require(file.existsAsFile() && file.getSize() >= 0 && (uint64)file.getSize() <= maximum,
-            "Logic: invalid file size or missing file: " + file.getFileName());
+            migration::message("Logic: invalid file size or missing file: ") + file.getFileName());
     auto block = std::make_shared<MemoryBlock>();
-    require(file.loadFileAsData(*block), "Logic: cannot read file.");
+    require(file.loadFileAsData(*block), migration::message("Logic: cannot read file."));
     return {block, 0, block->getSize()};
 }
 var xmlProperty(const XmlElement &element, int depth = 0) {
-    require(depth < 64, "Logic: invalid plist nesting.");
+    require(depth < 64, migration::message("Logic: invalid plist nesting."));
     if (element.hasTagName("string") || element.hasTagName("key"))
         return element.getAllSubText();
     if (element.hasTagName("integer"))
@@ -60,20 +61,20 @@ var xmlProperty(const XmlElement &element, int depth = 0) {
         auto result = object();
         auto *key = element.getFirstChildElement();
         while (key) {
-            require(key->hasTagName("key"), "Logic: invalid plist dictionary.");
+            require(key->hasTagName("key"), migration::message("Logic: invalid plist dictionary."));
             auto *value = key->getNextElement();
-            require(value != nullptr, "Logic: missing plist value.");
+            require(value != nullptr, migration::message("Logic: missing plist value."));
             put(result, Identifier(key->getAllSubText()), xmlProperty(*value, depth + 1));
             key = value->getNextElement();
         }
         return result;
     }
-    throw std::runtime_error("Logic: unsupported plist value.");
+    throw std::runtime_error(utf8(migration::message("Logic: unsupported plist value.")));
 }
 var readPlist(const File &file) {
     auto bytes = readBytes(file, 16 * 1024 * 1024);
     if (bytes.count >= 8 && std::memcmp(bytes.data(), "bplist00", 8) == 0) {
-        require(bytes.count >= 40, "Logic: truncated plist.");
+        require(bytes.count >= 40, migration::message("Logic: truncated plist."));
         auto trailer = bytes.slice(bytes.count - 32, 32);
         size_t offsetWidth = (size_t)trailer.integer(6, 1),
                refWidth = (size_t)trailer.integer(7, 1),
@@ -82,12 +83,12 @@ var readPlist(const File &file) {
                table = (size_t)trailer.integer(24, 8, true);
         require(objects > 0 && objects < 100000 && root < objects && offsetWidth >= 1 &&
                     offsetWidth <= 8 && refWidth >= 1 && refWidth <= 8,
-                "Logic: invalid plist header.");
+                migration::message("Logic: invalid plist header."));
         bytes.slice(table, objects * offsetWidth);
         std::set<size_t> active;
         std::function<var(size_t, int)> decode = [&](size_t index, int depth) -> var {
             require(index < objects && depth < 64 && active.insert(index).second,
-                    "Logic: cyclic plist.");
+                    migration::message("Logic: cyclic plist."));
             struct Pop {
                 std::set<size_t> &set;
                 size_t index;
@@ -98,12 +99,12 @@ var readPlist(const File &file) {
             size_t length = (size_t)(tag & 15);
             if (kind >= 4 && length == 15) {
                 int sizeTag = (int)bytes.integer(at++, 1);
-                require((sizeTag >> 4) == 1 && (sizeTag & 15) <= 3, "Logic: invalid plist length.");
+                require((sizeTag >> 4) == 1 && (sizeTag & 15) <= 3, migration::message("Logic: invalid plist length."));
                 size_t width = (size_t)1 << (sizeTag & 15);
                 length = (size_t)bytes.integer(at, width, true);
                 at += width;
             }
-            require(length < 16 * 1024 * 1024, "Logic: plist value exceeds size limit.");
+            require(length < 16 * 1024 * 1024, migration::message("Logic: plist value exceeds size limit."));
             if (kind == 0) {
                 if (tag == 8)
                     return false;
@@ -112,11 +113,11 @@ var readPlist(const File &file) {
                 return {};
             }
             if (kind == 1) {
-                require(length <= 3, "Logic: integer too wide.");
+                require(length <= 3, migration::message("Logic: integer too wide."));
                 return (int64)bytes.integer(at, (size_t)1 << length, true);
             }
             if (kind == 2) {
-                require(length == 2 || length == 3, "Logic: invalid real value.");
+                require(length == 2 || length == 3, migration::message("Logic: invalid real value."));
                 if (length == 2) {
                     auto bits = (uint32)bytes.integer(at, 4, true);
                     float value;
@@ -126,7 +127,7 @@ var readPlist(const File &file) {
                 auto bits = bytes.integer(at, 8, true);
                 double value;
                 std::memcpy(&value, &bits, 8);
-                require(std::isfinite(value), "Logic: invalid real.");
+                require(std::isfinite(value), migration::message("Logic: invalid real."));
                 return value;
             }
             if (kind == 5) {
@@ -154,7 +155,7 @@ var readPlist(const File &file) {
                 for (size_t i = 0; i < length; ++i) {
                     auto key =
                         decode((size_t)bytes.integer(at + i * refWidth, refWidth, true), depth + 1);
-                    require(key.isString(), "Logic: invalid plist key.");
+                    require(key.isString(), migration::message("Logic: invalid plist key."));
                     put(result, Identifier(key.toString()),
                         decode((size_t)bytes.integer(at + (length + i) * refWidth, refWidth, true),
                                depth + 1));
@@ -165,17 +166,17 @@ var readPlist(const File &file) {
                 auto value = bytes.slice(at, length);
                 return var(MemoryBlock(value.data(), value.count));
             }
-            throw std::runtime_error("Logic: unsupported plist type.");
+            throw std::runtime_error(utf8(migration::message("Logic: unsupported plist type.")));
         };
         auto result = decode(root, 0);
-        require(result.isObject(), "Logic: metadata must be a dictionary.");
+        require(result.isObject(), migration::message("Logic: metadata must be a dictionary."));
         return result;
     }
     auto xml = XmlDocument::parse(file);
     require(xml && xml->hasTagName("plist") && xml->getFirstChildElement(),
-            "Logic: invalid plist metadata.");
+            migration::message("Logic: invalid plist metadata."));
     auto result = xmlProperty(*xml->getFirstChildElement());
-    require(result.isObject(), "Logic: metadata must be a dictionary.");
+    require(result.isObject(), migration::message("Logic: metadata must be a dictionary."));
     return result;
 }
 struct Record {
@@ -184,13 +185,16 @@ struct Record {
     uint64 owner = 0, index = 0;
     Bytes body;
 };
-std::vector<Record> records(const Bytes &bytes) {
-    require(bytes.count >= 24 && bytes.integer(0) == 0xabc04723 &&
-                bytes.integer(16) == bytes.count - 24,
-            "Logic: unsupported project container.");
+std::vector<Record> records(const Bytes &bytes, StringArray *warnings = nullptr) {
+    require(bytes.count >= 24 && bytes.integer(0) == 0xabc04723, migration::message("Logic: unsupported project container."));
+    if (bytes.integer(16) != bytes.count - 24) {
+        require(warnings != nullptr, migration::message("Logic: incomplete project container."));
+        warnings->addIfNotAlreadyThere(migration::message("Logic: incomplete container; complete records were recovered."));
+    }
     std::vector<Record> result;
     size_t offset = 24;
     while (offset < bytes.count) {
+        try {
         auto h = bytes.slice(offset, 36);
         if (h.integer(0) == 0xabc04723) {
             size_t n = (size_t)h.integer(16);
@@ -200,21 +204,34 @@ std::vector<Record> records(const Bytes &bytes) {
         }
         String tag = String::fromUTF8((const char *)h.data(), 4);
         size_t n = (size_t)h.integer(28);
-        require(tag.length() == 4, "Logic: invalid project record.");
+        require(tag.length() == 4, migration::message("Logic: invalid project record."));
         result.push_back({tag, (int)h.integer(4, 2), (int)h.integer(6, 2), h.integer(8),
                           h.integer(tag == "karT" ? 18 : 14), bytes.slice(offset + 36, n)});
         offset += 36 + n;
-        require(result.size() <= 1000000, "Logic: too many records.");
-    }
+        require(result.size() <= 1000000, migration::message("Logic: too many records."));
+
+        } catch (const std::exception &error) {
+            if (!warnings) throw;
+            warnings->addIfNotAlreadyThere(migration::message("Logic record ignored: ") + String::fromUTF8(error.what())); break;
+        }
+}
     return result;
 }
-std::vector<Bytes> events(const Bytes &bytes) {
-    require(bytes.count % 16 == 0, "Logic: unsupported event layout.");
+std::vector<Bytes> events(const Bytes &bytes, StringArray *warnings = nullptr) {
+    if (bytes.count % 16 != 0) {
+        require(warnings != nullptr, migration::message("Logic: unsupported event layout."));
+        warnings->addIfNotAlreadyThere(migration::message("Logic: an incomplete event tail was ignored."));
+    }
+    const auto complete = bytes.count - bytes.count % 16;
     std::vector<Bytes> result;
-    for (size_t offset = 0; offset < bytes.count;) {
-        require((bytes.integer(offset + 7, 1) & 0x80) == 0, "Logic: invalid event boundary.");
+    for (size_t offset = 0; offset < complete;) {
+        if ((bytes.integer(offset + 7, 1) & 0x80) != 0) {
+            require(warnings != nullptr, migration::message("Logic: invalid event boundary."));
+            warnings->addIfNotAlreadyThere(migration::message("Logic: an orphan event continuation was ignored."));
+            offset += 16; continue;
+        }
         size_t end = offset + 16;
-        while (end < bytes.count && (bytes.integer(end + 7, 1) & 0x80))
+        while (end < complete && (bytes.integer(end + 7, 1) & 0x80))
             end += 16;
         result.push_back(bytes.slice(offset, end - offset));
         offset = end;
@@ -306,28 +323,32 @@ jaras::Part part(std::string name, double start, double end) {
 } // namespace
 MigratedProject readLogicProject(const File &bundle) {
     require(bundle.isDirectory() && bundle.hasFileExtension("logicx"),
-            "Select the .logicx project folder copied from the Mac.");
+            migration::message("Select the .logicx project folder copied from the Mac."));
     auto available =
         bundle.getChildFile("Alternatives").findChildFiles(File::findDirectories, false);
     available.removeIf([](const File &f) { return !f.getChildFile("ProjectData").existsAsFile(); });
-    require(!available.isEmpty(), "Logic: no project alternative was found.");
+    require(!available.isEmpty(), migration::message("Logic: no project alternative was found."));
+    MigratedProject result;
     auto infoFile = bundle.getChildFile("Resources/ProjectInformation.plist");
-    auto info = infoFile.existsAsFile() ? readPlist(infoFile) : object();
+    auto info = object();
+    try { if (infoFile.existsAsFile()) info = readPlist(infoFile); }
+    catch (const std::exception &error) { result.warnings.addIfNotAlreadyThere("Resources/ProjectInformation.plist\n" + migration::message("Logic project information ignored: ") + String::fromUTF8(error.what())); }
     auto active = get(info, "ActiveVariant");
     File alternative;
+    try {
     if (!active.isVoid()) {
         require(active.isString() || active.isInt() || active.isInt64() || active.isDouble(),
-                "Logic: invalid active alternative.");
+                migration::message("Logic: invalid active alternative."));
         if (active.isDouble())
             require(std::floor((double)active) == (double)active,
-                    "Logic: invalid active alternative.");
+                    migration::message("Logic: invalid active alternative."));
         for (auto &candidate : available)
             if (candidate.getFileName() == active.toString())
                 alternative = candidate;
         if (alternative == File()) {
             auto value = active.toString();
             require(value.isNotEmpty() && value.containsOnly("0123456789"),
-                    "Logic: active alternative was not found.");
+                    migration::message("Logic: active alternative was not found."));
             int matches = 0;
             for (auto &candidate : available)
                 if (candidate.getFileName().containsOnly("0123456789") &&
@@ -335,22 +356,33 @@ MigratedProject readLogicProject(const File &bundle) {
                     alternative = candidate;
                     ++matches;
                 }
-            require(matches == 1, "Logic: active alternative was not found or is ambiguous.");
+            require(matches == 1, migration::message("Logic: active alternative was not found or is ambiguous."));
         }
     } else {
-        require(available.size() == 1, "Logic: multiple alternatives without an active selection. "
-                                       "Save the desired alternative in Logic first.");
+        require(available.size() == 1, migration::message("Logic: multiple alternatives without an active selection. Save the desired alternative in Logic first."));
         alternative = available[0];
     }
-    auto metadata = readPlist(alternative.getChildFile("MetaData.plist"));
-    auto all = records(readBytes(alternative.getChildFile("ProjectData"), 512 * 1024 * 1024));
-    MigratedProject result;
+    } catch (const std::exception &error) {
+        available.sort(); alternative=available[0];
+        result.warnings.addIfNotAlreadyThere(migration::message("Logic alternative selection ignored: ") + String::fromUTF8(error.what()) + migration::message(" Recovered: ") + alternative.getFileName());
+    }
+    std::vector<Record> all;
+    bool readable=false;
+    auto candidates=available; candidates.removeAllInstancesOf(alternative); candidates.insert(0,alternative);
+    for (const auto &candidate : candidates) {
+        try { all=records(readBytes(candidate.getChildFile("ProjectData"),512*1024*1024),&result.warnings); alternative=candidate; readable=true; break; }
+        catch (const std::exception &error) { result.warnings.addIfNotAlreadyThere("Alternatives/" + candidate.getFileName() + "/ProjectData\n" + migration::message("Logic alternative ignored: ") + String::fromUTF8(error.what())); }
+    }
+    require(readable,migration::message("Logic: no readable arrangement data was found."));
+    auto metadata=object();
+    try { metadata=readPlist(alternative.getChildFile("MetaData.plist")); }
+    catch (const std::exception &error) { result.warnings.addIfNotAlreadyThere("Alternatives/" + alternative.getFileName() + "/MetaData.plist\n" + migration::message("Logic metadata ignored: ") + String::fromUTF8(error.what())); }
     result.project = migration::emptyProject(bundle.getFileNameWithoutExtension());
     auto &song = result.project.songs.front();
     double rate = num(metadata, "SampleRate", 44100),
            defaultBPM = num(metadata, "BeatsPerMinute", 120);
-    require(rate >= 8000 && rate <= 768000 && defaultBPM >= 1 && defaultBPM <= 1000,
-            "Logic: invalid sample rate or tempo.");
+    if (!(rate>=8000 && rate<=768000)) {rate=44100;result.warnings.addIfNotAlreadyThere(migration::message("Logic: invalid sample rate ignored; 44100 Hz was used."));}
+    if (!(defaultBPM>=1 && defaultBPM<=1000)) {defaultBPM=120;result.warnings.addIfNotAlreadyThere(migration::message("Logic: invalid tempo ignored; 120 BPM was used."));}
     song.bpm = defaultBPM;
     song.beatsPerBar = (int)num(metadata, "SongSignatureNumerator", 4);
     song.beatUnit = (int)num(metadata, "SongSignatureDenominator", 4);
@@ -360,16 +392,22 @@ MigratedProject readLogicProject(const File &bundle) {
     std::vector<Tempo> tempos;
     std::map<uint64, String> markerNames;
     for (auto &record : all) {
+            try {
         if (record.tag == "qSxT")
             markerNames[record.owner >> 16] = markerText(record.body);
         if (record.tag == "qSvE" && record.kind == 3)
-            for (auto &event : events(record.body))
+            for (auto &event : events(record.body, &result.warnings))
                 if (event.integer(0, 1) == 0x60) {
+            try {
                     double bpm = event.integer(16) / 10000.;
-                    require(bpm >= 1 && bpm <= 1000, "Logic: invalid tempo event.");
+                    require(bpm >= 1 && bpm <= 1000, migration::message("Logic: invalid tempo event."));
                     tempos.push_back({(double)event.integer(4) - 38400, bpm});
-                }
-    }
+
+            } catch (const std::exception &error) { result.warnings.addIfNotAlreadyThere(migration::message("Logic tempo point ignored: ") + String::fromUTF8(error.what())); }
+}
+
+            } catch (const std::exception &error) { result.warnings.addIfNotAlreadyThere(migration::message("Logic metadata ignored: ") + String::fromUTF8(error.what())); }
+}
     std::stable_sort(tempos.begin(), tempos.end(),
                      [](auto &a, auto &b) { return a.tick < b.tick; });
     if (tempos.empty() || tempos.front().tick > 0)
@@ -416,16 +454,23 @@ MigratedProject readLogicProject(const File &bundle) {
         bool mute;
     };
     std::map<uint64, Reference> files;
+    std::map<uint64, String> fileNames;
+    std::map<uint64, std::string> importedPaths;
     std::map<std::pair<uint64, uint64>, Bytes> regions;
     std::map<uint64, String> names, identifiers;
     std::map<String, Mixer> mixers;
     std::map<uint64, const Record *> sequences;
     for (auto &r : all) {
+        auto sourceDescription = "Alternatives/" + alternative.getFileName() + "/ProjectData [" +
+            r.tag + ", " + String((int64)r.owner) + ", " + String((int64)r.index) + "]";
+            try {
         auto &b = r.body;
         if (r.tag == "lFuA") {
             auto name = b.string(8, true);
+            fileNames[r.owner >> 16] = name;
+            sourceDescription = name + "\n" + sourceDescription;
             require(name.isNotEmpty() && name != "." && name != ".." && !name.containsAnyOf("/\\:"),
-                    "Logic: invalid audio filename.");
+                    migration::message("Logic: invalid audio filename."));
             double fileRate = rate;
             for (size_t i = 0; i + 24 <= b.count; ++i)
                 if (std::memcmp(b.data() + i, "EVAW", 4) == 0) {
@@ -450,43 +495,52 @@ MigratedProject readLogicProject(const File &bundle) {
             if (r.version == 12 && b.count == 463 + ((b.integer(158, 2) + 1) & ~uint64(1)))
                 identifiers[r.owner] = b.slice(b.count - 16, 16).key();
         } else if (r.tag == "OCuA" && r.version == 7 && b.count >= 169) {
-            auto key = b.slice(153 + 4 * (size_t)b.integer(26, 2), 16).key();
+            auto identifier = b.slice(153 + 4 * (size_t)b.integer(26, 2), 16);
+            if (std::all_of(identifier.data(), identifier.data()+identifier.count, [](uint8 byte){return byte==0;})) continue;
+            auto key = identifier.key();
             double position = b.integer(116) / 16777216.;
             int pan = (int)b.integer(89, 1), mute = (int)b.integer(90, 1);
-            require(position <= 127 && pan <= 127 && mute <= 1, "Logic: invalid mixer controls.");
+            require(position <= 127 && pan <= 127 && mute <= 1, migration::message("Logic: invalid mixer controls."));
+            require(!mixers.count(key), migration::message("Logic: duplicate mixer channel identifier."));
             mixers[key] = {std::pow(position / 90, 2), (pan - 64.) / (pan < 64 ? 64 : 63),
                            mute == 1};
         } else if (r.tag == "qeSM" && r.kind == 23)
             sequences[r.owner] = &r;
-    }
+
+            } catch (const std::exception &error) { result.warnings.addIfNotAlreadyThere(sourceDescription + "\n" + migration::message("Logic media or mixer setting ignored: ") + String::fromUTF8(error.what())); }
+}
     std::set<uint64> roots;
     for (auto &r : all)
         if (r.tag == "karT" && r.kind == 23 && r.body.count >= 57 && sequences.count(r.owner)) {
             auto *s = sequences[r.owner];
-            auto title = s->body.string(s->version >= 5 ? 16 : 52);
+            auto title = s->body.string((s->version == 3 || s->version >= 5) ? 16 : 52);
             if (title != "TRASH" && title != "Track Automation Root Folder" &&
                 title != "Track Alternatives" && title != "Global Harmonies" &&
                 !title.startsWith("*Automation"))
                 roots.insert(r.owner);
         }
-    require(!roots.empty(), "Logic: arrangement track list is not supported.");
+    require(!roots.empty(), migration::message("Logic: arrangement track list is not supported."));
     uint64 root = roots.count(0x40000) ? 0x40000 : *roots.begin();
     std::vector<const Record *> rows;
     for (auto &r : all)
-        if (r.tag == "karT" && r.kind == 23 && r.owner == root)
+        if (r.tag == "karT" && r.kind == 23 && r.owner == root && r.body.count >= 57)
             rows.push_back(&r);
     std::sort(rows.begin(), rows.end(), [](auto *a, auto *b) { return a->index < b->index; });
     std::map<uint64, size_t> tracks;
     std::optional<ID> group;
     for (auto *row : rows) {
+            try {
         int kind = (int)row->body.integer(0, 1);
         if (kind == 3)
             continue;
-        require(kind == 1, "Logic: unsupported track kind.");
+        // Version 6 kind 10 uses the same arrangement channel and depth fields.
+        require(kind == 1 || (row->version == 6 && kind == 10),
+                migration::message("Logic: unsupported track kind."));
         auto channel = row->body.integer(6);
         int depth = (int)row->body.integer(14, 2);
         jaras::Track track;
         track.id = uuid();
+        track.color = 0x828282;
         track.name =
             utf8(names.count(channel) ? names[channel] : "Track " + String((int)row->index + 1));
         if (identifiers.count(channel) && mixers.count(identifiers[channel])) {
@@ -495,48 +549,71 @@ MigratedProject readLogicProject(const File &bundle) {
             track.pan = m.pan;
             track.mute = m.mute;
         } else
-            result.warnings.addIfNotAlreadyThere("Some Logic mixer channels use an unsupported "
-                                                 "layout. Review volume, pan and mute.");
+            result.warnings.addIfNotAlreadyThere(migration::message("Some Logic mixer channels use an unsupported layout. Review volume, pan and mute."));
         if (depth > 0) {
-            require(group.has_value(), "Logic: invalid track group.");
+            if (!group) result.warnings.addIfNotAlreadyThere(migration::message("Logic: invalid track group was ignored."));
             track.parentTrackID = group;
         } else
             group = track.id;
         tracks[row->index + 1] = song.tracks.size();
         song.tracks.push_back(track);
-    }
-    require(!song.tracks.empty(), "Logic: no arrangement tracks.");
+
+            } catch (const std::exception &error) { result.warnings.addIfNotAlreadyThere(migration::message("Logic track ignored: ") + String::fromUTF8(error.what())); }
+}
+    require(!song.tracks.empty(), migration::message("Logic: no arrangement tracks."));
     std::vector<jaras::Part> music;
     for (auto &r : all)
         if (r.tag == "qSvE" && r.kind == 23 && r.owner == root)
-            for (auto &event : events(r.body)) {
+            for (auto &event : events(r.body, &result.warnings)) {
+            StringArray context;
+            if (event.count >= 24) {
+                const auto row = event.integer(20) & 0xffffff;
+                if (tracks.count(row)) context.add(text(song.tracks[tracks.at(row)].name));
+            }
+            if (event.count >= 48 && event.integer(0, 1) == 0x24) {
+                const auto id = event.integer(44), regionID = event.integer(40);
+                context.add(fileNames.count(id) ? fileNames.at(id) : migration::message("Audio file reference: ") + String((int64)id));
+                const auto region = regions.find({id, regionID});
+                if (region != regions.end()) {
+                    try { context.add(region->second.string(74)); } catch (const std::exception &) { /* The item reports its original decoding failure below. */ }
+                }
+            } else if (event.count >= 36 && event.integer(0, 1) == 0x20) {
+                const auto sequence = sequences.find(event.integer(32) << 16);
+                if (sequence != sequences.end()) {
+                    const auto *seq = sequence->second;
+                    try { context.add(seq->body.string(seq->version == 3 || seq->version >= 5 ? 16 : 52)); } catch (const std::exception &) {}
+                }
+            }
+            const auto sourceDescription = context.joinIntoString(" / ") + "\nAlternatives/" + alternative.getFileName() +
+                "/ProjectData [" + String((int64)r.owner) + ", " + String((int64)r.index) + "]";
+            try {
                 int type = (int)event.integer(0, 1);
                 if (type == 0xf1)
                     continue;
                 require((type == 0x24 || type == 0x20) && event.count >= 80,
-                        "Logic: unsupported or incomplete arrangement event.");
+                        migration::message("Logic: unsupported or incomplete arrangement event."));
                 auto row = event.integer(20) & 0xffffff;
-                require(tracks.count(row), "Logic: item references an unknown track.");
+                require(tracks.count(row), migration::message("Logic: item references an unknown track."));
                 auto &track = song.tracks[tracks[row]];
                 bool isMusic =
-                    text(track.name).trim().toLowerCase().replace(String::fromUTF8("ú"), "u") ==
-                    "musicas";
+                    migration::VSHookMigration::uppercase(text(track.name).trim()).replace(String::fromUTF8("Ú"), "U") ==
+                    "MUSICAS";
                 double tick =
                     (double)event.integer(4) - 34560 + (event.integer(0) >> 8) / 16777216.;
                 double start = seconds(tick);
                 if (type == 0x20) {
                     auto owner = event.integer(32) << 16;
                     require(sequences.count(owner),
-                            "Logic: MIDI region references an unknown sequence.");
+                            migration::message("Logic: MIDI region references an unknown sequence."));
                     auto &seq = *sequences[owner];
-                    size_t offset = seq.version >= 5 ? 16 : 52;
+                    size_t offset = (seq.version == 3 || seq.version >= 5) ? 16 : 52;
                     auto title = seq.body.string(offset);
                     size_t padded = ((size_t)seq.body.integer(offset, 2) + 1) & ~size_t(1);
                     double length = (double)seq.body.integer(offset + 62 + padded);
                     double end = seconds(tick + length);
                     start = std::max(0., start);
                     require(length > 0 && end > start && end < 7 * 86400,
-                            "Logic: invalid MIDI bounds.");
+                            migration::message("Logic: invalid MIDI bounds."));
                     if (isMusic) {
                         music.push_back(part(utf8(title), start, end));
                         continue;
@@ -547,23 +624,23 @@ MigratedProject readLogicProject(const File &bundle) {
                     for (auto &content : all)
                         if (content.tag == "qSvE" && content.kind == 23 && content.owner == owner) {
                             found = true;
-                            for (auto &note : events(content.body)) {
+                            for (auto &note : events(content.body, &result.warnings)) {
+            try {
                                 int status = (int)note.integer(0, 1);
                                 if (status == 0xf1)
                                     continue;
                                 if ((status & 0xf0) != 0x90) {
                                     result.warnings.addIfNotAlreadyThere(
-                                        "Logic MIDI controller and expression events are not "
-                                        "migrated.");
+                                        migration::message("Logic MIDI controller and expression events are not migrated."));
                                     continue;
                                 }
                                 require(note.count >= 32 && note.integer(23, 1) == 0x89,
-                                        "Logic: incomplete MIDI note.");
+                                        migration::message("Logic: incomplete MIDI note."));
                                 int pitch = (int)note.integer(12, 1),
                                     velocity = (int)note.integer(11, 1);
                                 double noteLength = (double)note.integer(28);
                                 require(pitch <= 127 && velocity <= 127 && noteLength > 0,
-                                        "Logic: invalid MIDI note.");
+                                        migration::message("Logic: invalid MIDI note."));
                                 if (velocity == 0)
                                     continue;
                                 double noteTick = tick + (double)note.integer(4) - 38400 +
@@ -573,10 +650,12 @@ MigratedProject readLogicProject(const File &bundle) {
                                 if (b > a)
                                     midi.notes.push_back({uuid(), (a - start) * 2, (b - a) * 2,
                                                           pitch, velocity, (status & 15) + 1});
-                                require(midi.notes.size() <= 100000, "Logic: too many MIDI notes.");
-                            }
+                                require(midi.notes.size() <= 100000, migration::message("Logic: too many MIDI notes."));
+
+            } catch (const std::exception &error) { result.warnings.addIfNotAlreadyThere(migration::message("Logic MIDI note ignored: ") + String::fromUTF8(error.what())); }
+}
                         }
-                    require(found, "Logic: MIDI region has no event sequence.");
+                    require(found, migration::message("Logic: MIDI region has no event sequence."));
                     std::stable_sort(midi.notes.begin(), midi.notes.end(),
                                      [](auto &a, auto &b) { return a.start < b.start; });
                     jaras::AudioClip clip;
@@ -588,22 +667,30 @@ MigratedProject readLogicProject(const File &bundle) {
                     clip.muted = (event.integer(12) & 0x100) != 0;
                     track.clips.push_back(clip);
                     result.warnings.addIfNotAlreadyThere(
-                        "MIDI notes were imported. Choose an instrument in CatLive; Logic plug-ins "
-                        "are not migrated.");
+                        migration::message("MIDI notes were imported. Choose an instrument in CatLive; Logic plug-ins are not migrated."));
                     continue;
                 }
                 auto fileID = event.integer(44), regionID = event.integer(40);
                 require(files.count(fileID) && regions.count({fileID, regionID}),
-                        "Logic: unsupported audio file or region reference.");
+                        migration::message("Logic: unsupported audio file or region reference."));
                 auto &file = files[fileID];
                 auto &region = regions[{fileID, regionID}];
                 double duration = region.integer(22, 8) / file.rate,
                        source = region.integer(6, 8) / file.rate, end = start + duration;
                 require(duration > 0 && duration < 7 * 86400 && source < 7 * 86400,
-                        "Logic: invalid audio bounds.");
+                        migration::message("Logic: invalid audio bounds."));
                 if (end <= 0)
                     continue;
-                auto path = utf8("Stems/Logic/" + String((int64)fileID) + "/" + file.name);
+                auto path=importedPaths[fileID];
+                if (path.empty()) {
+                    path=utf8("Stems/" + file.name);
+                    int suffix=1;
+                    while(result.media.count(path)) {
+                        const auto extension=File(file.name).getFileExtension();
+                        path=utf8("Stems/" + file.name.dropLastCharacters(extension.length()) + "-" + String(suffix++).paddedLeft('0',3) + extension);
+                    }
+                    importedPaths[fileID]=path;
+                }
                 result.media[path] = file.source;
                 jaras::AudioClip clip;
                 clip.id = uuid();
@@ -621,51 +708,62 @@ MigratedProject readLogicProject(const File &bundle) {
                         part(clip.name, clip.startTime, clip.startTime + clip.duration));
                 track.clips.push_back(clip);
                 if (file.source == File())
-                    result.warnings.addIfNotAlreadyThere("Missing media: " + file.name);
+                    result.warnings.addIfNotAlreadyThere(migration::message("Missing media: ") + file.name);
                 if (event.count > 80)
                     result.warnings.addIfNotAlreadyThere(
-                        "Logic Flex processing and region automation are not applied. Audio "
-                        "retains its source bounds.");
-            }
+                        migration::message("Logic Flex processing and region automation are not applied. Audio retains its source bounds."));
+
+            } catch (const std::exception &error) { result.warnings.addIfNotAlreadyThere(sourceDescription + "\n" + migration::message("Logic item ignored: ") + String::fromUTF8(error.what())); }
+}
     struct Marker {
         std::string name;
-        double start, end;
+        double start;
+        std::optional<double> end;
     };
     std::vector<Marker> markers;
     for (auto &r : all)
         if (r.tag == "qSvE" && r.kind == 22)
-            for (auto &event : events(r.body))
+            for (auto &event : events(r.body, &result.warnings))
                 if (event.integer(0, 1) == 0x12) {
-                    require(event.count >= 48, "Logic: incomplete marker.");
+            try {
+                    require(event.count >= 48, migration::message("Logic: incomplete marker."));
                     double tick = (double)event.integer(4) - 38400,
                            length = (double)event.integer(28);
                     auto title = markerNames[event.integer(16)];
                     if (title.isEmpty())
                         title = "Marker " + String(markers.size() + 1);
+                    // Logic uses a length of one tick to extend up to the next marker.
                     markers.push_back({utf8(title), std::max(0., seconds(tick)),
-                                       std::max(0., seconds(tick + length))});
-                }
+                                       length > 1 ? std::optional(std::max(0., seconds(tick + length))) : std::nullopt});
+
+            } catch (const std::exception &error) { result.warnings.addIfNotAlreadyThere(migration::message("Logic marker ignored: ") + String::fromUTF8(error.what())); }
+}
     std::stable_sort(markers.begin(), markers.end(),
                      [](auto &a, auto &b) { return a.start < b.start; });
     for (auto &t : song.tracks)
         for (auto &c : t.clips)
             song.duration = std::max(song.duration, c.startTime + c.duration);
-    for (auto &m : markers)
-        song.duration = std::max(song.duration, std::max(m.start, m.end));
+    for (const auto &marker : markers)
+        song.duration = std::max(song.duration, std::max(marker.start, marker.end.value_or(0.)));
     for (auto &p : music)
         song.duration = std::max(song.duration, p.endTime);
+    for (const auto &marker : *song.markers)
+        song.duration = std::max(song.duration, marker.position);
     for (size_t i = 0; i < markers.size(); ++i) {
-        auto &m = markers[i];
-        jaras::TimelineMarker flag;
-        flag.id = uuid();
-        flag.name = m.name;
-        flag.position = m.start;
-        flag.color = 0xc7ab40;
-        song.markers->push_back(flag);
-        double next = i + 1 < markers.size() ? markers[i + 1].start : song.duration,
-               end = std::min(next, m.end > m.start ? m.end : next);
-        if (end > m.start)
-            song.parts.push_back(part(m.name, m.start, end));
+        const auto &marker = markers[i];
+        const double next = i + 1 < markers.size() ? markers[i + 1].start : song.duration;
+        const bool hasExplicitEnd = marker.end && *marker.end > marker.start;
+        const double end = hasExplicitEnd ? *marker.end : next;
+        if (end > marker.start) {
+            song.parts.push_back(part(marker.name, marker.start, end));
+        } else {
+            jaras::TimelineMarker flag;
+            flag.id = uuid();
+            flag.name = utf8(text(marker.name).substring(0, 256));
+            flag.position = marker.start;
+            flag.color = 0xc7ab40;
+            song.markers->push_back(flag);
+        }
     }
     std::sort(music.begin(), music.end(),
               [](auto &a, auto &b) { return a.startTime < b.startTime; });
@@ -674,20 +772,15 @@ MigratedProject readLogicProject(const File &bundle) {
                     [](auto &a, auto &b) { return std::abs(a.startTime - b.startTime) < 1e-6; }),
         music.end());
     auto rootsCopy = song.parts;
+    std::vector<jaras::TimelineMarker> linked;
     std::set<ID> assigned;
-    for (size_t i = 0; i < rootsCopy.size(); ++i) {
-        auto &rootPart = rootsCopy[i];
-        double next = i + 1 < rootsCopy.size() ? rootsCopy[i + 1].startTime : song.duration;
+    for (const auto &rootPart : rootsCopy) {
         std::vector<jaras::Part> children;
-        for (auto p : music)
-            if (p.startTime >= rootPart.startTime - 1e-6 && p.startTime < rootPart.endTime - 1e-6 &&
-                p.endTime <= next + 1e-6) {
+        for (const auto &p : music)
+            if (!assigned.count(p.id) && p.startTime >= rootPart.startTime && p.endTime <= rootPart.endTime) {
                 assigned.insert(p.id);
                 children.push_back(p);
             }
-        if (children.empty())
-            continue;
-        song.parts[i].endTime = std::max(song.parts[i].endTime, children.back().endTime);
         if (children.size() > 1)
             for (auto p : children) {
                 p.parentRegionID = rootPart.id;
@@ -699,12 +792,20 @@ MigratedProject readLogicProject(const File &bundle) {
                 m.color = 0xc7ab40;
                 m.unifiedRegionID = rootPart.id;
                 m.sourceRegionID = p.id;
-                song.markers->push_back(m);
+                linked.push_back(m);
             }
     }
-    for (auto p : music)
-        if (!assigned.count(p.id))
-            song.parts.push_back(p);
+    for (const auto &p : music)
+        if (!assigned.count(p.id)) song.parts.push_back(p);
+    if (!music.empty()) {
+        std::vector<jaras::TimelineMarker> tempoMarkers;
+        for (const auto &marker : *song.markers) {
+            if (marker.tempoBPM) tempoMarkers.push_back(marker); else linked.push_back(marker);
+        }
+        auto flags = migration::VSHookMigration::uniqueFlags(std::move(linked));
+        tempoMarkers.insert(tempoMarkers.end(), flags.begin(), flags.end()); song.markers=std::move(tempoMarkers);
+        migration::VSHookMigration::sortParts(song);
+    }
     migration::finish(result);
     return result;
 }

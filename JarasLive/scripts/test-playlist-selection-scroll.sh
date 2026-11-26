@@ -14,5 +14,5 @@ start=scroll.index('struct SidebarScrollMetrics:')
 subject += '\n' + scroll[start:scroll.index('\n#endif',start)]
 Path(sys.argv[1]).write_text(Path('Tests/Apple/PlaylistSelectionScrollTests.swift').read_text().replace('// INSERT_PLAYLIST_CLICK_VIEW',subject))
 PY
-swiftc -swift-version 5 "$test_dir/main.swift" -o "$test_dir/test"
+swiftc -swift-version 5 Apple/Shared/NativeTimelineInputGate.swift "$test_dir/main.swift" -o "$test_dir/test"
 "$test_dir/test"

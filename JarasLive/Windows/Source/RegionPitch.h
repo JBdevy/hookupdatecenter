@@ -12,6 +12,21 @@ inline const jaras::Part *at(const jaras::Song &song, double position) {
         }
     return result;
 }
+// Local and Remote Tuner must address the same audible/selected source region.
+inline const jaras::Part *target(const jaras::Song &song, const jaras::TransportState &transport) {
+    if (transport.playing) {
+        for (const auto &part : song.parts) if (transport.ignoreNextRegionId == part.id) return &part;
+        if (const auto *part = at(song, transport.position)) return part;
+    }
+    for (const auto &part : song.parts) if (transport.regionId == part.id) {
+        if (transport.playing) return &part;
+        const jaras::Part *first = nullptr;
+        for (const auto &child : song.parts)
+            if (child.parentRegionID == part.id && (!first || child.startTime < first->startTime)) first = &child;
+        return first ? first : &part;
+    }
+    return nullptr;
+}
 inline bool contains(const std::optional<std::vector<ID>> &ids, const ID &id) {
     return !ids || std::find(ids->begin(), ids->end(), id) != ids->end();
 }
@@ -42,6 +57,17 @@ inline bool selected(const jaras::Song &song, const jaras::Track &track, const j
 inline int value(const jaras::Song &song, const jaras::Track &track, double position) {
     auto *part = at(song, position);
     return part && selected(song, track, *part) ? part->pitchSemitones.value_or(0) : 0;
+}
+inline int value(const jaras::Song &song, const jaras::Track &track, const jaras::AudioClip &clip) {
+    const double end = clip.startTime + clip.duration;
+    const auto rootID = jaras::regionMovementOwner(song, clip.startTime, end, clip.regionOwnerID);
+    if (!rootID) return 0;
+    const auto root = std::find_if(song.parts.begin(), song.parts.end(), [&](const auto &part) { return part.id == *rootID; });
+    if (root == song.parts.end() ||
+        std::max(0.0, std::min(end, root->endTime) - std::max(clip.startTime, root->startTime)) <= clip.duration / 2) return 0;
+    const auto ownerID = jaras::regionOwnerForMedia(song, clip.startTime, end, clip.regionOwnerID);
+    const auto part = std::find_if(song.parts.begin(), song.parts.end(), [&](const auto &part) { return ownerID && part.id == *ownerID; });
+    return part != song.parts.end() && selected(song, track, *part) ? part->pitchSemitones.value_or(0) : 0;
 }
 inline std::vector<ID> defaults(const jaras::Song &song, bool groups) {
     std::vector<ID> result;

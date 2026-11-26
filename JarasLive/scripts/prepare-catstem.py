@@ -33,6 +33,11 @@ def main():
         raise RuntimeError('Build this runtime on an Apple Silicon or Intel Mac.')
     lock = ROOT / 'scripts/catstem-requirements.lock'
     manifest = dict(version=2, architectures=["arm64", "x86_64"], requirements=hashlib.sha256(lock.read_bytes()).hexdigest(), model=MODEL_HASH)
+    # The item action uses CPU/MPS Demucs; discard a cached, unused MLX plugin
+    # helper so packages no longer contain its macOS 14-only binaries.
+    for obsolete in ('realtime-arm64', 'realtime-arm64.previous'):
+        if (TARGET / obsolete).is_dir():
+            shutil.rmtree(TARGET / obsolete)
     marker = TARGET / 'runtime.json'
     if marker.exists() and json.loads(marker.read_text()) == manifest:
         print('CatStem runtime already prepared:', TARGET)
@@ -50,7 +55,7 @@ def main():
         archive.unlink()
         python = staging / 'python/bin/python3.11'
         subprocess.run([str(python), '-m', 'pip', 'install', '--no-cache-dir', '-r', str(lock)], check=True)
-        download('https://dl.fbaipublicfiles.com/demucs/hybrid_transformer/' + MODEL, staging / MODEL, MODEL_HASH)
+        download('https://huggingface.co/musicfy/uvr/resolve/2afc13a29f3b11bdd051221c425629e013591e13/' + MODEL, staging / MODEL, MODEL_HASH)
         subprocess.run([str(python), '-I', '-c', 'import torch, demucs, soundfile; print(torch.__version__)'], check=True)
         # A universal CatLive includes a matching helper for both architectures.
         other = 'x86_64' if arch == 'arm64' else 'arm64'

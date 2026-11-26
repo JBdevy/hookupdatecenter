@@ -128,7 +128,9 @@ linkedB.synchronizeModel(-12)
 precondition(linkedB.doubleValue == linkedA.doubleValue, "delayed model redraw cannot overwrite the live partner")
 linkedA.mouseUp(with: event(.leftMouseUp, 160))
 linkedA.mini = true; linkedB.mini = true
+linkedA.rotary = true; linkedB.rotary = true
 linkedA.minValue = -1; linkedA.maxValue = 1; linkedB.minValue = -1; linkedB.maxValue = 1
+linkedA.doubleValue = 0; linkedB.doubleValue = 0
 linkedA.mouseDown(with: event(.leftMouseDown, 40))
 linkedA.mouseDragged(with: event(.leftMouseDragged, 170))
 precondition(linkedA.trackingPointer && linkedB.doubleValue == -linkedA.doubleValue, "linked pan mirrors each drag event before release")
@@ -138,6 +140,7 @@ precondition(linkedA.doubleValue == 0 && linkedB.doubleValue == 0, "reset from e
 linkedB.linkedTrack = nil
 let unlinkedValue = linkedB.doubleValue
 linkedA.mouseDown(with: event(.leftMouseDown, 40))
+linkedA.mouseDragged(with: event(.leftMouseDragged, 170))
 precondition(linkedB.doubleValue == unlinkedValue, "unlinked controls cannot receive stale mirroring")
 linkedA.mouseUp(with: event(.leftMouseUp, 40))
 print("LINKED_FADER_AND_PAN_IMMEDIATE_DRAG_MIRROR_BEFORE_RELEASE_OK")
@@ -166,6 +169,7 @@ print("FOOTER_MIXER_VERTICAL_FADER_ROTARY_PAN_AND_SHARED_TRACK_LIVE_SYNC_OK")
 
 // Selected, unlinked tracks receive their own computed value on each native event.
 linkedA.linkedTrack = nil; linkedB.linkedTrack = nil
+linkedA.rotary = false; linkedB.rotary = false
 linkedA.mini = false; linkedB.mini = false
 linkedA.minValue = -60; linkedA.maxValue = 12; linkedB.minValue = -60; linkedB.maxValue = 12
 var groupValues: [UUID:Double] = [:]
@@ -186,3 +190,26 @@ linkedA.mouseDragged(with: event(.leftMouseDragged, 130))
 precondition(abs(linkedB.doubleValue - (linkedA.doubleValue + 0.2)) < 0.000001, "Selected pan follows live without becoming the inverse unless linked")
 linkedA.mouseUp(with: event(.leftMouseUp, 130))
 print("SELECTED_TRACK_FADER_AND_PAN_LIVE_MIRROR_BEFORE_RELEASE_OK")
+
+MainActor.assumeIsolated {
+    let verticalMeterSlider = DirectVolumeSliderView(frame: NSRect(x: 0, y: 0, width: 32, height: 150))
+    verticalMeterSlider.vertical = true
+    verticalMeterSlider.synchronizeModel(0)
+    window.contentView!.addSubview(verticalMeterSlider)
+    let sliderMeter = TrackMeterLevel()
+    verticalMeterSlider.bindMeter(sliderMeter)
+    let faderBacking = verticalMeterSlider.layer!.sublayers!.first!
+    let railBacking = faderBacking.sublayers!.first!
+    let thumbBacking = faderBacking.sublayers![2]
+    let thumbBeforeRelease = thumbBacking.frame
+    let firstMeterChannel = (railBacking.sublayers!.first as! CAGradientLayer).mask!.sublayers!.first!
+    verticalMeterSlider.needsDisplay = false
+    sliderMeter.update(left: 0.5, right: 0.25, elapsed: 1.0 / 30)
+    let meterHeight = firstMeterChannel.frame.height
+    precondition(meterHeight > 0 && meterHeight < railBacking.frame.height)
+    precondition(firstMeterChannel.frame.maxY == railBacking.bounds.maxY)
+    sliderMeter.update(peak: 0, elapsed: 1.0 / 30)
+    precondition(firstMeterChannel.frame.height < meterHeight)
+    precondition(thumbBacking.frame == thumbBeforeRelease && !verticalMeterSlider.needsDisplay)
+    print("VERTICAL_FADER_RELEASE_UPDATES_LAYERS_WITHOUT_REPAINT_OK")
+}

@@ -165,7 +165,20 @@ public final class AuthService: ObservableObject {
             // Legacy trial caches use their signed server time until checkpointed.
             accept(cache.login, validatedAt: cache.validatedAt, offline: true, trustedTime: trustedTime)
             if allowed { try await checkpointTrial()?.value }
-        } catch { await deny(error) }
+            if cache.login.entitlement.planId == "trial" && !allowed {
+                workspaceAllowed = false
+                phase = .unauthenticated
+                message = "Seu período de teste acabou. Faça login com uma licença ativa para continuar."
+            }
+        } catch {
+            await deny(error)
+            // An expired trial must return to sign-in on the next launch so a
+            // customer can activate a purchased plan with the same installation.
+            if loginResult?.entitlement.planId == "trial" && !allowed {
+                workspaceAllowed = false
+                phase = .unauthenticated
+            }
+        }
     }
     /// Validate credentials before asking for a name, without occupying a seat
     /// or consuming a trial until the user completes the mandatory second step.

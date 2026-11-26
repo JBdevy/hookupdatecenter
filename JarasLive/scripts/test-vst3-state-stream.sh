@@ -3,6 +3,10 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 test_build="$(mktemp -d "${TMPDIR:-/tmp}/catlive-vst3-stream.XXXXXX")"
 trap 'rm -rf "$test_build"' EXIT
+clang++ -std=c++17 -fsanitize=address,undefined -fno-sanitize-recover=all \
+    -ICore/ThirdParty/VST3 Tests/Apple/VST3/UnalignedUIDTests.cpp \
+    -o "$test_build/unaligned-uid"
+"$test_build/unaligned-uid"
 plugin="$test_build/GainFixture.vst3"
 mkdir -p "$plugin/Contents/MacOS"
 cat > "$plugin/Contents/Info.plist" <<'PLIST'
@@ -19,4 +23,12 @@ clang++ -std=c++17 -fobjc-arc -fsanitize=address,undefined -fno-sanitize-recover
     Core/ThirdParty/VST3/pluginterfaces/base/*.cpp \
     -framework AVFoundation -framework AppKit -framework AudioToolbox \
     -o "$test_build/test"
+# Keep ASan on both sides while testing PCM/state/thread ownership. The
+# ordinary-plugin pass below separately covers physical image unload/reload.
+CATLIVE_PIN_SANITIZED_FIXTURE=1 "$test_build/test" "$plugin"
+clang++ -std=c++17 -fPIC -bundle -DCATLIVE_MODULE_LIFECYCLE_DIAGNOSTICS \
+    -ICore/ThirdParty/VST3 Tests/Apple/VST3/GainFixture.cpp \
+    Core/ThirdParty/VST3/pluginterfaces/base/funknown.cpp \
+    Core/ThirdParty/VST3/pluginterfaces/base/ustring.cpp -framework CoreFoundation \
+    -o "$plugin/Contents/MacOS/GainFixture"
 "$test_build/test" "$plugin"

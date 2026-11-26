@@ -43,12 +43,17 @@ import XCTest
                 project.regionSetlist?.autoAdvance = false
             } else { transport.queuedRegionId = target }
         case .play: transport.playing = true
-        case .stop, .stopAll: transport.playing = false; transport.subPlay.playing = false
+        case .stop, .stopAll:
+            transport.playing = false; transport.subPlay.playing = false
+            if let next = pendingStop { transport = next; pendingStop = nil }
+        case .editSeek: transport.position = value; transport.editPosition = value
         default: break
         }
     }
     func addTrack(id: UUID, name: String, role: TrackRole) throws {}
-    func advance(_ elapsed: Double) {}
+    var pendingStop: TransportState?
+    var pendingAdvance: TransportState?
+    func advance(_ elapsed: Double) { if let next = pendingAdvance { transport = next; pendingAdvance = nil } }
     func finishCurrentSong(_ enabled: Bool) {}
 }
 
@@ -60,6 +65,77 @@ final class SetlistAutoBlockTests: XCTestCase {
                                   Part(id: UUID(), name: "Encore", startTime: 20, endTime: 30)]
         project.regionSetlist = RegionSetlist()
         return project
+    }
+
+    @MainActor func testPreparedDestinationBecomesBlueSelectionForQueueAndBlockEnd() throws {
+        for blockEnd in [false, true] {
+            var project = fixture()
+            project.regionSetlist?.autoAdvance = true
+            project.regionSetlist?.autoUntilBlockEnd = blockEnd
+            project.regionSetlist?.prepareWithoutPlayback = !blockEnd
+            let first = project.songs[0].parts[0], next = project.songs[0].parts[1]
+            let executor = AutoBlockExecutor()
+            let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)
+            show.focusRegion(first.id)
+            show.send(.play)
+            if !blockEnd { show.send(.queueRegion, target: next.id) }
+            var stopped = executor.transport
+            stopped.playing = false; stopped.regionId = next.id
+            stopped.position = next.startTime; stopped.editPosition = next.startTime
+            stopped.queuedRegionId = nil
+            executor.pendingAdvance = stopped
+            show.tick()
+            XCTAssertEqual(show.focusedRegion, next.id)
+            XCTAssertEqual(show.snapshot.transport.position, next.startTime)
+            XCTAssertFalse(show.snapshot.transport.playing)
+            show.send(.stopAll)
+        }
+    }
+
+    @MainActor func testStopAndNaturalCompletionRevealPreparedSongInsteadOfRestoredCursor() throws {
+        for manual in [false, true] {
+            var project = fixture(); project.regionSetlist?.autoUntilBlockEnd = true
+            project.regionSetlist?.autoAdvance = true
+            project.savedCursor = SavedProjectCursor(songID: project.songs[0].id, position: 4)
+            let executor = AutoBlockExecutor()
+            let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)
+            let first = project.songs[0].parts[0], next = project.songs[0].parts[1]
+            XCTAssertEqual(show.restoredCursorPosition, 4)
+            show.send(.selectRegion, target: first.id); show.send(.play)
+            let oldFocus = show.regionFocusRequest
+            var prepared = executor.transport
+            prepared.playing = false; prepared.regionId = next.id; prepared.queuedRegionId = nil
+            prepared.position = next.startTime; prepared.editPosition = next.startTime
+            if manual { executor.pendingStop = prepared; show.send(.stop) }
+            else { executor.pendingAdvance = prepared; show.tick() }
+            XCTAssertEqual(show.focusedRegion, next.id)
+            XCTAssertEqual(show.navigationFocusPosition, next.startTime)
+            XCTAssertNil(show.restoredCursorPosition)
+            XCTAssertNotEqual(show.regionFocusRequest, oldFocus)
+            XCTAssertFalse(show.snapshot.transport.playing)
+        }
+    }
+
+    @MainActor func testAutoOffDoesNotFocusNextBlockOnStopAndNaturalCompletion() throws {
+        for manual in [false, true] {
+            var project = fixture(); project.regionSetlist?.autoUntilBlockEnd = true
+            project.regionSetlist?.autoAdvance = false
+            let first = project.songs[0].parts[0]
+            let executor = AutoBlockExecutor()
+            let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)
+            show.send(.selectRegion, target: first.id); show.send(.play)
+            var stopped = executor.transport
+            stopped.playing = false; stopped.queuedRegionId = nil
+            stopped.position = manual ? first.startTime : first.endTime
+            if manual { executor.pendingStop = stopped; show.send(.stop) }
+            else { executor.pendingAdvance = stopped; show.tick() }
+            XCTAssertNotEqual(show.focusedRegion, project.songs[0].parts[1].id)
+            if manual { XCTAssertEqual(show.focusedRegion, first.id) }
+            else { XCTAssertNil(show.focusedRegion, "Ordinary completion still clears the finished row highlight") }
+            XCTAssertEqual(show.snapshot.transport.regionId, first.id)
+            XCTAssertFalse(show.snapshot.transport.playing)
+            XCTAssertTrue(show.regionSetlist.autoUntilBlockEnd == true, "AUTO off preserves the preference for later use")
+        }
     }
 
     func testLegacySetlistWithoutSettingDecodesAsDisabledAndRoundTrips() throws {

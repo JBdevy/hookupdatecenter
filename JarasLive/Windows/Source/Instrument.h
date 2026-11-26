@@ -6,11 +6,15 @@ public:
     Instrument();~Instrument();
     void prepare(double sampleRate);
     void loadSoundFont(const File&);
+    std::unique_ptr<Instrument> prepareSoundFont(const File&)const;
+    void swap(Instrument&)noexcept;
     std::unique_ptr<Instrument> copy()const;
     void configure(const var &,bool drums=false);
     void render(AudioBuffer<float>&,const MidiBuffer&,int samples,int start=0);
+    static constexpr int previewSampleRate = 48000;
+    static AudioBuffer<float> renderLibraryPreview(const File&, bool drums = false);
     void stop();
-    String name="Piano";
+    String name;
 private:
     struct Impl;std::unique_ptr<Impl> impl;
 };

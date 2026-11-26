@@ -46,6 +46,85 @@ final class SetlistLiveTests: XCTestCase {
         return project
     }
 
+    func testPreviewUsesLiveGateAndSameUnifiedMarksAsSetlist() {
+        var value = project()
+        let first = value.songs[0].parts[0].id, second = value.songs[0].parts[1].id
+        let parent = UUID()
+        value.songs[0].parts[0].parentRegionID = parent
+        value.songs[0].parts[1].parentRegionID = parent
+        value.songs[0].parts.append(Part(id: parent, name: "Unified", startTime: 0, endTime: 400))
+        var setlist = RegionSetlist(); setlist.playedLiveRegionIDs = [first, parent]
+        value.regionSetlist = setlist
+        XCTAssertTrue(SetlistLivePlaybackTracker.previewMarks(project: value).isEmpty)
+        value.regionSetlist?.liveEnabled = true
+        XCTAssertEqual(SetlistLivePlaybackTracker.previewMarks(project: value), [first])
+        value.regionSetlist?.playedLiveRegionIDs = [first, second]
+        XCTAssertEqual(SetlistLivePlaybackTracker.previewMarks(project: value), [first, second, parent])
+        value.regionSetlist?.playedLiveRegionIDs = []
+        XCTAssertTrue(SetlistLivePlaybackTracker.previewMarks(project: value).isEmpty)
+    }
+
+    func testPreviewPlaybackAndQueueCountdownFollowTransportAndOccurrence() {
+        let song = project().songs[0], first = song.parts[0].id, next = song.parts[1].id
+        var transport = TransportState(playing: true, songId: song.id, position: 100,
+            queue: QueueState(), loop: LoopState(enabled: false), subPlay: SubPlayState(playing: false, position: 0))
+        transport.regionId = first; transport.queuedRegionId = next; transport.queueStartedAt = 50
+        var preview = TeleprompterPreviewPlayback(song: song, transport: transport)
+        XCTAssertEqual(preview.playingEntry, first); XCTAssertEqual(preview.queuedEntry, next)
+        XCTAssertEqual(preview.progress(for: first), 0.5)
+        XCTAssertEqual(preview.progress(for: next), 2.0 / 3.0, accuracy: 0.0001)
+        transport.position = 175
+        preview = TeleprompterPreviewPlayback(song: song, transport: transport)
+        XCTAssertEqual(preview.progress(for: first), 0.875)
+        XCTAssertEqual(preview.progress(for: next), 1.0 / 6.0, accuracy: 0.0001)
+        transport.playlistEntryId = UUID(); transport.queuedPlaylistEntryId = UUID()
+        let playlist = RegionPlaylist(id: UUID(), name: "Copies", songId: song.id,
+            regionIds: [first, transport.playlistEntryId!, next, transport.queuedPlaylistEntryId!],
+            duplicates: [.init(id: transport.playlistEntryId!, regionId: first), .init(id: transport.queuedPlaylistEntryId!, regionId: next)])
+        preview = TeleprompterPreviewPlayback(song: song, transport: transport, playlist: playlist)
+        XCTAssertEqual(preview.playingEntry, transport.playlistEntryId)
+        XCTAssertEqual(preview.queuedEntry, transport.queuedPlaylistEntryId)
+        XCTAssertEqual(preview.progress(for: first), 0, "A duplicate occurrence does not highlight its original row")
+        let allRegions = TeleprompterPreviewPlayback(song: song, transport: transport)
+        XCTAssertEqual(allRegions.playingEntry, first, "All regions uses the source, never a playlist alias")
+        XCTAssertEqual(allRegions.queuedEntry, next)
+        transport.ignoreNextEnd = 250
+        preview = TeleprompterPreviewPlayback(song: song, transport: transport, playlist: playlist)
+        XCTAssertEqual(preview.playedFraction, 0.7)
+        XCTAssertEqual(preview.remainingFraction, 0.375)
+        transport.playing = false; transport.paused = true
+        XCTAssertEqual(TeleprompterPreviewPlayback(song: song, transport: transport, playlist: playlist), preview)
+        transport.paused = false
+        XCTAssertEqual(TeleprompterPreviewPlayback(song: song, transport: transport, playlist: playlist), TeleprompterPreviewPlayback())
+    }
+
+    func testPreviewExpandsUnifiedRegionIntoOnlyRealSongs() {
+        var song = project().songs[0]
+        let parent = UUID()
+        song.parts[0].parentRegionID = parent; song.parts[1].parentRegionID = parent
+        song.parts.append(Part(id: parent, name: "Unified", startTime: 0, endTime: 400))
+        var transport = TransportState(playing: true, songId: song.id, position: 100,
+            queue: QueueState(), loop: LoopState(enabled: false), subPlay: SubPlayState(playing: false, position: 0))
+        transport.regionId = parent
+        let preview = TeleprompterPreviewPlayback(song: song, transport: transport)
+        XCTAssertEqual(preview.playingEntry, song.parts[0].id)
+        XCTAssertNil(preview.queuedEntry, "No queue must not highlight unrelated top-level songs")
+        XCTAssertEqual(preview.playedFraction, 0.5)
+        let entries = TeleprompterPreviewEntry.make(song: song, playlist: nil)
+        XCTAssertEqual(entries.map { $0.region.id }, [song.parts[0].id, song.parts[1].id])
+        XCTAssertEqual(entries[0].blockAnchors, [parent, song.parts[0].id], "Block before wrapper stays before its first song")
+        let copy = UUID()
+        let playlist = RegionPlaylist(id: UUID(), name: "Repeated drawer", songId: song.id,
+            regionIds: [parent, copy], duplicates: [.init(id: copy, regionId: parent)])
+        let repeated = TeleprompterPreviewEntry.make(song: song, playlist: playlist)
+        XCTAssertEqual(repeated.count, 4)
+        XCTAssertEqual(Set(repeated.map(\.id)).count, 4, "Repeated drawer songs need distinct stable preview rows")
+        XCTAssertFalse(repeated.contains { $0.region.id == parent })
+        transport.playlistEntryId = copy
+        let secondOccurrence = TeleprompterPreviewPlayback(song: song, transport: transport, playlist: playlist)
+        XCTAssertEqual(secondOccurrence.playingEntry, repeated[2].id)
+    }
+
     @MainActor func testThresholdUsesRealPlaybackAndPublishesOnlyAtTenSeconds() throws {
         let project = project(), executor = LiveExecutor()
         var now = 0.0

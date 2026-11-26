@@ -108,15 +108,15 @@ divider.mouseExited(with: hover)
 settle(1.05)
 precondition(divider.scrollIndicatorVisible, "pointer exit and prolonged inactivity never hide the permanent scrollbar")
 divider.mouseMoved(with: hover)
-precondition(NSCursor.current.image.size == NSSize(width: 28, height: 16), "hover uses the cached horizontal-only resize cursor")
+precondition(NSCursor.current == NSCursor.resizeLeftRight, "hover uses the original native horizontal resize cursor")
 divider.mouseExited(with: pointer(divider, .mouseMoved, CGPoint(x: 90, y: 50)))
 precondition(NSCursor.current == NSCursor.arrow, "leaving the scrollbar restores the pointer without needing a click")
 divider.cursorUpdate(with: hover)
-precondition(NSCursor.current.image.size == NSSize(width: 28, height: 16), "AppKit cursor updates restore the divider cursor on reentry")
+precondition(NSCursor.current == NSCursor.resizeLeftRight, "AppKit cursor updates restore the divider cursor on reentry")
 divider.mouseDown(with: pointer(divider, .leftMouseDown, CGPoint(x: 6, y: 50)))
 divider.mouseDragged(with: pointer(divider, .leftMouseDragged, CGPoint(x: 60, y: 80)))
 divider.mouseExited(with: pointer(divider, .mouseMoved, CGPoint(x: 60, y: 80)))
-precondition(NSCursor.current.image.size == NSSize(width: 28, height: 16), "an active divider drag keeps its cursor outside the narrow rail")
+precondition(NSCursor.current == NSCursor.resizeLeftRight, "an active divider drag keeps its cursor outside the narrow rail")
 divider.mouseUp(with: pointer(divider, .leftMouseUp, CGPoint(x: 60, y: 80)))
 precondition(NSCursor.current == NSCursor.arrow, "releasing outside the rail clears the drag cursor")
 
@@ -131,9 +131,39 @@ listDivider.mouseDown(with: pointer(listDivider, .leftMouseDown, CGPoint(x: 3, y
 listDivider.mouseDragged(with: pointer(listDivider, .leftMouseDragged, CGPoint(x: 3, y: 110)))
 listDivider.mouseUp(with: pointer(listDivider, .leftMouseUp, CGPoint(x: 3, y: 110)))
 precondition(setlistController.metrics.offset > 0 && mixerController.metrics.offset == offsetBeforeResize && listWidth == 0, "Setlist vertical dragging is independent from mixer and has no width callback")
+listDivider.showsRail = false; listDivider.showsScrollRail = false
 listDivider.mouseDown(with: pointer(listDivider, .leftMouseDown, CGPoint(x: 3, y: 50)))
 listDivider.mouseUp(with: pointer(listDivider, .leftMouseUp, CGPoint(x: -20, y: 50)))
-precondition(listWidth == 300, "leftward resize preserves the Setlist's reversed horizontal direction")
+precondition(listWidth == 300, "The hidden rail still resizes the Setlist in the correct direction")
+listDivider.showsRail = true; listDivider.showsScrollRail = true
+
+// A lazy Setlist can revise its estimated height while its thumb is held.
+// The same drag must still reach the last song, without releasing/regrabbing.
+setlistController.scroll(to: 0)
+listDivider.mouseDown(with: pointer(listDivider, .leftMouseDown, CGPoint(x: 3, y: 30)))
+listDivider.mouseDragged(with: pointer(listDivider, .leftMouseDragged, CGPoint(x: 3, y: 70)))
+setlistScroll.documentView!.setFrameSize(CGSize(width: 280, height: 4800))
+listDivider.mouseDragged(with: pointer(listDivider, .leftMouseDragged, CGPoint(x: 3, y: 398)))
+precondition(abs(setlistController.metrics.offset - setlistController.metrics.maximumOffset) < 0.1,
+             "Setlist thumb must reach the bottom after lazy content expands during the drag")
+listDivider.mouseUp(with: pointer(listDivider, .leftMouseUp, CGPoint(x: 3, y: 398)))
+setlistScroll.documentView!.setFrameSize(CGSize(width: 280, height: 1200))
+setlistController.scroll(to: 0)
+// A growing lazy extent must not reverse upward scrolling or move on release.
+setlistController.scroll(to: 600)
+listDivider.mouseDown(with: pointer(listDivider, .leftMouseDown, CGPoint(x: 3, y: 300)))
+listDivider.mouseDragged(with: pointer(listDivider, .leftMouseDragged, CGPoint(x: 3, y: 280)))
+setlistScroll.documentView!.setFrameSize(CGSize(width: 280, height: 4800))
+let beforeUp = setlistController.metrics.offset
+listDivider.mouseDragged(with: pointer(listDivider, .leftMouseDragged, CGPoint(x: 3, y: 275)))
+precondition(setlistController.metrics.offset < beforeUp, "Growing lazy extent reversed an upward drag")
+let beforeRelease = setlistController.metrics.offset
+setlistScroll.documentView!.setFrameSize(CGSize(width: 280, height: 6000))
+listDivider.mouseUp(with: pointer(listDivider, .leftMouseUp, CGPoint(x: 3, y: 275)))
+precondition(abs(setlistController.metrics.offset - beforeRelease) < 0.1, "Mouse-up moved the list without pointer movement")
+setlistScroll.documentView!.setFrameSize(CGSize(width: 280, height: 1200))
+setlistController.scroll(to: 0)
+print("SIDEBAR_LAZY_HEIGHT_CHANGE_DURING_THUMB_DRAG_OK")
 
 mixerController.scroll(to: 1_000_000)
 precondition(mixerController.metrics.offset == 1600 && abs(divider.scrollThumbRect.maxY - 398) < 0.001, "dragging clamps exactly at the content end and thumb reaches the rail bottom")
@@ -162,6 +192,7 @@ final class SidebarWheelEvent: NSEvent {
     override var window: NSWindow? { targetWindow }
     override var locationInWindow: NSPoint { point }
     override var scrollingDeltaY: CGFloat { delta }
+    override var phase: NSEvent.Phase { [] }
     override var hasPreciseScrollingDeltas: Bool { precise }
     override var modifierFlags: NSEvent.ModifierFlags { [] }
 }
@@ -183,11 +214,13 @@ precondition(mixerController.handleWheel(physicalWheel))
 settle(0.65)
 precondition(abs(mixerController.metrics.offset - max(0, beforeReversal - 32)) < 0.001, "reversal cancels outstanding travel")
 physicalWheel.precise = true
+mixerScroll.hasVerticalScroller = true
 let hitProbe = mixerScroll.contentView as! SidebarHitProbeClip
 let previousHits = hitProbe.hitCount
 for _ in 0..<120 {
     precondition(!mixerController.handleWheel(physicalWheel), "trackpad remains native")
 }
+mixerScroll.hasVerticalScroller = false
 precondition(hitProbe.hitCount == previousHits, "trackpad zoom must not hit-test the sidebar's entire hosted document")
 print("SIDEBAR_PHYSICAL_WHEEL_IMMEDIATE_EXACT_TARGET_AND_REVERSAL_OK")
 

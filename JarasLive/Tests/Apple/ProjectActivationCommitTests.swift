@@ -5,6 +5,7 @@ import Foundation
 enum ProjectError: Error { case rejected, noDocument }
 struct Project: Codable, Equatable { var id: UUID; var name: String }
 struct Snapshot { var project: Project }
+enum FixtureCommand { case stopAll }
 final class NSItemProvider {}
 enum AudioDropLayout { case sameTrack }
 @MainActor enum EditorCloseRecorder {
@@ -30,6 +31,8 @@ enum AudioDropLayout { case sameTrack }
     var projectSessionID = UUID()
     init(_ project: Project) { snapshot = Snapshot(project: project) }
     func saveForClosing() async throws { hasUnsavedChanges = false }
+    func send(_ command: FixtureCommand) {}
+    func applyImportedProject(_ project: Project) throws { try replaceProject(project) }
     func replaceProject(_ project: Project) throws {
         replacementWasLocked = !canExecute()
         if failReplacement { throw ProjectError.rejected }
@@ -41,15 +44,27 @@ enum AudioDropLayout { case sameTrack }
     private(set) var url: URL?
     private var projectID: UUID?
     func select(url: URL, id: UUID) async { self.url = url; projectID = id; await Task.yield() }
+    func select(url: URL, savedProject: Project) async { await select(url: url, id: savedProject.id) }
     func save(_ project: Project) throws {
         guard let url, project.id == projectID else { throw ProjectError.noDocument }
         try JSONEncoder().encode(project).write(to: url, options: .atomic)
     }
 }
 @MainActor final class ProjectDocuments {
+    struct OpeningProgress { var fraction = 0.0 }
+    final class FixtureAudio {
+        var excluded: Set<String> = []
+        var missing: Set<String> = []
+        func openPreparedProject(directory: URL, project: Project, unreadableAudioPaths: Set<String>) async throws {
+            excluded = unreadableAudioPaths
+        }
+        func setMissingAudioPaths(_ paths: Set<String>) { missing = paths }
+    }
     let show: FixtureShow
     let store = FixtureStore()
+    let projectAudio = FixtureAudio()
     var ready = true, canCancelOpening = true
+    var openingProgress: OpeningProgress?
     var currentURL: URL?
     var storeDuringPreload: URL?
     // INSERT_PENDING_DROP_TYPE
@@ -58,9 +73,13 @@ enum AudioDropLayout { case sameTrack }
     var importedDrops = 0
     init(_ project: Project, url: URL) { show = FixtureShow(project); currentURL = url }
     func rememberProjectMedia() async throws { await Task.yield() }
-    func preloadTimelineWaveforms(_ project: Project, at url: URL) async {
+    func preloadTimelineWaveforms(_ project: Project, at url: URL) async -> Set<String> {
         storeDuringPreload = store.url
         await Task.yield()
+        return ["unreadable.wav"]
+    }
+    func confirmOutgoingProject() async throws {
+        if ready && show.hasUnsavedChanges { try await show.saveForClosing() }
     }
     func importAudio(_ providers: [NSItemProvider], start: Double, track: UUID?, song: UUID, layout: AudioDropLayout, gap: Double) -> Bool {
         importedDrops += 1
@@ -72,7 +91,8 @@ enum AudioDropLayout { case sameTrack }
         // INSERT_DROP_CONFIRMATION
     }
     // INSERT_SESSION_HELPERS
-    func activate(_ project: Project, at url: URL) async throws {
+    func activate(_ project: Project, at url: URL, confirmReplacement: Bool = true) async throws {
+        let missing = await preloadTimelineWaveforms(project, at: url)
         // INSERT_ACTIVATION_COMMIT
     }
     func finishCreationOrAppend(_ project: Project, at url: URL) async throws {
@@ -83,6 +103,7 @@ enum AudioDropLayout { case sameTrack }
         // The creation worker starts after editors close and presets save.
         closeProjectEditors()
         let result: (Project, [String]) = (project, [])
+        let append = false
         // INSERT_CREATION_COMMIT
     }
 }
@@ -131,7 +152,12 @@ Task { @MainActor in
                 check(docs.show.replacementWasLocked && docs.show.canExecute(), "The commit must lock commands and restore the prior gate")
                 check(EditorCloseRecorder.closedProjects.count == 3 && EditorCloseRecorder.closedProjects.allSatisfy { $0 == current.id },
                       "FX, automation and MIDI editors must close against the outgoing project")
-                if creation { check(docs.storeDuringPreload == oldURL, "Media preparation must not redirect saves") }
+                check(docs.storeDuringPreload == oldURL, "Media preparation must not redirect saves")
+                if !fails {
+                    check(docs.projectAudio.excluded == ["unreadable.wav"] &&
+                          docs.projectAudio.missing == docs.projectAudio.excluded,
+                          "Audio preparation and playback must both skip unavailable media")
+                }
                 if fails {
                     check(docs.pendingAudioDrop?.id == pendingDrop.id && !docs.audioImportError.isEmpty,
                           "Rejected activation must retain the current pending import")

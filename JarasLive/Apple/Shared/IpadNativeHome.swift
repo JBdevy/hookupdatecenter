@@ -2,15 +2,246 @@
 import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
+import AVFoundation
+import Combine
 
 extension UTType {
+    static let catLiveProject = UTType(exportedAs: "com.hookdeveloper.jaraslive.project", conformingTo: .data)
     static let catLivePackage = UTType(exportedAs: "com.hookdeveloper.catlive.ziplive", conformingTo: .zip)
+}
+
+/// Every open document retains its controller and audio graph. Only the selected
+/// project owns live input, MIDI mappings and the visible workspace.
+@MainActor final class NativeProjectTabs: ObservableObject {
+    static let shared = NativeProjectTabs()
+    @Published private(set) var projects: [AppContainer] = []
+    @Published private(set) var selected = 0
+    @Published private(set) var transitioning = false
+    @Published var error = ""
+    private var openingObservers: [ObjectIdentifier: Set<AnyCancellable>] = [:]
+    var active: AppContainer? { projects.indices.contains(selected) ? projects[selected] : nil }
+    func isForeground(_ show: ShowController?) -> Bool { projects.isEmpty || active?.show === show }
+    func hasEnabledAudio(excluding container: AppContainer) -> Bool {
+        projects.contains { $0 !== container && $0.localPlaybackEnabled }
+    }
+    func handleAudioEvent(_ event: MobileAudioSessionEvent) {
+        for project in projects { project.handleMobileAudioEvent(event) }
+    }
+    func install(_ initial: AppContainer) {
+        guard projects.isEmpty else { return }
+        projects = [initial]; configure(initial); publishTabs()
+        DAWRemoteHostBridge.projectTabsProvider = { [weak self] in
+            guard let self else { return [] }
+            return projects.enumerated().map { index, project in
+                .init(id: project.remoteProjectTabID, name: project.documents.currentURL?.deletingPathExtension().lastPathComponent ?? project.show.snapshot.project.name, selected: index == self.selected)
+            }
+        }
+        DAWRemoteHostBridge.selectProjectTabHandler = { [weak self] id in
+            guard let self, let index = projects.firstIndex(where: { $0.remoteProjectTabID == id }) else { return }
+            select(index)
+        }
+    }
+    private var canChange: Bool {
+        !transitioning && active?.documents.busy != true && active?.documents.importingAudio != true &&
+        !TrackRecording.shared.recording && !TrackRecording.shared.busy
+    }
+    private func publishTabs() {
+        for project in projects {
+            project.documents.projectTabCount = projects.count
+            project.documents.projectTabIndex = selected
+        }
+    }
+    private func configure(_ container: AppContainer) {
+        container.documents.openInNewProjectTab = { [weak self] in self?.open($0) }
+        container.documents.openProjectTabAndWait = { [weak self] url in
+            guard let self else { throw CancellationError() }
+            try await self.openAndWait(url)
+        }
+        container.documents.activateExistingProjectTab = { [weak self, weak container] url in
+            guard let self else { return false }
+            guard let index = projects.firstIndex(where: { $0 !== container && self.canonical($0.documents.currentURL) == self.canonical(url) }) else { return false }
+            select(index); return true
+        }
+        container.documents.navigateProjectTab = { [weak self] in self?.navigate($0) }
+        container.show.navigateProjectTab = { [weak self] in self?.navigate($0) }
+        container.documents.additionalProtectedMediaURLs = { [weak self, weak container] in
+            guard let self else { return [] }
+            var urls = Set<URL>()
+            for project in projects where project !== container {
+                urls.formUnion(project.projectAudio.activeMediaURLs)
+                if let directory = project.documents.currentURL?.deletingLastPathComponent() {
+                    urls.formUnion(project.show.snapshot.project.mediaPaths.map { directory.appendingPathComponent($0).standardizedFileURL.resolvingSymlinksInPath() })
+                }
+            }
+            return urls
+        }
+    }
+    private func canonical(_ url: URL?) -> URL? { url?.standardizedFileURL.resolvingSymlinksInPath() }
+    func navigate(_ direction: Int) {
+        guard let index = ProjectTabNavigation.destination(current: selected, count: projects.count, direction: direction) else { return }
+        select(index)
+    }
+    func select(_ index: Int) {
+        guard canChange, projects.indices.contains(index), index != selected else { return }
+        activate(index)
+    }
+    private func activate(_ index: Int) {
+        if let old = active {
+            old.projectAudio.releaseKeyboardNotes()
+            old.projectAudio.setArmedInstrumentTracks([])
+            old.projectRecorder.suspendProjectTab()
+        }
+        selected = index
+        let next = projects[index]
+        StemAudioPlayback.shared = next.projectAudio
+        TrackRecording.shared = next.projectRecorder
+        next.projectRecorder.bind(next.show)
+        let directory = next.documents.currentURL?.deletingLastPathComponent()
+        InstrumentLibrary.shared.setProjectDirectory(directory)
+        if let directory {
+            VideoPlayback.shared.open(directory: directory)
+            VideoPlayback.teleprompter.open(directory: directory)
+            VideoPlayback.teleprompter2.open(directory: directory)
+            TeleprompterRemote.setProjectDirectory(directory)
+        }
+        DAWRemoteHostBridge.documents = next.documents
+        DAWRemoteHostBridge.bind(next.show, session: .nativeHost)
+        next.documents.refreshNativeStorage()
+        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        next.documents.recent = (UserDefaults.standard.stringArray(forKey: "jaras.recentProjects") ?? []).map { NativeRecentProjectPath.resolve($0, documents: documents) }
+        publishTabs()
+    }
+    private func openAndWait(_ url: URL) async throws {
+        open(url)
+        while transitioning { try await Task.sleep(nanoseconds: 20_000_000) }
+        guard let project = active else { throw ProjectError.invalid("Could not open project.") }
+        try await project.documents.waitUntilOpened(at: url)
+    }
+    func open(_ url: URL) {
+        guard canChange, let previous = active, previous.documents.ready else { return }
+        if let index = projects.firstIndex(where: { canonical($0.documents.currentURL) == canonical(url) }) { select(index); return }
+        transitioning = true
+        Task { @MainActor in
+            defer { transitioning = false }
+            do {
+                let engine = AVAudioEngine()
+                let audio = StemAudioPlayback(engine: engine, mobileOutput: JarasMobileAudioOutput(engine: engine), auxiliarySelectedHardware: true)
+                let next = try AppContainer(sharedAuth: previous.auth, audio: audio)
+                configure(next)
+                guard await next.setLocalPlaybackEnabled(true) else { throw ProjectError.invalid(next.show.message) }
+                projects.append(next); activate(projects.count - 1)
+                watchOpening(next, fallback: previous)
+                next.documents.open(url)
+            } catch { previous.documents.error = error.localizedDescription; self.error = error.localizedDescription }
+        }
+    }
+    private func watchOpening(_ project: AppContainer, fallback: AppContainer) {
+        let id = ObjectIdentifier(project)
+        var subscriptions = Set<AnyCancellable>()
+        let check: () -> Void = { [weak self, weak project, weak fallback] in
+            DispatchQueue.main.async {
+                guard let self, let project, let fallback, self.openingObservers[id] != nil,
+                      !project.documents.busy else { return }
+                if project.documents.ready { self.openingObservers.removeValue(forKey: id); return }
+                guard project.documents.missingAudioPrompt == nil else { return }
+                self.openingObservers.removeValue(forKey: id)
+                Task { @MainActor in
+                    self.transitioning = true
+                    defer { self.transitioning = false }
+                    let error = project.documents.error
+                    _ = await project.setLocalPlaybackEnabled(false)
+                    project.projectAudio.prepareForClosing()
+                    guard let index = self.projects.firstIndex(where: { $0 === project }),
+                          let previous = self.projects.firstIndex(where: { $0 === fallback }) else { return }
+                    if self.active === project { self.activate(previous) }
+                    self.projects.remove(at: index)
+                    if self.selected > index { self.selected -= 1 }
+                    self.publishTabs()
+                    fallback.documents.error = error
+                    self.error = error
+                }
+            }
+        }
+        project.documents.$busy.dropFirst().sink { busy in if !busy { check() } }.store(in: &subscriptions)
+        project.documents.$missingAudioPrompt.dropFirst().sink { _ in check() }.store(in: &subscriptions)
+        openingObservers[id] = subscriptions
+    }
+    func close(_ id: UUID) async {
+        guard canChange, let index = projects.firstIndex(where: { $0.remoteProjectTabID == id }) else { return }
+        activate(index); transitioning = true
+        defer { transitioning = false }
+        let project = projects[index]
+        guard await project.closeNativeProject(resumeAudio: projects.count == 1) else { error = project.documents.error; return }
+        if projects.count > 1 {
+            activate(index == 0 ? 1 : index - 1)
+            projects.remove(at: index)
+            if selected > index { selected -= 1 }
+            publishTabs()
+        }
+    }
+    func leave() async -> Bool {
+        guard canChange else { return false }
+        transitioning = true
+        defer { transitioning = false }
+        // Save every project before closing any, so a failed save preserves all tabs.
+        do {
+            for project in projects where project.documents.ready {
+                try await project.show.saveForClosing()
+                try await project.documents.rememberProjectMedia()
+            }
+        } catch { active?.documents.error = error.localizedDescription; return false }
+        for index in projects.indices {
+            activate(index)
+            guard await projects[index].closeNativeProject(resumeAudio: false) else { return false }
+        }
+        activate(0); projects = [projects[0]]; publishTabs()
+        return true
+    }
+}
+
+@MainActor private struct NativeProjectTabBar: View {
+    @ObservedObject var tabs: NativeProjectTabs
+    @State private var closing: UUID?
+    var body: some View {
+        GeometryReader { geometry in
+            let count = max(1, tabs.projects.count)
+            let spacing = min(3.0, geometry.size.width / CGFloat(count))
+            let width = max(0, (geometry.size.width - spacing * CGFloat(count - 1)) / CGFloat(count))
+            HStack(spacing: spacing) {
+                ForEach(Array(tabs.projects.enumerated()), id: \.element.remoteProjectTabID) { index, project in
+                    HStack(spacing: 0) {
+                        Button { tabs.select(index) } label: {
+                            Text(project.documents.currentURL?.deletingPathExtension().lastPathComponent ?? project.show.snapshot.project.name)
+                                .font(.jarasSystem(size: 12, weight: .semibold))
+                                .lineLimit(1).truncationMode(.middle)
+                                .frame(maxWidth: .infinity).frame(height: 38)
+                                .contentShape(Rectangle())
+                        }.frame(minWidth: 0, maxWidth: .infinity)
+                        Button { closing = project.remoteProjectTabID } label: {
+                            Image(systemName: "xmark").font(.jarasSystem(size: 12))
+                                .frame(width: min(32, width * 0.35), height: 38).contentShape(Rectangle())
+                        }.accessibilityLabel("Close tab")
+                    }.buttonStyle(.plain).frame(width: width)
+                        .foregroundStyle(index == tabs.selected ? Color.white : Color.white.opacity(0.6))
+                        .background(index == tabs.selected ? Color.white.opacity(0.12) : Color.white.opacity(0.04))
+                        .overlay(alignment: .bottom) {
+                            if index == tabs.selected { Rectangle().fill(Color.green).frame(height: 2) }
+                        }
+                }
+            }
+        }.frame(height: 38).padding(.horizontal, 6).background(Color.black.opacity(0.2))
+            .alert("Close tab", isPresented: Binding(get: { closing != nil }, set: { if !$0 { closing = nil } })) {
+                Button("Cancel", role: .cancel) { closing = nil }
+                Button("Save and close") { if let id = closing { closing = nil; Task { await tabs.close(id) } } }
+            } message: { Text("The project will be saved before closing.") }
+    }
 }
 
 /// iPhone never constructs this view or a local audio container.
 @MainActor struct IpadNativeHome: View {
     @ObservedObject var bootstrap: Bootstrap
     @StateObject private var purchases = NativePurchaseStore.shared
+    @StateObject private var tabs = NativeProjectTabs.shared
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage("jaras.language") private var language = "en"
     @State private var native = false
@@ -22,9 +253,24 @@ extension UTType {
     @State private var pendingPackage: URL?
     var body: some View {
         Group {
-            if native, let container = bootstrap.container {
-                RootView(container: container, leaveNative: { leave(container) })
-                    .modifier(NativeTrialSession(show: container.show, purchases: purchases) { showingPurchase = true })
+            if native, let container = tabs.active ?? bootstrap.container {
+                VStack(spacing: 0) {
+                    if tabs.projects.count > 1 { NativeProjectTabBar(tabs: tabs) }
+                    RootView(container: container, leaveNative: { leave(container) })
+                        .id(ObjectIdentifier(container))
+                }
+                .modifier(NativeTrialSession(show: container.show, purchases: purchases) { showingPurchase = true })
+                .disabled(entering || tabs.transitioning)
+                .overlay {
+                    if entering { StartupView(progress: nil, stage: "Closing…") }
+                }
+                // Native controls commit their visual state in the same frame.
+                // Keep Remote transitions and the playback/display clocks separate.
+                .transaction { transaction in
+                    transaction.animation = nil
+                    transaction.disablesAnimations = true
+                }
+
             } else if starting {
                 StartupView(progress: nil, stage: "Iniciando…")
             } else {
@@ -34,11 +280,11 @@ extension UTType {
                         mode("Native", detail: "Play your projects directly on this iPad.", icon: "waveform", action: { enter() })
                         mode("Remote", detail: "Control or follow your PC’s session.", icon: "network", action: { remote = true })
                     }.frame(maxWidth: 760)
-                    if !purchases.unlocked, purchases.trialDaysRemaining > 0 {
-                        HStack {
-                            Text("Free trial: \(purchases.trialDaysRemaining) day(s) remaining")
-                            Button("Unlock Native mode") { showingPurchase = true }
-                        }.font(.callout).foregroundStyle(JarasTheme.green)
+                    if !purchases.unlocked {
+                        Button("Unlock Native mode") { showingPurchase = true }
+                            .buttonStyle(.bordered).controlSize(.large)
+                            .font(.jarasCallout).foregroundStyle(JarasTheme.green)
+                            .accessibilityIdentifier("catlive-home-unlock-native")
                     }
                     if entering { ProgressView() }
                     if !error.isEmpty { Text(LocalizedStringKey(error)).foregroundStyle(.red).multilineTextAlignment(.center) }
@@ -51,6 +297,9 @@ extension UTType {
             }
         }
         .preferredColorScheme(.dark).environment(\.locale, Locale(identifier: language))
+        .alert("Project", isPresented: Binding(get: { !tabs.error.isEmpty }, set: { if !$0 { tabs.error = "" } })) {
+            Button("OK", role: .cancel) { tabs.error = "" }
+        } message: { Text(LocalizedStringKey(tabs.error)) }
         .fullScreenCover(isPresented: $remote) { DAWRemoteClientView().environment(\.locale, Locale(identifier: language)) }
         .fullScreenCover(isPresented: $showingPurchase) {
             IpadNativePurchaseView(store: purchases, close: { showingPurchase = false; pendingPackage = nil }, openNative: {
@@ -72,9 +321,9 @@ extension UTType {
     private func mode(_ name: String, detail: String, icon: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             VStack(alignment: .leading, spacing: 18) {
-                Image(systemName: icon).font(.system(size: 34)).foregroundStyle(JarasTheme.green)
-                Text(LocalizedStringKey(name)).font(.title2.bold())
-                Text(LocalizedStringKey(detail)).font(.body).foregroundStyle(JarasTheme.secondary)
+                Image(systemName: icon).font(.jarasSystem(size: 34)).foregroundStyle(JarasTheme.green)
+                Text(LocalizedStringKey(name)).font(.jarasTitle2.bold())
+                Text(LocalizedStringKey(detail)).font(.jarasBody).foregroundStyle(JarasTheme.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }.padding(26).frame(maxWidth: .infinity, minHeight: 195, alignment: .leading)
                 .background(RemoteSurface.panel)
@@ -95,8 +344,9 @@ extension UTType {
             }
             if bootstrap.container == nil { bootstrap.retry() }
             guard let container = bootstrap.container else { error = bootstrap.error ?? "Could not open Native mode."; return }
+            tabs.install(container)
             guard await container.setLocalPlaybackEnabled(true) else { error = container.show.message; return }
-            JarasMobileApplicationDelegate.setObserverOrientation(false)
+            JarasMobileApplicationDelegate.setLandscapeOnly(true)
             native = true; starting = false
             if let package { container.documents.importPortablePackage(package) }
         }
@@ -106,9 +356,34 @@ extension UTType {
         entering = true
         Task {
             defer { entering = false }
-            guard await container.closeNativeProject(resumeAudio: false) else { error = container.documents.error; return }
+            guard await tabs.leave() else { error = tabs.active?.documents.error ?? container.documents.error; return }
             native = false
+            JarasMobileApplicationDelegate.setLandscapeOnly(false)
         }
+    }
+}
+
+/// The native browser header shows the verified access instead of a generic mode title.
+struct NativeAccessTitle: View {
+    @ObservedObject private var purchases = NativePurchaseStore.shared
+    var body: some View {
+        Group {
+            if purchases.unlocked {
+                Text("Lifetime")
+            } else if purchases.canAccessNative && purchases.trialDaysRemaining > 0 {
+                if purchases.trialDaysRemaining == 1 {
+                    Text("1 day remaining — Free trial")
+                } else {
+                    Text("\(purchases.trialDaysRemaining) days remaining — Free trial")
+                }
+            } else if purchases.checked && purchases.trialExpiresAt != nil {
+                Text("Free trial ended")
+            } else {
+                Text("Native")
+            }
+        }
+        .font(.jarasHeadline).foregroundStyle(JarasTheme.green)
+        .accessibilityIdentifier("catlive-native-access-status")
     }
 }
 
@@ -134,16 +409,24 @@ private struct NativeTrialSession: ViewModifier {
 /// Hold security-scoped folder access through scan, ordering and media copy.
 private struct NativeProjectPicker: UIViewControllerRepresentable {
     let kind: ProjectDocuments.NativePicker
+    var directory: URL? = nil
     let picked: ([URL]) -> Void
     let cancelled: () -> Void
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
-        let types: [UTType] = (kind == .stems || kind == .storage || kind == .packageDestination) ? [.folder] : kind == .trackAudio ? [.mp3, .wav, .aiff] : kind == .trackMedia ? [.image, .movie] : [.catLivePackage, .zip]
+        let reaper = UTType(filenameExtension: "rpp") ?? UTType(importedAs: "com.cockos.reaper.project", conformingTo: .data)
+        let logic = UTType(filenameExtension: "logicx") ?? UTType(importedAs: "com.apple.logicx.project", conformingTo: .package)
+        let types: [UTType] = (kind == .stems || kind == .storage || kind == .packageDestination || kind == .temporaryDestination || kind == .projectFolder) ? [.folder] : kind == .trackAudio ? [.audio, .movie, .image] : kind == .trackMedia ? [.image, .movie] : kind == .reaper ? [reaper] : kind == .logic ? [logic, .package] : kind == .projectFile ? [.catLiveProject] : kind == .project ? [.catLiveProject, .catLivePackage, .zip, reaper, logic] : [.catLivePackage, .zip]
         let picker = UIDocumentPickerViewController(forOpeningContentTypes: types, asCopy: kind == .trackAudio || kind == .trackMedia)
+        picker.directoryURL = directory
         picker.allowsMultipleSelection = kind == .stems
         if kind == .stems { picker.title = JarasLocalization.string("Choose the folder containing your song folders") }
         if kind == .storage { picker.title = JarasLocalization.string("Choose an external folder for CatLive projects") }
-        if kind == .package { picker.title = JarasLocalization.string("Choose a CatLive project") }
+        if kind == .package || kind == .project { picker.title = JarasLocalization.string("Choose a CatLive project") }
+        if kind == .projectFolder {
+            picker.title = JarasLocalization.string("Choose the folder containing the selected project and its media.")
+        }
+        if kind == .temporaryDestination { picker.title = JarasLocalization.string("Save Project") }
         if kind == .packageDestination { picker.title = JarasLocalization.string("Choose a folder for the imported project") }
         picker.delegate = context.coordinator
         return picker
@@ -179,29 +462,143 @@ private final class NativeProjectPickerSelection {
     deinit { for url in scopedURLs { url.stopAccessingSecurityScopedResource() } }
 }
 
+/// UIKit may dismiss Files before invoking its delegate. Keep the result in a
+/// reference object and deliver it once both events have arrived, in either order.
+@MainActor private final class NativeProjectPickerHandoff: ObservableObject {
+    enum Result {
+        case selected(NativeProjectPickerSelection)
+        case cancelled(ProjectDocuments.NativePicker)
+    }
+    private var kind: ProjectDocuments.NativePicker?
+    private var result: Result?
+    private var dismissed = false
+    private var delivered = false
+    func begin(_ kind: ProjectDocuments.NativePicker) {
+        if self.kind == kind && !delivered { return }
+        self.kind = kind; result = nil; dismissed = false; delivered = false
+    }
+    func selected(_ urls: [URL], kind: ProjectDocuments.NativePicker) -> Result? {
+        guard self.kind == kind, result == nil, !delivered else { return nil }
+        // Retain security-scoped access before Files releases its own grant.
+        result = .selected(NativeProjectPickerSelection(urls: urls, kind: kind))
+        return takeIfReady()
+    }
+    func cancelled(_ kind: ProjectDocuments.NativePicker) -> Result? {
+        guard self.kind == kind, result == nil, !delivered else { return nil }
+        result = .cancelled(kind)
+        return takeIfReady()
+    }
+    func didDismiss() -> Result? { dismissed = true; return takeIfReady() }
+    private func takeIfReady() -> Result? {
+        guard dismissed, !delivered, let result else { return nil }
+        delivered = true; self.result = nil
+        return result
+    }
+}
+
+/// Keep the import intent alive while its confirmation closes. SwiftUI's
+/// alert(item:) clears the binding before its button action on some iPadOS
+/// versions, and presenting Files during that dismissal can lose the sheet.
+private struct NativePackageImportConfirmation: UIViewControllerRepresentable {
+    let prompt: PortableProjectImportPrompt?
+    let confirmed: (PortableProjectImportPrompt) -> Void
+    let cancelled: () -> Void
+
+    func makeUIViewController(context: Context) -> Controller { Controller() }
+    func updateUIViewController(_ controller: Controller, context: Context) {
+        controller.update(prompt: prompt, confirmed: confirmed, cancelled: cancelled)
+    }
+
+    final class Controller: UIViewController {
+        private var prompt: PortableProjectImportPrompt?
+        private var activePrompt: PortableProjectImportPrompt?
+        private var alert: UIAlertController?
+        private var finishing = false
+        private var waitingForDismissal = false
+        private var confirmed: (PortableProjectImportPrompt) -> Void = { _ in }
+        private var cancelled: () -> Void = {}
+
+        override func viewDidAppear(_ animated: Bool) {
+            super.viewDidAppear(animated)
+            presentIfReady()
+        }
+
+        func update(prompt: PortableProjectImportPrompt?, confirmed: @escaping (PortableProjectImportPrompt) -> Void,
+                    cancelled: @escaping () -> Void) {
+            self.prompt = prompt; self.confirmed = confirmed; self.cancelled = cancelled
+            if let alert, activePrompt != prompt {
+                self.alert = nil; activePrompt = nil; finishing = true
+                alert.dismiss(animated: true) { [weak self] in
+                    self?.finishing = false
+                    self?.presentIfReady()
+                }
+            } else { presentIfReady() }
+        }
+
+        private func presentIfReady() {
+            guard let prompt, alert == nil, !finishing, !waitingForDismissal,
+                  let root = viewIfLoaded?.window?.rootViewController else { return }
+            // A destination prompt may arrive as Files finishes closing. Wait
+            // for that actual transition, rather than guessing a delay.
+            if let presented = root.presentedViewController {
+                guard presented.isBeingDismissed, let transition = presented.transitionCoordinator else { return }
+                waitingForDismissal = true
+                let scheduled = transition.animate(alongsideTransition: nil) { [weak self] _ in
+                    self?.waitingForDismissal = false
+                    self?.presentIfReady()
+                }
+                if !scheduled { waitingForDismissal = false }
+                return
+            }
+            let alert = UIAlertController(title: JarasLocalization.string(prompt.title),
+                                          message: JarasLocalization.string(prompt.message), preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: JarasLocalization.string(prompt.action), style: .default) { [weak self, weak alert] _ in
+                if let alert { self?.finish(alert, prompt: prompt, accepted: true) }
+            })
+            alert.addAction(UIAlertAction(title: JarasLocalization.string("Cancel"), style: .cancel) { [weak self, weak alert] _ in
+                if let alert { self?.finish(alert, prompt: prompt, accepted: false) }
+            })
+            self.alert = alert; activePrompt = prompt
+            root.present(alert, animated: true)
+        }
+
+        private func finish(_ alert: UIAlertController, prompt: PortableProjectImportPrompt, accepted: Bool) {
+            guard self.alert === alert, !finishing else { return }
+            self.alert = nil; activePrompt = nil; finishing = true
+            alert.dismiss(animated: true) { [weak self] in
+                guard let self else { return }
+                finishing = false
+                guard self.prompt == prompt else { presentIfReady(); return }
+                if accepted { confirmed(prompt) } else { cancelled() }
+            }
+        }
+    }
+}
+
 struct NativeProjectPresentation: ViewModifier {
     @ObservedObject var documents: ProjectDocuments
-    @State private var pickerSelection: NativeProjectPickerSelection?
-    @State private var presentedPicker: ProjectDocuments.NativePicker?
+    @StateObject private var pickerHandoff = NativeProjectPickerHandoff()
     func body(content: Content) -> some View {
         content
             .sheet(item: $documents.nativePicker, onDismiss: pickerDismissed) { kind in
-                NativeProjectPicker(kind: kind, picked: { urls in
-                    guard documents.nativePicker == kind, pickerSelection == nil else { return }
-                    pickerSelection = NativeProjectPickerSelection(urls: urls, kind: kind)
+                NativeProjectPicker(kind: kind, directory: documents.nativePickerDirectory, picked: { urls in
+                    let result = pickerHandoff.selected(urls, kind: kind)
                     documents.nativePicker = nil
-                }, cancelled: { if documents.nativePicker == kind { documents.nativePicker = nil } })
+                    deliver(result)
+                }, cancelled: {
+                    let result = pickerHandoff.cancelled(kind)
+                    documents.nativePicker = nil
+                    deliver(result)
+                })
                     // UIKit's Files controller handles its own keyboard and
                     // rename popovers; a second SwiftUI resize can steal focus.
                     .ignoresSafeArea(.keyboard, edges: .bottom)
-                    .onAppear { presentedPicker = kind }
+                    .interactiveDismissDisabled()
+                    .onAppear { pickerHandoff.begin(kind) }
             }
-            .alert(item: $documents.nativePackagePrompt) { prompt in
-                Alert(title: Text(LocalizedStringKey(prompt.title)),
-                      message: Text(LocalizedStringKey(prompt.message)),
-                      primaryButton: .default(Text(LocalizedStringKey(prompt.action))) { documents.continueNativePackageImport(prompt) },
-                      secondaryButton: .cancel(Text("Cancel")) { documents.cancelNativePackageImport() })
-            }
+            .background(NativePackageImportConfirmation(prompt: documents.nativePackagePrompt,
+                confirmed: documents.continueNativePackageImport, cancelled: documents.cancelNativePackageImport)
+                .frame(width: 0, height: 0))
             .alert("Import", isPresented: Binding(get: { !documents.audioImportError.isEmpty }, set: { if !$0 { documents.audioImportError = "" } })) {
                 Button("OK") { documents.audioImportError = "" }
             } message: { Text(verbatim: documents.audioImportError) }
@@ -212,12 +609,15 @@ struct NativeProjectPresentation: ViewModifier {
             }
     }
     private func pickerDismissed() {
-        let selection = pickerSelection, kind = presentedPicker
-        pickerSelection = nil; presentedPicker = nil
-        if let selection {
+        deliver(pickerHandoff.didDismiss())
+    }
+    private func deliver(_ result: NativeProjectPickerHandoff.Result?) {
+        switch result {
+        case .selected(let selection):
             documents.receiveNativeFiles(selection.urls, kind: selection.kind)
-        } else if let kind {
+        case .cancelled(let kind):
             documents.cancelNativePicker(kind: kind)
+        case nil: break
         }
     }
 }

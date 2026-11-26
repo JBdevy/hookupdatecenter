@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 project(CatLiveWindows VERSION 1.1.0 LANGUAGES C CXX)
-set(CATLIVE_VERSION "1.01" CACHE STRING "Public CatLive version (X.XX)")
+set(CATLIVE_VERSION "2.00" CACHE STRING "Public CatLive version (X.XX)")
 if(NOT CATLIVE_VERSION MATCHES "^[0-9]+\\.[0-9][0-9]$")
     message(FATAL_ERROR "CATLIVE_VERSION must use X.XX format.")
 endif()
@@ -13,14 +13,19 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 set(CATLIVEROOT "${CMAKE_CURRENT_SOURCE_DIR}/..")
 set(CATLIVE_JUCE_SOURCE "" CACHE PATH "Existing JUCE 8.0.15 source directory")
-if(CATLIVE_JUCE_SOURCE)
-    add_subdirectory("${CATLIVE_JUCE_SOURCE}" "${CMAKE_BINARY_DIR}/juce")
-else()
+if(NOT CATLIVE_JUCE_SOURCE)
     include(FetchContent)
     FetchContent_Declare(JUCE GIT_REPOSITORY https://github.com/juce-framework/JUCE.git
-        GIT_TAG 8.0.15 GIT_SHALLOW TRUE)
+        GIT_TAG 8.0.15 GIT_SHALLOW TRUE SOURCE_SUBDIR catlive-download-only)
     FetchContent_MakeAvailable(JUCE)
+    set(CATLIVE_JUCE_SOURCE "${juce_SOURCE_DIR}")
 endif()
+# Isolate the presentation fix from the user's shared JUCE checkout/cache.
+include(cmake/Direct2DFramePacing.cmake)
+catlive_prepare_juce("${CATLIVE_JUCE_SOURCE}" CATLIVE_PATCHED_JUCE)
+include(cmake/WASAPILoopback.cmake)
+catlive_prepare_loopback("${CATLIVE_JUCE_SOURCE}" "${CATLIVE_PATCHED_JUCE}")
+add_subdirectory("${CATLIVE_PATCHED_JUCE}" "${CMAKE_BINARY_DIR}/juce-framepaced")
 add_library(CatLiveCore STATIC "${CATLIVEROOT}/Core/Project/Models.cpp"
     "${CATLIVEROOT}/Core/Transport/Engine.cpp" "${CATLIVEROOT}/Core/Import/TrackTaxonomy.cpp")
 target_include_directories(CatLiveCore PUBLIC "${CATLIVEROOT}/Core")
@@ -28,41 +33,235 @@ target_compile_options(CatLiveCore PRIVATE /utf-8 /W4)
 add_library(CatLiveLoudness STATIC "${CATLIVEROOT}/Core/ThirdParty/EBUR128/ebur128.c")
 target_include_directories(CatLiveLoudness PRIVATE "${CATLIVEROOT}/Core/ThirdParty/EBUR128/queue")
 target_compile_definitions(CatLiveLoudness PRIVATE _USE_MATH_DEFINES)
+# Keep LAME replaceable as a DLL; no proprietary Media Foundation MP3 restrictions.
+set(CATLIVE_LAME_ROOT "${CATLIVEROOT}/Core/ThirdParty/Lame")
+set(CATLIVE_LAME_SOURCES bitstream encoder fft gain_analysis id3tag lame newmdct presets
+    psymodel quantize quantize_pvt reservoir set_get tables takehiro util vbrquantize VbrTag version)
+set(CATLIVE_LAME_FILES)
+foreach(name IN LISTS CATLIVE_LAME_SOURCES)
+    list(APPEND CATLIVE_LAME_FILES "${CATLIVE_LAME_ROOT}/${name}.c")
+endforeach()
+add_library(CatLiveLame SHARED ${CATLIVE_LAME_FILES})
+set_target_properties(CatLiveLame PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
+target_include_directories(CatLiveLame PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty/Lame" "${CATLIVE_LAME_ROOT}")
+target_compile_definitions(CatLiveLame PRIVATE HAVE_CONFIG_H _CRT_SECURE_NO_WARNINGS)
+target_compile_options(CatLiveLame PRIVATE /utf-8)
+# Run exactly the same pure import rules as JavaScriptCore on Apple platforms.
+include(FetchContent)
+FetchContent_Declare(catlive_quickjs
+    GIT_REPOSITORY https://github.com/quickjs-ng/quickjs.git
+    GIT_TAG 6a9fe9af5ca0bf7c49ae697edef44864272317d1)
+FetchContent_GetProperties(catlive_quickjs)
+if(NOT catlive_quickjs_POPULATED)
+    FetchContent_Populate(catlive_quickjs)
+    add_subdirectory("${catlive_quickjs_SOURCE_DIR}" "${catlive_quickjs_BINARY_DIR}" EXCLUDE_FROM_ALL)
+endif()
 juce_add_binary_data(CatLiveAssets SOURCES
+    Assets/HookImportRules.js
     Assets/Localization/English.json Assets/Localization/Portuguese.json
     Assets/Localization/StageDefaults.json Assets/Localization/StageFields.json
-    Assets/Localization/InstrumentCatalog.json
+    Assets/Localization/InstrumentCatalog.json Assets/Teleprompter.html
+    Assets/NoteEmoji/keycap_23.png
+    Assets/NoteEmoji/keycap_2a.png
+    Assets/NoteEmoji/keycap_30.png
+    Assets/NoteEmoji/keycap_31.png
+    Assets/NoteEmoji/keycap_32.png
+    Assets/NoteEmoji/keycap_33.png
+    Assets/NoteEmoji/keycap_34.png
+    Assets/NoteEmoji/keycap_35.png
+    Assets/NoteEmoji/keycap_36.png
+    Assets/NoteEmoji/keycap_37.png
+    Assets/NoteEmoji/keycap_38.png
+    Assets/NoteEmoji/keycap_39.png
     "${CATLIVEROOT}/Apple/Resources/Click.mp3"
-    Assets/Fonts/Figtree-Regular.ttf Assets/Fonts/Figtree-Medium.ttf Assets/Fonts/Figtree-SemiBold.ttf
-    Assets/Fonts/Figtree-Bold.ttf Assets/Fonts/Figtree-BoldItalic.ttf
+    "${CATLIVEROOT}/Apple/Resources/StartupSound.wav"
+    "${CATLIVEROOT}/Resources/Fonts/Inter/Inter-Regular.ttf"
+    "${CATLIVEROOT}/Resources/Fonts/Inter/Inter-Medium.ttf"
+    "${CATLIVEROOT}/Resources/Fonts/Inter/Inter-SemiBold.ttf"
+    "${CATLIVEROOT}/Resources/Fonts/Inter/Inter-Bold.ttf"
+    "${CATLIVEROOT}/Resources/Fonts/Inter/Inter-BoldItalic.ttf"
+    "${CATLIVEROOT}/Resources/Fonts/Inter/Setlist/ArchivoBlack-Regular.ttf"
+    "${CATLIVEROOT}/Resources/Fonts/Inter/Setlist/Bungee-Regular.ttf"
+    "${CATLIVEROOT}/Resources/Fonts/Inter/Setlist/Inter-Black.ttf"
+    "${CATLIVEROOT}/Resources/Fonts/Inter/Setlist/Inter-ExtraBold.ttf"
     "${CATLIVEROOT}/Apple/Assets.xcassets/CatLiveSplash.imageset/CatLiveSplash.png"
     "${CATLIVEROOT}/Apple/Assets.xcassets/CatLiveIcon.appiconset/icon-256@1x.png")
 juce_add_gui_app(CatLive PRODUCT_NAME "CatLive" COMPANY_NAME "Hook Developer"
     BUNDLE_ID "com.hookdeveloper.catlive" VERSION "${CATLIVE_BINARY_VERSION}"
     ICON_BIG "${CATLIVEROOT}/Apple/Assets.xcassets/CatLiveIcon.appiconset/icon-256@1x.png")
 juce_generate_juce_header(CatLive)
+# JUCE 8.0.15's resource rule only depends on its icon. Track Info.txt too,
+# otherwise incremental version changes leave FileVersion/ProductVersion stale.
+get_target_property(catlive_generated_sources CatLive JUCE_GENERATED_SOURCES_DIRECTORY)
+get_target_property(catlive_info_file CatLive JUCE_INFO_FILE)
+add_custom_command(OUTPUT "${catlive_generated_sources}/CatLive_resources.rc" APPEND
+    DEPENDS "${catlive_info_file}")
+add_library(CatLiveVST3 STATIC "${CATLIVEROOT}/WindowsNative/Source/VST3Host.cpp"
+    "${CATLIVEROOT}/Core/ThirdParty/VST3/pluginterfaces/base/funknown.cpp"
+    "${CATLIVEROOT}/Core/ThirdParty/VST3/pluginterfaces/base/ustring.cpp"
+    "${CATLIVEROOT}/Core/ThirdParty/VST3/pluginterfaces/base/coreiids.cpp")
+target_include_directories(CatLiveVST3 PUBLIC "${CATLIVEROOT}/WindowsNative/Source" PRIVATE "${CATLIVEROOT}/Core/ThirdParty/VST3")
+target_compile_definitions(CatLiveVST3 PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+target_compile_options(CatLiveVST3 PRIVATE /utf-8)
+target_link_libraries(CatLiveVST3 PRIVATE ole32 user32)
+add_executable(CatLiveVST3Probe "${CATLIVEROOT}/WindowsNative/Tests/VST3Probe.cpp")
+target_include_directories(CatLiveVST3Probe PRIVATE "${CATLIVEROOT}/WindowsNative/ThirdParty")
+target_link_libraries(CatLiveVST3Probe PRIVATE CatLiveVST3 dbghelp)
+add_dependencies(CatLive CatLiveVST3Probe)
+add_custom_command(TARGET CatLive POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    "$<TARGET_FILE:CatLiveVST3Probe>" "$<TARGET_FILE_DIR:CatLive>/CatLiveVST3Probe.exe")
+install(TARGETS CatLiveVST3Probe RUNTIME DESTINATION .)
+add_custom_command(TARGET CatLive POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    "${CATLIVEROOT}/Core/ThirdParty/VST3/VST3-LICENSE.txt" "$<TARGET_FILE_DIR:CatLive>/VST3-LICENSE.txt")
+install(FILES "${CATLIVEROOT}/Core/ThirdParty/VST3/VST3-LICENSE.txt" DESTINATION .)
+set(CATLIVE_APP_OUTPUT_DIRECTORY "" CACHE PATH "Optional application output directory for local validation builds")
+if(CATLIVE_APP_OUTPUT_DIRECTORY)
+    set_target_properties(CatLive PROPERTIES RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CATLIVE_APP_OUTPUT_DIRECTORY}")
+endif()
 target_sources(CatLive PRIVATE Source/Main.cpp Source/Session.cpp Source/ProjectCodec.cpp Source/ProjectBrowser.cpp
+    Source/NativeAudioDeviceHost.cpp
     Source/ProjectMigration.cpp Source/LogicProjectImporter.cpp Source/Typography.cpp Source/AdvancedPanel.cpp
-    Source/AudioEngine.cpp Source/Instrument.cpp Source/Projection.cpp Source/NativeFX.cpp Source/Lighting.cpp Source/Auth.cpp Source/Workspace.cpp Source/Tests.cpp Source/MP3Writer.cpp
+    Source/AudioEngine.cpp Source/Instrument.cpp Source/Projection.cpp Source/native_video_decoder_ffmpeg.cpp Source/NativeFX.cpp Source/Lighting.cpp Source/Auth.cpp Source/Workspace.cpp Source/Tests.cpp Source/MP3Writer.cpp Source/AudioFormats.cpp Source/MediaSource.cpp
+    "${CATLIVEROOT}/WindowsNative/Source/AudioFile.cpp"
+    "${CATLIVEROOT}/WindowsNative/Source/StemSeparator.cpp"
+    ThirdParty/QRCode/qrcodegen.cpp
     ThirdParty/Monocypher/monocypher.c ThirdParty/Monocypher/monocypher-ed25519.c)
+option(CATLIVE_NATIVE_DEVICE_HOST "Use the CatLive native WASAPI/ASIO device host" OFF)
+set(CATLIVE_ASIO_SDK "" CACHE PATH "Externally supplied Steinberg ASIO SDK root")
+if(CATLIVE_NATIVE_DEVICE_HOST)
+    if(NOT EXISTS "${CATLIVE_ASIO_SDK}/common/iasiodrv.h")
+        message(FATAL_ERROR "Native device builds require CATLIVE_ASIO_SDK; ASIO must remain available.")
+    endif()
+    add_library(CatLiveDeviceIO STATIC NativeAudio/WasapiDevice.cpp NativeAudio/AsioDevice.cpp
+        NativeAudio/ClockedDuplexDevice.cpp NativeAudio/CallbackHub.cpp)
+    target_compile_features(CatLiveDeviceIO PRIVATE cxx_std_20)
+    target_include_directories(CatLiveDeviceIO PRIVATE "${CATLIVE_ASIO_SDK}/common")
+    target_compile_definitions(CatLiveDeviceIO PRIVATE CATLIVE_HAS_ASIO_SDK=1 NOMINMAX WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0A00)
+    target_compile_options(CatLiveDeviceIO PRIVATE /utf-8 /W4)
+    target_link_libraries(CatLiveDeviceIO PRIVATE avrt ole32 uuid propsys winmm advapi32)
+    target_link_libraries(CatLive PRIVATE CatLiveDeviceIO)
+    set_source_files_properties(Source/NativeAudioDeviceHost.cpp PROPERTIES COMPILE_OPTIONS "/std:c++20")
+    target_compile_definitions(CatLive PRIVATE CATLIVE_NATIVE_DEVICE_HOST=1)
+else()
+    target_compile_definitions(CatLive PRIVATE CATLIVE_NATIVE_DEVICE_HOST=0)
+endif()
+option(CATLIVE_NATIVE_FRONTEND "Build the optional --native-ui Windows presentation" ON)
+option(CATLIVE_IMGUI_FRONTEND "Build the Win32/Dear ImGui/DirectX Windows presentation" ON)
+if(CATLIVE_IMGUI_FRONTEND)
+    include(cmake/ImGuiFrontend.cmake)
+endif()
+if(CATLIVE_NATIVE_FRONTEND OR CATLIVE_IMGUI_FRONTEND)
+    target_sources(CatLive PRIVATE Source/FrontendBridge.cpp)
+endif()
+if(CATLIVE_NATIVE_FRONTEND)
+    include(cmake/WebView2.cmake)
+    target_sources(CatLive PRIVATE Source/NativeFrontendHost.cpp)
+    target_link_libraries(CatLive PRIVATE CatLiveWebView2Loader)
+    target_compile_definitions(CatLive PRIVATE CATLIVE_NATIVE_FRONTEND=1)
+    add_custom_command(TARGET CatLive POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CATLIVEROOT}/WindowsNative/ui" "$<TARGET_FILE_DIR:CatLive>/native-ui"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:CatLive>/native-ui/fonts"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CATLIVEROOT}/Resources/Fonts/Inter" "$<TARGET_FILE_DIR:CatLive>/native-ui/fonts"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:CatLive>/Licenses/WebView2"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CATLIVE_WEBVIEW2_SDK}/LICENSE.txt" "${CATLIVE_WEBVIEW2_SDK}/NOTICE.txt" "$<TARGET_FILE_DIR:CatLive>/Licenses/WebView2")
+    install(DIRECTORY "${CATLIVEROOT}/WindowsNative/ui/" DESTINATION native-ui)
+    install(DIRECTORY "${CATLIVEROOT}/Resources/Fonts/Inter/" DESTINATION native-ui/fonts)
+    install(FILES "${CATLIVE_WEBVIEW2_SDK}/LICENSE.txt" "${CATLIVE_WEBVIEW2_SDK}/NOTICE.txt" DESTINATION Licenses/WebView2)
+    add_executable(NativeFrontendHostTests "${CATLIVEROOT}/WindowsNative/Tests/NativeFrontendHostTests.cpp" Source/NativeFrontendHost.cpp)
+    target_include_directories(NativeFrontendHostTests PRIVATE Source)
+    target_compile_definitions(NativeFrontendHostTests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0A00)
+    target_compile_options(NativeFrontendHostTests PRIVATE /utf-8)
+    target_link_libraries(NativeFrontendHostTests PRIVATE CatLiveWebView2Loader)
+    # WebView2 controllers require an interactive desktop; CI services and SSH
+    # sessions deliberately do not run this window test as part of headless CTest.
+    option(CATLIVE_FRONTEND_INTERACTIVE_TESTS "Run real HWND/WebView2 tests in an interactive Windows desktop" OFF)
+    if(CATLIVE_FRONTEND_INTERACTIVE_TESTS)
+        add_test(NAME NativeFrontendHostTests COMMAND NativeFrontendHostTests)
+        set_tests_properties(NativeFrontendHostTests PROPERTIES TIMEOUT 30)
+    endif()
+endif()
 target_include_directories(CatLive PRIVATE ThirdParty/Monocypher)
-target_link_libraries(CatLive PRIVATE CatLiveCore CatLiveLoudness CatLiveAssets juce::juce_audio_utils
-    juce::juce_dsp juce::juce_osc juce::juce_video juce::juce_cryptography bcrypt crypt32 normaliz dnsapi mfplat mfreadwrite mfuuid mf
+find_path(CATLIVE_FFMPEG_INCLUDE_DIR NAMES libavcodec/avcodec.h
+    HINTS "${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty/ffmpeg-8.1.2")
+if(NOT CATLIVE_FFMPEG_INCLUDE_DIR)
+    include(FetchContent)
+    FetchContent_Declare(catlive_ffmpeg_headers
+        URL "https://ffmpeg.org/releases/ffmpeg-8.1.2.tar.xz"
+        URL_HASH SHA256=464beb5e7bf0c311e68b45ae2f04e9cc2af88851abb4082231742a74d97b524c
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+    FetchContent_GetProperties(catlive_ffmpeg_headers)
+    if(NOT catlive_ffmpeg_headers_POPULATED)
+        FetchContent_MakeAvailable(catlive_ffmpeg_headers)
+    endif()
+    set(CATLIVE_FFMPEG_INCLUDE_DIR "${catlive_ffmpeg_headers_SOURCE_DIR}")
+endif()
+include(cmake/FFmpegHeaders.cmake)
+set(CATLIVE_FFMPEG_PUBLIC_HEADERS "${CMAKE_CURRENT_BINARY_DIR}/ffmpeg-include")
+catlive_prepare_ffmpeg_headers("${CATLIVE_FFMPEG_INCLUDE_DIR}" "${CATLIVE_FFMPEG_PUBLIC_HEADERS}")
+target_include_directories(CatLive PRIVATE ThirdParty/FFmpeg/include "${CATLIVE_FFMPEG_PUBLIC_HEADERS}")
+target_link_libraries(CatLive PRIVATE CatLiveCore CatLiveLoudness CatLiveLame CatLiveAssets CatLiveVST3 juce::juce_audio_utils
+    juce::juce_dsp juce::juce_osc juce::juce_cryptography d2d1 dwrite dcomp bcrypt crypt32 normaliz dnsapi iphlpapi comctl32 imm32 psapi mfplat mfreadwrite mfuuid mf d3d11 dxgi winmm msimg32 avrt icu
     juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
 target_compile_definitions(CatLive PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0
     JUCE_APPLICATION_NAME_STRING="CatLive" JUCE_APPLICATION_VERSION_STRING="${CATLIVE_VERSION}"
-    JUCE_ASIO=1 JUCE_WASAPI=1 JUCE_USE_MP3AUDIOFORMAT=1 JUCE_WIN_PER_MONITOR_DPI_AWARE=1
+    JUCE_ASIO=1 JUCE_WASAPI=1 JUCE_USE_WINRT_MIDI=1 JUCE_USE_MP3AUDIOFORMAT=1 JUCE_WIN_PER_MONITOR_DPI_AWARE=1
     JUCE_MODAL_LOOPS_PERMITTED=0 NOMINMAX WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0A00)
 target_compile_options(CatLive PRIVATE /utf-8 /bigobj)
+# Accelerate Signalsmith's existing FFT calculations without changing its
+# spectral preset or requiring AVX/AVX2 on older Windows x64 processors.
+add_library(CatLiveFFT STATIC ThirdParty/PFFFT/src/pffft.c ThirdParty/PFFFT/src/pffft_common.c)
+target_include_directories(CatLiveFFT PUBLIC ThirdParty/PFFFT/include PRIVATE ThirdParty/PFFFT/include/pffft)
+target_compile_definitions(CatLiveFFT PUBLIC PFFFT_STATIC_DEFINE=1)
+target_link_libraries(CatLive PRIVATE CatLiveFFT)
+target_compile_definitions(CatLive PRIVATE SIGNALSMITH_USE_PFFFT=1)
+add_custom_command(TARGET CatLive POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:CatLive>/Licenses/PFFFT"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty/PFFFT/LICENSE.txt" "$<TARGET_FILE_DIR:CatLive>/Licenses/PFFFT/LICENSE.txt")
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty/PFFFT/LICENSE.txt" DESTINATION Licenses/PFFFT)
 enable_testing()
-foreach(name Core PlaybackScope SmoothSeek MultiLoop RegionBoundaryOwnership RegionOnsetOwnership TempoOwnership Timecode ClickTrack)
+foreach(test IN ITEMS SharedItemBoundaryTests StopTransitionTests)
+    add_executable(${test} "${CATLIVEROOT}/Tests/Core/${test}.cpp")
+    target_compile_features(${test} PRIVATE cxx_std_17)
+    target_compile_options(${test} PRIVATE /UNDEBUG)
+    add_test(NAME ${test} COMMAND ${test})
+endforeach()
+foreach(mode Reference Batched)
+    add_executable(SignalsmithOutput${mode} "${CATLIVEROOT}/Tests/Apple/SignalsmithBatchOutputTests.cpp")
+    target_link_libraries(SignalsmithOutput${mode} PRIVATE CatLiveFFT)
+    if(mode STREQUAL Batched)
+        target_compile_definitions(SignalsmithOutput${mode} PRIVATE CATLIVE_SIGNALSMITH_BATCH_OUTPUT=1)
+    endif()
+endforeach()
+add_test(NAME SignalsmithOutputParity COMMAND "${CMAKE_COMMAND}"
+    "-DREFERENCE=$<TARGET_FILE:SignalsmithOutputReference>"
+    "-DBATCHED=$<TARGET_FILE:SignalsmithOutputBatched>"
+    "-DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/signalsmith-output-parity"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/SignalsmithOutputParity.cmake")
+add_executable(Direct2DTextTests "${CATLIVEROOT}/WindowsNative/Tests/Direct2DTextTests.cpp")
+target_compile_definitions(Direct2DTextTests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+target_compile_options(Direct2DTextTests PRIVATE /utf-8)
+target_link_libraries(Direct2DTextTests PRIVATE d3d11 dxgi d2d1 dwrite windowscodecs ole32)
+add_executable(SavePulseTests "${CATLIVEROOT}/WindowsNative/Tests/SavePulseTests.cpp")
+target_compile_definitions(SavePulseTests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+target_compile_options(SavePulseTests PRIVATE /utf-8)
+target_link_libraries(SavePulseTests PRIVATE d3d11 dxgi d2d1 dcomp dwmapi ole32)
+# Requires a usable Windows graphics adapter, but creates no visible window and
+# never takes keyboard focus. Run explicitly on the validation PC, not CI VMs.
+foreach(name ProjectSync Core PlaybackScope SmoothSeek MultiLoop RegionBoundaryOwnership RegionOnsetOwnership RegionArrangement RegionMovementCoverage ItemRateAndLoop TempoOwnership Timecode TimecodePlayback ClickTrack WindowsTimelineSnap WindowsMeterRepaint WindowsDrawingReuse WindowsTrackRowGeometry)
     add_executable(${name}Tests "${CATLIVEROOT}/Tests/Core/${name}Tests.cpp")
     target_link_libraries(${name}Tests PRIVATE CatLiveCore)
-    target_compile_options(${name}Tests PRIVATE /utf-8)
+    target_compile_options(${name}Tests PRIVATE /utf-8 /UNDEBUG)
     add_test(NAME ${name}Tests COMMAND ${name}Tests)
 endforeach()
+# Exercise the production native decoder, including exact MP3 seeking, in CI.
+add_executable(AudioFileTests "${CATLIVEROOT}/WindowsNative/Tests/AudioFileTests.cpp"
+    "${CATLIVEROOT}/WindowsNative/Source/AudioFile.cpp")
+target_compile_options(AudioFileTests PRIVATE /utf-8)
+add_test(NAME AudioFileTests COMMAND AudioFileTests "${CATLIVEROOT}/Apple/Resources/Click.mp3")
 add_test(NAME WindowsIntegration COMMAND CatLive --self-test "${CMAKE_BINARY_DIR}/test-results")
-set_tests_properties(WindowsIntegration PROPERTIES TIMEOUT 90)
+# The integration suite covers more than 440 cases, including real-time tails
+# and disk streaming. Keep a finite budget with headroom on shared CI runners.
+set_tests_properties(WindowsIntegration PROPERTIES TIMEOUT 300)
 find_program(CATLIVE_NODE node)
 if(CATLIVE_NODE)
     add_test(NAME IndependentDocumentCodec COMMAND "${CATLIVE_NODE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/verify-project-compatibility.cjs" "${CMAKE_BINARY_DIR}/test-results" "$<TARGET_FILE:CatLive>")
@@ -73,3 +272,69 @@ if(CATLIVE_NODE)
     set_tests_properties(DAWImportCompatibility PROPERTIES TIMEOUT 120)
 endif()
 install(TARGETS CatLive RUNTIME DESTINATION . RESOURCE DESTINATION .)
+
+# Offline SMK37 firmware installer. The helper and firmware are separate
+# programs; retain their notices and corresponding firmware source.
+add_custom_command(TARGET CatLive POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory "${CATLIVEROOT}/Resources/SMK37" "$<TARGET_FILE_DIR:CatLive>/SMK37"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/Resources/SMK37Tools" "$<TARGET_FILE_DIR:CatLive>/SMK37Tools")
+install(DIRECTORY "${CATLIVEROOT}/Resources/SMK37" DESTINATION .)
+install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/Resources/SMK37Tools" DESTINATION .)
+
+foreach(folder NativeSamples TrackIcons ControlIcons MIDIChords)
+    add_custom_command(TARGET CatLive POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CATLIVEROOT}/Resources/${folder}" "$<TARGET_FILE_DIR:CatLive>/${folder}")
+    install(DIRECTORY "${CATLIVEROOT}/Resources/${folder}" DESTINATION .)
+endforeach()
+
+# Category artwork is decoded once per open editor, never in the audio callback.
+foreach(category pianos upright electric keyboard organ strings guitar bass synth synthPad lead acordeon brass mallets drum user)
+    set(artwork "${CATLIVEROOT}/Apple/Assets.xcassets/InstrumentArtwork_${category}.imageset/${category}.png")
+    add_custom_command(TARGET CatLive POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:CatLive>/InstrumentInterfaces"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${artwork}" "$<TARGET_FILE_DIR:CatLive>/InstrumentInterfaces/${category}.png")
+    install(FILES "${artwork}" DESTINATION InstrumentInterfaces)
+endforeach()
+
+
+# Local validation output and installed product both carry the replaceable encoder,
+# license, exact upstream source and the build configuration needed to rebuild it.
+add_custom_command(TARGET CatLive POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:CatLiveLame>" "$<TARGET_FILE_DIR:CatLive>/CatLiveLame.dll"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:CatLive>/Licenses/LAME" "$<TARGET_FILE_DIR:CatLive>/Licenses/dr_libs"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CATLIVE_LAME_ROOT}/COPYING" "$<TARGET_FILE_DIR:CatLive>/Licenses/LAME/COPYING"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CATLIVE_LAME_ROOT}/lame-3.100-source.tar.gz" "$<TARGET_FILE_DIR:CatLive>/Licenses/LAME/lame-3.100-source.tar.gz"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty/Lame/config.h" "$<TARGET_FILE_DIR:CatLive>/Licenses/LAME/config.h"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty/Lame/BUILD.txt" "$<TARGET_FILE_DIR:CatLive>/Licenses/LAME/BUILD.txt"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CATLIVEROOT}/WindowsNative/ThirdParty/dr_libs/LICENSE" "$<TARGET_FILE_DIR:CatLive>/Licenses/dr_libs/LICENSE"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/THIRD-PARTY-NOTICES.txt" "$<TARGET_FILE_DIR:CatLive>/THIRD-PARTY-NOTICES.txt")
+install(TARGETS CatLiveLame RUNTIME DESTINATION .)
+install(FILES "${CATLIVE_LAME_ROOT}/COPYING" "${CATLIVE_LAME_ROOT}/lame-3.100-source.tar.gz"
+    "${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty/Lame/config.h" "${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty/Lame/BUILD.txt" DESTINATION Licenses/LAME)
+install(FILES "${CATLIVEROOT}/WindowsNative/ThirdParty/dr_libs/LICENSE" DESTINATION Licenses/dr_libs)
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/THIRD-PARTY-NOTICES.txt" DESTINATION .)
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/Assets/NoteEmoji/LICENSE-GRAPHICS.txt" DESTINATION Licenses/Twemoji)
+
+# CatStem DSP/protocol tests do not load a model or require physical audio.
+add_executable(CatStemCoreTests "${CATLIVEROOT}/WindowsNative/Tests/StemSeparatorCoreTests.cpp")
+target_compile_options(CatStemCoreTests PRIVATE /utf-8)
+add_test(NAME CatStemCoreTests COMMAND CatStemCoreTests)
+
+add_executable(CatStemProcessTests "${CATLIVEROOT}/WindowsNative/Tests/StemSeparatorProcessTests.cpp"
+    "${CATLIVEROOT}/WindowsNative/Source/StemSeparator.cpp")
+target_compile_definitions(CatStemProcessTests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0A00)
+target_compile_options(CatStemProcessTests PRIVATE /utf-8)
+
+# Real WASAPI hardware validation; deliberately opt-in (CI has no render endpoint).
+add_executable(LoopbackDeviceTests EXCLUDE_FROM_ALL Tests/LoopbackDeviceTests.cpp)
+target_link_libraries(LoopbackDeviceTests PRIVATE juce::juce_audio_devices juce::juce_audio_formats winmm)
+target_compile_definitions(LoopbackDeviceTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0
+    JUCE_WASAPI=1 JUCE_ASIO=0 JUCE_MODAL_LOOPS_PERMITTED=1 NOMINMAX WIN32_LEAN_AND_MEAN)
+target_compile_options(LoopbackDeviceTests PRIVATE /utf-8 /bigobj)
+
+target_link_libraries(CatLive PRIVATE qjs)
+install(FILES "${catlive_quickjs_SOURCE_DIR}/LICENSE" DESTINATION . RENAME QuickJS-LICENSE.txt)
+
+add_executable(LiveTempoEditGateTests "${CATLIVEROOT}/Tests/Core/LiveTempoEditGateTests.cpp")
+target_compile_features(LiveTempoEditGateTests PRIVATE cxx_std_17)
+add_test(NAME LiveTempoEditGateTests COMMAND LiveTempoEditGateTests)

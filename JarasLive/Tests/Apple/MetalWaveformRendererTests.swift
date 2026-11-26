@@ -53,6 +53,63 @@ func render(_ strokes: [MetalWaveformStroke], density: Float = 1, items: [MetalT
     return Pixels(bytes: pixels, width: texture.width, height: texture.height)
 }
 
+// Read actual GPU pixels, including a sparse flat sample segment: a fade must
+// reshape amplitude and invalidate presentation while reusing the PCM buffer.
+let flat = TimelineAudioWaveform.VertexBlock(channels: [[SIMD2<Float>(0, -1), SIMD2<Float>(100, -1)]],
+    start: 0, end: 101, step: 1, rate: 1, key: "fade-flat-pcm")
+var faded = MetalWaveformStroke(block: flat, channel: 0, scale: SIMD2(1, 32), translation: SIMD2(10, 64),
+    clip: item, color: SIMD4(1, 1, 1, 1), itemRect: item, lineWidth: 1,
+    fadeRange: SIMD4(10, 100, 50, 50), fadeShape: SIMD4(1, 0, 1, 0))
+let linearPixels = render([faded])
+precondition(linearPixels.maximumAlpha(35, 48) > 120 && linearPixels.maximumAlpha(85, 48) > 120,
+    "Linear fades reshape PCM amplitude at both ends")
+precondition(linearPixels.maximumAlpha(35, 32) == 0, "Unattenuated waveform must disappear inside the fade")
+let linearFrame = MetalWaveformFrame(size: size, strokes: [faded])
+let fadeUploads = engine.uploadedBufferCount
+faded.fadeShape = SIMD4(16, 1, 1.0 / 16.0, -1)
+let curvedPixels = render([faded])
+precondition(curvedPixels.maximumAlpha(35, 62) > 120 && curvedPixels.maximumAlpha(85, 34) > 120,
+    "Both fine controls reach the GPU envelope")
+precondition(!linearFrame.hasSameContent(as: MetalWaveformFrame(size: size, strokes: [faded])), "Fade edits invalidate presentation")
+precondition(engine.uploadedBufferCount == fadeUploads, "Dragging fades must reuse source audio vertices")
+print("METAL_WAVEFORM_FADE_IN_OUT_FINE_CURVES_AND_SPARSE_PCM_PIXELS_OK")
+
+let amplifiedPCM = TimelineAudioWaveform.VertexBlock(channels: [[
+    SIMD2<Float>(0, 0), SIMD2<Float>(20, -1), SIMD2<Float>(40, -1),
+    SIMD2<Float>(60, 1), SIMD2<Float>(80, 1), SIMD2<Float>(100, 0)
+]], start: 0, end: 101, step: 1, rate: 1, key: "amplified-pcm")
+let boundedStroke = MetalWaveformStroke(block: amplifiedPCM, channel: 0, scale: SIMD2(1, 80),
+    translation: SIMD2(10, 64), clip: CGRect(x: 10, y: 24, width: 108, height: 80),
+    color: SIMD4(repeating: 1), itemRect: item, lineWidth: 1, amplitudeBounds: SIMD2(25, 103))
+for density: Float in [1, 2] {
+    let pixels = render([boundedStroke], density: density)
+    precondition(pixels.maximumAlpha(Int(40 * density), Int(25 * density)) > 120,
+        "Amplified negative PCM keeps a visible contour at the top of its channel")
+    precondition(pixels.maximumAlpha(Int(80 * density), Int(103 * density)) > 120,
+        "Amplified positive PCM keeps a visible contour at the bottom of its channel")
+    precondition(pixels.maximumAlpha(Int(40 * density), Int(19 * density)) == 0)
+}
+print("METAL_AMPLIFIED_PCM_CONTOUR_STAYS_IN_CHANNEL_OK")
+
+// Per-channel pan changes presentation, retaining the original PCM buffers.
+let panBlock = TimelineAudioWaveform.VertexBlock(channels: [[SIMD2<Float>(0, -1), SIMD2<Float>(100, -1)],
+    [SIMD2<Float>(0, -1), SIMD2<Float>(100, -1)]], start: 0, end: 101, step: 1, rate: 1, key: "pan-stereo-pcm")
+func panStrokes(_ pan: Double) -> [MetalWaveformStroke] {
+    (0..<2).map { channel in
+        MetalWaveformStroke(block: panBlock, channel: channel,
+            scale: SIMD2(1, Float(20 * WaveformAmplitude.panGain(pan, channel: channel, channels: 2))),
+            translation: SIMD2(10, Float(40 + channel * 50)), clip: item, color: SIMD4(1,1,1,1), itemRect: item, lineWidth: 1)
+    }
+}
+let centerPan = render(panStrokes(0)), panUploads = engine.uploadedBufferCount
+let rightPan = render(panStrokes(1)), leftPan = render(panStrokes(-1)), halfPan = render(panStrokes(0.5))
+precondition(centerPan.maximumAlpha(60,20)>120 && centerPan.maximumAlpha(60,70)>120)
+precondition(rightPan.maximumAlpha(60,20)==0 && rightPan.maximumAlpha(60,40)>120 && rightPan.maximumAlpha(60,70)>120)
+precondition(leftPan.maximumAlpha(60,20)>120 && leftPan.maximumAlpha(60,70)==0 && leftPan.maximumAlpha(60,90)>120)
+precondition(halfPan.maximumAlpha(60,30)>120 && halfPan.maximumAlpha(60,70)>120)
+precondition(engine.uploadedBufferCount == panUploads, "Pan must reuse source waveform buffers")
+print("METAL_WAVEFORM_PAN_CHANNEL_ATTENUATION_WITHOUT_PCM_REUPLOAD_OK")
+
 func red(_ image: Pixels, _ x: Int, _ y: Int) -> Int { Int(image.bytes[(y * image.width + x) * 4 + 2]) }
 func green(_ image: Pixels, _ x: Int, _ y: Int) -> Int { Int(image.bytes[(y * image.width + x) * 4 + 1]) }
 var decoration = MetalTimelineItem(rect: CGRect(x: 10, y: 10, width: 100, height: 100),
@@ -61,7 +118,7 @@ var decoration = MetalTimelineItem(rect: CGRect(x: 10, y: 10, width: 100, height
 let bodyPixels = render([], items: [decoration])
 precondition(engine.lastEncodedItemCount == 1 && engine.lastEncodedStrokeCount == 0)
 precondition(red(bodyPixels, 50, 40) > red(bodyPixels, 50, 100), "GPU preserves vertical item gradient")
-precondition(red(bodyPixels, 50, 20) < red(bodyPixels, 50, 32), "item header has the original dark contrast band")
+precondition(abs(red(bodyPixels, 50, 20) - 72) <= 1 && red(bodyPixels, 50, 20) == green(bodyPixels, 50, 20), "item header is lighter gray, independent of track color")
 precondition(bodyPixels.alpha(3, 20) == 0 && bodyPixels.alpha(10, 10) < 140, "rounded item must not fill outside its bounds")
 precondition(green(bodyPixels, 10, 50) > 80, "selected/item border must remain visible")
 let noWave = MetalWaveformFrame(size: size, strokes: [], items: [decoration])
@@ -86,11 +143,96 @@ let farZoom = render([], items: [enormous])
 precondition(red(farZoom, 64, 50) == 255 && farZoom.alpha(64, 3) == 0, "extreme zoom draws only bounded visible geometry")
 print("METAL_ITEM_GRADIENT_HEADER_OUTLINE_NOTCH_RETINA_BATCH_AND_PRE_WAVEFORM_OK")
 
+// Selection remains distinct even when the track itself is bright green. The
+// dark backing separates the outline from both the item and the grid at 1x/2x.
+for density: Float in [1, 2] {
+    let selected = MetalTimelineItem(rect: CGRect(x: 10, y: 10, width: 100, height: 100),
+        topColor: SIMD4(0, 1, 0, 1), bottomColor: SIMD4(0, 1, 0, 1),
+        borderColor: SIMD4(128.0 / 255, 1, 156.0 / 255, 1),
+        cornerRadius: 3, borderWidth: 3, borderBackdropWidth: 5)
+    let pixels = render([], density: density, items: [selected])
+    let y = Int(60 * density)
+    precondition(green(pixels, Int(10 * density), y) > 240 && red(pixels, Int(10 * density), y) > 115,
+        "Selected item must have a bright, opaque outline")
+    precondition(green(pixels, Int(12 * density), y) < 170,
+        "Dark backing must separate the selected outline from a green item")
+    precondition(pixels.alpha(Int(6 * density), y) == 0 && green(pixels, Int(20 * density), y) == 255,
+        "Selection must stay bounded and leave the interior color unchanged")
+}
+print("METAL_SELECTION_OUTLINE_CONTRAST_ON_GREEN_AT_1X_AND_2X_OK")
+
 func waveform(scale: SIMD2<Float> = SIMD2(1, 32), translation: SIMD2<Float> = SIMD2(20, 50), channel: Int = 0,
               clip: CGRect = item, colour: SIMD4<Float> = SIMD4(0.7, 0.7, 0.7, 0.8)) -> MetalWaveformStroke {
     MetalWaveformStroke(block: block, channel: channel, scale: scale, translation: translation,
         clip: clip, color: colour, itemRect: item)
 }
+// Two sources may have the same start, span and LOD. Their derived envelopes
+// must retain source identity or the semantic GPU cache reuses the other audio.
+func envelopeFixture(_ name: String, _ level: Float) -> TimelineAudioWaveform.VertexBlock {
+    TimelineAudioWaveform.VertexBlock(channels: [[SIMD2(0, -level), SIMD2(3, level),
+        SIMD2(4, -level), SIMD2(7, level)]], start: 0, end: 8, step: 4, rate: 48000, key: name).rasterEnvelope
+}
+let loudEnvelope = envelopeFixture("different-source-loud", 0.8)
+let quietEnvelope = envelopeFixture("different-source-quiet", 0.1)
+precondition(loudEnvelope.key != quietEnvelope.key)
+func envelopeFrame(_ source: TimelineAudioWaveform.VertexBlock) -> MetalWaveformStroke {
+    MetalWaveformStroke(block: source, channel: 0, scale: SIMD2(10, 40), translation: SIMD2(20, 64),
+        clip: item, color: SIMD4(repeating: 1), itemRect: item)
+}
+let loudSource = render([envelopeFrame(loudEnvelope)])
+let quietSource = render([envelopeFrame(quietEnvelope)])
+precondition(loudSource.alpha(40, 40) > 200 && quietSource.alpha(40, 40) == 0,
+    "same-position source envelopes must never reuse another file's GPU pixels")
+precondition(render([envelopeFrame(loudEnvelope)]).bytes == loudSource.bytes)
+print("METAL_DERIVED_ENVELOPES_PRESERVE_SOURCE_IDENTITY_AND_GPU_PIXELS_OK")
+// At overview zoom, a transient shorter than a display pixel still reaches
+// its real amplitude. Fractional scroll translations move whole columns without
+// breathing, and adjacent source blocks share one peak-column partition.
+for density: Float in [1, 2] {
+    var points: [SIMD2<Float>] = []
+    for frame in stride(from: 0, to: 8192, by: 256) {
+        let level: Float = frame == 256 || frame == 4096 ? 0.8 : 0.1
+        points.append(SIMD2(Float(frame), -level))
+        points.append(SIMD2(Float(frame + 256), level))
+    }
+    let overview = TimelineAudioWaveform.VertexBlock(channels: [points], start: 0, end: 8192,
+        step: 256, rate: 48000, key: "subpixel-transients", isPeakEnvelope: true)
+    var totals: [Double] = []
+    for phase: Float in [0, 0.1, 0.25, 0.49, 0.75, 1] {
+        let stroke = MetalWaveformStroke(block: overview, channel: 0, scale: SIMD2(0.001, 40),
+            translation: SIMD2(20 + phase, 64), clip: item, color: SIMD4(repeating: 1), itemRect: item)
+        let pixels = render([stroke], density: density)
+        let x = Int(round((20 + phase) * density))
+        precondition(pixels.alpha(x, Int(34 * density)) > 240,
+            "A subpixel transient must retain its full peak in its output column")
+        totals.append(Double(stride(from: 3, to: pixels.bytes.count, by: 4).reduce(0) { $0 + Int(pixels.bytes[$1]) }))
+        precondition(engine.lastEncodedSegmentCount <= Int(ceil(9 * density)),
+            "Overview work must be bounded by physical columns, not source samples")
+    }
+    precondition((totals.max()! - totals.min()!) / totals.max()! < 0.001,
+        "Scrolling must not pulse the overview's peak coverage")
+}
+let coarseFallback = TimelineAudioWaveform.VertexBlock(channels: [[SIMD2<Float>(0, -0.5), SIMD2<Float>(65536, 0.5)]],
+    start: 0, end: 65536, step: 65536, rate: 48000, key: "zoomed-coarse-fallback", isPeakEnvelope: true)
+let coarseStroke = MetalWaveformStroke(block: coarseFallback, channel: 0, scale: SIMD2(1000, 40),
+    translation: SIMD2(-100000, 64), clip: item, color: SIMD4(repeating: 1), itemRect: item)
+_ = render([coarseStroke], density: 2)
+precondition(engine.lastEncodedSegmentCount < 225, "A zoomed coarse fallback must draw only visible pixel columns")
+print("METAL_OVERVIEW_SUBPIXEL_TRANSIENTS_KEEP_FULL_AMPLITUDE_AND_SCROLL_COVERAGE_OK")
+
+// Constant signed PCM envelopes test actual GPU pixels at known dBFS.
+for level: Float in [0.25, 0.5, pow(10, -1.4 / 20), 1] {
+    let source = envelopeFixture("calibration-\(level)", level)
+    let lane = CGRect(x: 10, y: 20, width: 108, height: 80)
+    let stroke = MetalWaveformStroke(block: source, channel: 0,
+        scale: SIMD2(10, Float(WaveformAmplitude.fullScale(channelHeight: lane.height))),
+        translation: SIMD2(20, 60), clip: lane, color: SIMD4(repeating: 1), itemRect: lane)
+    let pixels = render([stroke])
+    let rows = (20..<100).filter { pixels.alpha(40, $0) > 100 }
+    precondition(abs(Float(rows.count) - 79 * level) <= 2, "waveform must show absolute PCM amplitude, not twice its gain")
+    precondition(pixels.alpha(40, 19) == 0 && pixels.alpha(40, 100) == 0, "full scale remains inside its own lane")
+}
+print("METAL_WAVEFORM_ABSOLUTE_DBFS_CALIBRATION_OK")
 let original = render([waveform()])
 precondition(original.maximumAlpha(36, 26) > 180 && original.maximumAlpha(68, 74) > 180)
 precondition(original.maximumAlpha(36, 50) == 0, "do not replace actual samples by a synthetic centerline")
@@ -101,6 +243,11 @@ precondition(engine.uploadedBufferCount == uploads, "pan/zoom must reuse immutab
 let amplified = render([waveform(scale: SIMD2(1, 48))])
 precondition(amplified.maximumAlpha(36, 14) > 180 && amplified.maximumAlpha(68, 86) > 180)
 precondition(amplified.maximumAlpha(36, 26) == 0, "positive item gain must change displayed amplitude")
+let normalized = render([waveform(scale: SIMD2(1, 32 * Float(WaveformAmplitude.gain(item: 1, normalization: 1.5))))])
+precondition(normalized.bytes == amplified.bytes, "normalization and item gain must draw the same amplitude")
+let compensated = render([waveform(scale: SIMD2(1, 32 * Float(WaveformAmplitude.gain(item: 0.5, normalization: 2))))])
+precondition(compensated.bytes == original.bytes, "item and normalization gains combine multiplicatively")
+precondition(engine.uploadedBufferCount == uploads, "normalization must reuse source PCM buffers")
 let duplicate = render([waveform(), waveform(), waveform()])
 precondition(duplicate.bytes == original.bytes, "overlapping joins/duplicates must not accumulate alpha or darken peaks")
 print("METAL_ACTUAL_VERTICES_TRANSFORM_GAIN_AND_MAX_COVERAGE_OK")
@@ -158,7 +305,9 @@ func peakStroke(clip: CGRect = item, block: TimelineAudioWaveform.VertexBlock = 
 let peaks = render([peakStroke()])
 precondition(peaks.alpha(20, 41) > 240 && peaks.alpha(60, 75) > 240 && peaks.alpha(80, 57) > 240)
 precondition(peaks.alpha(80, 45) == 0, "a later interval must preserve its own smaller extrema")
-precondition(peaks.alpha(32, 41) > 240 && peaks.alpha(60, 42) == 0, "real peak remains at center while neighboring bins join with a sloped contour")
+precondition(peaks.alpha(32, 41) > 240 && peaks.alpha(60, 42) > 240,
+             "joining interval edges must not attenuate a transient before its next bucket")
+precondition(peaks.alpha(96, 45) == 0, "the next bucket retains its own smaller extrema at its center")
 let trimmedPeak = render([peakStroke(clip: CGRect(x: 34, y: 10, width: 3, height: 108))])
 precondition(trimmedPeak.alpha(35, 41) > 240 && trimmedPeak.alpha(35, 78) > 240,
              "a trim inside one bucket must retain its continuous peak contour")
@@ -371,7 +520,7 @@ let benchmarkBlock = TimelineAudioWaveform.VertexBlock(channels: [(0..<4096).map
     SIMD2(Float($0), sin(Float($0) * 0.17) * sin(Float($0) * 0.003))
 }], start: 0, end: 4096, step: 1, rate: 48_000, key: "200-visible-strokes")
 func measureBatch(_ benchmarkBlock: TimelineAudioWaveform.VertexBlock, label: String,
-                  sourceBlocks: [TimelineAudioWaveform.VertexBlock] = []) {
+                  sourceBlocks: [TimelineAudioWaveform.VertexBlock] = [], sourceScale: Float = 0.053) {
 var encodeTimes: [Double] = [], scheduleTimes: [Double] = [], gpuTimes: [Double] = []
 for frameIndex in 0..<16 {
     var strokes: [MetalWaveformStroke] = []
@@ -380,7 +529,7 @@ for frameIndex in 0..<16 {
             let rect = CGRect(x: column * 220, y: row * 60, width: 218, height: 58)
             let source = sourceBlocks.isEmpty ? benchmarkBlock : sourceBlocks[(row * 10 + column) % sourceBlocks.count]
             strokes.append(MetalWaveformStroke(block: source, channel: 0,
-                scale: SIMD2(0.053 + Float(frameIndex) * 0.00001, 22),
+                scale: SIMD2(sourceScale * (1 + Float(frameIndex) * 0.0002), 22),
                 translation: SIMD2(Float(rect.minX), Float(rect.midY)), clip: rect,
                 color: SIMD4(0.65, 0.65, 0.65, 1), itemRect: rect))
         }
@@ -437,6 +586,9 @@ let unicodeBenchmarkBlocks = (0..<200).map { index in
 measureBatch(unicodeBenchmarkBlocks[0], label: "METAL_200_REPEATED_UNICODE_STROKES_2200x1200_MEASURED")
 measureBatch(unicodeBenchmarkBlocks[0], label: "METAL_200_DISTINCT_UNICODE_STROKES_2200x1200_MEASURED",
     sourceBlocks: unicodeBenchmarkBlocks)
+let overviewBenchmark = TimelineAudioWaveform.VertexBlock(channels: [intervalPeakPoints.map { SIMD2($0.x * 256, $0.y) }],
+    start: 0, end: 4096 * 256, step: 8 * 256, rate: 48000, key: "overview-200", isPeakEnvelope: true)
+measureBatch(overviewBenchmark, label: "METAL_200_OVERVIEW_PIXEL_COLUMN_STROKES_MEASURED", sourceScale: 0.053 / 256)
 
 if ProcessInfo.processInfo.environment["JARAS_METAL_OFFSCREEN_ONLY"] == "1" { exit(0) }
 
@@ -612,6 +764,18 @@ precondition(surface.submittedFrameCount == fillBefore + 1 && surface.subviews.f
 surface.submit(MetalWaveformFrame(size: size, strokes: []))
 precondition(surface.subviews.first?.alphaValue == 0, "deleting the last item hides its GPU fill immediately")
 print("METAL_NATIVE_FILL_ONLY_PRESENT_AND_DELETE_OK")
+// The compositor must adopt item clipping synchronously, before a queued
+// drawable can present pixels belonging to the previous item geometry.
+let maskDestination = CGRect(x: 75, y: 20, width: 25, height: 70)
+surface.submit(MetalWaveformFrame(size: size, strokes: [MetalWaveformStroke(block: filledInterval,
+    channel: 0, scale: SIMD2(128, 64), translation: SIMD2(0, 64), clip: maskDestination,
+    color: SIMD4(repeating: 1), itemRect: maskDestination)],
+    coordinateSpace: .init(documentOrigin: .zero, pixelsPerSecond: 100, contentRevision: 101)))
+let currentMask = (surface.layer?.mask as? CAShapeLayer)?.path
+precondition(currentMask?.contains(CGPoint(x: 85, y: 50)) == true)
+precondition(currentMask?.contains(CGPoint(x: 30, y: 50)) == false,
+    "current item clips must reject stale drawable pixels before presentation")
+print("METAL_COMPOSITOR_ITEM_MASK_UPDATES_BEFORE_DRAWABLE_PRESENTATION_OK")
 testWindow.close()
 
 #endif

@@ -5,6 +5,22 @@ import AppKit
 // workspace, real SwiftUI text fields and divider, not grid-selection behavior.
 struct GridSelectionInput { func apply(to view: GridSelectionView) {} }
 final class GridSelectionView: NSView {}
+@MainActor struct NativeLibraryTrackDrop {
+    static let type = NSPasteboard.PasteboardType("com.catlive.fixture.effect-drop")
+    func operation(for sender: NSDraggingInfo, in view: NSView) -> NSDragOperation { [] }
+    func perform(_ sender: NSDraggingInfo, in view: NSView) -> Bool { false }
+}
+enum JarasTheme {
+    static let setlistQueuedYellow: UInt32 = 0x807219
+    static let displayHex: UInt32 = 0x0f0f0f
+    static let lightDarkBackgroundHex: UInt32 = 0x242424
+    static let workspaceToolbar = Color.gray
+}
+extension Color {
+    init(hex: UInt32) {
+        self.init(red: Double(hex >> 16 & 255) / 255, green: Double(hex >> 8 & 255) / 255, blue: Double(hex & 255) / 255)
+    }
+}
 
 func require(_ value: @autoclosure () -> Bool, _ message: String) {
     if !value() { FileHandle.standardError.write(Data(("FAIL: " + message + "\n").utf8)); exit(1) }
@@ -57,6 +73,15 @@ private struct NativeFixture: NSViewRepresentable {
     func makeNSView(context: Context) -> FixtureNative { FixtureNative(frame: .zero) }
     func updateNSView(_ native: FixtureNative, context: Context) {}
 }
+private struct SetlistGridFixture: NSViewRepresentable {
+    func makeNSView(context: Context) -> GridNativeScrollView {
+        let scroll = GridNativeScrollView(frame: .zero)
+        scroll.documentView = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 700))
+        scroll.showTimelineVerticalBar(inset: 0)
+        return scroll
+    }
+    func updateNSView(_ scroll: GridNativeScrollView, context: Context) {}
+}
 private final class ExternalFooterView: NSView {
     override func resetCursorRects() { addCursorRect(bounds.intersection(visibleRect), cursor: .pointingHand) }
 }
@@ -65,16 +90,18 @@ private struct ExternalFooter: NSViewRepresentable {
     func updateNSView(_ native: ExternalFooterView, context: Context) {}
 }
 private struct Fixture: View {
+    var rightSetlist = false
     @State private var leftText = "Track name"
     @State private var rightText = "Search songs"
     let controller = SidebarScrollController()
     var body: some View {
         VStack(spacing: 0) {
-        NativeWorkspaceSplit(width: 280, restoreWidth: 280, minimum: 200, scrollController: controller,
+        NativeWorkspaceSplit(width: 280, restoreWidth: 280, minimum: 200, scrollController: controller, sidebarLeading: !rightSetlist,
                              onToggle: {}, onEnd: { _ in }) {
             VStack(spacing: 0) {
                 TextField("Track name", text: $leftText).frame(height: 36).padding(.horizontal, 20)
-                NativeFixture()
+                if rightSetlist { SetlistGridFixture() }
+                else { NativeFixture() }
             }
         } trailing: {
             VStack {
@@ -104,7 +131,8 @@ MainActor.assumeIsolated {
     let initialPointer = CGEvent(source: nil)!.location
     let window = NSWindow(contentRect: NSRect(x: 160, y: 180, width: 900, height: 480), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
     window.isReleasedWhenClosed = false; window.acceptsMouseMovedEvents = true
-    let host = NSHostingView(rootView: Fixture())
+    let setlistOnly = CommandLine.arguments.contains("--setlist-only")
+    let host = NSHostingView(rootView: Fixture(rightSetlist: setlistOnly))
     window.contentView = host
     window.makeKeyAndOrderFront(nil); app.activate(ignoringOtherApps: true)
     func pump(_ duration: Double = 0.12) {
@@ -119,14 +147,7 @@ MainActor.assumeIsolated {
         window.orderOut(nil); window.close()
         CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: initialPointer, mouseButton: .left)?.post(tap: .cghidEventTap)
     }
-    let native = all(FixtureNative.self, host).first!
-    let divider = all(MixerDividerView.self, host).first!
-    let externalFooter = all(ExternalFooterView.self, host).first!
-    let fields = all(NSTextField.self, host).filter { $0 !== native.field }
-    require(fields.count >= 2, "real SwiftUI TextFields mounted")
     let split = all(NSView.self, host).first { String(describing: type(of: $0)).contains("WorkspaceSplitView<") }!
-    print("ACTIVE \(app.isActive) KEY \(window.isKeyWindow)")
-    print("FIELDS \(fields.count), split \(split.frame), grid \(native.grid.frame)")
     func position(_ view: NSView, _ point: NSPoint? = nil) -> CGPoint {
         let local = point ?? NSPoint(x: view.bounds.midX, y: view.bounds.midY)
         let screen = window.convertPoint(toScreen: view.convert(local, to: nil))
@@ -137,7 +158,8 @@ MainActor.assumeIsolated {
         CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: target, mouseButton: .left)!.post(tap: .cghidEventTap)
         pump()
         print("\(WorkspaceArrowTestSwitch.enabled ? "arrow" : "baseline") \(label): \(cursorName(NSCursor.current))")
-        require(abs(CGEvent(source: nil)!.location.x-target.x) < 2 && abs(CGEvent(source: nil)!.location.y-target.y) < 2, "real pointer reached fixture")
+        let actual = CGEvent(source: nil)!.location
+        require(abs(actual.x-target.x) < 2 && abs(actual.y-target.y) < 2, "real pointer reached \(label) at \(target); current \(actual)")
         // Public system-cursor sampling is test-only. It checks what AppKit
         // displays, in addition to logging the application cursor stack.
         let system = NSCursor.currentSystem
@@ -145,6 +167,29 @@ MainActor.assumeIsolated {
         require(shown, "\(label): system cursor shape must match \(cursorName(cursor))")
 
     }
+    if setlistOnly {
+        WorkspaceArrowTestSwitch.enabled = true
+        window.invalidateCursorRects(for: split); pump()
+        let scroll = all(GridNativeScrollView.self, host).first!
+        let bar = all(NSScroller.self, scroll).last!
+        let barFrame = bar.convert(bar.bounds, to: split)
+        let y = barFrame.midY
+        move(split, NSPoint(x: barFrame.minX - 16, y: y), expecting: .arrow, "grid beside Setlist handle")
+        move(bar, expecting: .resizeLeftRight, "Setlist handle from grid")
+        move(bar, NSPoint(x: bar.bounds.midX, y: bar.bounds.height * 0.8), expecting: .resizeLeftRight, "Setlist handle along rail")
+        move(split, NSPoint(x: barFrame.maxX + 16, y: y), expecting: .arrow, "Setlist beside handle")
+        move(bar, expecting: .resizeLeftRight, "Setlist handle from sidebar")
+        move(split, NSPoint(x: barFrame.minX - 16, y: y), expecting: .arrow, "handle back to grid")
+        print("SETLIST_SCROLLBAR_RESIZE_CURSOR_OK")
+        return
+    }
+    let native = all(FixtureNative.self, host).first!
+    let divider = all(MixerDividerView.self, host).first!
+    let externalFooter = all(ExternalFooterView.self, host).first!
+    let fields = all(NSTextField.self, host).filter { $0 !== native.field }
+    require(fields.count >= 2, "real SwiftUI TextFields mounted")
+    print("ACTIVE \(app.isActive) KEY \(window.isKeyWindow)")
+    print("FIELDS \(fields.count), split \(split.frame), grid \(native.grid.frame)")
     func clickToEdit(_ field: NSTextField) {
         let target = position(field)
         for kind in [CGEventType.mouseMoved, .leftMouseDown, .leftMouseUp] {
@@ -158,7 +203,7 @@ MainActor.assumeIsolated {
         WorkspaceArrowTestSwitch.enabled = enabled
         window.invalidateCursorRects(for: split); pump()
         move(native, NSPoint(x: 300, y: 40), expecting: .arrow, "mixer blank")
-        move(split, NSPoint(x: 760, y: 220), expecting: .arrow, "setlist blank")
+        move(split, NSPoint(x: 80, y: 220), expecting: .arrow, "setlist blank")
         move(externalFooter, expecting: .pointingHand, "external footer keeps its cursor")
         for field in fields {
             clickToEdit(field)

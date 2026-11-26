@@ -2,15 +2,17 @@
 #include "Common.h"
 namespace catlive {
 // The document representation is shared with TrackAutomation.swift. Compiled curves
-// contain no JUCE variants, strings or allocations in the audio callback.
+// contain no variants or allocations in the audio callback; plugin IDs are prepared once.
 struct AutomationCurve {
-    enum Target { volume, pan, mute, unsupported };
+    enum Target { volume, pan, mute, externalFX, unsupported };
     enum Shape { linear, square, smooth, fastStart, fastEnd };
     struct Point {
         double time, value;
         Shape shape;
     };
     Target target = volume;
+    String plugin;
+    uint32 parameter = 0;
     double fallback = 1;
     bool linearGain = false;
     std::vector<Point> points;
@@ -67,7 +69,13 @@ struct AutomationProgram {
             curve.target = kind == "volume" ? AutomationCurve::volume
                            : kind == "pan"  ? AutomationCurve::pan
                            : kind == "mute" ? AutomationCurve::mute
+                           : kind == "externalFX" ? AutomationCurve::externalFX
                                             : AutomationCurve::unsupported;
+            if (curve.target == AutomationCurve::externalFX) {
+                curve.plugin = str(get(entry,"target"),"plugin");
+                curve.parameter = (uint32)(int64)get(get(entry,"target"),"parameter");
+                if (curve.plugin.isEmpty()) continue;
+            }
             if (curve.target == AutomationCurve::unsupported)
                 continue;
             curve.fallback = jlimit(
@@ -119,6 +127,9 @@ struct AutomationProgram {
     }
 };
 namespace automation {
+inline bool trackSupportsLanes(const jaras::Track &track) {
+    return jaras::fixedTrackName(track.role).empty();
+}
 inline var settings(const jaras::Track &track) {
     return track.automationJSON ? JSON::parse(text(*track.automationJSON)) : object();
 }
@@ -131,6 +142,14 @@ inline Array<var> visible(const jaras::Track &track) {
         if (flag(curve, "visible", true))
             result.add(curve);
     return result;
+}
+inline bool allTrackLanesVisible(const jaras::Song &song) {
+    bool hasTrack = false;
+    for (const auto &track : song.tracks) if (trackSupportsLanes(track)) {
+        if (visible(track).isEmpty()) return false;
+        hasTrack = true;
+    }
+    return hasTrack;
 }
 inline var envelope(String kind, double value) {
     auto curve = object(), target = object();

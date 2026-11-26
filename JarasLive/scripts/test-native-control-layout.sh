@@ -9,6 +9,6 @@ for language in en pt-BR; do
     cp "Apple/Resources/$language.lproj/Localizable.strings" "$test_dir/$language.lproj/"
 done
 swiftc -swift-version 5 -O -target "$(uname -m)-apple-macos12.0" \
-    Apple/Shared/RightClickRouting.swift Apple/Shared/NativeTooltips.swift \
+    Apple/Shared/NativeTimelineInputGate.swift Apple/Shared/RightClickRouting.swift Apple/Shared/NativeTooltips.swift \
     "$test_dir/main.swift" -o "$test_dir/test"
 "$test_dir/test"

@@ -1,10 +1,35 @@
 // Compiled with the production protocol/session sources by test-daw-remote.sh.
 import AppKit
+// The Remote suite exercises its real encrypted transport on loopback. Keep
+// the separate wired-sync service out of this fixture's listeners/preferences.
+@MainActor final class ProjectSyncController {
+    static let shared = ProjectSyncController()
+    private(set) var enabled = false
+    func setEnabled(_ value: Bool) { enabled = value }
+}
+final class JarasRemoteMainAudio {
+    static let pcm = Data([0x80, 0xbb, 0, 0, 0xff, 0x7f, 0x01, 0x80])
+    private var capturing = false
+    func setCapturing(_ value: Bool) { capturing = value }
+    func nextPacket() -> Data? { capturing ? Self.pcm : nil }
+}
+@MainActor final class StemAudioPlayback {
+    static let shared = StemAudioPlayback()
+    func setRemoteMainAudioCapture(_ capture: JarasRemoteMainAudio?) {}
+}
 setbuf(stdout, nil)
 func require(_ value: @autoclosure () -> Bool, _ message: String) {
     if !value() { fatalError(message) }
 }
 let project = UUID(), song = UUID(), trackID = UUID(), regionID = UUID()
+if case .mainAudioSubscription(let enabled) = try DAWRemoteWire.decode(DAWRemoteWire.mainAudioSubscription(true)) {
+    require(enabled, "Main audio subscription preserves the enabled preference")
+} else { fatalError("Invalid Main audio subscription kind") }
+let stereoAudio = JarasRemoteMainAudio.pcm
+if case .mainAudio(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.mainAudio(stereoAudio)) {
+    require(decoded == stereoAudio, "Main audio preserves the sample rate and signed stereo PCM")
+} else { fatalError("Invalid Main audio packet kind") }
+require((try? DAWRemoteWire.decode(DAWRemoteWire.mainAudio(stereoAudio.dropLast()))) == nil, "Reject partial stereo frames")
 var fixture = DAWRemoteState(project: project, projectName: "Remote native test", song: song, songName: "Test",
     songs: [.init(id: song, name: "Test")],
     tracks: [.init(id: trackID, name: "Track", color: 0x828282, volume: 1, pan: 0, mute: false, solo: false,
@@ -14,6 +39,32 @@ var fixture = DAWRemoteState(project: project, projectName: "Remote native test"
     position: 0, duration: 10, bpm: 120, playing: false, paused: false, subPlaying: false, loop: false,
     masterVolume: 1, masterMute: false, masterSolo: false, masterMono: false,
     pendingSave: false, saving: false, message: "")
+require(fixture.nativeTransportSongName(selectedRegionID: nil) == "—",
+        "The idle native transport must not fall back to the project name")
+require(fixture.nativeTransportSongName(selectedRegionID: regionID) == "Region",
+        "The idle native transport must show the explicitly selected region")
+fixture.playing = true
+require(fixture.nativeTransportSongName(selectedRegionID: nil) == "Region",
+        "The playing native transport must show the audible region")
+fixture.playing = false
+for enabled in [true, false] {
+    let command = DAWRemoteCommand(project: project, song: song, action: .transportFadeout, enabled: enabled)
+    require(command.valid, "Explicit start/cancel Fadeout command is valid")
+    require(DAWRemoteAccessRules.allows(command, mode: .director), "Director can fade out")
+    require(!DAWRemoteAccessRules.allows(command, mode: .observer) && !DAWRemoteAccessRules.allows(command, mode: .notices), "Read-only roles cannot fade out")
+    if case .command(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.command(command)) {
+        require(decoded.enabled == enabled, "Fadeout desired state survives wire encoding")
+    } else { fatalError("Fadeout command round trip") }
+}
+require(!DAWRemoteCommand(project: project, song: song, action: .transportFadeout).valid, "Fadeout requires explicit desired state")
+var fading = fixture
+fading.fadeout = .init(runID: UUID(), duration: 3, remaining: 1.5)
+if case .state(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.state(fading)) {
+    require(decoded.fadeout == fading.fadeout, "Countdown state survives wire encoding")
+}
+fading.fadeout?.remaining = 4
+require(!fading.valid, "Reject countdown outside configured duration")
+print("REMOTE_FADEOUT_CAPABILITY_AND_PERMISSION_OK")
 fixture.tracks[0].nameColor = 0x000000
 fixture.tracks[0].emphasized = true
 fixture.tracks[0].silenced = true
@@ -25,7 +76,39 @@ let legacyTrackJSON = try JSONSerialization.jsonObject(with: Data(legacyTrackPac
 require((legacyTrackJSON["tracks"] as! [[String: Any]])[0]["linkedTrack"] == nil, "unlinked state omits optional link metadata for older peers")
 if case .state(let decoded) = try DAWRemoteWire.decode(legacyTrackPacket) {
     require(decoded.tracks[0].linkedTrack == nil, "legacy state without link metadata remains compatible")
+    require(decoded.trackMixerStripeOnly == nil && decoded.gridInvertsWaveforms == nil, "Legacy hosts may omit appearance preferences")
+    require(decoded.tempoNeedsRender == nil, "older hosts without the tempo indicator remain compatible")
 } else { fatalError("legacy track state packet") }
+for enabled in [true, false] {
+    var appearance = fixture
+    appearance.trackMixerStripeOnly = enabled
+    appearance.gridInvertsWaveforms = enabled
+    if case .state(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.state(appearance)) {
+        require(decoded.trackMixerStripeOnly == enabled && decoded.gridInvertsWaveforms == enabled,
+                "Keep both explicit host appearance choices in the Remote state")
+    } else { fatalError("appearance state packet") }
+}
+for pending in [true, false] {
+    var tempoFixture = fixture
+    tempoFixture.tempoNeedsRender = pending
+    if case .state(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.state(tempoFixture)) {
+        require(decoded.tempoNeedsRender == pending, "Remote preserves the host tempo-render indicator, including clearing it after render")
+    } else { fatalError("tempo indicator state packet") }
+}
+print("REMOTE_TEMPO_RENDER_INDICATOR_AND_LEGACY_COMPATIBILITY_OK")
+require(fixture.tracks[0].instrumentIcon == nil, "Older projects/hosts do not invent a track icon")
+var iconFixture = fixture
+for icon: String? in ["drums", "saxophone", "vocal", nil] {
+    let previous = iconFixture.tracks[0]
+    iconFixture.tracks[0].instrumentIcon = icon
+    if case .state(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.state(iconFixture)) {
+        require(decoded.tracks[0].instrumentIcon == icon, "Remote must follow host icon changes and removal")
+        require(!decoded.tracks[0].hasSameMixerControls(as: previous), "Icon change/removal must invalidate the retained row")
+        require(decoded.tracks[0].volume == previous.volume && decoded.tracks[0].clips == previous.clips,
+                "Icon presentation must not change audio or grid data")
+    } else { fatalError("track icon state packet") }
+}
+print("REMOTE_TRACK_ICON_CHANGES_REMOVAL_AND_LEGACY_COMPATIBILITY_OK")
 var linkedFixture = fixture
 let partnerTrackID = UUID()
 linkedFixture.tracks[0].linkedTrack = partnerTrackID
@@ -62,38 +145,34 @@ for gain in [0.01, 0.1, 1.0, 2.0] {
 require(DAWRemoteScrollRange.clamp(-200, content: 2000, viewport: 500) == 0, "track scrolling upper bound")
 require(DAWRemoteScrollRange.clamp(3000, content: 2000, viewport: 500) == 1500, "track scrolling lower bound")
 require(DAWRemoteScrollRange.clamp(50, content: 100, viewport: 500) == 0, "short list does not scroll")
-let panelStart = DAWRemotePanelWidths(track: 0.30, setlist: 0.32)
-require(panelStart.resizingTrack(by: 2) == .init(track: 1, setlist: 0), "mixer can occupy the whole content area and push grid/setlist closed")
-require(panelStart.resizingSetlist(by: -2) == .init(track: 0, setlist: 1), "setlist can occupy the whole content area and push grid/mixer closed")
-require(panelStart.resizingTrack(by: -2) == .init(track: 0, setlist: 0.32), "mixer can collapse fully while preserving setlist")
-require(panelStart.resizingSetlist(by: 2) == .init(track: 0.30, setlist: 0), "setlist can collapse fully while preserving mixer")
-let expandedTrack = panelStart.resizingTrack(by: 0.5)
-require(abs(expandedTrack.track - 0.8) < 0.000001 && abs(expandedTrack.setlist - 0.2) < 0.000001 && expandedTrack.grid < 0.000001,
-        "expanding mixer first consumes grid then pushes setlist")
-let expandedSetlist = panelStart.resizingSetlist(by: -0.5)
-require(abs(expandedSetlist.setlist - 0.82) < 0.000001 && abs(expandedSetlist.track - 0.18) < 0.000001 && expandedSetlist.grid < 0.000001,
-        "expanding setlist first consumes grid then pushes mixer")
-for delta in [0.0, 0.1, 2.0, 0.5, 0.0, -2.0, -0.1, 0.0] {
-    for widths in [panelStart.resizingTrack(by: delta), panelStart.resizingSetlist(by: delta)] {
-        require(widths.track >= 0 && widths.setlist >= 0 && widths.grid >= 0 && abs(widths.track + widths.setlist + widths.grid - 1) < 0.000001,
-                "full-range resize and reversals stay within the physical content width")
-    }
+func nativePaneWidths(available: Double, trackVisible: Bool = true, setlist: Double = 0.25) -> TabletWorkspacePanelWidths {
+    TabletWorkspacePanelWidths(trackVisible: trackVisible, trackWidth: 328, setlistFraction: setlist,
+                               reference: 1_000, available: available)
 }
-require(panelStart.resizingTrack(by: 0) == panelStart && panelStart.resizingSetlist(by: 0) == panelStart,
-        "reversing to the original pointer restores both original pane widths after either was pushed closed")
-let onlySetlist = DAWRemotePanelWidths(track: 0, setlist: 1)
-let restoredMixer = onlySetlist.resizingTrack(by: 0.3)
-require(abs(restoredMixer.track - 0.3) < 0.000001 && abs(restoredMixer.setlist - 0.7) < 0.000001,
-        "the retained mixer handle can reopen a collapsed mixer from full-screen setlist")
-let onlyMixer = DAWRemotePanelWidths(track: 1, setlist: 0)
-let restoredSetlist = onlyMixer.resizingSetlist(by: -0.3)
-require(abs(restoredSetlist.setlist - 0.3) < 0.000001 && abs(restoredSetlist.track - 0.7) < 0.000001,
-        "the retained setlist handle can reopen a collapsed setlist from full-screen mixer")
-require(onlyMixer.resizingTrack(by: -0.2).grid > 0.19 && onlySetlist.resizingSetlist(by: 0.2).grid > 0.19,
-        "retracting the full-width panel restores grid space")
-require(panelStart.resizingTrack(by: .nan) == panelStart && panelStart.resizingSetlist(by: .infinity) == panelStart,
-        "invalid drag values cannot corrupt panel layout")
-print("REMOTE_FULL_RANGE_PANEL_WIDTHS_COLLAPSE_RESTORE_AND_REVERSALS_OK")
+let undockedPanes = nativePaneWidths(available: 1_000)
+let withFocus = nativePaneWidths(available: 760)
+let withFocusAndLibrary = nativePaneWidths(available: 455)
+require(undockedPanes.track == 328 && withFocus.track == undockedPanes.track &&
+        withFocus.setlist == undockedPanes.setlist && withFocus.grid < undockedPanes.grid,
+        "Opening a Native dock consumes only the grid while there is room")
+require(withFocusAndLibrary.track == withFocus.track && withFocusAndLibrary.grid == 0 &&
+        withFocusAndLibrary.setlist == 127, "Setlist gives up width before the Track Mixer")
+require(nativePaneWidths(available: 250).track == 250 &&
+        nativePaneWidths(available: 760, trackVisible: false).track == 0,
+        "The fixed width yields only to the available space and a hidden Track Mixer stays hidden")
+require(nativePaneWidths(available: 1_000, setlist: 0.8).track == 328 &&
+        nativePaneWidths(available: 1_000, setlist: 0).grid == 672,
+        "Resizing or hiding the Native Setlist preserves the fixed Track Mixer width")
+let remotePanes = TabletWorkspacePanelWidths(trackVisible: true, trackWidth: 320, setlistFraction: 1,
+                                             reference: 900, available: 900)
+require(remotePanes.track == 320 && remotePanes.setlist == 580 && remotePanes.grid == 0,
+        "Remote Setlist cannot resize the fixed Track Mixer")
+require(NativeRegionDrawerSwipe.expansion(x: -45, y: 5) == true &&
+        NativeRegionDrawerSwipe.expansion(x: 45, y: 5) == false &&
+        NativeRegionDrawerSwipe.expansion(x: -20, y: 0) == nil &&
+        NativeRegionDrawerSwipe.expansion(x: -50, y: 80) == nil,
+        "Left opens, right closes, and vertical scrolling or a small movement does neither")
+print("NATIVE_PANE_WIDTH_PRIORITY_AND_DIRECTIONAL_DRAWER_OK")
 let autoCommand = DAWRemoteCommand(project: project, song: song, action: .toggleRegionAuto)
 if case .command(let decodedAuto) = try DAWRemoteWire.decode(DAWRemoteWire.command(autoCommand)) {
     require(decodedAuto.action == .toggleRegionAuto && decodedAuto.valid, "AUTO typed command roundtrip")
@@ -151,12 +230,25 @@ var laneFixture = fixture
 laneFixture.tracks[0].laneCount = 2; laneFixture.tracks[0].clips[0].lane = 1
 require(abs(DAWRemoteItemLayout.rowHeight(laneFixture.tracks[0]) - 120.4) < 0.000001, "overlapping item lanes expand matching mixer/grid row height")
 require(DAWRemoteItemLayout.laneHeight(fixture.tracks[0]) == 86, "single item fills full track height")
-for scale in [0.35, 0.5, 1.0, 2.0, 3.0] {
+for scale in [0.1, 0.35, 0.5, 1.0, 2.0, 3.0] {
     let track = laneFixture.tracks[0]
-    require(DAWRemoteItemLayout.laneHeight(track, scale: scale) >= 28, "pinch keeps item mute/name header visible")
+    require(DAWRemoteItemLayout.laneHeight(track, scale: scale) >= 26, "pinch keeps the compact item mute/name header visible")
     require(abs(DAWRemoteItemLayout.rowHeight(track, scale: scale) - DAWRemoteItemLayout.laneHeight(track, scale: scale) * Double(track.laneCount ?? 1)) < 0.000001, "pinch scales every overlapping lane and mixer row together")
 }
-require(DAWRemoteItemLayout.heightScale(.nan) == 1 && DAWRemoteItemLayout.heightScale(0) == 0.35 && DAWRemoteItemLayout.heightScale(100) == 3, "pinch restores only finite bounded heights")
+require(DAWRemoteItemLayout.heightScale(.nan) == 1 && DAWRemoteItemLayout.heightScale(0) == 0.1 && DAWRemoteItemLayout.heightScale(100) == 3, "pinch restores only finite bounded heights")
+var programLaneFixture = fixture
+programLaneFixture.tracks[0].minimumHeight = 6 * 24 + 8
+require(programLaneFixture.valid, "native Program Change minimum lane height is valid")
+for scale in [0.35, 0.5, 1.0, 2.0] {
+    require(DAWRemoteItemLayout.rowHeight(programLaneFixture.tracks[0], scale: scale) >= 152,
+            "six Program Change heads stay inside the same mixer/grid row at every pinch scale")
+}
+let roundTripProgramLane = try JSONDecoder().decode(DAWRemoteState.self, from: JSONEncoder().encode(programLaneFixture))
+require(roundTripProgramLane.tracks[0].minimumHeight == 152, "native minimum lane height survives presentation encoding")
+programLaneFixture.tracks[0].minimumHeight = -1
+require(!programLaneFixture.valid, "negative minimum height is rejected")
+programLaneFixture.tracks[0].minimumHeight = .infinity
+require(!programLaneFixture.valid, "nonfinite minimum height is rejected")
 var visibleLaneTrack = fixture.tracks[0]
 visibleLaneTrack.laneCount = 8
 visibleLaneTrack.clips = [
@@ -178,6 +270,14 @@ require(DAWRemoteItemLayout.tracks([visibleLaneTrack], within: nil)[0].clips.isE
 if case .state(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.state(laneFixture)) {
     require(decoded.tracks[0].laneCount == 2 && decoded.tracks[0].clips[0].lane == 1, "desktop item lane metadata roundtrip")
 } else { fatalError("lane state packet") }
+let tapSource = UUID()
+let tapCommand = DAWRemoteCommand(project: project, song: song, action: .tapTempo, target: tapSource, value: 123.456)
+if case .command(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.command(tapCommand)) {
+    require(decoded.action == .tapTempo && decoded.target == tapSource && decoded.value == 123.456,
+            "Remote BPM taps must preserve the sending clock and the original touch timestamp")
+    require(DAWRemoteAccessRules.allows(decoded, mode: .director) && !DAWRemoteAccessRules.allows(decoded, mode: .notices),
+            "Only a transport-capable Remote can tap tempo")
+} else { fatalError("tap tempo packet") }
 let volume = DAWRemoteCommand(project: project, song: song, action: .volume, target: trackID, value: 0.5)
 if case .command(let command) = try DAWRemoteWire.decode(DAWRemoteWire.command(volume)) {
     require(command.id == volume.id && command.value == 0.5 && command.target == trackID, "typed action roundtrip")
@@ -238,6 +338,17 @@ if case .command(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.command(o
 } else { fatalError("open recent project packet") }
 require(!DAWRemoteCommand(project: project, action: .openRecentProject).valid, "open project requires explicit opaque target")
 require(!DAWRemoteCommand(project: project, action: .openRecentProject, target: UUID(), value: 1).valid, "open project rejects arbitrary payload values")
+let openInNewTab = DAWRemoteCommand(project: project, song: song, action: .openRecentProjectInNewTab, target: reordered[0].id)
+if case .command(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.command(openInNewTab)) {
+    require(decoded.action == .openRecentProjectInNewTab && decoded.target == reordered[0].id, "new-tab command preserves its opaque project target")
+} else { fatalError("open recent project in new tab packet") }
+require(!DAWRemoteCommand(project: project, action: .openRecentProjectInNewTab).valid, "new tab requires an issued project target")
+require(!DAWRemoteCommand(project: project, action: .openRecentProjectInNewTab, target: UUID(), value: 1).valid, "new tab rejects arbitrary payloads")
+require(projectsFixture.projects?.canOpenInNewTab == nil, "legacy hosts do not advertise new-tab support")
+projectsFixture.projects?.canOpenInNewTab = true
+if case .state(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.state(projectsFixture)) {
+    require(decoded.projects?.canOpenInNewTab == true, "new-tab capability roundtrips independently of replace-project support")
+} else { fatalError("new-tab capability packet") }
 _ = catalog.update([firstProject], current: firstProject)
 require(catalog.url(for: firstCatalog[1].id) == nil, "removed recent project identifiers are revoked")
 projectsFixture.projects?.recent.append(reordered[0])
@@ -246,6 +357,20 @@ projectsFixture.projects = .init(recent: reordered, busy: true, canOpen: false, 
 if case .state(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.state(projectsFixture)) {
     require(decoded.projects?.busy == true && decoded.projects?.canOpen == false, "host owns opening progress and transition availability")
 } else { fatalError("project progress state packet") }
+let openingRequest = UUID()
+for phase in ["opening", "completed", "failed", "cancelled", "waiting"] {
+    projectsFixture.projects?.commandID = openingRequest
+    projectsFixture.projects?.commandState = phase
+    if case .state(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.state(projectsFixture)) {
+        require(decoded.projects?.commandID == openingRequest && decoded.projects?.commandState == phase,
+                "Project opening result survives snapshots and is correlated with its initiating command")
+    } else { fatalError("project opening acknowledgment") }
+}
+projectsFixture.projects?.commandState = "invented"
+require(!projectsFixture.valid, "Unknown project operation states cannot enter the client")
+projectsFixture.projects?.commandID = nil; projectsFixture.projects?.commandState = nil
+require(projectsFixture.valid, "Older hosts remain compatible without opening acknowledgments")
+print("REMOTE_PROJECT_OPENING_ACKNOWLEDGMENT_AND_LEGACY_OK")
 print("REMOTE_RECENT_PROJECTS_OPAQUE_IDS_AND_OPEN_COMMAND_OK")
 print("REMOTE_NATIVE_STATE_TYPED_ACTIONS_AND_VERSION_VALIDATION_OK")
 
@@ -257,6 +382,65 @@ func waitFor(_ message: String, seconds: Double = 5, _ done: () -> Bool) {
     while !done() && Date() < deadline { RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.005)) }
     if !done() { FileHandle.standardError.write(Data(("TIMEOUT: " + message + "\n").utf8)) }
     require(done(), message)
+}
+
+let controlParameters = DAWRemoteChannel.parameters()
+require(controlParameters.includePeerToPeer,
+        "Remote controls must retain the original Bonjour paths")
+require(DAWRemoteNetworkRoute.priority(name: "en0", type: .wifi) == 0 &&
+        DAWRemoteNetworkRoute.priority(name: "awdl0", type: .other) == 1,
+        "Remote accepts the Wi-Fi LAN and Apple wireless peer-to-peer")
+require(DAWRemoteNetworkRoute.priority(name: "anpi0", type: .other) == nil &&
+        DAWRemoteNetworkRoute.priority(name: "en2", type: .wiredEthernet) == nil,
+        "Remote must never select the iPad cable route")
+let wiredIPv4 = NWEndpoint.hostPort(host: .ipv4(IPv4Address("169.254.10.2")!), port: 62000)
+let wiredIPv6 = NWEndpoint.hostPort(host: .ipv6(IPv6Address("fe80::2")!), port: 62000)
+let routedLAN = NWEndpoint.hostPort(host: .ipv4(IPv4Address("10.0.0.105")!), port: 62000)
+require(!DAWRemoteChannel.allowsMainAudio(local: wiredIPv4, remote: wiredIPv6, wired: true),
+        "Do not stream Main audio over the wired device link")
+require(!DAWRemoteChannel.allowsMainAudio(local: routedLAN, remote: wiredIPv4, wired: true),
+        "Check both ends of the wired device link")
+require(DAWRemoteChannel.allowsMainAudio(local: routedLAN, remote: nil, wired: true),
+        "Ethernet on the local network may carry Main audio")
+require(DAWRemoteChannel.allowsMainAudio(local: wiredIPv6, remote: nil, wired: false),
+        "Wireless peer-to-peer may carry Main audio")
+
+do {
+    let audioHost = DAWRemoteSession(role: .host, name: "Main Audio Host")
+    audioHost.stateProvider = { fixture }
+    let endpoint = try audioHost.testListen()
+    var receiving = Set<String>()
+    func audioPeer(_ name: String, access: DAWRemoteAccess) -> DAWRemoteChannel {
+        let connection = NWConnection(to: endpoint, using: DAWRemoteChannel.parameters())
+        let client = DAWRemoteChannel(connection: connection, role: .client, name: name,
+                                      queue: DispatchQueue(label: name))
+        var requested = false
+        client.onReady = { [weak client] _ in
+            client?.send(try! DAWRemoteWire.accessRequest(.init(mode: access, pin: "")))
+        }
+        client.onPacket = { [weak client] packet in
+            if case .state(let state) = packet {
+                client?.send(try! DAWRemoteWire.acknowledge(state.sequence))
+                if !requested && state.mainAudioAvailable == true {
+                    requested = true
+                    client?.send(DAWRemoteWire.mainAudioSubscription(true))
+                }
+            }
+        }
+        client.onMainAudio = { pcm in
+            DispatchQueue.main.async {
+                if pcm == stereoAudio { receiving.insert(name) }
+            }
+        }
+        client.start()
+        return client
+    }
+    let first = audioPeer("First controller", access: .director)
+    waitFor("the first controller receives Main audio with no other connection") { receiving.contains("First controller") }
+    let second = audioPeer("Second observer", access: .observer)
+    waitFor("the second observer also receives the stereo stream") { receiving.contains("Second observer") }
+    first.close(); second.close(); audioHost.stop()
+    print("REMOTE_MAIN_PCM_FIRST_AND_SUBSEQUENT_PEERS_OK")
 }
 
 let plain = try DAWRemoteWire.command(volume)
@@ -306,7 +490,6 @@ extension DAWRemoteSession {
     func testListen() throws -> NWEndpoint {
         stop(); enabled = true
         let parameters = DAWRemoteChannel.parameters()
-        require(parameters.includePeerToPeer, "direct path enables Apple peer-to-peer discovery and transport")
         parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: .any)
         let listener = try NWListener(using: parameters)
         startListener(listener)
@@ -336,6 +519,9 @@ extension DAWRemoteSession {
     func testIsolation(_ endpoint: NWEndpoint) {
         let stranger = DAWRemoteChannel(connection: NWConnection(to: endpoint, using: DAWRemoteChannel.parameters()), role: .client, name: "Stranger", queue: worker)
         received(.command(.init(project: project, action: .stop)), from: stranger)
+    }
+    func testHoldStateFeedback() {
+        stateTimer?.invalidate(); stateTimer = nil; waitingForState = UInt64.max
     }
     func testAcknowledgements() {
         stateTimer?.invalidate(); stateTimer = nil
@@ -429,6 +615,9 @@ timerClient.testConnect(timerEndpoint)
 waitFor("timer fixture connects with initial timer sample") { timerClient.remoteState?.timer != nil }
 var timerPublications = 0
 let timerObservation = timerClient.$remoteState.dropFirst().sink { _ in timerPublications += 1 }
+// Synthetic snapshots bypass the host battery sampler. Keep that field stable while testing timer ticks.
+timerFixture.desktopBatteryPercent = timerClient.remoteState?.desktopBatteryPercent
+timerFixture.mainAudioAvailable = timerClient.remoteState?.mainAudioAvailable
 let ticks = (1...100).map { tick -> DAWRemoteState in
     var state = timerFixture; state.timer?.remainingSeconds -= Double(tick) * 0.1; return state
 }
@@ -597,6 +786,7 @@ let rolesHost = DAWRemoteSession(role: .host, name: "Roles Mac")
 require(rolesHost.setDirectorPIN("0123"), "four digit PIN accepts leading zero")
 let rolesEndpoint = try rolesHost.testListen()
 var rolesFixture = fixture
+rolesFixture.projectTabs = [.init(id: UUID(), name: "Remote tab A", selected: true), .init(id: UUID(), name: "Remote tab B", selected: false)]
 var roleCommandCount = 0
 rolesHost.stateProviderForSession = { session in
     var state = rolesFixture; state.message = "panel-\(session.requestedPanel)"; return state
@@ -623,7 +813,8 @@ director.requestAccess(.director, pin: "0123")
 waitFor("correct PIN opens director") { director.accessMode == .director && director.remoteState != nil }
 observer.testConnect(rolesEndpoint, access: .observer)
 waitFor("observer joins alongside director without PIN") { observer.accessMode == .observer && observer.remoteState != nil }
-require(observer.remoteState!.tracks.isEmpty && observer.remoteState!.playlists == nil && observer.remoteState!.projects == nil, "observer receives no mixer or project controls")
+require(observer.remoteState!.tracks.isEmpty && observer.remoteState!.playlists == nil && observer.remoteState!.projects == nil && observer.remoteState!.projectTabs == nil, "observer receives no mixer, project controls or tabs")
+require(director.remoteState!.projectTabs == rolesFixture.projectTabs, "director sees the open project tabs")
 observer.testUnchecked(.init(project: project, action: .play))
 observer.testUnchecked(.init(project: project, action: .selectPlaylist))
 observer.send(.init(project: project, action: .remotePanel, value: 2))
@@ -632,6 +823,39 @@ waitFor("independent local teleprompter subscriptions") { observer.remoteState?.
 require(roleCommandCount == 0, "observer cannot control Mac even with raw packets")
 director.send(.init(project: project, action: .play))
 waitFor("director changes are mirrored to observer") { director.remoteState?.playing == true && observer.remoteState?.playing == true && roleCommandCount == 1 }
+// Observer cue delivery uses the shared host path (Mac and iPad native).
+let nextCueID = UUID(), armedCueID = UUID()
+rolesFixture.timelineRegions = [.init(id: regionID, name: "Playing", start: 0, end: 20, color: 0)]
+rolesFixture.markers = [.init(id: nextCueID, name: "Refrão", position: 10, color: 0, section: true),
+                       .init(id: armedCueID, name: "Ponte", position: 2, color: 0, section: true),
+                       .init(id: UUID(), name: "Ordinary cue", position: 6, color: 0)]
+rolesFixture.position = 4.9
+rolesFixture.sectionPlayback = .init(currentRegion: regionID, secondaryRegion: nil, position: 4.9,
+    secondaryPosition: nil, queuedMarker: nil, queueStartedAt: nil, nextTrigger: nil, currentEnd: 20)
+require(DAWRemoteSectionCue.current(in: rolesFixture) == nil, "cue stays hidden before the five-second window")
+rolesFixture.position = 5; rolesFixture.sectionPlayback?.position = 5
+waitFor("observer receives upcoming section over the real encrypted connection") {
+    observer.remoteState.flatMap { DAWRemoteSectionCue.current(in: $0) } == .init(marker: nextCueID, name: "Refrão", seconds: 5, armed: false)
+}
+rolesFixture.sectionPlayback?.queuedMarker = armedCueID
+rolesFixture.sectionPlayback?.nextTrigger = 10
+waitFor("armed destination overrides natural next section, even for a backward jump") {
+    observer.remoteState.flatMap { DAWRemoteSectionCue.current(in: $0) } == .init(marker: armedCueID, name: "Ponte", seconds: 5, armed: true)
+}
+rolesFixture.sectionPlayback?.position = 9.1
+require(DAWRemoteSectionCue.current(in: rolesFixture)?.seconds == 1, "countdown follows host audible position")
+rolesFixture.sectionPlayback?.queuedMarker = nil
+require(DAWRemoteSectionCue.current(in: rolesFixture)?.marker == nextCueID, "cancel restores natural next marker immediately")
+rolesFixture.loop = true; rolesFixture.loopEnd = 10
+require(DAWRemoteSectionCue.current(in: rolesFixture) == nil, "a loop returning at a marker must not announce an unreachable section")
+rolesFixture.loop = false; rolesFixture.sectionPlayback?.position = 10
+require(DAWRemoteSectionCue.current(in: rolesFixture) == nil, "cue disappears after crossing the section marker")
+rolesFixture.sectionPlayback?.position = 8; rolesFixture.paused = true
+require(DAWRemoteSectionCue.current(in: rolesFixture) == nil, "paused transport hides countdown")
+rolesFixture.paused = false; rolesFixture.playing = false
+waitFor("Stop removes observer cue") { observer.remoteState?.playing == false && observer.remoteState.flatMap { DAWRemoteSectionCue.current(in: $0) } == nil }
+rolesFixture.playing = true; rolesFixture.sectionPlayback = nil; rolesFixture.markers = nil
+print("REMOTE_OBSERVER_SECTION_CUE_NATURAL_ARMED_CANCEL_LOOP_STOP_AND_HOST_DELIVERY_OK")
 let observerNext = UUID()
 rolesFixture.regions.append(.init(id: observerNext, name: "Next", start: 12, end: 20, color: 0x123456))
 rolesFixture.regions.reverse(); rolesFixture.focusedRegion = observerNext; rolesFixture.queuedRegion = observerNext
@@ -656,7 +880,7 @@ rolesHost.stateProviderForSession = { session in
     var state = rolesFixture; state.project = reboundProject; state.message = "rebound-\(session.requestedPanel)"; return state
 }
 waitFor("secondary client follows replacement project provider instead of waiting on stale binding") {
-    observer.remoteState?.project == reboundProject && observer.remoteState?.message == "rebound-2"
+    observer.remoteState?.project == reboundProject && observer.remoteState?.message == "rebound-2" && observer.remoteState?.projectTabs == nil
 }
 observer.stop(); rolesHost.stop()
 // A notices login is independent from the director and never controls transport.
@@ -823,11 +1047,12 @@ var markerKinds = fixture
 markerKinds.markers = [
     .init(id: UUID(), name: "Normal", position: 1, color: 0x123456),
     .init(id: UUID(), name: "TRECHO", position: 2, color: 0xabcdef, section: true),
+    .init(id: UUID(), name: "LOOP", position: 2.5, color: 0xff5050, section: true, loopSection: true),
     .init(id: UUID(), name: "0st Música unificada", position: 3, color: 0xffcc00,
           unifiedRegionID: UUID(), sourceRegionID: UUID())
 ]
 if case .state(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.state(markerKinds)) {
-    require(decoded.markers == markerKinds.markers, "normal, section and unified marker styles survive Remote transport")
+    require(decoded.markers == markerKinds.markers, "normal, section, loop and unified marker styles survive Remote transport")
 } else { fatalError("Missing marker style state") }
 print("REMOTE_MAC_MARKER_STYLES_OK")
 
@@ -1181,3 +1406,184 @@ if let directory = ProcessInfo.processInfo.environment["CATLIVE_COMPATIBILITY_IN
             "Windows Remote must include native teleprompter, notices and timer state")
     print("WINDOWS_REMOTE_SWIFT_PROTOCOL_COMPATIBILITY_OK")
 }
+
+// Tabs are optional for older hosts; selection targets a tab UUID, not a song or path.
+var tabFixture = fixture
+let remoteTabIDs = [UUID(), UUID()]
+tabFixture.projectTabs = [.init(id: remoteTabIDs[0], name: "Show A", selected: false),
+                          .init(id: remoteTabIDs[1], name: "Show B", selected: true)]
+if case .state(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.state(tabFixture)) {
+    require(decoded.projectTabs == tabFixture.projectTabs, "Project tabs survive the Remote wire packet")
+} else { fatalError("project tabs state packet") }
+var invalidTabFixture = tabFixture
+invalidTabFixture.projectTabs![0].selected = true
+require(!invalidTabFixture.valid, "Only one Remote tab can be selected")
+invalidTabFixture = tabFixture
+invalidTabFixture.projectTabs![1].id = remoteTabIDs[0]
+require(!invalidTabFixture.valid, "Remote tab identities must be unique")
+let selectTab = DAWRemoteCommand(project: project, action: .selectProjectTab, target: remoteTabIDs[0])
+require(selectTab.valid && DAWRemoteAccessRules.allows(selectTab, mode: .director), "Director can select an open project tab")
+require(!DAWRemoteAccessRules.allows(selectTab, mode: .observer) && !DAWRemoteAccessRules.allows(selectTab, mode: .notices), "Observers and notices cannot switch project tabs")
+require(!DAWRemoteCommand(project: project, action: .selectProjectTab).valid, "Tab selection needs a target")
+require(!DAWRemoteCommand(project: project, action: .selectProjectTab, target: remoteTabIDs[0], value: 1).valid, "Tab selection does not accept an index or transport value")
+let closeTab = DAWRemoteCommand(project: project, action: .closeProjectTab, target: remoteTabIDs[0])
+require(closeTab.valid && DAWRemoteAccessRules.allows(closeTab, mode: .director), "Director can request closing an issued project tab")
+require(!DAWRemoteAccessRules.allows(closeTab, mode: .observer) && !DAWRemoteAccessRules.allows(closeTab, mode: .notices), "Observer cannot close project tabs")
+require(!DAWRemoteCommand(project: project, action: .closeProjectTab).valid, "Closing requires a tab identity")
+if case .command(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.command(closeTab)) {
+    require(decoded.action == .closeProjectTab && decoded.target == remoteTabIDs[0], "Tab close command roundtrips")
+} else { fatalError("close project tab packet") }
+print("REMOTE_PROJECT_TABS_PROTOCOL_AND_ACCESS_OK")
+
+// Six banks are presentation data; no host paths or MIDI mapping crosses the wire.
+var vinhetasFixture = fixture
+let remotePad = DAWRemoteVinhetas.Pad(name: "Pad", color: 0x123456, volume: 0.5, gate: true, loaded: true, active: false)
+vinhetasFixture.vinhetas = .init(selectedPreset: 2, available: true,
+    presets: (0..<6).map { .init(name: "Preset \($0 + 1)", color: 0x654321, pads: Array(repeating: remotePad, count: 16)) })
+if case .state(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.state(vinhetasFixture)) {
+    require(decoded.vinhetas == vinhetasFixture.vinhetas, "Six banks and sixteen pads roundtrip exactly")
+} else { fatalError("Vinhetas state") }
+var invalidPads = vinhetasFixture
+invalidPads.vinhetas!.presets[0].pads.removeLast()
+require(!invalidPads.valid, "Incomplete bank is rejected before UI indexing")
+invalidPads = vinhetasFixture; invalidPads.vinhetas!.presets[0].pads[0].volume = .nan
+require(!invalidPads.valid, "Nonfinite pad volume is rejected")
+let pressID = UUID()
+let remotePress = DAWRemoteCommand(project: project, song: song, action: .vinhetasDown, target: pressID, pad: 15, preset: 5)
+for command in [remotePress,
+    DAWRemoteCommand(project: project, action: .vinhetasUp, target: pressID),
+    DAWRemoteCommand(project: project, action: .vinhetasPreset, value: 5),
+    DAWRemoteCommand(project: project, action: .vinhetasVolume, value: 0.5, pad: 0, preset: 0),
+    DAWRemoteCommand(project: project, action: .vinhetasGate, enabled: true, pad: 0, preset: 0),
+    DAWRemoteCommand(project: project, action: .vinhetasPanic)] {
+    require(command.valid && DAWRemoteAccessRules.allows(command, mode: .director), "Director may control Vinhetas")
+    require(!DAWRemoteAccessRules.allows(command, mode: .observer) && !DAWRemoteAccessRules.allows(command, mode: .notices), "Read-only modes cannot trigger or stop audio")
+    if case .command(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.command(command)) {
+        require(decoded.action == command.action && decoded.target == command.target && decoded.pad == command.pad && decoded.preset == command.preset && decoded.enabled == command.enabled, "Typed Vinhetas controls roundtrip")
+    } else { fatalError("Vinhetas command") }
+}
+for pad in [-1, 16] {
+    require(!DAWRemoteCommand(project: project, action: .vinhetasDown, target: pressID, pad: pad, preset: 0).valid, "Out-of-range pad rejected")
+}
+require(!DAWRemoteCommand(project: project, action: .vinhetasDown, target: pressID, pad: 0).valid, "Press requires bank context")
+require(!DAWRemoteCommand(project: project, action: .play, pad: 0, preset: 0).valid, "Pad metadata cannot attach to unrelated actions")
+require(!DAWRemoteCommand(project: project, action: .vinhetasGate, pad: 0, preset: 0).valid, "Gate requires explicit state")
+
+let padHost = DAWRemoteSession(role: .host, name: "Vinhetas host")
+let padClient = DAWRemoteSession(role: .client, name: "Vinhetas remote")
+let padEndpoint = try padHost.testListen()
+padHost.stateProvider = { vinhetasFixture }
+var padActions: [DAWRemoteCommand] = []
+padHost.commandHandler = { padActions.append($0) }
+padClient.testConnect(padEndpoint)
+waitFor("Vinhetas encrypted state available") { padClient.remoteState?.vinhetas != nil }
+padClient.send(remotePress); padClient.send(remotePress)
+waitFor("Press accepted once") { padActions.count == 1 }
+require(padActions[0].target == pressID, "Host preserves per-press identity")
+// Keep state feedback blocked: presses/releases must use the command path
+// immediately and must not depend on a 100 ms presentation acknowledgement.
+let immediateTCP = DAWRemoteChannel.parameters().defaultProtocolStack.transportProtocol as? NWProtocolTCP.Options
+require(immediateTCP?.noDelay == true, "Interactive commands must disable TCP batching")
+padHost.testHoldStateFeedback()
+var padDelays: [Double] = []
+for _ in 0..<24 {
+    let id = UUID(), began = ProcessInfo.processInfo.systemUptime, previous = padActions.count
+    padClient.send(.init(project: project, song: song, action: .vinhetasDown, target: id, pad: 0, preset: 2))
+    padClient.send(.init(project: project, action: .vinhetasUp, target: id))
+    waitFor("Back-to-back pad press/release") { padActions.count == previous + 2 }
+    require(padActions[previous].action == .vinhetasDown && padActions[previous + 1].action == .vinhetasUp &&
+        padActions[previous].target == id && padActions[previous + 1].target == id, "Pad command ordering")
+    padDelays.append((ProcessInfo.processInfo.systemUptime - began) * 1000)
+}
+print("REMOTE_PAD_24_ORDERED_PAIRS_NO_ACK_WAIT_OK median_ms=\(padDelays.sorted()[12]) max_ms=\(padDelays.max()!)")
+padActions = [padActions[0]]
+padClient.stop()
+waitFor("Disconnect releases only this connection's held pad") { padActions.count == 2 }
+require(padActions[1].action == .vinhetasUp && padActions[1].target == pressID, "Disconnect synthesizes release, not global Panic")
+padHost.stop()
+print("REMOTE_VINHETAS_STATE_COMMANDS_PERMISSIONS_AND_DISCONNECT_RELEASE_OK")
+
+var padFeedback = DAWRemoteVinhetasFeedback()
+let feedbackID = UUID()
+var feedbackState = vinhetasFixture.vinhetas!
+padFeedback.down(id: feedbackID, preset: 0, pad: 0, gate: false)
+require(padFeedback.lit(preset: 0, pad: 0), "Remote lights before the first host response")
+padFeedback.up(preset: 0, pad: 0); padFeedback.receive(feedbackState)
+require(padFeedback.lit(preset: 0, pad: 0), "A stale stopped snapshot cannot blank a new one-shot")
+feedbackState.receivedPresses = [feedbackID]; padFeedback.receive(feedbackState)
+require(!padFeedback.lit(preset: 0, pad: 0), "A short completed sample clears after the host acknowledges its trigger")
+feedbackState.presets[0].pads[0].active = true; padFeedback.receive(feedbackState)
+require(!padFeedback.lit(preset: 0, pad: 0), "Host activation alone does not light a Remote pad")
+padFeedback.down(id: UUID(), preset: 0, pad: 0, gate: true)
+require(padFeedback.lit(preset: 0, pad: 0), "Gate lights locally on press")
+padFeedback.up(preset: 0, pad: 0)
+require(!padFeedback.lit(preset: 0, pad: 0), "Gate release darkens immediately despite stale active host state")
+print("REMOTE_VINHETAS_LOCAL_LIGHTING_STALE_STATE_AND_SHORT_SAMPLE_COMPLETION_OK")
+
+let longFeedbackID = UUID()
+padFeedback.down(id: longFeedbackID, preset: 0, pad: 0, gate: false)
+feedbackState.receivedPresses = [longFeedbackID];feedbackState.presets[0].pads[0].active = true
+padFeedback.receive(feedbackState)
+feedbackState.receivedPresses = [];feedbackState.presets[0].pads[0].active = false
+padFeedback.receive(feedbackState)
+require(!padFeedback.lit(preset: 0, pad: 0), "A long sample still clears after its receipt leaves the bounded history")
+print("REMOTE_VINHETAS_LONG_SAMPLE_COMPLETION_AFTER_RECEIPT_HISTORY_EXPIRES_OK")
+
+// Master and track pans share the same bounded command; a missing target is the Master.
+for target in [Optional<UUID>.none, Optional(trackID)] {
+    for pan in [-1.0, 0, 0.75, 1] {
+        let command = DAWRemoteCommand(project: project, action: .pan, target: target, value: pan)
+        require(command.valid && DAWRemoteAccessRules.allows(command, mode: .director), "Master/track pan accepted for director")
+        require(!DAWRemoteAccessRules.allows(command, mode: .observer), "Pan denied for observer")
+    }
+    require(!DAWRemoteCommand(project: project, action: .pan, target: target, value: 1.01).valid, "Pan rejects out of range")
+}
+var panFixture = fixture
+panFixture.masterPan = -0.5
+if case .state(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.state(panFixture)) {
+    require(decoded.masterPan == -0.5, "Master pan survives snapshot encoding")
+} else { fatalError("Master pan snapshot missing") }
+for invalid in [-1.01, 1.01, Double.infinity, Double.nan] {
+    panFixture.masterPan = invalid
+    require(!panFixture.valid, "Master pan rejects invalid snapshot values")
+}
+print("REMOTE_MASTER_PAN_BOUNDS_AND_STATE_OK")
+
+var localGateFeedback = DAWRemoteVinhetasFeedback()
+var localGateState = vinhetasFixture.vinhetas!
+localGateState.presets[0].pads[0].gate = false
+require(localGateFeedback.toggleGate(preset: 0, pad: 0, confirmed: false, now: 10), "Gate enables before host responds")
+localGateFeedback.receive(localGateState, now: 10.1)
+require(localGateFeedback.gate(preset: 0, pad: 0, confirmed: false, now: 10.1), "Old snapshots cannot undo the local Gate")
+require(!localGateFeedback.toggleGate(preset: 0, pad: 0, confirmed: false, now: 10.2), "Second fast tap uses local state")
+localGateState.presets[0].pads[0].gate = true
+localGateFeedback.receive(localGateState, now: 10.3)
+require(!localGateFeedback.gate(preset: 0, pad: 0, confirmed: true, now: 10.3), "Late acknowledgement of first tap cannot undo second tap")
+localGateState.presets[0].pads[0].gate = false
+localGateFeedback.receive(localGateState, now: 10.4)
+localGateState.presets[0].pads[0].gate = true
+localGateFeedback.receive(localGateState, now: 10.5)
+require(localGateFeedback.gate(preset: 0, pad: 0, confirmed: true, now: 10.5), "Later desktop Gate changes remain synchronized")
+require(localGateFeedback.toggleGate(preset: 0, pad: 0, confirmed: false, now: 20), "Another local Gate change")
+require(!localGateFeedback.gate(preset: 1, pad: 0, confirmed: false, now: 20.1), "Gate changes stay within their preset")
+localGateFeedback.expireGates(now: 23)
+require(!localGateFeedback.gate(preset: 0, pad: 0, confirmed: false, now: 23), "Unconfirmed Gate changes return to authoritative state after timeout")
+print("REMOTE_GATE_LOCAL_IMMEDIATE_RAPID_TAPS_STALE_STATE_AND_PRESET_ISOLATION_OK")
+
+var advancingTitle = drawerFixture
+advancingTitle.playing = true; advancingTitle.position = 2; advancingTitle.currentRegion = regionID
+advancingTitle.focusedRegion = plainRegion
+advancingTitle.songDisplays = .init(current: "Stale song", currentBPM: nil, next: nil, nextBPM: nil, queued: nil, queuedBPM: nil, playlistSeconds: 20)
+advancingTitle.sectionPlayback = nil
+require(advancingTitle.currentSongName == "Inside", "Remote title follows drawer song rather than browsed selection or stale display")
+advancingTitle.currentRegion = plainRegion; advancingTitle.position = 12; advancingTitle.focusedRegion = regionID
+require(advancingTitle.currentSongName == "Regular", "Queue handoff updates the title while blue selection is still on previous song")
+print("REMOTE_QUEUE_HANDOFF_TITLE_OK")
+
+var selectionVisibility = advancingTitle
+selectionVisibility.playing = true
+require(!selectionVisibility.showsSetlistSelection, "Remote selection must not be blue while playing")
+selectionVisibility.playing = false; selectionVisibility.subPlaying = false
+require(selectionVisibility.showsSetlistSelection, "Stopped Remote keeps selection")
+selectionVisibility.subPlaying = true
+require(!selectionVisibility.showsSetlistSelection, "Subplay also suppresses blue selection")

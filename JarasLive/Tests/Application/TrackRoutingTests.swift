@@ -29,6 +29,251 @@ import XCTest
     func applyProjectEdit(_ p: Project) throws { try p.validate(); project = p; fullEdits += 1 }
 }
 final class TrackRoutingTests: XCTestCase {
+    func testHozMixerFiltersUseInputsAndExplicitRoutesInTrackOrder() {
+        var song = Project.empty(name: "Mixer").songs[0]
+        var tracks = ["Group", "Line", "MIDI", "Aux", "Main return", "Unpatched"].map {
+            Track(id: UUID(), name: $0, role: .other)
+        }
+        let ids = tracks.map(\.id)
+        tracks[1].parentTrackID = ids[0]
+        tracks[1].inputPatch = .stereo
+        tracks[1].routing = TrackRouting(transmitters: [ids[0]])
+        tracks[2].midiInput = 1
+        tracks[3].routing = TrackRouting(receives: [ids[2]])
+        tracks[4].routing = TrackRouting(receives: [nil], mainReceiveSlot: 0)
+        song.tracks = tracks
+        func matches(_ scope: HozMixerTrackScope = .all, _ signals: Set<HozMixerSignal> = []) -> [String] {
+            song.hozMixerTracks(tracks, scope: scope, signals: signals).map(\.name)
+        }
+        XCTAssertEqual(matches(.groups), ["Group"])
+        XCTAssertEqual(matches(.tracks), ["Line", "MIDI", "Aux", "Main return", "Unpatched"])
+        XCTAssertEqual(matches(.all, [.audio, .midi]), ["Line", "MIDI"])
+        XCTAssertEqual(matches(.all, [.sends]), ["MIDI"])
+        XCTAssertEqual(matches(.all, [.bus]), ["Aux", "Main return"])
+        XCTAssertEqual(matches(.groups, [.bus]), [])
+        XCTAssertEqual(song.hozMixerBusSources, [ids[3]: [ids[2]]])
+        song.tracks[2].routing = TrackRouting(transmitters: [ids[3]])
+        song.tracks[1].routing = TrackRouting(transmitters: [ids[0], ids[3]])
+        XCTAssertEqual(song.hozMixerBusSources, [ids[3]: [ids[1], ids[2]]])
+    }
+
+    @MainActor func testMainSendsPreserveDestinationOrderAndReplaceAtomically() throws {
+        var project = Project.empty(name: "Main sends")
+        let tracks = (0..<3).map { Track(id: UUID(), name: "Track \($0)", role: .other) }
+        project.songs[0].tracks = tracks
+        let executor = RoutingExecutor()
+        let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)
+        show.setMainSend(from: nil, to: tracks[2].id)
+        show.setMainSend(from: nil, to: tracks[0].id)
+        show.setMainSend(from: nil, to: tracks[2].id)
+        XCTAssertEqual(executor.writes, 2)
+        XCTAssertEqual(show.current?.tracks.map { $0.routing?.mainSendOrder }, [1, nil, 0])
+        show.setMainSend(from: tracks[2].id, to: tracks[1].id)
+        XCTAssertEqual(executor.writes, 3)
+        let restored = try JSONDecoder().decode(Project.self, from: JSONEncoder().encode(show.snapshot.project))
+        XCTAssertEqual(restored.songs[0].tracks.map { $0.routing?.mainSendOrder }, [1, 0, nil])
+        XCTAssertEqual(restored.songs[0].tracks.map(\.receivesMain), [true, true, false])
+        XCTAssertEqual(restored.songs[0].tracks[1].inputMonitoring, false)
+        show.setMainSend(from: tracks[1].id, to: nil)
+        XCTAssertEqual(show.current?.tracks.map(\.receivesMain), [true, false, false])
+    }
+
+    @MainActor func testCreateGroupUsesOnlySelectionAndClickedParent() throws {
+        var project = Project.empty(name: "Selected group")
+        let tracks = (0..<6).map { Track(id: UUID(), name: "Track \($0)", role: .other) }
+        project.songs[0].tracks = tracks
+        let executor = RoutingExecutor()
+        let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)
+        show.setMixerTrackSelection(Set([tracks[0].id, tracks[3].id, tracks[5].id]), anchor: tracks[0].id)
+        XCTAssertTrue(show.canCreateTrackGroup(tracks[3].id))
+        show.createTrackGroup(tracks[3].id)
+        let result = try XCTUnwrap(show.current?.tracks)
+        XCTAssertEqual(result.map(\.id), [1,2,3,0,5,4].map { tracks[$0].id })
+        for index in [0,5] { XCTAssertEqual(result.first { $0.id == tracks[index].id }?.parentTrackID, tracks[3].id) }
+        for index in [1,2,4] { XCTAssertEqual(result.first { $0.id == tracks[index].id }, tracks[index]) }
+        try show.snapshot.project.validate()
+    }
+    @MainActor func testRoutingEditsUpdateBothEndpointsAndRemoveMirror() throws {
+        var project = Project.empty(name: "Reciprocal")
+        let tracks = (0..<3).map { Track(id: UUID(), name: "Track \($0)", role: .other) }
+        project.songs[0].tracks = tracks
+        let executor = RoutingExecutor()
+        let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)
+        show.setTrackRouting([tracks[0].id], receive: false, slot: 0, other: tracks[1].id)
+        XCTAssertEqual(show.current?.tracks[1].routing?.receives.compactMap { $0 }, [tracks[0].id])
+        XCTAssertEqual(show.current?.trackConnections.count, 1)
+        show.setTrackRouting([tracks[1].id], receive: true, slot: 0, other: tracks[2].id)
+        XCTAssertTrue(show.current?.tracks[0].routing?.transmitters.compactMap { $0 }.isEmpty == true)
+        XCTAssertEqual(show.current?.tracks[2].routing?.transmitters.compactMap { $0 }, [tracks[1].id])
+        XCTAssertEqual(show.current?.trackConnections.count, 1)
+        show.removeTrackRoute([tracks[1].id], receive: true, slot: 0)
+        XCTAssertTrue(show.current?.tracks[2].routing?.transmitters.compactMap { $0 }.isEmpty == true)
+        XCTAssertEqual(show.current?.trackConnections.count, 0)
+    }
+
+    @MainActor func testSendTapsPersistPerDestinationAndResetAfterRemoval() throws {
+        var project = Project.empty(name: "Send taps")
+        let tracks = (0..<3).map { Track(id: UUID(), name: "Route \($0)", role: .other) }
+        project.songs[0].tracks = tracks
+        let show = try ShowController(executor: RoutingExecutor(), persistence: MemoryProjectStore(), initialProject: project)
+        let source = tracks[0].id, first = tracks[1].id, second = tracks[2].id
+        show.setTrackRouting([first], receive: true, slot: 0, other: source)
+        show.setTrackRouting([source], receive: false, slot: 1, other: second)
+        XCTAssertEqual(show.current?.tracks[0].routing?.transmitters, [first, second])
+        XCTAssertEqual(show.current?.tracks[1].routing?.receives, [source])
+        show.setTrackSendTap(source, destination: first, tap: .preFX)
+        show.setTrackSendTap(source, destination: second, tap: .preFader)
+        let firstSend = TrackConnection(source: source, destination: first)
+        let secondSend = TrackConnection(source: source, destination: second)
+        var liveGains: [TrackConnection: Double] = [:]
+        show.audioSendGain = { liveGains[$0] = $1 }
+        show.setTrackSendGain(firstSend, gain: 0.25, preview: true)
+        XCTAssertEqual(liveGains[firstSend], 0.25)
+        XCTAssertEqual(show.current?.tracks[0].routing?.sendGain(to: first), 1)
+        show.restoreTrackSendGain(firstSend)
+        XCTAssertEqual(liveGains[firstSend], 1)
+        show.setTrackSendGain(firstSend, gain: 0.25)
+        show.setTrackSendGain(secondSend, gain: 0.5)
+        show.setTrackSendTap(source, destination: first, tap: .postFader)
+        show.setTrackSendGain(firstSend, gain: 0.1)
+        XCTAssertEqual(show.current?.tracks[0].routing?.sendGain(to: first), 0.25)
+        show.setTrackSendTap(source, destination: first, tap: .preFX)
+        let data = try JSONEncoder().encode(show.snapshot.project)
+        let reopened = try JSONDecoder().decode(Project.self, from: data)
+        XCTAssertEqual(reopened.songs[0].tracks[0].routing?.sendTap(to: first), .preFX)
+        XCTAssertEqual(reopened.songs[0].tracks[0].routing?.sendTap(to: second), .preFader)
+        XCTAssertEqual(reopened.songs[0].tracks[0].routing?.sendGain(to: first), 0.25)
+        XCTAssertEqual(reopened.songs[0].tracks[0].routing?.sendGain(to: second), 0.5)
+        show.setTrackRouting([source], receive: false, slot: 0, other: nil)
+        show.setTrackRouting([source], receive: false, slot: 0, other: first)
+        XCTAssertEqual(show.current?.tracks[0].routing?.sendTap(to: first), .postFader)
+        XCTAssertEqual(show.current?.tracks[0].routing?.sendTap(to: second), .preFader)
+        XCTAssertEqual(show.current?.tracks[0].routing?.sendGain(to: first), 1)
+        XCTAssertEqual(show.current?.tracks[0].routing?.sendGain(to: second), 0.5)
+    }
+
+    @MainActor func testDisableRecordingInputAndRestoreLinkedPair() throws {
+        var project = Project.empty(name: "No hardware input")
+        let tracks = (0..<2).map { Track(id: UUID(), name: "Input \($0)", role: .keys) }
+        project.songs[0].tracks = tracks
+        project.songs[0].linkTracks(Set(tracks.map(\.id)), firstInput: 1, color: 0x44aa55)
+        let show = try ShowController(executor: RoutingExecutor(), persistence: MemoryProjectStore(), initialProject: project)
+        show.setRecordingInput(tracks[1].id, input: .none)
+        XCTAssertEqual(show.current?.tracks.map(\.inputPatch), [OutputPatch.none, OutputPatch.none])
+        show.setRecordingInput(tracks[1].id, input: OutputPatch(firstChannel: 4, channelCount: 1))
+        XCTAssertEqual(show.current?.tracks.map(\.inputPatch), [OutputPatch(firstChannel: 3, channelCount: 1), OutputPatch(firstChannel: 4, channelCount: 1)])
+        try show.snapshot.project.validate()
+    }
+    @MainActor func testMultipleTrackDropPreservesOrderTreesRoutingAndSingleUndo() throws {
+        var project = Project.empty(name: "Multi drag")
+        var tracks = (0..<7).map { Track(id: UUID(), name: "Track \($0)", role: .other) }
+        tracks[2].parentTrackID = tracks[1].id; tracks[2].patch = .masterGroup
+        tracks[5].parentTrackID = tracks[4].id; tracks[5].patch = .masterGroup
+        project.songs[0].tracks = tracks
+        let executor = RoutingExecutor()
+        let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)
+        show.setMixerTrackSelection([tracks[0].id, tracks[1].id, tracks[2].id], anchor: tracks[0].id)
+        XCTAssertFalse(show.canDropTrack(tracks[0].id, on: tracks[2].id, after: true))
+        show.dropTrack(tracks[0].id, on: tracks[4].id, before: tracks[5].id)
+        let result = try XCTUnwrap(show.current?.tracks)
+        XCTAssertEqual(result.map(\.id), [3,4,0,1,2,5,6].map { tracks[$0].id })
+        XCTAssertEqual(result[2].parentTrackID, tracks[4].id)
+        XCTAssertEqual(result[3].parentTrackID, tracks[4].id)
+        XCTAssertEqual(result[4], tracks[2])
+        XCTAssertEqual(result[2].primaryOutput, .masterGroup)
+        XCTAssertEqual(result[3].primaryOutput, .masterGroup)
+        XCTAssertEqual(executor.fullEdits, 1)
+        try show.snapshot.project.validate()
+        show.undo(); XCTAssertEqual(show.current?.tracks, tracks)
+        show.redo(); XCTAssertEqual(show.current?.tracks, result)
+    }
+
+    @MainActor func testCreateGroupFromOneRootIncludesAllFollowingRootsAndPreservesNestedAudioRouting() throws {
+        var project = Project.empty(name: "Create group below track")
+        var tracks = (0..<7).map { Track(id: UUID(), name: "Track \($0)", role: .other) }
+        tracks[3].parentTrackID = tracks[2].id; tracks[3].outputs = [.masterGroup]
+        tracks[4].parentTrackID = tracks[3].id; tracks[4].patch = .masterGroup
+        tracks[2].outputs = [.master, OutputPatch(firstChannel: 7, channelCount: 2)]
+        tracks[5].patch = OutputPatch.none
+        tracks[6].outputs = []
+        tracks[1].outputs = [.master, OutputPatch(firstChannel: 3, channelCount: 2)]
+        project.songs[0].tracks = tracks
+        let executor = RoutingExecutor()
+        let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)
+        XCTAssertTrue(show.current!.canCreateTrackGroup(tracks[1].id))
+        show.setMixerTrackSelection(Set(tracks.dropFirst().map(\.id)), anchor: tracks[1].id)
+        show.createTrackGroup(tracks[1].id)
+        let result = try XCTUnwrap(show.current?.tracks)
+        XCTAssertEqual(result.map(\.id), tracks.map(\.id))
+        XCTAssertEqual(result[0], tracks[0], "Tracks above the chosen master remain untouched")
+        XCTAssertEqual(result[1], tracks[1], "The folder keeps its own audio and output settings")
+        for index in [2, 5, 6] {
+            XCTAssertEqual(result[index].parentTrackID, tracks[1].id)
+            XCTAssertEqual(result[index].primaryOutput, .masterGroup)
+        }
+        XCTAssertEqual(result[2].outputPatches, [.masterGroup, OutputPatch(firstChannel: 7, channelCount: 2)])
+        XCTAssertEqual(result[3], tracks[3]); XCTAssertEqual(result[4], tracks[4])
+        XCTAssertEqual(TrackHierarchy(result).ancestors(of: tracks[4].id), [tracks[3].id, tracks[2].id, tracks[1].id])
+        try show.snapshot.project.validate()
+        XCTAssertEqual(executor.fullEdits, 1)
+        show.undo(); XCTAssertEqual(show.current?.tracks, tracks)
+        show.redo(); XCTAssertEqual(show.current?.tracks, result)
+    }
+    func testCreateGroupRejectsMembersAndSpecialTracksAndLeavesLastRootUnchanged() throws {
+        var project = Project.empty(name: "Group eligibility")
+        let click = Track(id: UUID(), name: "Click", role: TrackRole(rawValue: TrackKind.click.rawValue))
+        let pads = Track(id: UUID(), name: "VINHETAS-FX", role: TrackRole(rawValue: "vinhetas"))
+        var tracks = (0..<4).map { Track(id: UUID(), name: "Track \($0)", role: .other) }
+        tracks[1].parentTrackID = tracks[0].id; tracks[1].patch = .masterGroup
+        project.songs[0].tracks = [pads, click] + tracks
+        try project.validate()
+        let songID = project.songs[0].id
+        for id in [pads.id, click.id, tracks[1].id, tracks[3].id, UUID()] {
+            XCTAssertFalse(project.songs[0].canCreateTrackGroup(id))
+            let before = project
+            try project.createTrackGroup(id, song: songID)
+            XCTAssertEqual(project, before)
+        }
+        try project.createTrackGroup(tracks[0].id, song: songID)
+        XCTAssertEqual(project.songs[0].tracks.prefix(2), [pads, click])
+        XCTAssertEqual(project.songs[0].tracks[3], tracks[1], "Existing children keep the same route")
+        XCTAssertEqual(project.songs[0].tracks[4].parentTrackID, tracks[0].id)
+        XCTAssertEqual(project.songs[0].tracks[5].parentTrackID, tracks[0].id)
+    }
+    @MainActor func testCreateGroupRejectsAudioFeedbackAtomically() throws {
+        var project = Project.empty(name: "Reject feedback")
+        var parent = Track(id: UUID(), name: "Parent", role: .other)
+        let child = Track(id: UUID(), name: "Child", role: .other)
+        parent.routing = TrackRouting(transmitters: [child.id])
+        project.songs[0].tracks = [parent, child]
+        try project.validate()
+        let original = project
+        XCTAssertThrowsError(try project.createTrackGroup(parent.id, song: project.songs[0].id))
+        XCTAssertEqual(project, original)
+        let executor = RoutingExecutor()
+        let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)
+        show.setMixerTrackSelection(Set([parent.id,child.id]), anchor: parent.id)
+        show.createTrackGroup(parent.id)
+        XCTAssertEqual(show.snapshot.project, original)
+        XCTAssertEqual(executor.fullEdits, 0)
+        XCTAssertFalse(show.message.isEmpty)
+    }
+    func testCreateGroupKeepsLinkedPairBelowTogetherButCannotUseLinkedMaster() throws {
+        var project = Project.empty(name: "Linked children")
+        let tracks = (0..<4).map { Track(id: UUID(), name: "Track \($0)", role: .other) }
+        project.songs[0].tracks = tracks
+        project.songs[0].linkTracks([tracks[1].id, tracks[2].id], firstInput: 1, color: 0x44aa55)
+        XCTAssertFalse(project.songs[0].canCreateTrackGroup(tracks[1].id))
+        XCTAssertTrue(project.songs[0].canCreateTrackGroup(tracks[0].id))
+        try project.createTrackGroup(tracks[0].id, song: project.songs[0].id)
+        try project.validate()
+        for index in 1...3 {
+            XCTAssertEqual(project.songs[0].tracks[index].parentTrackID, tracks[0].id)
+            XCTAssertEqual(project.songs[0].tracks[index].primaryOutput, .masterGroup)
+        }
+        XCTAssertEqual(project.songs[0].tracks[1].stereoLink?.partner, tracks[2].id)
+        XCTAssertEqual(project.songs[0].tracks[2].stereoLink?.partner, tracks[1].id)
+    }
     func testLongRoutingChainValidatesWithoutRecursionAndRejectsCycleAtEnd() throws {
         var project = Project.empty(name: "Long routing chain")
         var tracks = (0..<30_000).map { Track(id: UUID(), name: "Track \($0)", role: .other) }
@@ -267,9 +512,9 @@ final class TrackRoutingTests: XCTestCase {
         var audioUpdates = 0
         show.audioUpdate = { _, _ in audioUpdates += 1 }
         show.setMixerTrackSelection([first.id, second.id, video.id, UUID()], anchor: second.id)
-        XCTAssertEqual(show.mixerTrackSelection, [first.id, second.id])
+        XCTAssertEqual(show.mixerTrackSelection, [first.id, second.id, video.id])
         XCTAssertEqual(show.selectedTrackForActions, second.id)
-        XCTAssertNotNil(show.current?.linkableTracks(show.mixerTrackSelection))
+        XCTAssertNotNil(show.current?.linkableTracks(show.mixerTrackSelection.subtracting([video.id])))
         show.setMixerTrackSelection([first.id], anchor: second.id)
         XCTAssertEqual(show.selectedTrackForActions, first.id)
         show.setMixerTrackSelection([], anchor: nil)
@@ -360,5 +605,109 @@ final class TrackRoutingTests: XCTestCase {
         controller.setTrackRouting([tracks[2].id], receive: false, slot: 1, other: tracks[0].id)
         XCTAssertEqual(controller.snapshot.project, before); XCTAssertEqual(executor.writes, 1)
         controller.undo(); XCTAssertEqual(controller.snapshot.project, p)
+    }
+}
+
+extension TrackRoutingTests {
+    @MainActor func testMatrixStrokePublishesOneFinalAudioGraphAndRejectsFeedbackAtomically() throws {
+        let rows = (0..<4).map { Track(id: UUID(), name: "Track \($0)", role: .other) }
+        var project = Project.empty(name: "Matrix stroke")
+        project.songs[0].tracks = rows
+        let executor = RoutingExecutor()
+        let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)
+        let physical = OutputPatch(firstChannel: 3, channelCount: 2)
+        let stroke: [(source: UUID?, destination: MatrixPatchDestination)] = [
+            (rows[0].id, .track(rows[1].id)), (rows[0].id, .track(rows[1].id)),
+            (rows[1].id, .track(rows[2].id)), (rows[0].id, .output(physical)), (nil, .output(physical))
+        ]
+        var calls = 0
+        show.audioMatrixPatch = { routes, outputs, master in
+            calls += 1
+            XCTAssertEqual(routes[rows[0].id]?.transmitters, [rows[1].id])
+            XCTAssertEqual(routes[rows[1].id]?.transmitters, [rows[2].id])
+            XCTAssertTrue(outputs[rows[0].id]?.contains(physical) == true)
+            XCTAssertTrue(master?.contains(physical) == true)
+        }
+        show.applyMatrixPatch(stroke, enabled: true)
+        let installed = show.snapshot.project
+        show.applyMatrixPatch(stroke, enabled: true)
+        show.applyMatrixPatch([(rows[2].id, .track(rows[3].id)), (rows[3].id, .track(rows[0].id))], enabled: true)
+        XCTAssertEqual(calls, 1)
+        XCTAssertEqual(executor.fullEdits, 1)
+        XCTAssertEqual(show.snapshot.project, installed)
+    }
+
+    @MainActor func testMatrixRemovesReceiveAndSendTogetherAndUndoRestoresBoth() throws {
+        var project = Project.empty(name: "Matrix")
+        var a = Track(id: UUID(), name: "A", role: .other)
+        var b = Track(id: UUID(), name: "B", role: .other)
+        a.routing = TrackRouting(transmitters: [b.id, b.id])
+        b.routing = TrackRouting(receives: [a.id])
+        project.songs[0].tracks = [a, b]
+        let executor = RoutingExecutor()
+        let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)
+        var updates: [UUID: TrackRouting] = [:]
+        show.audioRouting = { updates = $0 }
+        show.toggleMatrixPatch(source: a.id, destination: .track(b.id))
+        XCTAssertFalse(show.current!.matrixConnection(source: a.id, destination: b.id))
+        XCTAssertEqual(updates.count, 2)
+        XCTAssertEqual(executor.fullEdits, 1)
+        show.undo()
+        XCTAssertEqual(show.current?.tracks, [a, b])
+        show.redo()
+        XCTAssertFalse(show.current!.matrixConnection(source: a.id, destination: b.id))
+    }
+    @MainActor func testMatrixKeepsGroupMembershipAndHardwareWhenDisconnectingParent() throws {
+        var project = Project.empty(name: "Matrix group")
+        let group = Track(id: UUID(), name: "Group", role: .other)
+        var member = Track(id: UUID(), name: "Member", role: .other)
+        member.parentTrackID = group.id
+        let hardware = OutputPatch(firstChannel: 3, channelCount: 2)
+        member.outputs = [.masterGroup, hardware]
+        member.routing = TrackRouting(transmitters: [group.id])
+        project.songs[0].tracks = [group, member]
+        let show = try ShowController(executor: RoutingExecutor(), persistence: MemoryProjectStore(), initialProject: project)
+        show.toggleMatrixPatch(source: member.id, destination: .track(group.id))
+        XCTAssertEqual(show.current?.tracks[1].parentTrackID, group.id)
+        XCTAssertEqual(show.current?.tracks[1].outputPatches, [hardware])
+        XCTAssertFalse(show.current!.matrixConnection(source: member.id, destination: group.id))
+        show.toggleMatrixPatch(source: member.id, destination: .track(group.id))
+        XCTAssertTrue(show.current!.matrixConnection(source: member.id, destination: group.id))
+        XCTAssertEqual(show.current?.tracks[1].outputPatches, [hardware, .masterGroup])
+    }
+    @MainActor func testMatrixRejectsFeedbackWithoutChangingProjectOrAudio() throws {
+        var project = Project.empty(name: "Matrix feedback")
+        var a = Track(id: UUID(), name: "A", role: .other)
+        let b = Track(id: UUID(), name: "B", role: .other)
+        a.routing = TrackRouting(transmitters: [b.id])
+        project.songs[0].tracks = [a, b]
+        let executor = RoutingExecutor()
+        let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)
+        var updates = 0
+        show.audioRouting = { _ in updates += 1 }
+        show.toggleMatrixPatch(source: b.id, destination: .track(a.id))
+        XCTAssertEqual(show.snapshot.project, project)
+        XCTAssertEqual(updates, 0); XCTAssertEqual(executor.fullEdits, 0)
+        XCTAssertFalse(show.message.isEmpty)
+        show.toggleMatrixPatch(source: a.id, destination: .track(a.id))
+        XCTAssertEqual(show.snapshot.project, project)
+    }
+    @MainActor func testMatrixHardwareRoutesPreserveOthersAndCanDisableLastMasterOutput() throws {
+        var project = Project.empty(name: "Matrix hardware")
+        let a = Track(id: UUID(), name: "A", role: .other)
+        project.songs[0].tracks = [a]
+        let show = try ShowController(executor: RoutingExecutor(), persistence: MemoryProjectStore(), initialProject: project)
+        let original = a.outputPatches
+        let hardware = OutputPatch(firstChannel: 7, channelCount: 2)
+        show.toggleMatrixPatch(source: a.id, destination: .output(hardware))
+        XCTAssertEqual(show.current?.tracks[0].outputPatches, original + [hardware])
+        show.toggleMatrixPatch(source: a.id, destination: .output(hardware))
+        XCTAssertEqual(show.current?.tracks[0].outputPatches, original)
+        for patch in show.snapshot.project.masterOutputPatches {
+            show.toggleMatrixPatch(source: nil, destination: .output(patch))
+        }
+        XCTAssertEqual(show.snapshot.project.masterOutputPatches, [])
+        let data = try JSONEncoder().encode(show.snapshot.project)
+        XCTAssertEqual(try JSONDecoder().decode(Project.self, from: data).masterOutputPatches, [])
     }
 }

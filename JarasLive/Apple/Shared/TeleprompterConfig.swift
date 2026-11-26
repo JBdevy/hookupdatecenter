@@ -5,6 +5,12 @@ import AppKit
 import UIKit
 #endif
 
+@MainActor func teleprompterSetlistColor(playlist: Bool, unified: Bool) -> UInt32 {
+    if unified { return UInt32(AppearanceColor.shared("jaras.setlist.unifiedTextColor", default: 0xffeb3b).value) }
+    if playlist { return UInt32(AppearanceColor.shared("jaras.setlist.playlistTextColor", default: 0x00ff9a).value) }
+    return UInt32(AppearanceColor.shared("jaras.setlist.allRegionsTextColor", default: 0xffffff).value)
+}
+
 @MainActor final class TeleprompterPreferences: ObservableObject {
     static let shared = TeleprompterPreferences()
     static let second = TeleprompterPreferences(key: "jaras.teleprompter2.settings")
@@ -58,13 +64,17 @@ private enum TPSettingField: Identifiable {
         .color("queueNameColor", "Queued song color", \.queueNameColor),
         .color("progressColor", "Progress color", \.progressColor),
         .color("chordColor", "Chords color", \.chordColor),
-        .range("textScale", "Lyrics scale", \.textScale, 35...100),
+        .color("previewRegionColor", "Custom preview region color", \.previewUserColor),
+        .range("textScale", "Lyrics scale", \.textScale, 35...150),
         .range("clockScale", "Timer scale", \.clockScale, 35...150),
         .range("songNameScale", "Song name scale", \.songNameScale, 35...200),
         .range("queueNameScale", "Queued song scale", \.queueNameScale, 35...200),
         .toggle("mediaStretch", "Stretch", \.stretchesMedia),
         .range("mediaScale", "Media scale", \.mediaScale, 25...150),
-        .range("previewScale", "Preview depth", \.previewScale, 35...300),
+        .range("previewScale", "Preview region scale", \.previewScale, 35...300),
+        .range("previewBlockScale", "Preview block scale", \.previewBlockNameScale, 35...300),
+        .range("previewRegionDurationScale", "Preview region duration scale", \.previewRegionTimeScale, 35...300),
+        .range("previewBlockDurationScale", "Preview block duration scale", \.previewBlockTimeScale, 35...300),
         .range("localClockScale", "Local clock scale", \.localClockScale, 50...200),
         .range("chordScale", "Chords scale", \.chordScale, 10...100),
         .choice("textCase", "Text case", \.textCase, [TPOption(value: "original", label: "Original text"), TPOption(value: "uppercase", label: "UPPERCASE"), TPOption(value: "lowercase", label: "lowercase")]),
@@ -74,6 +84,7 @@ private enum TPSettingField: Identifiable {
         .choice("queueNameFontFamily", "Queued song font", \.queueNameFontFamily, [TPOption(value: "system", label: "Default"), TPOption(value: "arial", label: "ARIAL"), TPOption(value: "segoe", label: "SEGOE UI"), TPOption(value: "bahnschrift", label: "BAHNSCHRIFT"), TPOption(value: "verdana", label: "VERDANA"), TPOption(value: "tahoma", label: "TAHOMA"), TPOption(value: "georgia", label: "GEORGIA"), TPOption(value: "trebuchet", label: "TREBUCHET"), TPOption(value: "impact", label: "IMPACT"), TPOption(value: "mono", label: "MONO")]),
         .choice("chordFontFamily", "Chords font", \.chordFontFamily, [TPOption(value: "system", label: "Default"), TPOption(value: "arial", label: "ARIAL"), TPOption(value: "segoe", label: "SEGOE UI"), TPOption(value: "bahnschrift", label: "BAHNSCHRIFT"), TPOption(value: "verdana", label: "VERDANA"), TPOption(value: "tahoma", label: "TAHOMA"), TPOption(value: "georgia", label: "GEORGIA"), TPOption(value: "trebuchet", label: "TREBUCHET"), TPOption(value: "impact", label: "IMPACT"), TPOption(value: "mono", label: "MONO")]),
         .choice("textAlignment", "Lyrics alignment", \.textAlignment, [TPOption(value: "left", label: "Left"), TPOption(value: "center", label: "Center"), TPOption(value: "right", label: "Right")]),
+        .choice("previewRegionColorSource", "Preview region color", \.previewColorMode, [TPOption(value: "region", label: "Region"), TPOption(value: "setlist", label: "Setlist"), TPOption(value: "user", label: "User")]),
         .choice("clockPosition", "Timer position", \.clockPosition, [TPOption(value: "left-top", label: "Top left"), TPOption(value: "left-bottom", label: "Bottom left"), TPOption(value: "right-top", label: "Top right"), TPOption(value: "right-bottom", label: "Bottom right"), TPOption(value: "center-top", label: "Top center"), TPOption(value: "center-bottom", label: "Bottom center")]),
         .choice("localClockPosition", "Local clock position", \.localClockPosition, [TPOption(value: "left", label: "Left"), TPOption(value: "right", label: "Right")]),
         .choice("songNamePosition", "Song name position", \.songNamePosition, [TPOption(value: "top", label: "Top"), TPOption(value: "bottom", label: "Bottom")]),
@@ -95,6 +106,7 @@ private enum TPSettingField: Identifiable {
         .toggle("queueNameEnabled", "Show queued song", \.queueNameEnabled),
         .toggle("chordsEnabled", "Show chords", \.chordsEnabled),
         .toggle("ignorePreview", "Ignore Preview", \.ignoresPreview),
+        .toggle("previewLyricsEnabled", "Show lyrics alongside preview", \.showsLyricsWithPreview),
         .toggle("previewSongDurationEnabled", "Show song durations in preview", \.previewSongDurationEnabled),
         .toggle("previewBlockDurationEnabled", "Show block durations in preview", \.previewBlockDurationEnabled),
         .toggle("previewUnderlineEnabled", "Underline preview names", \.previewUnderlineEnabled),
@@ -105,15 +117,20 @@ private enum TPSettingField: Identifiable {
 
 struct TeleprompterConfig: View {
     var showingNotices = false
+    var embedded = false
+    var showsClose = true
     @ObservedObject var preferences: TeleprompterPreferences
     let close: () -> Void
     var body: some View {
         VStack(spacing: 12) {
-            HStack {
-                Text(LocalizedStringKey(showingNotices ? "Messages" : "Teleprompter settings")).font(.headline)
+            if !embedded { HStack {
+                Text(LocalizedStringKey(showingNotices ? "Messages" : "Teleprompter settings")).font(.jarasHeadline)
                 Spacer()
-                Button(action: close) { Image(systemName: "xmark").frame(width: 36,height: 36).contentShape(Rectangle()) }
-                    .buttonStyle(.plain).jarasHelp("Close")
+                if showsClose {
+                    Button(action: close) { Image(systemName: "xmark").frame(width: 36,height: 36).contentShape(Rectangle()) }
+                        .buttonStyle(.plain).jarasHelp("Close")
+                }
+            }
             }
             if !showingNotices {
                 Picker("Preset", selection: Binding(get: { preferences.selected },set: { preferences.select($0) })) {
@@ -124,9 +141,9 @@ struct TeleprompterConfig: View {
                         VStack(spacing: 12) {
                             ForEach(["Colors","Scales","Fonts and positions","Display"],id: \.self) { group in
                                 VStack(alignment: .leading,spacing: 10) {
-                                    Text(LocalizedStringKey(group)).font(.system(size: 12,weight: .bold)).foregroundStyle(JarasTheme.green)
+                                    Text(LocalizedStringKey(group)).font(.jarasSystem(size: 12,weight: .bold)).foregroundStyle(JarasTheme.green)
                                     LazyVGrid(columns: Array(repeating: GridItem(.flexible(),spacing: 8),count: geometry.size.width > 520 ? 2 : 1),spacing: 8) {
-                                        ForEach(TPSettingField.all.filter { $0.group == group }) { field in
+                                        ForEach(TPSettingField.all.filter { $0.group == group && visibleField($0) }) { field in
                                             fieldView(field).padding(9).frame(maxWidth: .infinity,minHeight: group == "Colors" || group == "Display" ? 48 : 70,alignment: .leading)
                                                 .background(JarasTheme.display).cornerRadius(6)
                                                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(JarasTheme.line))
@@ -138,17 +155,24 @@ struct TeleprompterConfig: View {
                     }
                 }
             }
-            #if os(macOS)
             if showingNotices {
                 ScrollView { TPNoticeSettingsView().frame(maxWidth: .infinity, alignment: .leading) }
             }
-            #endif
-            HStack {
-                Button("Timer settings") { TeleprompterTimerController.shared.showConfiguration() }
-                Spacer(); Button("Close",action: close).keyboardShortcut(.cancelAction)
+            if !embedded && showsClose {
+                HStack {
+                    Spacer()
+                    Button("Close", action: close).keyboardShortcut(.cancelAction)
+                }
             }
         }.padding(16).frame(minWidth: 500,idealWidth: 760,maxWidth: .infinity,minHeight: 520,idealHeight: 700,maxHeight: .infinity)
             .background(JarasTheme.panel).foregroundStyle(JarasTheme.text)
+    }
+    private func visibleField(_ field: TPSettingField) -> Bool {
+        #if os(iOS)
+        return !["clearMode", "mediaStretch", "mediaScale"].contains(field.id)
+        #else
+        return true
+        #endif
     }
     @ViewBuilder private func fieldView(_ field: TPSettingField) -> some View {
         switch field {
@@ -156,6 +180,7 @@ struct TeleprompterConfig: View {
             HStack {
                 Text(LocalizedStringKey(label)).frame(maxWidth: .infinity,alignment: .leading)
                 ColorPicker(LocalizedStringKey(label),selection: Binding(get: { Color(hex: preferences.settings[keyPath: path]) },set: { preferences.set(path,$0.teleprompterRGB) }),supportsOpacity: false).labelsHidden()
+                    .disabled(field.id == "previewRegionColor" && preferences.settings.previewColorMode != "user")
             }
         case .range(_,let label,let path,let limits):
             VStack(alignment: .leading,spacing: 5) {
@@ -166,7 +191,10 @@ struct TeleprompterConfig: View {
             VStack(alignment: .leading,spacing: 5) {
                 Text(LocalizedStringKey(label))
                 Picker(LocalizedStringKey(label),selection: Binding(get: { preferences.settings[keyPath: path] },set: { preferences.set(path,$0) })) {
-                    ForEach(options,id: \.value) { option in Text(LocalizedStringKey(option.label)).tag(option.value) }
+                    ForEach(options,id: \.value) { option in
+                        let title = field.id == "previewRegionColorSource" ? Text(verbatim: option.label) : Text(LocalizedStringKey(option.label))
+                        title.tag(option.value)
+                    }
                 }.labelsHidden().pickerStyle(.menu).frame(maxWidth: .infinity,alignment: .leading)
             }
         case .toggle(_,let label,let path):

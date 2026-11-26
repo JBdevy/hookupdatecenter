@@ -1,10 +1,14 @@
 #!/bin/bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
+export MACOSX_DEPLOYMENT_TARGET=12.0
 build_dir="$(mktemp -d "${TMPDIR:-/tmp}/jaras-effects.XXXXXX")"
 trap 'rm -rf "$build_dir"' EXIT
-clang++ -std=c++17 -fobjc-arc -c Apple/Bridge/JarasEffects.mm -o "$build_dir/effects.o"
+clang++ -O3 -std=c++17 -fobjc-arc -c Apple/Bridge/JarasEffects.mm -o "$build_dir/effects.o"
+clang++ -O3 -std=c++17 -fobjc-arc -c Apple/Bridge/JarasCatSynth.mm -o "$build_dir/catsynth.o"
+clang++ -std=c++17 -fobjc-arc -c Apple/Bridge/JarasStemSeparator.mm -o "$build_dir/stemseparator.o"
+bash scripts/prepare-drummer-test-support.sh "$build_dir"
 bash scripts/compile-vst3.sh "$build_dir"
 cp Tests/Apple/EffectsTests.swift "$build_dir/main.swift"
-swiftc -Onone -swift-version 5 -import-objc-header Apple/Bridge/JarasLive-Bridging-Header.h Application/Project/OutputPatch.swift Application/Project/NativeFXSettings.swift Application/Project/TrackRouting.swift Application/Project/MultiLoop.swift Application/Project/TrackAutomation.swift Application/Controls/NativeFXParameter.swift Application/Project/ProjectModels.swift Application/Project/MIDIItem.swift Application/Project/TimelineTempo.swift Apple/Shared/NativeEffectsChain.swift Apple/Shared/EQRealTimeAnalysis.swift "$build_dir/main.swift" "$build_dir/effects.o" "$build_dir"/vst3*.o -framework Accelerate -lc++ -o "$build_dir/test"
+swiftc -target "$(uname -m)-apple-macos12.0" -Onone -swift-version 5 -import-objc-header Apple/Bridge/JarasLive-Bridging-Header.h Application/Project/OutputPatch.swift Application/Project/DrummerPadKit.swift Application/Project/NativeFXSettings.swift Application/Project/TrackRouting.swift Application/Project/MultiLoop.swift Application/Project/TrackAutomation.swift Application/Controls/NativeFXParameter.swift Application/Project/ProjectModels.swift Application/Project/MIDIItem.swift Application/Project/ItemFade.swift Application/Project/ItemFadeCurve.swift Application/Project/TimelineTempo.swift Apple/Shared/DrummerPadAudio.swift "$build_dir/DrummerPadSupport.swift" Application/Project/AudioFileRead.swift Apple/Shared/NativeEffectsChain.swift Apple/Shared/CatStemRealtimeRuntime.swift Apple/Shared/EQRealTimeAnalysis.swift "$build_dir/main.swift" "$build_dir/effects.o" "$build_dir/catsynth.o" "$build_dir/drummer-pad.o" "$build_dir/stemseparator.o" "$build_dir"/vst3*.o -framework Accelerate -lc++ -o "$build_dir/test"
 "$build_dir/test"

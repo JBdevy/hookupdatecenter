@@ -1,0 +1,48 @@
+CatLive desktop update notice — backend contract
+
+GET https://backcatlive.up.railway.app/api/desktop-update?platform=macos&version=1.35
+The Windows client uses platform=windows. No authorization or licence data is sent.
+An installed bundle version such as 1.35.0 is sent as 1.35.
+
+HTTP 200, application/json:
+  {"enabled":true,"version":"1.36","url":"https://example.com/catlive/download"}
+
+To remove the notice:
+  {"enabled":false}
+
+enabled must be a JSON boolean. For enabled=true, version and url are required
+strings. The backend version must have exactly X.XX decimal format, for example
+1.35 or 2.00. The major component has at most nine ASCII digits; the minor
+component has exactly two. No suffixes, signs, spaces, build metadata or patch
+segment. The Windows caption also displays 1.35 rather than JUCE's 1.35.0.
+The client displays Update only when the enabled backend version is strictly
+greater than its own version. Comparison is numeric by component, without
+floating point or integer overflow; 1.35 equals an installed 1.35.0, and 1.35 is
+greater than 1.09. A valid equal or older response clears an existing notice.
+
+The URL must be an absolute HTTP or HTTPS address with a nonempty host and no
+embedded user/password, raw whitespace, backslash or control characters.
+Percent-encoded controls are also rejected. For both clients, use a valid
+hostname/IP and port, an ASCII URL of at most 2,048 bytes with non-ASCII text
+percent-encoded, and a UTF-8 JSON object of at most 16 KiB. Escaped spaces such
+as %20 are accepted in a download filename. Clicking Update opens that URL in
+the browser. It does not download/install automatically or dismiss the notice.
+
+Checks run at startup and every five minutes. macOS also checks when its network
+path reconnects; Windows retries unsuccessful checks after 60 seconds. One shared
+service handles all project tabs, with only one request in flight. Network
+timeouts are five seconds; Windows also caps response bytes and the body-reading
+window. The endpoint must return HTTP 200 directly, without a redirect, and
+current state rather than relying on cached responses.
+
+A missing endpoint, non-200 status, malformed response, invalid version/link or
+network failure has no dialog and preserves the last valid notice in memory.
+There is no disk persistence: a fresh process starts hidden until a valid newer
+release arrives. enabled=false hides the notice even without version/url.
+
+The backcatlive admin panel provides an Atualizações tab with version and URL
+fields, Lançar atualização, and Retirar aviso. Authenticated GET/POST requests to
+/jb7/api/desktop-update manage the persisted singleton notice. Writes require
+the existing admin session, same-origin check and CSRF token. A fresh backend
+starts with the notice disabled; schema updates preserve existing notices.
+Publishing the backend itself never announces a new desktop version.

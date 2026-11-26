@@ -182,7 +182,48 @@ class Mailbox:
             return self.jobs.popleft()
 
 
-class MLXBackend:
+class StreamingBackend:
+    """Shared PCM framing, crossfade and mixture consistency for inference backends."""
+    def reset(self):
+        self.context.fill(0)
+        self.previous_tail = None
+
+    def warmup(self):
+        durations = []
+        for _ in range(3):
+            began = time.perf_counter()
+            self.estimate()
+            durations.append(time.perf_counter() - began)
+        self.reset()
+        return durations
+
+    def process(self, payload):
+        np = self.np
+        pcm = np.frombuffer(payload, dtype='<f4').reshape(HOP, CHANNELS).T
+        if not np.isfinite(pcm).all():
+            raise ValueError('Input contains nonfinite samples')
+        self.context[:, :-HOP] = self.context[:, HOP:]
+        self.context[:, -HOP:] = pcm
+        if np.any(self.context):
+            output = self.estimate()
+        else:
+            # Exactly-zero captured history has no sources. Keep the preceding
+            # prediction tail's crossfade below; never threshold quiet program.
+            output = np.zeros((STEMS, CHANNELS, HOP + self.crossfade), dtype=np.float32)
+            self.skipped_silent_blocks += 1
+        if self.crossfade:
+            if self.previous_tail is not None:
+                output[:, :, :self.crossfade] = self.previous_tail * (1 - self.fade) + output[:, :, :self.crossfade] * self.fade
+            self.previous_tail = output[:, :, HOP:].copy()
+        # Mixture consistency: keep the four named estimates intact and assign
+        # their residual (including piano) to Other. At unity the five sources
+        # reconstruct the original timestamp-aligned input, including seams.
+        start = CONTEXT - RIGHT - HOP
+        output[4, :, :HOP] = self.context[:, start:start + HOP] - output[:4, :, :HOP].sum(axis=0)
+        return output[:, :, :HOP].transpose(0, 2, 1).astype('<f4', copy=False).tobytes(order='C')
+
+
+class MLXBackend(StreamingBackend):
     def __init__(self, model_dir, crossfade_frames=1024):
         if crossfade_frames < 0 or crossfade_frames > RIGHT or crossfade_frames > HOP:
             raise ValueError('Crossfade must fit within the captured right context')
@@ -234,10 +275,6 @@ class MLXBackend:
         self.fade = np.linspace(0, 1, crossfade_frames, dtype=np.float32)[None, None, :] if crossfade_frames else None
         self.model_sha = config['safetensors_sha256']
 
-    def reset(self):
-        self.context.fill(0)
-        self.previous_tail = None
-
     def estimate(self):
         np, mx = self.np, self.mx
         pcm = mx.array(self.context[None])
@@ -251,39 +288,6 @@ class MLXBackend:
             raise ValueError('Nonfinite or malformed model output')
         return output
 
-    def warmup(self):
-        durations = []
-        for _ in range(3):
-            began = time.perf_counter()
-            self.estimate()
-            durations.append(time.perf_counter() - began)
-        self.reset()
-        return durations
-
-    def process(self, payload):
-        np = self.np
-        pcm = np.frombuffer(payload, dtype='<f4').reshape(HOP, CHANNELS).T
-        if not np.isfinite(pcm).all():
-            raise ValueError('Input contains nonfinite samples')
-        self.context[:, :-HOP] = self.context[:, HOP:]
-        self.context[:, -HOP:] = pcm
-        if np.any(self.context):
-            output = self.estimate()
-        else:
-            # Exactly-zero captured history has no sources. Keep the preceding
-            # prediction tail's crossfade below; never threshold quiet program.
-            output = np.zeros((STEMS, CHANNELS, HOP + self.crossfade), dtype=np.float32)
-            self.skipped_silent_blocks += 1
-        if self.crossfade:
-            if self.previous_tail is not None:
-                output[:, :, :self.crossfade] = self.previous_tail * (1 - self.fade) + output[:, :, :self.crossfade] * self.fade
-            self.previous_tail = output[:, :, HOP:].copy()
-        # Mixture consistency: keep the four named estimates intact and assign
-        # their residual (including piano) to Other. At unity the five sources
-        # reconstruct the original timestamp-aligned input, including seams.
-        start = CONTEXT - RIGHT - HOP
-        output[4, :, :HOP] = self.context[:, start:start + HOP] - output[:4, :, :HOP].sum(axis=0)
-        return output[:, :, :HOP].transpose(0, 2, 1).astype('<f4', copy=False).tobytes(order='C')
 
 
 class Service:

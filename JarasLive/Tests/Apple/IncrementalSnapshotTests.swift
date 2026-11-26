@@ -1,9 +1,60 @@
 import Foundation
 
+private func matchesNativeProject(_ value: Project, _ full: Project) -> Bool {
+    var compared = value
+    guard compared.songs.count == full.songs.count else { return false }
+    func samePeaks(_ a: [Double], _ b: [Double]) -> Bool {
+        // Ventura's full NSNumber -> JSON -> Double reference can round a
+        // decimal peak by two ULPs. Cached arrays must retain their original
+        // bits (checked separately), while metadata remains exactly equal.
+        a.count == b.count && zip(a, b).allSatisfy { $0 == $1 || abs($0 - $1) <= 4 * max($0.ulp, $1.ulp) }
+    }
+    for song in compared.songs.indices {
+        guard compared.songs[song].tracks.count == full.songs[song].tracks.count else { return false }
+        for track in compared.songs[song].tracks.indices {
+            guard compared.songs[song].tracks[track].clips.count == full.songs[song].tracks[track].clips.count else { return false }
+            for item in compared.songs[song].tracks[track].clips.indices {
+                let clip = compared.songs[song].tracks[track].clips[item], reference = full.songs[song].tracks[track].clips[item]
+                guard samePeaks(clip.waveform, reference.waveform),
+                      (clip.waveformChannels == nil) == (reference.waveformChannels == nil),
+                      (clip.waveformChannels ?? []).count == (reference.waveformChannels ?? []).count,
+                      zip(clip.waveformChannels ?? [], reference.waveformChannels ?? []).allSatisfy({ samePeaks($0, $1) }) else { return false }
+                compared.songs[song].tracks[track].clips[item].waveform = reference.waveform
+                compared.songs[song].tracks[track].clips[item].waveformChannels = reference.waveformChannels
+            }
+        }
+    }
+    return compared == full
+}
+
 final class MeasuringSnapshotCore: JarasCoreBridge {
+    var loadMetadata = Data()
+    var loadWaveforms: [String: [Data]] = [:]
     var editData = Data()
     var retainedIDs: [String] = []
     var pastedData: Data?
+    var trackEditData = Data()
+    var trackWaveformSources: [String: String] = [:]
+    var trackSnapshotData = Data()
+    var failNextTrackSnapshot = false
+    override func load(projectData: Data, waveforms: [String: [Data]]) throws {
+        try super.load(projectData: projectData, waveforms: waveforms)
+        loadMetadata = projectData; loadWaveforms = waveforms
+    }
+    override func trackMetadataSnapshot(previousRevision: UInt64) throws -> Data {
+        let result = try super.trackMetadataSnapshot(previousRevision: previousRevision)
+        trackSnapshotData = result
+        if failNextTrackSnapshot {
+            failNextTrackSnapshot = false
+            return Data("invalid snapshot".utf8)
+        }
+        return result
+    }
+    override func applyTrackStructureEdit(_ data: Data, trackOrders: [String: [String]], preservingWaveforms: [String: String]) throws {
+        try super.applyTrackStructureEdit(data, trackOrders: trackOrders, preservingWaveforms: preservingWaveforms)
+        trackEditData = data
+        trackWaveformSources = preservingWaveforms
+    }
     override func pasteItems(_ data: Data, song: String, moving: Bool) throws {
         try super.pasteItems(data, song: song, moving: moving)
         pastedData = data
@@ -25,7 +76,7 @@ final class MeasuringSnapshotCore: JarasCoreBridge {
     func matchesFull() throws -> ShowSnapshot {
         let cached = try executor.snapshot()
         let full = try JSONDecoder().decode(ShowSnapshot.self, from: core.snapshot())
-        precondition(cached.project == full.project, "metadata hydration must exactly match the full native project")
+        precondition(matchesNativeProject(cached.project, full.project), "metadata hydration must exactly match the full native project")
         let cachedTransport = try encoder.encode(cached.transport), fullTransport = try encoder.encode(full.transport)
         precondition(cachedTransport == fullTransport, "metadata hydration cannot modify either playback head")
         precondition(cached.nextSongId == full.nextSongId)
@@ -47,6 +98,11 @@ final class MeasuringSnapshotCore: JarasCoreBridge {
     precondition(loaded.project.songs[0].tracks[0].clips[0].waveform.withUnsafeBufferPointer { $0.baseAddress } == originalStorage, "hydration shares existing immutable waveform storage instead of allocating or decoding it")
     let fullSize = try core.snapshot().count, metadataSize = try core.metadataSnapshot().count
     precondition(metadataSize * 20 < fullSize, "metadata transfer is independent of the large waveform payload")
+    precondition(core.loadMetadata.count * 20 < fullSize,
+                 "opening a project must not encode its waveform samples into JSON")
+    let rawPeaks = source.withUnsafeBytes { Data($0) }
+    precondition(core.loadWaveforms[clip.id.uuidString] == [rawPeaks, rawPeaks, Array(source.reversed()).withUnsafeBytes { Data($0) }],
+                 "the core receives the exact native bytes of every mono and channel waveform")
     var unchangedWaves = loaded.project
     unchangedWaves.songs[0].tracks[0].name = "Renamed track"
     try executor.applyProjectEdit(unchangedWaves)
@@ -111,6 +167,18 @@ final class MeasuringSnapshotCore: JarasCoreBridge {
     var invalid = project; invalid.songs[0].duration = -1
     do { try executor.load(invalid); preconditionFailure("invalid load accepted") } catch {}
     _ = try matchesFull()
+    let previousProject = try matchesFull().project
+    let invalidBuffers: [[String: [Data]]] = [
+        [:], [clip.id.uuidString: []], [clip.id.uuidString: [Data([0])]],
+        [clip.id.uuidString: [[Double.nan].withUnsafeBytes { Data($0) }]],
+        [clip.id.uuidString: [rawPeaks], UUID().uuidString: [Data()]]
+    ]
+    for buffers in invalidBuffers {
+        do { try core.load(projectData: core.loadMetadata, waveforms: buffers); preconditionFailure("invalid binary waveform load accepted") } catch {}
+        let current = try matchesFull()
+        precondition(current.project == previousProject, "a failed binary load must preserve the complete previous project")
+    }
+    print("BINARY_WAVEFORM_LOAD_EXACT_CHANNELS_SPLIT_AND_FAILURE_ATOMICITY_OK")
     var invalidTrack = imported; invalidTrack.id = UUID(); invalidTrack.clips[0].id = clip.id; invalidTrack.clips[0].waveform = [0.99]
     do { try executor.insertAudioTracks([invalidTrack], song: project.songs[0].id); preconditionFailure("duplicate clip accepted") } catch {}
     _ = try matchesFull()
@@ -239,6 +307,135 @@ final class MeasuringSnapshotCore: JarasCoreBridge {
     let reopenedStems = try reopenedChannels.snapshot().project
     precondition(reopenedStems.songs[0].tracks[0].clips[0].separatedStemTracks == stemIDs)
     print("CATSTEM_NATIVE_BRIDGE_EDIT_MIXER_SAVE_REOPEN_ASSOCIATIONS_OK")
+    let structuralCore = MeasuringSnapshotCore(), structural = LocalCommandExecutor(core: structuralCore)
+    var large = project
+    large.songs[0].tracks = (0..<32).map { index in
+        var value = track; value.id = UUID(); value.name = "Track \(index)"
+        value.clips[0].id = UUID(); return value
+    }
+    try structural.load(large)
+    let before = try structural.snapshot().project
+    var added = before
+    let empty = Track(id: UUID(), name: "Added", role: .keys)
+    added.songs[0].tracks.insert(empty, at: 2)
+    added.songs[0].tracks[4].volume = 0.4
+    try structural.applyTrackStructureEdit(added, previous: before)
+    let delta = try JSONSerialization.jsonObject(with: structuralCore.trackEditData) as! [String: Any]
+    let deltaTracks = ((delta["songs"] as! [[String: Any]])[0]["tracks"] as! [[String: Any]])
+    precondition(deltaTracks.count == 2, "Adding a track and changing another transmits only those two tracks")
+    func canonicalStructure() throws -> Project {
+        let value = try structural.snapshot().project
+        let full = try JSONDecoder().decode(ShowSnapshot.self, from: structuralCore.snapshot()).project
+        precondition(matchesNativeProject(value, full), "Structural delta must match the complete canonical native project")
+        return value
+    }
+    let afterAdded = try canonicalStructure()
+    precondition(afterAdded == added && afterAdded.songs[0].tracks[2].id == empty.id)
+    func returnedTrackCount() throws -> Int {
+        let response = try JSONSerialization.jsonObject(with: structuralCore.trackSnapshotData) as! [String: Any]
+        let snapshot = response["snapshot"] as! [String: Any], project = snapshot["project"] as! [String: Any]
+        return (project["songs"] as! [[String: Any]]).reduce(0) { $0 + ($1["tracks"] as! [[String: Any]]).count }
+    }
+    let changedTrackCount = try returnedTrackCount()
+    precondition(changedTrackCount == 2, "Snapshot decodes only the added and edited tracks")
+    let unchangedSnapshot = try canonicalStructure(), unchangedTrackCount = try returnedTrackCount()
+    precondition(unchangedSnapshot == afterAdded && unchangedTrackCount == 0, "Repeated reads retain canonical tracks without decoding them again")
+    let fullMetadataSize = try structuralCore.metadataSnapshot().count
+    precondition(structuralCore.trackSnapshotData.count * 3 < fullMetadataSize)
+    let (copied, copiedIDs) = try afterAdded.trackDuplicationDraft([afterAdded.songs[0].tracks[0].id], song: afterAdded.songs[0].id)
+    var invalidDraft = copied
+    let draftIndex = invalidDraft.songs[0].tracks.firstIndex { copiedIDs.contains($0.id) }!
+    invalidDraft.songs[0].tracks[draftIndex].clips[0].duration = -1
+    do { try structural.applyTrackStructureEdit(invalidDraft, previous: afterAdded); preconditionFailure("Invalid copied metadata accepted") } catch {}
+    let afterInvalidDraft = try canonicalStructure()
+    precondition(afterInvalidDraft == afterAdded, "Draft construction does not commit invalid copied metadata")
+    invalidDraft = copied
+    invalidDraft.songs[0].tracks[draftIndex].clips[0].waveform = [.nan]
+    do { try structural.applyTrackStructureEdit(invalidDraft, previous: afterAdded); preconditionFailure("Invalid copied waveform accepted") } catch {}
+    let afterInvalidDraftWaveform = try canonicalStructure()
+    precondition(afterInvalidDraftWaveform == afterAdded, "Draft construction cannot bypass waveform validation")
+    try structural.execute(.play, target: nil, value: 0)
+    try structural.execute(.subPlay, target: nil, value: 0)
+    structural.advance(1)
+    let running = try structural.playbackSnapshot()
+    try structural.applyTrackStructureEdit(copied, previous: afterAdded)
+    let afterCopy = try canonicalStructure(), afterCopyPlayback = try structural.playbackSnapshot()
+    precondition(afterCopy == copied)
+    precondition(afterCopyPlayback.transport == running.transport, "Duplicating tracks preserves both running playback heads")
+    let copyDelta = try JSONSerialization.jsonObject(with: structuralCore.trackEditData) as! [String: Any]
+    let copyTracks = (copyDelta["songs"] as! [[String: Any]])[0]["tracks"] as! [[String: Any]]
+    precondition(copyTracks.count == copiedIDs.count, "Duplicate transmits only the new tracks")
+    let copyItems = copyTracks.flatMap { $0["clips"] as! [[String: Any]] }
+    precondition(copyItems.allSatisfy { ($0["waveform"] as? [Double])?.isEmpty == true && $0["waveformChannels"] == nil }, "Copies omit the immutable waveform arrays, including every stereo channel")
+    precondition(structuralCore.trackWaveformSources.count == copyItems.count && structuralCore.trackWaveformSources.allSatisfy { $0.key != $0.value }, "Copies reuse the waveform of an existing native item under their new IDs")
+    let copiesWithWaveforms = try JSONEncoder().encode(copied.songs[0].tracks.filter { copiedIDs.contains($0.id) })
+    precondition(structuralCore.trackEditData.count * 20 < copiesWithWaveforms.count)
+    let badOrder = [copied.songs[0].id.uuidString: [UUID().uuidString]]
+    do { try structuralCore.applyTrackStructureEdit(structuralCore.trackEditData, trackOrders: badOrder, preservingWaveforms: [:]); preconditionFailure("Unknown retained track accepted") } catch {}
+    let afterFailure = try canonicalStructure(), afterFailurePlayback = try structural.playbackSnapshot()
+    precondition(afterFailure == copied && afterFailurePlayback.transport == afterCopyPlayback.transport, "Invalid structural delta is atomic")
+    let completeOrder = [copied.songs[0].id.uuidString: copied.songs[0].tracks.map { $0.id.uuidString }]
+    let invalidSource = [copyItems[0]["id"] as! String: UUID().uuidString]
+    do { try structuralCore.applyTrackStructureEdit(structuralCore.trackEditData, trackOrders: completeOrder, preservingWaveforms: invalidSource); preconditionFailure("Unknown waveform source accepted") } catch {}
+    let afterInvalidSource = try canonicalStructure()
+    precondition(afterInvalidSource == copied, "A missing waveform source leaves the native project unchanged")
+    var changedCopy = copied
+    let copyIndex = changedCopy.songs[0].tracks.firstIndex { copiedIDs.contains($0.id) }!
+    let changedItemID = changedCopy.songs[0].tracks[copyIndex].clips[0].id
+    changedCopy.songs[0].tracks[copyIndex].clips[0].waveform = [0.3, 0.6]
+    changedCopy.songs[0].tracks[copyIndex].clips[0].waveformChannels = [[0.1, 0.2], [0.4, 0.5]]
+    try structural.applyTrackStructureEdit(changedCopy, previous: copied)
+    let changedCopyState = try canonicalStructure()
+    precondition(changedCopyState == changedCopy && structuralCore.trackWaveformSources[changedItemID.uuidString] == nil, "Edited waveform arrays are transferred instead of borrowing another item's old values")
+    try structural.applyTrackStructureEdit(before, previous: changedCopy)
+    let undone = try canonicalStructure()
+    precondition(undone == before, "Undo removes new tracks and restores edited tracks and waveforms")
+    try structural.execute(.volume, target: before.songs[0].tracks[0].id, value: 0.3)
+    structuralCore.failNextTrackSnapshot = true
+    do { _ = try structural.snapshot(); preconditionFailure("Broken snapshot decoded") } catch {}
+    let recovered = try canonicalStructure(), recoveredTracks = try returnedTrackCount()
+    precondition(recovered.songs[0].tracks[0].volume == 0.3 && recoveredTracks == before.songs[0].tracks.count,
+                 "A lost response requests a complete canonical snapshot without missing edits")
+    _ = try structuralCore.trackMetadataSnapshot(previousRevision: 0)
+    let afterOtherReader = try canonicalStructure(), otherReaderTrackCount = try returnedTrackCount()
+    precondition(afterOtherReader == recovered && otherReaderTrackCount == before.songs[0].tracks.count,
+                 "Another snapshot reader cannot desynchronize the retained track cache")
+    var reordered = recovered
+    reordered.songs[0].tracks.swapAt(0, 1)
+    try structural.applyTrackStructureEdit(reordered, previous: recovered)
+    let afterReorder = try canonicalStructure(), reorderedTrackCount = try returnedTrackCount()
+    precondition(afterReorder == reordered && reorderedTrackCount == 0, "Canonical order changes retain existing track values")
+    var replacementProject = Project.empty(name: "Replacement with reused IDs")
+    replacementProject.songs[0] = reordered.songs[0]
+    replacementProject.setlists[0].songIds = [replacementProject.songs[0].id]
+    replacementProject.songs[0].tracks[0].clips[0].waveform = [0.7]
+    try structural.execute(.stopAll, target: nil, value: 0)
+    try structural.load(replacementProject)
+    let afterReplacement = try canonicalStructure()
+    precondition(afterReplacement.id == replacementProject.id && afterReplacement.songs[0].tracks[0].clips[0].waveform == [0.7],
+                 "Project replacement refreshes media arrays even when canonical track metadata is unchanged")
+    var noPeaks = afterReplacement
+    noPeaks.songs[0].tracks[0].clips[0].waveform = []
+    noPeaks.songs[0].tracks[0].clips[0].waveformChannels = nil
+    try structural.applyTrackStructureEdit(noPeaks, previous: afterReplacement)
+    let emptyPeaks = try canonicalStructure()
+    precondition(emptyPeaks == noPeaks, "Removing waveform arrays hydrates canonical empty storage on unchanged metadata")
+    var noPeaksOnLoad = Project.empty(name: "No waveform on load")
+    noPeaksOnLoad.songs[0].parts = [Part(id: UUID(), name: "Region", startTime: 0, endTime: 60)]
+    var noPeaksTrack = Track(id: UUID(), name: "Silent audio", role: .other)
+    noPeaksTrack.clips = [AudioClip(id: UUID(), name: "Empty peaks", startTime: 0, duration: 1)]
+    noPeaksOnLoad.songs[0].tracks = [noPeaksTrack]
+    try structural.load(noPeaksOnLoad)
+    _ = try canonicalStructure()
+    try structural.addTrack(id: UUID(), name: "Timecode", role: TrackRole(rawValue: "timecode"))
+    let nativeTimecode = try canonicalStructure()
+    let timecodeID = nativeTimecode.songs[0].tracks.first { $0.kind == .timecode }!.id
+    try structural.resizeRegion(nativeTimecode.songs[0].parts[0].id, start: 0, end: 80)
+    let normalizedTimecode = try canonicalStructure()
+    precondition(normalizedTimecode.songs[0].tracks.first { $0.id == timecodeID }?.clips != nativeTimecode.songs[0].tracks.first { $0.id == timecodeID }?.clips,
+                 "Snapshot returns regenerated timecode items after a native region edit")
+    print("TRACK_METADATA_DELTA_CANONICAL_ORDER_CHANGED_TRACKS_FAILURE_RECOVERY_OTHER_READER_AND_PROJECT_REPLACEMENT_OK")
+    print("TRACK_STRUCTURE_DELTA_OMITS_UNCHANGED_TRACKS_PRESERVES_ORDER_WAVEFORMS_PLAYBACK_UNDO_AND_ATOMIC_FAILURE_OK")
     print("LOCAL_METADATA_SNAPSHOT_CACHE_COW_IMPORT_RECORD_SPLIT_UNDO_FAILURE_AND_TRANSPORT_OK fullBytes=\(fullSize) metadataBytes=\(metadataSize) retainedEditBytes=\(retainedEditBytes)")
 }
 try MainActor.assumeIsolated { try runSnapshotCacheTests() }

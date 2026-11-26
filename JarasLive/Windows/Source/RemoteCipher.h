@@ -88,6 +88,7 @@ class Cipher final {
     }
     Cipher(const Cipher &) = delete;
     Cipher &operator=(const Cipher &) = delete;
+    MemoryBlock sessionBinding;
     Bytes hello() const {
         Bytes value{0x4a, 0x44, 1, 2, role};
         append(value, publicKey.data(), publicKey.size());
@@ -113,6 +114,7 @@ class Cipher final {
         append(transcript, role == host ? mine : peer);
         append(transcript, role == host ? peer : mine);
         const auto salt = SHA256(transcript.data(), transcript.size()).getRawData();
+        sessionBinding = salt;
         try {
             outgoing = derive(shared, salt, role == host ? "host-to-client" : "client-to-host");
             incoming = derive(shared, salt, role == host ? "client-to-host" : "host-to-client");

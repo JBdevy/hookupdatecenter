@@ -15,9 +15,11 @@ import XCTest
         transport.playing = false; transport.subPlay.playing = false
         transport.songId = project.songs.first?.id; transport.position = 0; transport.editPosition = 0
     }
+    func applyProjectEdit(_ project: Project) throws { self.project = project }
     func execute(_ command: ShowCommand, target: UUID?, value: Double) throws {
         commands.append((command, target))
         switch command {
+        case .seek: transport.position = value; transport.editPosition = value
         case .editSeek: transport.editPosition = value; if !transport.playing { transport.position = value }
         case .select: transport.songId = target
         case .play:
@@ -53,12 +55,112 @@ import XCTest
     func snapshot() throws -> ShowSnapshot { snapshotCount += 1; return ShowSnapshot(project: project, transport: transport) }
     func playbackSnapshot() throws -> PlaybackSnapshot { PlaybackSnapshot(transport: transport) }
     func configureRegionSetlist(_ state: RegionSetlist) throws { project.regionSetlist = state }
+    func setRegionInit(_ id: UUID, count: Int, bars: Bool) throws {
+        for s in project.songs.indices { for r in project.songs[s].parts.indices where project.songs[s].parts[r].id == id {
+            if bars { project.songs[s].parts[r].subplayInitBars = count }
+            else { project.songs[s].parts[r].subplayInitBars = nil; project.songs[s].parts[r].subplayInitSeconds = Double(count) }
+        } }
+    }
     func advance(_ elapsed: Double) { transport.position += elapsed }
     func finishCurrentSong(_ enabled: Bool) {}
 }
 
 final class ProjectCursorTests: XCTestCase {
-    @MainActor func testHeaderClickPausesFollowWithoutSeekingOrChangingRegionSelection() throws {
+    @MainActor func testMultipleItemResizeCommitsBothEdgesAsOneUndoStep() throws {
+        var project = Project.empty(name: "Multiple resize")
+        var firstTrack = Track(id: UUID(), name: "First", role: .keys)
+        var secondTrack = Track(id: UUID(), name: "Second", role: .keys)
+        let first = AudioClip(id: UUID(), name: "First", startTime: 10, duration: 10, midi: MIDIItem())
+        let second = AudioClip(id: UUID(), name: "Second", startTime: 30, duration: 20, midi: MIDIItem())
+        let untouched = AudioClip(id: UUID(), name: "Other", startTime: 60, duration: 5, midi: MIDIItem())
+        firstTrack.clips = [first, untouched]; secondTrack.clips = [second]
+        project.songs[0].tracks = [firstTrack, secondTrack]; project.songs[0].duration = 120
+        let show = try ShowController(executor: CursorExecutor(), persistence: MemoryProjectStore(), initialProject: project)
+        let original = show.snapshot.project
+        show.resizeItems([first.id: (12, 20), second.id: (32, 50)])
+        var clips = try XCTUnwrap(show.current).tracks.flatMap(\.clips)
+        XCTAssertEqual(clips.first { $0.id == first.id }?.startTime, 12)
+        XCTAssertEqual(clips.first { $0.id == second.id }?.startTime, 32)
+        XCTAssertEqual(clips.first { $0.id == untouched.id }, untouched)
+        show.undo()
+        XCTAssertEqual(show.snapshot.project, original, "One undo restores the entire selection")
+        show.resizeItems([first.id: (10, 23), second.id: (30, 53)])
+        clips = try XCTUnwrap(show.current).tracks.flatMap(\.clips)
+        XCTAssertEqual(clips.first { $0.id == first.id }?.duration, 13)
+        XCTAssertEqual(clips.first { $0.id == second.id }?.duration, 23)
+        XCTAssertEqual(clips.first { $0.id == untouched.id }, untouched)
+        let resized = show.snapshot.project
+        show.undo(); XCTAssertEqual(show.snapshot.project, original)
+        show.redo(); XCTAssertEqual(show.snapshot.project, resized)
+    }
+
+    @MainActor func testUnifiedSelectionTempoEditsOnlySongUnderEditCursor() throws {
+        var project = Project.empty(name: "Unified tempo")
+        let group = Part(id: UUID(), name: "Unified", startTime: 0, endTime: 60)
+        var a = Part(id: UUID(), name: "First", startTime: 0, endTime: 25); a.parentRegionID = group.id
+        var b = Part(id: UUID(), name: "Second", startTime: 20, endTime: 45); b.parentRegionID = group.id
+        var c = Part(id: UUID(), name: "Third", startTime: 40, endTime: 60); c.parentRegionID = group.id
+        project.songs[0].parts = [a, b, c, group]; project.songs[0].duration = 60
+        project.songs[0].markers = [(a, 120.0), (b, 146.0), (c, 164.0)].map { part, bpm in
+            TimelineMarker(id: UUID(), name: "TEMPO", position: part.startTime, color: 0,
+                regionOwnerID: part.id, tempoBPM: bpm, tempoTimebase: .free, tempoReferenceBPM: bpm)
+        }
+        let executor = CursorExecutor()
+        let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)
+        show.focusRegion(group.id)
+        show.send(.editSeek, value: 23)
+        XCTAssertEqual(show.tempoControlBPM, 146)
+        show.adjustTempo(1)
+        XCTAssertEqual(show.current?.markers?.first { $0.regionOwnerID == a.id }?.tempoBPM, 120)
+        XCTAssertEqual(show.current?.markers?.first { $0.regionOwnerID == b.id }?.tempoBPM, 147)
+        XCTAssertEqual(show.current?.markers?.first { $0.regionOwnerID == c.id }?.tempoBPM, 164)
+    }
+    @MainActor func testAutomaticSubplaySecondsAndBarsPersistAndSwitchUnits() throws {
+        var project = Project.demo()
+        project.songs[0].parts = [Part(id: UUID(), name: "Next song", startTime: 0, endTime: 60)]
+        project.songs[0].duration = max(project.songs[0].duration, 60)
+        let show = try ShowController(executor: CursorExecutor(), persistence: MemoryProjectStore(), initialProject: project)
+        XCTAssertEqual(show.regionSetlist.subplayLeadSelection, 1)
+        for count in 1...5 {
+            show.setAutomaticSubplay(true, bars: count)
+            XCTAssertEqual(show.regionSetlist.automaticSubplayBars, count)
+            XCTAssertEqual(show.regionSetlist.subplayLeadSelection, count * 2)
+            show.setAutomaticSubplay(false)
+            XCTAssertEqual(show.regionSetlist.automaticSubplayBars, count)
+            let restored = try JSONDecoder().decode(RegionSetlist.self, from: JSONEncoder().encode(show.regionSetlist))
+            XCTAssertEqual(restored, show.regionSetlist)
+            show.setAutomaticSubplay(true, seconds: Double(count))
+            XCTAssertNil(show.regionSetlist.automaticSubplayBars)
+            XCTAssertEqual(show.regionSetlist.subplayLeadSelection, count * 2 - 1)
+        }
+        show.setAutomaticSubplay(true, next: true)
+        XCTAssertEqual(show.regionSetlist.subplayLeadSelection, 11)
+        show.setAutomaticSubplay(false)
+        XCTAssertEqual(show.regionSetlist.subplayLeadSelection, 11)
+        let next = try JSONDecoder().decode(RegionSetlist.self, from: JSONEncoder().encode(show.regionSetlist))
+        XCTAssertTrue(next.automaticSubplayNext == true)
+        show.setAutomaticSubplay(true, bars: 2)
+        XCTAssertFalse(show.regionSetlist.automaticSubplayNext == true)
+        let region = try XCTUnwrap(show.current?.parts.first)
+        show.setRegionInit(region.id, selection: 6)
+        XCTAssertEqual(show.current?.parts.first?.subplayInitBars, 3)
+        show.setRegionInit(region.id, selection: 3)
+        XCTAssertNil(show.current?.parts.first?.subplayInitBars)
+        XCTAssertEqual(show.current?.parts.first?.subplayInitSeconds, 2)
+        show.setRegionInit(region.id, selection: 4)
+        show.setRegionInit(region.id, selection: 0)
+        let zero = try XCTUnwrap(show.current?.parts.first)
+        XCTAssertNil(zero.subplayInitBars)
+        XCTAssertEqual(zero.subplayInitSeconds, 0)
+        XCTAssertEqual(zero.subplayInitSelection, 0)
+        let restoredZero = try JSONDecoder().decode(Part.self, from: JSONEncoder().encode(zero))
+        XCTAssertEqual(restoredZero.subplayInitSeconds, 0)
+        XCTAssertEqual(restoredZero.subplayInitSelection, 0)
+        let legacy = try JSONDecoder().decode(RegionSetlist.self, from: Data(#"{"playlists":[],"autoAdvance":false,"automaticSubplay":true,"automaticSubplaySeconds":3}"#.utf8))
+        XCTAssertNil(legacy.automaticSubplayBars)
+        XCTAssertEqual(legacy.subplayLeadSelection, 5)
+    }
+    @MainActor func testEmptyRegionBandClickPausesFollowWithoutSeekingOrChangingSelection() throws {
         var project = Project.empty(name: "Header navigation")
         let part = Part(id: UUID(), name: "Song", startTime: 10, endTime: 40)
         project.songs[0].parts = [part]; project.songs[0].duration = 40
@@ -74,7 +176,7 @@ final class ProjectCursorTests: XCTestCase {
         XCTAssertEqual(show.timelineZoomPosition, 27)
         XCTAssertEqual(show.snapshot.transport.position, position)
         XCTAssertEqual(show.snapshot.transport.editPosition, 27)
-        XCTAssertNil(show.selectedTimelineRegion, "Blank header, marker and ruler clicks must not select another band")
+        XCTAssertNil(show.selectedTimelineRegion, "The empty part of the band does not select any region")
         XCTAssertEqual(show.regionFocusRequest, focusRequest, "Pausing follow must not recenter the grid")
         show.selectTimelineRegion(part.id)
         XCTAssertEqual(show.snapshot.transport.editPosition, 27, "The band selects without seeking to the region start")
@@ -88,6 +190,102 @@ final class ProjectCursorTests: XCTestCase {
         XCTAssertEqual(show.selectedTimelineRegion, part.id, "Header interaction preserves the white selection")
     }
 
+    @MainActor func testRepeatedTimedItemPauseReplacesDeadlineAndSurvivesRegionChange() async throws {
+        var project = Project.empty(name: "Item follow")
+        let first = Part(id: UUID(), name: "First", startTime: 0, endTime: 10)
+        let second = Part(id: UUID(), name: "Second", startTime: 10, endTime: 20)
+        project.songs[0].parts = [first, second]
+        project.songs[0].duration = 20
+        let executor = CursorExecutor()
+        let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)
+        show.send(.play)
+        show.pauseTimelineFollow(resumingAfter: 0.05)
+        show.pauseTimelineFollow(resumingAfter: 0.5)
+        executor.transport.position = 10
+        executor.transport.regionId = second.id
+        show.tick()
+        XCTAssertTrue(show.timelineFollowPaused, "A region crossing must preserve a timed item pause")
+        try await Task.sleep(nanoseconds: 150_000_000)
+        XCTAssertTrue(show.timelineFollowPaused, "The first item's timer cannot resume the new pause")
+        try await Task.sleep(nanoseconds: 450_000_000)
+        XCTAssertFalse(show.timelineFollowPaused)
+    }
+
+    @MainActor func testRegionBandSelectionExtendsInTimeOrderAndTogglesWithoutSeeking() throws {
+        var project = Project.empty(name: "Range selection")
+        let parts = (0..<5).map { Part(id: UUID(), name: "Region \($0)", startTime: Double($0 * 10), endTime: Double($0 * 10 + 9)) }
+        project.songs[0].parts = parts.reversed()
+        project.songs[0].duration = 50
+        let show = try ShowController(executor: CursorExecutor(), persistence: MemoryProjectStore(), initialProject: project)
+        show.send(.editSeek, value: 7)
+        show.selectTimelineRegion(parts[1].id)
+        show.selectTimelineRegion(parts[4].id, extending: true)
+        XCTAssertEqual(show.selectedTimelineRegions, Set(parts[1...4].map(\.id)))
+        show.selectTimelineRegion(parts[2].id, extending: true)
+        XCTAssertEqual(show.selectedTimelineRegions, Set(parts[1...2].map(\.id)), "Repeated Shift clicks keep the original anchor")
+        show.selectTimelineRegion(parts[0].id, extending: true)
+        XCTAssertEqual(show.selectedTimelineRegions, Set(parts[0...1].map(\.id)), "Intervals work in reverse")
+        show.selectTimelineRegion(parts[4].id, toggling: true)
+        XCTAssertEqual(show.selectedTimelineRegions, Set([parts[0].id, parts[1].id, parts[4].id]))
+        show.selectTimelineRegion(parts[1].id, toggling: true)
+        XCTAssertEqual(show.selectedTimelineRegions, Set([parts[0].id, parts[4].id]))
+        XCTAssertEqual(show.snapshot.transport.editPosition, 7)
+        XCTAssertEqual(show.timelinePresentationState.selectedRegions, show.selectedTimelineRegions)
+        show.selectTimelineRegion(parts[2].id)
+        XCTAssertEqual(show.selectedTimelineRegions, [parts[2].id])
+        try show.replaceProject(Project.empty(name: "Other"))
+        XCTAssertTrue(show.selectedTimelineRegions.isEmpty)
+    }
+
+    @MainActor func testPlaybackAdvanceAccountsForDelayedFirstRecordingSampleWithoutCountingSeeks() throws {
+        let executor = CursorExecutor()
+        var now = 1.0
+        let show = try ShowController(executor: executor, persistence: MemoryProjectStore(),
+                                      initialProject: Project.empty(name: "Recording"), playbackClock: { now })
+        show.send(.play)
+        defer { show.send(.stop) }
+        now = 1.35
+        let recordStart = show.snapshot.transport.position
+        let engineTimeAtRecordStart = show.timelinePlaybackAdvance
+        now = 1.39
+        show.tick()
+        XCTAssertEqual(show.timelinePlaybackAdvance - engineTimeAtRecordStart, 0.39, accuracy: 0.000001)
+        XCTAssertEqual(show.snapshot.transport.position,
+                       recordStart + show.timelinePlaybackAdvance - engineTimeAtRecordStart, accuracy: 0.000001)
+        let advanceBeforeSeek = show.timelinePlaybackAdvance
+        now = 1.65
+        show.send(.editSeek, value: 3)
+        XCTAssertEqual(show.timelinePlaybackAdvance - advanceBeforeSeek, 0.26, accuracy: 0.000001)
+        XCTAssertEqual(show.snapshot.transport.position, 0.65, accuracy: 0.000001)
+        let advanceBeforeJump = show.timelinePlaybackAdvance
+        show.send(.seek, value: 5)
+        XCTAssertEqual(show.snapshot.transport.position, 5)
+        XCTAssertEqual(show.timelinePlaybackAdvance, advanceBeforeJump)
+    }
+
+    @MainActor func testZoomAnchorChangesOnlyAfterAnExplicitCursorMove() throws {
+        let executor = CursorExecutor()
+        let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: Project.empty(name: "Zoom"))
+        show.send(.editSeek, value: 3)
+        show.send(.play)
+        executor.transport.position = 25
+        show.tick()
+        XCTAssertEqual(show.timelineZoomPosition, 3)
+        show.send(.seek, value: 40)
+        executor.transport.position = 45
+        show.tick()
+        XCTAssertEqual(show.timelineZoomPosition, show.snapshot.transport.position)
+        show.send(.editSeek, value: 12)
+        XCTAssertEqual(show.timelineZoomPosition, 12)
+        XCTAssertGreaterThan(show.snapshot.transport.position, 40)
+        show.send(.seek, value: 20)
+        show.send(.stop)
+        show.send(.play)
+        executor.transport.position = 30
+        show.tick()
+        XCTAssertEqual(show.timelineZoomPosition, 20)
+    }
+
     @MainActor func testRegionBandClickPausesFollowUntilStopOrNextSongAndKeepsHighlight() throws {
         var project = Project.empty(name: "Navigation")
         let first = Part(id: UUID(), name: "First", startTime: 0, endTime: 10)
@@ -98,7 +296,7 @@ final class ProjectCursorTests: XCTestCase {
         show.send(.play)
         show.send(.editSeek, value: 4)
         XCTAssertFalse(show.timelineFollowPaused, "Editing the cursor alone must not disable continuous follow")
-        XCTAssertEqual(show.timelineZoomPosition, show.snapshot.transport.position)
+        XCTAssertEqual(show.timelineZoomPosition, 4)
         show.selectTimelineRegion(first.id)
         XCTAssertTrue(show.timelineFollowPaused)
         XCTAssertEqual(show.selectedTimelineRegion, first.id)
@@ -111,7 +309,7 @@ final class ProjectCursorTests: XCTestCase {
         show.tick()
         XCTAssertFalse(show.timelineFollowPaused, "Starting another song resumes follow")
         XCTAssertEqual(show.selectedTimelineRegion, first.id, "Playback changes must preserve the white band selection")
-        XCTAssertEqual(show.timelineZoomPosition, 10, accuracy: 0.05)
+        XCTAssertEqual(show.timelineZoomPosition, 6)
         show.selectTimelineRegion(first.id)
         XCTAssertTrue(show.timelineFollowPaused, "Clicking the same highlighted band must pause again")
         show.send(.stop)
@@ -235,6 +433,7 @@ final class ProjectCursorTests: XCTestCase {
                 XCTAssertEqual(show.regionFocusRequest, gridRequest)
                 XCTAssertNotEqual(show.setlistFocusRequest, listRequest)
                 XCTAssertEqual(show.snapshot.transport.queuedRegionId, target)
+                XCTAssertEqual(show.focusedRegion, target == nil ? nil : queued.id, "Removing the queued song must not leave it blue")
                 XCTAssertEqual(show.snapshot.transport.subPlay.playing, subplay)
                 XCTAssertEqual(show.snapshot.transport.position, 20, accuracy: 0.1)
             }
@@ -245,6 +444,47 @@ final class ProjectCursorTests: XCTestCase {
         executor.regionCommandResult = nil
         show.focusRegion(queued.id)
         XCTAssertNotEqual(show.regionFocusRequest, gridRequest, "Stopped selection must still reveal the song")
+    }
+    @MainActor func testKeyboardSelectionPreparesAfterNaturalEndWithoutStartingPlayback() throws {
+        var project = Project.empty(name: "Keyboard ready")
+        let first = Part(id: UUID(), name: "First", startTime: 0, endTime: 10)
+        let second = Part(id: UUID(), name: "Second", startTime: 10, endTime: 20)
+        let third = Part(id: UUID(), name: "Third", startTime: 20, endTime: 30)
+        project.songs[0].parts = [first, second, third]; project.songs[0].duration = 30
+        let executor = CursorExecutor()
+        let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)
+        show.focusRegion(first.id); show.send(.play)
+        show.stepRegion(1, commitAfterDelay: false); show.stepRegion(1, commitAfterDelay: false)
+        XCTAssertEqual(show.focusedRegion, third.id); XCTAssertNil(show.snapshot.transport.queuedRegionId)
+        XCTAssertEqual(show.snapshot.transport.regionId, first.id)
+        executor.transport.position = 10; executor.transport.playing = false
+        show.tick()
+        XCTAssertEqual(show.focusedRegion, third.id)
+        XCTAssertEqual(show.snapshot.transport.regionId, third.id)
+        XCTAssertEqual(show.snapshot.transport.editPosition, 20)
+        XCTAssertFalse(show.snapshot.transport.playing)
+        show.send(.play)
+        XCTAssertEqual(show.snapshot.transport.regionId, third.id)
+        show.send(.stopAll)
+    }
+    @MainActor func testEnterUsesBrowsedSelectionAndCancelsAutoWithQueue() throws {
+        var project = Project.empty(name: "Keyboard queue")
+        let first = Part(id: UUID(), name: "First", startTime: 0, endTime: 10)
+        let second = Part(id: UUID(), name: "Second", startTime: 10, endTime: 20)
+        project.songs[0].parts = [first, second]; project.songs[0].duration = 20
+        project.regionSetlist = RegionSetlist(); project.regionSetlist?.autoAdvance = true
+        let executor = CursorExecutor()
+        let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)
+        show.focusRegion(first.id); show.send(.play); show.stepRegion(1, commitAfterDelay: false)
+        var queued = executor.transport; queued.queuedRegionId = second.id; executor.regionCommandResult = queued
+        XCTAssertTrue(show.activateSetlistSelection()); XCTAssertEqual(show.snapshot.transport.queuedRegionId, second.id)
+        queued.queuedRegionId = nil; executor.regionCommandResult = queued
+        XCTAssertTrue(show.activateSetlistSelection())
+        XCTAssertNil(show.snapshot.transport.queuedRegionId); XCTAssertEqual(show.focusedRegion, second.id)
+        XCTAssertFalse(show.regionSetlist.autoAdvance); XCTAssertTrue(show.snapshot.transport.playing)
+        queued.queuedRegionId = second.id; executor.regionCommandResult = queued
+        XCTAssertTrue(show.activateSetlistSelection()); XCTAssertEqual(show.snapshot.transport.queuedRegionId, second.id)
+        show.send(.stopAll)
     }
     @MainActor func testBrowsingSetlistDuringPlaybackDoesNotRequestGridRecenter() async throws {
         var project = Project.empty(name: "Browse viewport")
@@ -351,7 +591,59 @@ final class ProjectCursorTests: XCTestCase {
         marker.name = "Chorus"; show.setMarker(marker)
         XCTAssertEqual(show.current?.markers?.first?.name, "Chorus")
         XCTAssertTrue(show.canCreateMarker(at: 11))
-        XCTAssertTrue(show.canCreateMarker(at: 10, tempo: true), "tempo lane and normal markers can coincide")
+        XCTAssertFalse(show.canCreateMarker(at: 10, tempo: true), "tempo and normal markers cannot share a position")
+    }
+    @MainActor func testEveryMarkerKindBlocksCreationAtItsPosition() throws {
+        let kinds = [
+            TimelineMarker(id: UUID(), name: "Cue", position: 10, color: 0),
+            TimelineMarker(id: UUID(), name: "$Verse", position: 10, color: 0),
+            TimelineMarker(id: UUID(), name: "*Loop", position: 10, color: 0),
+            TimelineMarker(id: UUID(), name: "TEMPO", position: 10, color: 0,
+                           tempoBPM: 120, tempoBeats: 4, tempoUnit: 4)
+        ]
+        for var existing in kinds {
+            existing.applySectionPrefix()
+            for candidate in kinds {
+                var project = Project.empty(name: "Occupied marker position")
+                project.songs[0].parts = [Part(id: UUID(), name: "Song", startTime: 0, endTime: 60)]
+                project.songs[0].markers = [existing]
+                let executor = CursorExecutor()
+                let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)
+                let before = show.current?.markers
+                let engineBefore = executor.project.songs[0].markers
+                XCTAssertFalse(show.canCreateMarker(at: 10, tempo: candidate.isTempo))
+                // Recheck at commit too: the form may have opened before the
+                // position became occupied, with minor floating-point drift.
+                var duplicate = candidate
+                duplicate.id = UUID(); duplicate.position += 0.0000005
+                show.setMarker(duplicate)
+                XCTAssertEqual(show.current?.markers, before)
+                XCTAssertEqual(executor.project.songs[0].markers, engineBefore)
+                XCTAssertFalse(show.hasUnsavedChanges)
+                XCTAssertEqual(show.modalNotice, "A marker already exists at this position.")
+                XCTAssertTrue(show.canCreateMarker(at: 11, tempo: candidate.isTempo))
+            }
+        }
+    }
+    @MainActor func testCreatingTempoDoesNotGenerateAnotherMarkerAtOccupiedOrigin() throws {
+        for name in ["Start", "$Verse", "*Loop"] {
+            var project = Project.empty(name: "Occupied origin")
+            project.songs[0].parts = [Part(id: UUID(), name: "Song", startTime: 0, endTime: 60)]
+            var origin = TimelineMarker(id: UUID(), name: name, position: 0, color: 0)
+            origin.applySectionPrefix()
+            project.songs[0].markers = [origin]
+            let executor = CursorExecutor()
+            let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)
+            let tempo = TimelineMarker(id: UUID(), name: "TEMPO", position: 10, color: 0,
+                                       tempoBPM: 120, tempoBeats: 4, tempoUnit: 4)
+            show.setMarker(tempo)
+            let markers = try XCTUnwrap(show.current?.markers)
+            XCTAssertEqual(markers.count, 2)
+            XCTAssertEqual(markers.filter { abs($0.position) < 0.000001 }.map(\.id), [origin.id])
+            XCTAssertTrue(markers.contains { $0.id == tempo.id })
+            XCTAssertEqual(executor.project.songs[0].markers?.count, 2)
+            XCTAssertTrue(show.hasUnsavedChanges)
+        }
     }
     @MainActor func testTempoButtonsEditMarkerUnderGreenCursorAndPreserveOtherTiming() throws {
         var project = Project.empty(name: "Tempo buttons")
@@ -397,10 +689,11 @@ final class ProjectCursorTests: XCTestCase {
             var tempo = TimelineMarker(id: UUID(), name: "TEMPO", position: 340, color: 0x999999, tempoBPM: 180, tempoBeats: 3, tempoUnit: 8)
             show.setMarker(tempo)
             XCTAssertEqual(show.current?.markers?.first?.position, 0)
+            tempo.tempoPlaybackRate = show.current?.markers?.first(where: { $0.id == tempo.id })?.tempoPlaybackRate
             XCTAssertEqual(show.current?.markers?.filter { $0.position > 0 }, [marker, tempo]); XCTAssertEqual(show.current?.duration, 340)
             tempo.tempoBPM = 90; show.setMarker(tempo)
             show.deleteManualMarker(tempo.id)
-            XCTAssertEqual(audioRevisions, mode == .relative ? [0, 1, 2, 3] : [0, 0, 0, 0])
+            XCTAssertEqual(audioRevisions, [0, 1, 2, 3])
             XCTAssertEqual(show.current?.markers?.filter { $0.position > 0 }, [marker])
             XCTAssertEqual(executor.snapshotCount, reads); XCTAssertEqual(executor.loadCount, loads)
             XCTAssertEqual(show.snapshot.transport, transport)
@@ -421,10 +714,11 @@ final class ProjectCursorTests: XCTestCase {
         var revisions: [UInt64] = []; show.audioUpdate = { _,revision in revisions.append(revision) }
         var settings = ProjectTimeSettings(); settings.timebase = .relative
         XCTAssertTrue(show.configureProjectTime(bpm: 120, beats: 4, unit: 4, settings: settings))
-        XCTAssertEqual(show.current?.tempoAudioSegments(clip).map(\.audioRate), [1.25, 1.875])
+        XCTAssertEqual(show.current?.tempoAudioSegments(clip).map(\.audioRate), [1.25])
         settings.timebase = .free
         XCTAssertTrue(show.configureProjectTime(bpm: 120, beats: 4, unit: 4, settings: settings))
-        XCTAssertEqual(show.current?.tempoAudioSegments(clip), [clip])
+        XCTAssertEqual(show.current?.tempoAudioSegments(clip).map(\.audioRate), [1.25])
+        XCTAssertEqual(show.current?.tempoAudioSegments(clip).first?.sourceOffset, clip.sourceOffset)
         settings.divisions = 0
         XCTAssertTrue(show.configureProjectTime(bpm: 120, beats: 4, unit: 4, settings: settings))
         XCTAssertEqual(revisions, [1, 2, 2], "switching timebase updates voices, while a grid-only edit keeps them")
@@ -450,7 +744,7 @@ final class ProjectCursorTests: XCTestCase {
         global.tempoTimebase = .free; show.setMarker(global)
         settings.timebase = .free
         XCTAssertTrue(show.configureProjectTime(bpm: 120, beats: 4, unit: 4, settings: settings))
-        XCTAssertEqual(revisions, [1, 2, 3, 4, 4, 4, 5, 6, 7])
+        XCTAssertEqual(revisions, [1, 2, 3, 4, 5, 6, 7, 8, 9])
         XCTAssertEqual(executor.snapshotCount, reads); XCTAssertEqual(executor.loadCount, loads)
         XCTAssertEqual(show.snapshot.transport, transport)
         XCTAssertEqual(show.snapshot.project, executor.project)
@@ -459,19 +753,24 @@ final class ProjectCursorTests: XCTestCase {
         let executor = CursorExecutor()
         let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: .empty(name: "Window actions"))
         show.performAction(.normalizeItems); XCTAssertEqual(show.normalizeItemsRequest, 1)
+        show.performAction(.reRenderItems); XCTAssertEqual(show.itemProcessingRequest?.action, .reRenderItems)
+        let firstRequest = show.itemProcessingRequest?.id
+        show.performAction(.reRenderItems); XCTAssertNotEqual(show.itemProcessingRequest?.id, firstRequest)
+        show.performAction(.unifyAudioItems); XCTAssertEqual(show.itemProcessingRequest?.action, .unifyAudioItems)
         show.performAction(.createTempoMarker); XCTAssertEqual(show.tempoMarkerRequest, 1)
-        var videoVisible = false, teleprompterVisible = false, tracksVisible = true, setlistVisible = true, audioUpdates = 0
+        var videoVisible = false, teleprompterVisible = false, tracksVisible = true, setlistVisible = true, barVisible = false, audioUpdates = 0
         show.toggleVideoWindow = { videoVisible.toggle() }
         show.toggleTeleprompterWindow = { teleprompterVisible.toggle() }
         show.toggleTracksPanel = { tracksVisible.toggle() }
+        show.toggleBarMixerPanel = { barVisible.toggle() }
         show.toggleSetlistPanel = { setlistVisible.toggle() }
         show.audioUpdate = { _,_ in audioUpdates += 1 }
         let loads = executor.loadCount, snapshots = executor.snapshotCount
-        for action in [DAWAction.toggleVideo, .toggleTeleprompter, .toggleTracks, .toggleSetlist] { show.performAction(action) }
-        XCTAssertTrue(videoVisible); XCTAssertTrue(teleprompterVisible)
+        for action in [DAWAction.toggleVideo, .toggleTeleprompter, .toggleTracks, .toggleSetlist, .toggleBarMixer] { show.performAction(action) }
+        XCTAssertTrue(videoVisible); XCTAssertTrue(teleprompterVisible); XCTAssertTrue(barVisible)
         XCTAssertFalse(tracksVisible); XCTAssertFalse(setlistVisible)
-        for action in [DAWAction.toggleVideo, .toggleTeleprompter, .toggleTracks, .toggleSetlist] { show.performAction(action) }
-        XCTAssertFalse(videoVisible); XCTAssertFalse(teleprompterVisible)
+        for action in [DAWAction.toggleVideo, .toggleTeleprompter, .toggleTracks, .toggleSetlist, .toggleBarMixer] { show.performAction(action) }
+        XCTAssertFalse(videoVisible); XCTAssertFalse(teleprompterVisible); XCTAssertFalse(barVisible)
         XCTAssertTrue(tracksVisible); XCTAssertTrue(setlistVisible)
         XCTAssertEqual(executor.loadCount, loads); XCTAssertEqual(executor.snapshotCount, snapshots)
         XCTAssertEqual(audioUpdates, 0); XCTAssertFalse(show.hasUnsavedChanges)
@@ -483,6 +782,8 @@ final class ProjectCursorTests: XCTestCase {
         let child = Part(id: UUID(), name: "Child", startTime: 80, endTime: 90, parentRegionID: special.id)
         project.songs[0].parts = [special, child, first]
         project.songs[0].markers = [TimelineMarker(id: UUID(), name: "Child", position: 80, color: 0x54ff93, unifiedRegionID: special.id, sourceRegionID: child.id),
+                                    TimelineMarker(id: UUID(), name: "Tempo", position: 40, color: 0x999999, tempoBPM: 120),
+                                    TimelineMarker(id: UUID(), name: "Tempo after last marker", position: 200, color: 0x999999, tempoBPM: 130),
                                     TimelineMarker(id: UUID(), name: "Same point", position: 50, color: 0x54ff93),
                                     TimelineMarker(id: UUID(), name: "Last", position: 140, color: 0x54ff93)]
         project.songs[0].duration = 400
@@ -504,12 +805,12 @@ final class ProjectCursorTests: XCTestCase {
         show.performAction(.nextRegion); XCTAssertEqual(show.snapshot.transport.editPosition, 30)
         show.performAction(.nextRegion); XCTAssertEqual(show.snapshot.transport.editPosition, 70, "unified children are markers rather than additional region bands")
         show.performAction(.previousRegion); XCTAssertEqual(show.snapshot.transport.editPosition, 30)
-        show.performAction(.projectEnd); XCTAssertEqual(show.snapshot.transport.editPosition, 140, "end means last marker or region end, ignoring later media and empty grid")
+        show.performAction(.projectEnd); XCTAssertEqual(show.snapshot.transport.editPosition, 400, "Project end reaches the song duration beyond its last marker")
         show.send(.editSeek, value: 32); XCTAssertNil(show.navigationFocusPosition)
         show.send(.play); executor.transport.queuedRegionId = special.id
         show.performAction(.projectEnd)
         XCTAssertTrue(show.snapshot.transport.playing)
-        XCTAssertEqual(show.snapshot.transport.editPosition, 140)
+        XCTAssertEqual(show.snapshot.transport.editPosition, 400)
         XCTAssertLessThan(show.snapshot.transport.position, 50)
         XCTAssertEqual(show.snapshot.transport.queuedRegionId, special.id)
         XCTAssertEqual(executor.loadCount, loads); XCTAssertEqual(executor.snapshotCount, snapshots)
@@ -710,9 +1011,9 @@ final class ProjectCursorTests: XCTestCase {
         XCTAssertFalse(show.hasUnsavedChanges)
         project.savedCursor = SavedProjectCursor(songID: project.songs[0].id, position: project.songs[0].duration + 90)
         try show.replaceProject(project)
-        XCTAssertEqual(show.snapshot.transport.position, project.songs[0].duration)
+        XCTAssertEqual(show.snapshot.transport.position, project.songs[0].duration + 90)
     }
-    @MainActor func testSavedCursorClampsToProjectEndAndIgnoresInvalidPosition() throws {
+    @MainActor func testSavedCursorKeepsEmptyTimelinePositionAndIgnoresInvalidPosition() throws {
         let suite = "jaras-test-cursor-" + UUID().uuidString
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
@@ -721,13 +1022,37 @@ final class ProjectCursorTests: XCTestCase {
         memory.remember(project: project.id, songID: project.songs[0].id, position: project.songs[0].duration + 90)
         memory.remember(project: project.id, songID: project.songs[0].id, position: .nan)
         let show = try ShowController(executor: CursorExecutor(), persistence: MemoryProjectStore(), initialProject: project, cursorMemory: memory)
-        XCTAssertEqual(show.snapshot.transport.position, project.songs[0].duration)
+        XCTAssertEqual(show.snapshot.transport.position, project.songs[0].duration + 90)
         XCTAssertFalse(show.isPlaying)
     }
 }
 
 
 extension ProjectCursorTests {
+    @MainActor func testCursorNavigationPersistsWithoutChangingInterfaceDefaults() async throws {
+        let project = UUID(), song = UUID()
+        let key = "jaras.projectCursor." + project.uuidString
+        let domain = "com.hookdeveloper.catlive.project-cursors"
+        let legacy: [String: Any] = ["song": song.uuidString, "position": 12.5]
+        UserDefaults.standard.set(legacy, forKey: key)
+        defer {
+            UserDefaults.standard.removeObject(forKey: key)
+            CFPreferencesSetAppValue(key as CFString, nil, domain as CFString)
+            CFPreferencesAppSynchronize(domain as CFString)
+        }
+        let memory = ProjectCursorMemory()
+        XCTAssertEqual(memory.cursor(for: project)?.position, 12.5, "Existing cursor positions must migrate")
+        for position in [22.0, 31.5, 46.25] { memory.remember(project: project, songID: song, position: position) }
+        XCTAssertEqual(ProjectCursorMemory().cursor(for: project)?.position, 46.25,
+                       "Switching workspaces must see the cursor before disk persistence completes")
+        XCTAssertEqual(UserDefaults.standard.dictionary(forKey: key)?["position"] as? Double, 12.5,
+                       "Moving the cursor must not invalidate standard interface preferences")
+        await ProjectCursorMemory.flushPendingWrites()
+        let stored = CFPreferencesCopyAppValue(key as CFString, domain as CFString) as? [String: Any]
+        XCTAssertEqual(stored?["position"] as? Double, 46.25, "Latest cursor must survive relaunch")
+        XCTAssertEqual(stored?["song"] as? String, song.uuidString)
+    }
+
     @MainActor func testPlaybackAndZoomPresentationReadsNeverDirtyOrReloadProject() throws {
         var project = Project.empty(name: "Dirty-state boundary")
         let region = Part(id: UUID(), name: "Song", startTime: 0, endTime: 120)
@@ -799,5 +1124,58 @@ extension ProjectCursorTests {
         show.performAction(.toggleParts); XCTAssertTrue(partsOpen)
         show.performAction(.toggleParts); XCTAssertFalse(partsOpen)
         XCTAssertEqual(executor.loadCount, loads)
+    }
+}
+
+extension ProjectCursorTests {
+    @MainActor func testPlaylistDuplicateGuardsActionsAndQueuesOccurrenceWithoutChangingGrid() throws {
+        let executor = CursorExecutor()
+        var project = Project.empty(name: "Duplicate guard")
+        let first = Part(id: UUID(), name: "First", startTime: 0, endTime: 60)
+        let second = Part(id: UUID(), name: "Second", startTime: 60, endTime: 120)
+        project.songs[0].parts = [first, second]
+        let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)
+        XCTAssertNil(show.duplicatePlaylistRegion(first.id), "All Regions cannot duplicate")
+        XCTAssertTrue(show.createRegionPlaylist(name: "Concert", selected: [first.id, second.id]))
+        let alias = try XCTUnwrap(show.duplicatePlaylistRegion(first.id))
+        XCTAssertEqual(show.current, project.songs[0])
+        XCTAssertEqual(show.listedRegions.map(\.id), [first.id, alias, second.id])
+        XCTAssertEqual(show.playlistRegionSourceID(alias), first.id)
+        XCTAssertEqual(show.listedRegions[1].name, first.name)
+        show.focusRegion(alias)
+        XCTAssertNil(show.modalNotice, "A stopped transport must allow selecting a copy")
+        XCTAssertEqual(executor.commands.last?.1, alias)
+        show.send(.queueRegion, target: alias)
+        XCTAssertNil(show.modalNotice, "Direct/Remote commands also allow a stopped copy")
+        XCTAssertEqual(executor.commands.last?.1, alias)
+        show.focusRegion(first.id); show.send(.play)
+        let before = executor.regionCommands.count
+        show.send(.selectRegion, target: alias)
+        XCTAssertEqual(executor.regionCommands.count, before, "same physical song cannot queue its copy")
+        XCTAssertEqual(show.modalNotice, ShowController.duplicateRegionQueueNotice)
+        show.send(.stop); show.focusRegion(second.id); show.send(.play)
+        show.modalNotice = nil
+        show.focusRegion(alias)
+        XCTAssertNil(show.modalNotice)
+        XCTAssertEqual(executor.commands.last?.0, .queueRegion)
+        XCTAssertEqual(executor.commands.last?.1, alias)
+        XCTAssertEqual(show.focusedRegion, alias)
+        show.send(.stop)
+    }
+
+    @MainActor func testDuplicateReorderAndDeletePreservePhysicalSongAndOriginalRow() throws {
+        let executor = CursorExecutor()
+        var project = Project.empty(name: "Duplicate ordering")
+        let first = Part(id: UUID(), name: "First", startTime: 0, endTime: 60)
+        let second = Part(id: UUID(), name: "Second", startTime: 60, endTime: 120)
+        project.songs[0].parts = [first, second]
+        let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)
+        XCTAssertTrue(show.createRegionPlaylist(name: "Concert", selected: [first.id, second.id]))
+        let alias = try XCTUnwrap(show.duplicatePlaylistRegion(first.id))
+        show.moveSetlistEntries([alias], relativeTo: second.id, after: true)
+        XCTAssertEqual(show.listedRegions.map(\.id), [first.id, second.id, alias])
+        XCTAssertTrue(show.deleteSetlistEntries([alias]))
+        XCTAssertEqual(show.listedRegions.map(\.id), [first.id, second.id])
+        XCTAssertEqual(show.current, project.songs[0])
     }
 }

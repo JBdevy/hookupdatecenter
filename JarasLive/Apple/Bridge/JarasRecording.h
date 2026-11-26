@@ -1,15 +1,33 @@
 #import <Foundation/Foundation.h>
-@class AVAudioPCMBuffer, AVAudioSourceNode;
+#import <TargetConditionals.h>
+@class AVAudioPCMBuffer, AVAudioSourceNode, AVAudioFormat;
 NS_ASSUME_NONNULL_BEGIN
+#if TARGET_OS_OSX
+/// Direct AUHAL input: no AVAudioEngine tap batching on the monitoring path.
+@interface JarasMacAudioInput : NSObject
+@property(nonatomic, readonly, nullable) AVAudioFormat *format;
+@property(nonatomic, readonly) BOOL running;
+@property(nonatomic, readonly) uint32_t device;
+@property(nonatomic, readonly) uint32_t bufferFrames;
+- (BOOL)prepareWithDevice:(uint32_t)device bufferFrames:(uint32_t)frames error:(NSError **)error;
+- (void)setCapture:(void (^_Nullable)(AVAudioPCMBuffer *, uint64_t))capture;
+- (BOOL)startAndReturnError:(NSError **)error;
+- (void)pause;
+- (void)stop;
+@end
+#endif
 @interface JarasCaptureRing : NSObject
 - (instancetype)initWithChannels:(NSUInteger)channels capacity:(NSUInteger)frames;
 - (AVAudioSourceNode *)monitorSourceWithSampleRate:(double)rate firstChannel:(NSUInteger)first channelCount:(NSUInteger)count;
 - (void)beginCapture;
+- (void)beginCaptureAtHostTime:(uint64_t)hostTime NS_SWIFT_NAME(beginCapture(atHostTime:));
 - (void)endCapture;
 // Writer queue only: wait for the last accepted input buffer before draining.
 - (void)waitForPendingCapture;
 - (void)pushBuffer:(AVAudioPCMBuffer *)buffer;
+- (void)pushBuffer:(AVAudioPCMBuffer *)buffer hostTime:(uint64_t)hostTime NS_SWIFT_NAME(push(_:hostTime:));
 - (NSUInteger)readFrames:(float *)destination maximum:(NSUInteger)frames;
+- (float)takeInputPeak:(NSUInteger)channel;
 @property(nonatomic, readonly) NSUInteger droppedFrames;
 @end
 @interface JarasMP3Encoder : NSObject

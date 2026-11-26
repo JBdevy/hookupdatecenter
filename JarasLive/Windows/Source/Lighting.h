@@ -1,5 +1,6 @@
 #pragma once
 #include "Session.h"
+#include "IntegrationClient.h"
 namespace catlive {
 struct LightingCue {
     ID id;
@@ -36,6 +37,12 @@ class Lighting final : private Thread {
     String host = "127.0.0.1", error;
     int port = 7000, webPort = 8080;
     bool resolumeEnabled = false, includeMarkers = true;
+    bool integrationEnabled = false, integrationMTC = false;
+    String integrationHost, integrationMIDIOutput;
+    int integrationPort = 48726;
+    IntegrationClient integration;
+    var integrationConfiguration() const;
+    void setIntegrationForeground(bool foreground);
     void refresh(bool assignMissing = true);
     void saveSettings();
     void loadSettings();
@@ -62,7 +69,7 @@ class Lighting final : private Thread {
     void update(const jaras::TransportState &);
     void setMidiOutput(const String &identifier);
     String midiIdentifier;
-    std::atomic<bool> mtcEnabled{false};
+    std::atomic<bool> mtcEnabled{false}, remoteMTCActive{false};
     void enableMTC(bool value) {
         mtcEnabled = value;
         notify();
@@ -85,6 +92,8 @@ class Lighting final : private Thread {
     bool selectionInitialised = false, mapCommitted = false;
     std::shared_ptr<int> alive = std::make_shared<int>(0);
     uint64 oscGeneration = 0;
+    uint64 integrationJump = 0;
+    bool integrationForeground = true, integrationSending = false;
     void run() override;
 };
 } // namespace catlive

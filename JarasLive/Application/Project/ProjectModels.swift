@@ -9,8 +9,125 @@ public struct TrackRole: Codable, Hashable, Sendable, RawRepresentable {
     public func encode(to encoder: Encoder) throws { var box = encoder.singleValueContainer(); try box.encode(rawValue) }
 }
 public struct AudioFile: Codable, Equatable, Sendable { public var path: String; public var sha256: String? }
-public struct AudioClip: Codable, Identifiable, Equatable, Sendable { public var id: UUID; public var name: String; public var startTime: Double; public var duration: Double; public var separatedStemTracks: [UUID]?; public var sourceOffset: Double = 0; public var waveform: [Double] = []; public var audioFile: AudioFile?; public var gain: Double?; public var phaseInverted: Bool? = nil; public var pan: Double? = nil; public var normalizationGain: Double?; public var fadeIn: Double?; public var fadeOut: Double?; public var fadeTimelineStart: Double?; public var fadeTimelineDuration: Double?; public var channelMode: Int?; public var waveformChannels: [[Double]]?; public var muted: Bool?; public var playbackRate: Double?; public var recordingLane: Int?; public var loopStart: Double?; public var loopLength: Double?; public var fx: NativeFXSettings?; public var timecode: TimecodeSettings?; public var timecodeStartOffset: Double?; public var timecodeEndOffset: Double?; public var fxBypassed: Bool?; public var text: String?; public var midi: MIDIItem?; public var frozenMIDI: Bool?; public var renderedTiming: Bool?; public var pitchSemitones: Double? = nil; public var regionOwnerID: UUID? = nil; public var automation: TrackAutomation? = nil; public var automationSourceOffset: Double? = nil; public var tempoBasePlaybackRate: Double? = nil; public var renderedTempo: Bool? = nil; public var audioRate: Double { playbackRate ?? 1 } }
+public struct ItemTempoReference: Codable, Equatable, Sendable { public var markerID: UUID; public var rate: Double; public init(markerID: UUID, rate: Double) { self.markerID = markerID; self.rate = rate } }
+public struct ElasticPoint: Codable, Equatable, Sendable {
+    public var position: Double
+    public var source: Double
+    // Normalized linear playback-rate slope for the interval after this marker.
+    // The first marker also owns the interval from the start of the item.
+    public var slopeBefore: Double? = nil
+    public var slopeAfter: Double? = nil
+    public init(position: Double, source: Double) {
+        self.position = position; self.source = source
+    }
+    public static func valid(_ points: [Self]) -> Bool {
+        guard points.count <= 256 else { return false }
+        var previous = Self(position: 0, source: 0)
+        for point in points {
+            guard point.position.isFinite, point.source.isFinite,
+                  [point.slopeBefore, point.slopeAfter].compactMap({ $0 }).allSatisfy({ $0.isFinite && abs($0) < 1 }),
+                  point.position >= previous.position + 0.000001, point.source >= previous.source + 0.000001,
+                  point.position <= 0.999999, point.source <= 0.999999 else { return false }
+            previous = point
+        }
+        return true
+    }
+}
+public struct ElasticSpeed: Equatable, Sendable {
+    public var start: Double
+    public var end: Double
+    public func value(at fraction: Double) -> Double { start + (end - start) * fraction }
+    public func distance(at fraction: Double) -> Double { fraction * (start + value(at: fraction)) / 2 }
+    /// Schedule a continuous source mapping using available constant-rate voices.
+    public func slices(duration: Double, emit: (Double, Double, Double) -> Void) {
+        let count = Int(min(256, max(1, ceil(abs(end - start) * 100))))
+        for slice in 0..<count {
+            let a = Double(slice) / Double(count), b = Double(slice + 1) / Double(count)
+            emit(a * duration, b * duration, value(at: (a + b) / 2))
+        }
+    }
+    public static func laneOffset(rate: Double, height: Double) -> Double {
+        -tanh(log2(max(0.01, rate))) * max(0, height / 2 - 6)
+    }
+    public static func label(_ rate: Double) -> String { String(format: "%.2fx", locale: Locale(identifier: "en_US_POSIX"), rate) }
+}
+public extension Array where Element == ElasticPoint {
+    func slopeForElasticSpan(_ span: Int) -> Double {
+        (span == 0 ? first?.slopeBefore : self[span - 1].slopeAfter) ?? 0
+    }
+    func speedForElasticSpan(_ span: Int, referenceRate: Double = 1) -> ElasticSpeed {
+        let left = span == 0 ? Element(position: 0, source: 0) : self[span - 1]
+        let next = span == count ? Element(position: 1, source: 1) : self[span]
+        let mean = referenceRate * (next.source - left.source) / (next.position - left.position)
+        let slope = slopeForElasticSpan(span)
+        return ElasticSpeed(start: mean * (1 - slope), end: mean * (1 + slope))
+    }
+    private mutating func setElasticSlope(_ value: Double, span: Int) {
+        let slope = abs(value) < 1e-12 ? nil : Optional(value)
+        if span == 0 { self[0].slopeBefore = slope } else { self[span - 1].slopeAfter = slope }
+    }
+    /// A rate drag ripples subsequent anchors. Shift preserves both ends and
+    /// changes the opposite rate by the amount required to consume the same audio.
+    @discardableResult mutating func adjustElasticRate(index: Int, right: Bool, down: Double,
+        preservePositions: Bool, reset: Bool, referenceRate: Double) -> Double {
+        guard indices.contains(index), down.isFinite, referenceRate.isFinite, referenceRate > 0 else { return 1 }
+        let span = right ? index + 1 : index
+        let left = span == 0 ? 0 : self[span - 1].position
+        let end = span == count ? 1 : self[span].position
+        var speed = speedForElasticSpan(span, referenceRate: referenceRate)
+        let sum = speed.start + speed.end, old = right ? speed.start : speed.end
+        let steps = (down / 2).rounded(.towardZero)
+        guard reset || steps != 0 else { return 1 }
+        let lower = Swift.min(0.01, sum / 4)
+        let target = reset ? 1 : Swift.max(lower, (round(old * 100) - steps) / 100)
+        let near = preservePositions ? Swift.min(sum - lower, target) : target
+        if right { speed.start = near; if preservePositions { speed.end = sum - near } }
+        else { speed.end = near; if preservePositions { speed.start = sum - near } }
+        let total = speed.start + speed.end
+        let delta = preservePositions ? 0 : (end - left) * (sum / total - 1)
+        let ratio = 1 + delta
+        var changed = self
+        if delta != 0 {
+            for i in indices { changed[i].position = (self[i].position + (i >= span ? delta : 0)) / ratio }
+        }
+        changed.setElasticSlope((speed.end - speed.start) / total, span: span)
+        guard Element.valid(changed) else { return 1 }
+        self = changed
+        return ratio
+    }
+    mutating func insertElasticAnchor(_ anchor: Element) {
+        let span = firstIndex { $0.position >= anchor.position } ?? count
+        let left = span == 0 ? 0 : self[span - 1].position
+        let end = span == count ? 1 : self[span].position
+        let speed = speedForElasticSpan(span)
+        let middle = speed.value(at: (anchor.position - left) / (end - left))
+        var replacement = self
+        if span == 0, !replacement.isEmpty { replacement[0].slopeBefore = nil }
+        replacement.insert(anchor, at: span)
+        guard Element.valid(replacement) else { return }
+        replacement.setElasticSlope((middle - speed.start) / (middle + speed.start), span: span)
+        replacement.setElasticSlope((speed.end - middle) / (speed.end + middle), span: span + 1)
+        self = replacement
+    }
+    func constrainedElasticPosition(index: Int, proposed: Double) -> Double {
+        let left = index > 0 ? self[index - 1] : Element(position: 0, source: 0)
+        let right = index + 1 < count ? self[index + 1] : Element(position: 1, source: 1)
+        let source = self[index].source
+        let lower = left.position + Swift.max(0.000002, (source - left.source) / 8)
+        let upper = right.position - Swift.max(0.000002, (right.source - source) / 8)
+        return lower <= upper ? Swift.max(lower, Swift.min(upper, proposed)) : self[index].position
+    }
+}
+public struct AudioClip: Codable, Identifiable, Equatable, Sendable { public var id: UUID; public var name: String; public var startTime: Double; public var duration: Double; public var separatedStemTracks: [UUID]?; public var sourceOffset: Double = 0; public var waveform: [Double] = []; public var audioFile: AudioFile?; public var gain: Double?; public var phaseInverted: Bool? = nil; public var pan: Double? = nil; public var normalizationGain: Double?; public var fadeIn: Double?; public var fadeOut: Double?; public var fadeControlsEnabled: Bool? = nil; public var fadeInCurve: Double? = nil; public var fadeInSCurve: Double? = nil; public var fadeOutCurve: Double? = nil; public var fadeOutSCurve: Double? = nil;  public var fadeTimelineStart: Double?; public var fadeTimelineDuration: Double?; public var channelMode: Int?; public var waveformChannels: [[Double]]?; public var muted: Bool?; public var playbackRate: Double?; public var recordingLane: Int?; public var loopStart: Double?; public var loopLength: Double?; public var fx: NativeFXSettings?; public var timecode: TimecodeSettings?; public var timecodeStartOffset: Double?; public var timecodeEndOffset: Double?; public var fxBypassed: Bool?; public var text: String?; public var midi: MIDIItem?; public var frozenMIDI: Bool?; public var renderedTiming: Bool?; public var pitchSemitones: Double? = nil; public var regionOwnerID: UUID? = nil; public var automation: TrackAutomation? = nil; public var automationSourceOffset: Double? = nil; public var tempoBasePlaybackRate: Double? = nil; public var renderedTempo: Bool? = nil; public var clickDouble: Bool? = nil; public var tempoRateReferences: [ItemTempoReference]? = nil; public var elasticPoints: [ElasticPoint]? = nil; public var elasticSourceScale: Double? = nil; public var audioRate: Double { playbackRate ?? 1 } }
 public extension AudioClip {
+    func isTeleprompterLyric(on track: Track) -> Bool {
+        track.kind.isTeleprompter && !isProjectionMedia && audioFile == nil && midi == nil
+    }
+    func hasSelectableMediaHeader(on track: Track) -> Bool {
+        if midi != nil || audioFile != nil { return true }
+        return track.kind == .standard && text == nil && timecode == nil &&
+            (track.audioFile != nil || !waveform.isEmpty || waveformChannels?.isEmpty == false)
+    }
     var isProjectionMedia: Bool { audioFile?.path.hasPrefix("Videos/") == true }
     var isImage: Bool { isProjectionMedia && ["png", "jpg", "jpeg", "gif", "heic", "heif", "tif", "tiff", "bmp", "webp", "avif"].contains(URL(fileURLWithPath: audioFile?.path ?? "").pathExtension.lowercased()) }
 }
@@ -18,7 +135,73 @@ public extension AudioClip {
 public enum TrackRecordingMode: Int, CaseIterable, Sendable {
     case midi = 0, mono = 1, stereo = 2
 }
+public struct ProgramChangeMarker: Codable, Identifiable, Equatable, Sendable {
+    public var id: UUID
+    public var position: Double
+    /// MIDI wire value (0...127); the interface displays 1...128.
+    public var program: Int
+    public var channel: Int
+    public var name: String? = nil
+    public var output: Int? = nil
+    public var title: String { name.flatMap { $0.isEmpty ? nil : $0 } ?? "PC \(program + 1)" }
+}
+public struct ChordMarker: Codable, Identifiable, Equatable, Sendable {
+    public static let maximumNameLength = 12
+    public var id: UUID
+    public var regionID: UUID
+    public var offset: Double
+    public var name: String
+}
+public struct ProgramChangeLayout: Equatable, Sendable {
+    public var lanes: [UUID: Int] = [:]
+    public var count = 1
+    public init(_ markers: [ProgramChangeMarker]) {
+        let sorted = markers.enumerated().sorted { $0.element.position == $1.element.position ? $0.offset < $1.offset : $0.element.position < $1.element.position }
+        var start = -Double.infinity, lane = 0
+        for entry in sorted {
+            if abs(entry.element.position - start) >= 0.000001 { start = entry.element.position; lane = 0 }
+            lanes[entry.element.id] = lane; lane += 1; count = max(count, lane)
+        }
+    }
+}
+public enum TrackMixerComponent: Int, CaseIterable, Sendable {
+    case patch = 1, fx = 2, envelope = 4, rec = 8, inputMonitor = 16, pan = 32, mute = 64, solo = 128, phase = 256, vuMeter = 512
+    public static let compactMask = patch.rawValue | fx.rawValue | envelope.rawValue | rec.rawValue | pan.rawValue
+    public var title: String {
+        switch self {
+        case .patch: return "Patch"
+        case .fx: return "FX"
+        case .envelope: return "Envelope"
+        case .rec: return "Rec"
+        case .inputMonitor: return "Input Monitor"
+        case .pan: return "Pan"
+        case .mute: return "M"
+        case .solo: return "S"
+        case .phase: return "Phase"
+        case .vuMeter: return "VU Meter"
+        }
+    }
+}
 public struct Track: Codable, Identifiable, Equatable, Sendable {
+    /// nil inherits the global Timeline setting. Stored values override it for this track.
+    public var stackedStems: Bool? = nil
+    public var hiddenMixerComponents: Int? = nil
+    public var supportsMixerComponents: Bool { kind == .standard && role.rawValue != "vinhetas" }
+    public var allowsCompactMixerHeight: Bool { supportsMixerComponents || kind == .programChange || kind == .click || kind.isTeleprompter }
+    public var availableMixerComponents: [TrackMixerComponent] {
+        supportsMixerComponents ? TrackMixerComponent.allCases : [.vuMeter]
+    }
+    public func applicableMixerComponentMask(_ mask: Int) -> Int {
+        supportsMixerComponents ? mask : mask & TrackMixerComponent.vuMeter.rawValue
+    }
+    public var mixerComponentMask: Int { applicableMixerComponentMask(hiddenMixerComponents ?? 0) }
+    public func showsMixerComponent(_ component: TrackMixerComponent) -> Bool {
+        mixerComponentMask & component.rawValue == 0
+    }
+    public var compactMixerControls: Bool {
+        mixerComponentMask & TrackMixerComponent.compactMask == TrackMixerComponent.compactMask
+    }
+
     /// Applied only by creation paths. Decoded nil/custom colors stay unchanged.
     public static let defaultStandardColor: UInt32 = 0x828282
     public var id: UUID; public var name: String; public var role: TrackRole
@@ -26,22 +209,56 @@ public struct Track: Codable, Identifiable, Equatable, Sendable {
     public var phaseInverted: Bool? = nil
     /// Visual row proportion; absent in existing projects means the standard height.
     public var heightScale: Double? = nil
+    /// Optional visual identity; unknown future identifiers survive round trips.
+    public var instrumentIcon: String? = "png:Other/waveform"
     public var mute = false, solo = false
     public var output = 1
     public var automation: TrackAutomation?
     public var fx: NativeFXSettings?
     public var midiInput: Int?
     public var midiChannel: Int?
+    public var midiOutput: Int?
+    public var programChanges: [ProgramChangeMarker]?
+    public var chordMarkers: [ChordMarker]? = nil
+    public var programChangeLaneCount: Int { ProgramChangeLayout(programChanges ?? []).count }
     public func acceptsMIDI(status: UInt8) -> Bool {
         status >= 0x80 && status < 0xf0 && (midiChannel == nil || midiChannel == 0 || midiChannel == Int(status & 0x0f) + 1)
     }
     public var parentTrackID: UUID?
     public var stereoLink: TrackStereoLink?
     public var inputPatch: OutputPatch?
+    mutating func selectLineInput(_ patch: OutputPatch) {
+        inputPatch = patch
+        if patch.firstChannel > 0 {
+            midiInput = nil
+            if recordingChannels == TrackRecordingMode.midi.rawValue { recordingChannels = patch.channelCount }
+        }
+    }
+    mutating func selectMIDIInput(_ slot: Int?) {
+        midiInput = slot
+        if slot != nil {
+            inputPatch = .some(.none)
+            if !receivesMain { recordingChannels = TrackRecordingMode.midi.rawValue }
+        }
+    }
     public var inputMonitoring: Bool?
+    public func monitorsInput(armed: Bool) -> Bool {
+        !receivesMain && (inputMonitoring ?? armed)
+    }
+    public func monitorsMIDIInstrument(armed: Bool) -> Bool {
+        !receivesMain && (armed || inputMonitoring == true)
+    }
     public var recordingChannels: Int?
-    public var recordingMode: TrackRecordingMode { TrackRecordingMode(rawValue: recordingChannels ?? 2) ?? .stereo }
+    public var recordingMode: TrackRecordingMode {
+        let mode = TrackRecordingMode(rawValue: recordingChannels ?? 2) ?? .stereo
+        return receivesMain && mode == .midi ? .stereo : mode
+    }
     public var recordingFormat: String?
+    public var recordingOutput: Bool? = nil
+    public var receivesMain: Bool { routing?.mainReceiveSlot != nil }
+    public var recordsOutput: Bool { receivesMain || role.rawValue == "vinhetas" || recordingOutput == true }
+    public var recordingPostFader: Bool? = nil
+    public var recordingPostFX: Bool? = nil
     public var timecode: TimecodeSettings?
     public var importedTimecodeItems: Bool?
     public var color: UInt32?
@@ -66,21 +283,57 @@ public struct TrackStereoLink: Codable, Equatable, Sendable {
 
 /// Shared visual geometry. Overlapping items retain the existing minimum per lane.
 public enum TrackHeightGeometry {
+    /// Keep the same point of a row at the same screen Y through a height zoom.
+    /// Without selection, use the first visible row, including its clipped fraction.
+    public struct ScrollAnchor {
+        public let row: Int
+        public let fraction: Double
+        public let screenY: Double
+        public init?(heights: [Double], offset: Double, selected: Int?) {
+            guard !heights.isEmpty, offset.isFinite else { return nil }
+            let visible = heights.indices.filter { heights[$0] > 0 && heights[$0].isFinite }
+            guard let last = visible.last else { return nil }
+            var end = 0.0
+            let first = heights.indices.first { index in
+                end += heights[index]
+                return heights[index] > 0 && end > offset
+            } ?? last
+            row = selected.flatMap { visible.contains($0) ? $0 : nil } ?? first
+            let top = heights.prefix(row).reduce(0, +)
+            let point = min(top + heights[row], max(top, offset))
+            fraction = (point - top) / heights[row]
+            screenY = point - offset
+        }
+        public func offset(heights: [Double]) -> Double? {
+            guard heights.indices.contains(row), heights[row] > 0 else { return nil }
+            return heights.prefix(row).reduce(0, +) + heights[row] * fraction - screenY
+        }
+    }
     public static let minimumScale = 0.1, maximumScale = 10.0
     public static func isValidScale(_ value: Double) -> Bool { value.isFinite && (minimumScale...maximumScale).contains(value) }
     public static func scale(_ value: Double?) -> Double { value.flatMap { isValidScale($0) ? $0 : nil } ?? 1 }
-    public static func laneLimits(count: Int) -> ClosedRange<Double> { count > 1 ? 26...168 : 24...240 }
-    public static func laneHeight(base: Double, scale: Double, count: Int) -> Double {
-        let limits = laneLimits(count: count)
+    public static let minimumLaneHeight = 66.0
+    public static let compactMinimumLaneHeight = 28.0
+    public static let compactControlHeight = 64.0
+    public static func laneLimits(count: Int, allowsCompactHeight: Bool = false) -> ClosedRange<Double> {
+        let minimum = allowsCompactHeight ? compactMinimumLaneHeight : minimumLaneHeight
+        return count > 1 ? max(26, minimum / Double(count))...168 : minimum...240
+    }
+    public static func laneHeight(base: Double, scale: Double, count: Int, allowsCompactHeight: Bool = false) -> Double {
+        let limits = laneLimits(count: count, allowsCompactHeight: allowsCompactHeight)
         return min(limits.upperBound, max(limits.lowerBound, base * (count > 1 ? 0.7 : 1) * scale))
     }
     /// Stop a shared zoom at the first row limit, keeping all row proportions.
-    public static func globalLimits(scales: [Double], laneCounts: [Int], current: Double = 64) -> ClosedRange<Double> {
-        var lower = 24.0, upper = 240.0
+    public static func globalLimits(scales: [Double], laneCounts: [Int], current: Double = 64, compact: [Bool] = []) -> ClosedRange<Double> {
+        let hasCompact = compact.prefix(scales.count).contains(true)
+        var lower = hasCompact ? Double.infinity : minimumLaneHeight, upper = 240.0
         for (index, scale) in scales.enumerated() {
             let count = laneCounts.indices.contains(index) ? laneCounts[index] : 1
-            let limits = laneLimits(count: count), multiplier = scale * (count > 1 ? 0.7 : 1)
-            lower = max(lower, limits.lowerBound / multiplier)
+            let isCompact = compact.indices.contains(index) && compact[index]
+            let limits = laneLimits(count: count, allowsCompactHeight: isCompact), multiplier = scale * (count > 1 ? 0.7 : 1)
+            // Full rows stop at their own floor while compact rows continue to shrink.
+            if !hasCompact { lower = max(lower, limits.lowerBound / multiplier) }
+            else if isCompact { lower = min(lower, limits.lowerBound / multiplier) }
             upper = min(upper, limits.upperBound / multiplier)
         }
         // A malformed combination from another editor still gets bounded rows.
@@ -129,8 +382,23 @@ public extension Song {
             tracks[index].stereoLink = TrackStereoLink(partner: offset == 0 ? bottom.id : top.id, left: offset == 0, original: TrackLinkOriginal(original))
             tracks[index].name = (offset == 0 ? "L - " : "R - ") + original.name
             tracks[index].color = color; tracks[index].volume = top.volume; tracks[index].pan = offset == 0 ? -1 : 1
-            tracks[index].inputPatch = OutputPatch(firstChannel: firstInput + offset, channelCount: 1)
+            tracks[index].selectLineInput(OutputPatch(firstChannel: firstInput + offset, channelCount: 1))
         }
+    }
+    mutating func selectLineInput(_ patch: OutputPatch, forTrack index: Int) {
+        guard let link = tracks[index].stereoLink else {
+            tracks[index].selectLineInput(patch)
+            return
+        }
+        let first = min(1023, max(1, patch.firstChannel - (link.left ? 0 : 1)))
+        tracks[index].selectLineInput(patch == .none ? .none : OutputPatch(firstChannel: first + (link.left ? 0 : 1), channelCount: 1))
+        if let partner = tracks.firstIndex(where: { $0.id == link.partner }) {
+            tracks[partner].selectLineInput(patch == .none ? .none : OutputPatch(firstChannel: first + (link.left ? 1 : 0), channelCount: 1))
+        }
+    }
+    mutating func selectMIDIInput(_ slot: Int?, forTrack index: Int, clearLineInput: Bool = false) {
+        if slot != nil || clearLineInput { selectLineInput(.none, forTrack: index) }
+        tracks[index].selectMIDIInput(slot)
     }
     mutating func unlinkTracks(_ id: UUID) {
         guard let index = tracks.firstIndex(where: { $0.id == id }), let link = tracks[index].stereoLink else { return }
@@ -153,6 +421,13 @@ public struct Part: Codable, Identifiable, Equatable, Sendable {
     public var pitchGroupIDs: [UUID]? = nil
     public var multiLoops: [MultiLoop]? = nil
     public var totalLoop: Bool? = nil
+    public var subplayInitSeconds: Double? = nil
+    public var subplayInitBars: Int? = nil
+    public var subplayInitSelection: Int {
+        if let bars = subplayInitBars { return min(5, max(1, bars)) * 2 }
+        if subplayInitSeconds == 0 { return 0 }
+        return Int(min(5, max(1, subplayInitSeconds ?? 1))) * 2 - 1
+    }
     public var semitones: Int { pitchSemitones ?? 0 }
     public var usesUppercase: Bool { uppercaseName ?? true }
     public var displayName: String {
@@ -180,8 +455,12 @@ public struct TimelineMarker: Codable, Identifiable, Equatable, Sendable {
     public var tempoUnit: Int? = nil
     public var tempoTimebase: TempoMarkerTimebase? = nil
     public var tempoReferenceBPM: Double? = nil
+    public var tempoPlaybackRate: Double? = nil
+    public var regionTempoAnchor: Bool? = nil
     public var section: Bool? = nil
     public var loopSection: Bool? = nil
+    public var automaticSectionTargetID: UUID? = nil
+    public var automaticSectionRepeatCount: Int? = nil
     public var isLoopSection: Bool { isSection && loopSection == true }
     public var markerEditorName: String { (isLoopSection ? "*" : isSection ? "$" : "") + name }
     public mutating func applySectionPrefix() {
@@ -194,6 +473,7 @@ public struct TimelineMarker: Codable, Identifiable, Equatable, Sendable {
     }
     public var isSection: Bool { section == true && !isTempo }
     public var isTempo: Bool { tempoBPM != nil }
+    public var isNavigationMarker: Bool { !isTempo && !isSection }
     public static let maximumNameLength = 256
     public static let maximumSectionNameLength = 256
     public static func flagWidths(_ markers: [Self], scale: Double, widths: [UUID: Double], regionEnds: [UUID: Double] = [:], facesLeft: Bool = false) -> [UUID: Double] {
@@ -227,6 +507,19 @@ public struct TimelineMarker: Codable, Identifiable, Equatable, Sendable {
 
 }
 public struct Song: Codable, Identifiable, Equatable, Sendable {
+    /// Limit empty space to 60 hours after the last item or region.
+    public var timelineScrollEnd: Double {
+        var end = 0.0
+        for region in parts where region.endTime.isFinite { end = max(end, region.endTime) }
+        for track in tracks {
+            for item in track.clips {
+                let itemEnd = item.startTime + item.duration
+                if itemEnd.isFinite { end = max(end, itemEnd) }
+            }
+        }
+        return end + 60 * 60 * 60
+    }
+
     /// Complete-project audio export includes leading silence and stops at the
     /// last audio item's end, independently of region or auxiliary-track bounds.
     public var completeAudioExportEnd: Double {
@@ -277,7 +570,32 @@ public struct Song: Codable, Identifiable, Equatable, Sendable {
     public func markerLabel(_ marker: TimelineMarker) -> String {
         if let bpm = marker.tempoBPM { return String(format: "%g  %d/%d", bpm, marker.tempoBeats ?? 4, marker.tempoUnit ?? 4) }
         guard let id = marker.sourceRegionID, let region = parts.first(where: { $0.id == id }) else { return marker.isSection ? marker.name.uppercased() : marker.name }
-        return "\(region.semitones)st  " + marker.name
+        return "\(region.semitones)st  " + region.displayName
+    }
+    /// Program Change heads share the normal marker boundary, while stacked
+    /// messages at the same position remain independent on their own lanes.
+    public func programChangeHeadWidth(at position: Double, naturalWidth: Double, scale: Double) -> Double {
+        let end = parts.lazy.filter {
+            $0.parentRegionID == nil && $0.startTime <= position && position < $0.endTime
+        }.map(\.endTime).min() ?? .infinity
+        let width = min(naturalWidth, (end - position) * scale)
+        return width >= 18 ? width : 0
+    }
+    public func chordRegion(at position: Double) -> Part? {
+        guard let id = regionOwner(at: position) else { return nil }
+        return parts.first { $0.id == id && $0.startTime <= position && position < $0.endTime }
+    }
+    public func chord(at position: Double) -> String? {
+        guard tracks.contains(where: { $0.kind == .chords && $0.chordMarkers?.isEmpty == false }),
+              let region = chordRegion(at: position) else { return nil }
+        let offset = position - region.startTime
+        var current: ChordMarker?
+        for track in tracks where track.kind == .chords {
+            for marker in track.chordMarkers ?? [] where marker.regionID == region.id && marker.offset <= offset {
+                if current == nil || marker.offset > current!.offset { current = marker }
+            }
+        }
+        return current?.name
     }
     public var markerRegionEnds: [UUID: Double] {
         var result: [UUID: Double] = [:]
@@ -322,11 +640,34 @@ public struct Song: Codable, Identifiable, Equatable, Sendable {
     }
 }
 public struct Setlist: Codable, Identifiable, Equatable, Sendable { public var id: UUID; public var name: String; public var songIds: [UUID] }
+public struct RegionPlaylistDuplicate: Codable, Identifiable, Equatable, Sendable {
+    public var id: UUID
+    public var regionId: UUID
+    public init(id: UUID, regionId: UUID) { self.id = id; self.regionId = regionId }
+}
 public struct RegionPlaylist: Codable, Identifiable, Equatable, Sendable {
     public var id: UUID
     public var name: String
     public var songId: UUID
+    /// Ordered row IDs. Original rows use the physical region ID; copies use an alias.
     public var regionIds: [UUID]
+    public var duplicates: [RegionPlaylistDuplicate]? = nil
+    public func regionSourceID(forEntry id: UUID) -> UUID {
+        duplicates?.first { $0.id == id }?.regionId ?? id
+    }
+    public func isDuplicate(_ id: UUID) -> Bool { duplicates?.contains { $0.id == id } == true }
+    public func region(forEntry id: UUID, in song: Song) -> Part? {
+        guard regionIds.contains(id), var region = song.parts.first(where: { $0.id == regionSourceID(forEntry: id) }) else { return nil }
+        region.id = id
+        return region
+    }
+    @discardableResult public mutating func duplicateRegion(_ entry: UUID) -> UUID? {
+        guard let index = regionIds.firstIndex(of: entry) else { return nil }
+        let duplicate = RegionPlaylistDuplicate(id: UUID(), regionId: regionSourceID(forEntry: entry))
+        duplicates = (duplicates ?? []) + [duplicate]
+        regionIds.insert(duplicate.id, at: index + 1)
+        return duplicate.id
+    }
 }
 public struct SetlistBlock: Codable, Identifiable, Equatable, Sendable {
     public var id: UUID
@@ -352,6 +693,14 @@ public struct RegionSetlist: Codable, Equatable, Sendable {
     public var autoUntilBlockEnd: Bool?
     public var automaticSubplay: Bool?
     public var automaticSubplaySeconds: Double?
+    public var automaticSubplayBars: Int?
+    public var subplayExclusiveTrackIDs: [UUID]?
+    public var automaticSubplayNext: Bool?
+    public var subplayLeadSelection: Int {
+        if automaticSubplayNext == true { return 11 }
+        if let bars = automaticSubplayBars { return min(5, max(1, bars)) * 2 }
+        return Int(subplayLeadTime) * 2 - 1
+    }
     public var subplayLeadTime: Double { min(5, max(1, automaticSubplaySeconds ?? 1)) }
     public var prepareWithoutPlayback: Bool?
     public var preparesWithoutPlayback: Bool { prepareWithoutPlayback ?? false }
@@ -379,16 +728,23 @@ public extension RegionSetlist {
         var number = last + 1
         while names.contains(prefix + String(number)) { number += 1 }
         var copy = source; copy.id = UUID(); copy.name = prefix + String(number)
+        let aliases = Dictionary(uniqueKeysWithValues: (source.duplicates ?? []).map { ($0.id, UUID()) })
+        copy.regionIds = source.regionIds.map { aliases[$0] ?? $0 }
+        copy.duplicates = source.duplicates?.map { RegionPlaylistDuplicate(id: aliases[$0.id]!, regionId: $0.regionId) }
         playlists.append(copy)
         let copiedBlocks = (blocks ?? []).filter { $0.playlistId == source.id }.map { block -> SetlistBlock in
-            var copyBlock = block; copyBlock.id = UUID(); copyBlock.playlistId = copy.id; return copyBlock
+            var copyBlock = block; copyBlock.id = UUID(); copyBlock.playlistId = copy.id
+            copyBlock.beforeRegionId = block.beforeRegionId.map { aliases[$0] ?? $0 }
+            return copyBlock
         }
         if !copiedBlocks.isEmpty { blocks = (blocks ?? []) + copiedBlocks }
         return copy.id
     }
     @discardableResult mutating func deletePlaylist(_ id: UUID) -> Bool {
         guard playlists.contains(where: { $0.id == id }) else { return false }
+        let removed = Set(playlists.first(where: { $0.id == id })?.duplicates?.map(\.id) ?? [])
         playlists.removeAll { $0.id == id }
+        playedLiveRegionIDs?.removeAll { removed.contains($0) }
         blocks?.removeAll { $0.playlistId == id }
         if selectedId == id { selectedId = nil }
         return true
@@ -407,6 +763,14 @@ public struct ResolumeSettings: Codable, Equatable, Sendable {
     public var includeMarkers = true
     public var withMarkers: [String: String] = [:]
     public var regionsOnly: [String: String] = [:]
+    /// Optional for backward-compatible documents. Receiver paths and MIDI
+    /// identifiers belong to CatLive Integration, never to this computer.
+    public var integrationEnabled: Bool?
+    public var integrationHost: String?
+    public var integrationPort: Int?
+    public var integrationMTCEnabled: Bool?
+    public var integrationMIDIOutput: String?
+    public var usesIntegration: Bool { integrationEnabled == true }
     public init() {}
     public static func assignment(_ text: String) -> (deck: Int, column: Int)? {
         let pair = text.split(separator: ":", omittingEmptySubsequences: false)
@@ -420,6 +784,14 @@ public struct ResolumeSettings: Codable, Equatable, Sendable {
               (1...65535).contains(oscPort), (1...65535).contains(webPort),
               withMarkers.count <= 100_000, regionsOnly.count <= 100_000 else {
             throw ProjectError.invalid("Invalid Resolume settings")
+        }
+        if usesIntegration {
+            let address = integrationHost ?? ""
+            guard !address.isEmpty, address.count <= 253,
+                  !address.contains(where: { $0.isWhitespace || "/\\?#@".contains($0) }),
+                  (1...65535).contains(integrationPort ?? 48726), (integrationMIDIOutput?.count ?? 0) <= 512 else {
+                throw ProjectError.invalid("Invalid CatLive Integration settings")
+            }
         }
     }
 }
@@ -462,7 +834,28 @@ public indirect enum PortableProjectJSON: Codable, Equatable, Sendable {
     }
 }
 
+public enum TimelineLocks {
+    public static let regions = 1, itemPosition = 2
+    public static let itemVolume = 8, itemPan = 16, itemMute = 32
+    public static let all = regions | itemPosition | itemVolume | itemPan | itemMute
+    public static func normalize(_ options: Int) -> Int {
+        // Older projects stored one bit for volume and pan.
+        (options & all) | (options & 4 == 0 ? 0 : itemVolume | itemPan)
+    }
+}
 public struct Project: Codable, Identifiable, Equatable, Sendable {
+    /// Additive packages already applied; repeated imports never restore deleted content.
+    public var partialImportIDs: [UUID]? = nil
+    /// Unfinished Reduce Project choices travel with the saved document.
+    public var reductionDraft: PortableProjectJSON? = nil
+    /// Permanent identity shared by copies used for redundant playback. Assigned by Save.
+    public var projectSyncID: UUID? = nil
+    /// Protect timeline positions and boundaries; nil keeps older projects unlocked.
+    public var timelineMovementLocked: Bool? = nil
+    /// Independent edit locks: regions/markers=1, item geometry=2, item gain/pan=4.
+    public var timelineLockOptions: Int? = nil
+    public var configuredTimelineLocks: Int { TimelineLocks.normalize(timelineLockOptions ?? TimelineLocks.all) }
+    public var effectiveTimelineLocks: Int { timelineMovementLocked == true ? configuredTimelineLocks : 0 }
     /// Windows grandMA2 assignments and reserved destinations must survive a Mac save.
     public var windowsLighting: PortableProjectJSON? = nil
     public var resolume: ResolumeSettings? = nil
@@ -481,7 +874,8 @@ public struct Project: Codable, Identifiable, Equatable, Sendable {
     public var masterSolo: Bool?
     public var masterMono: Bool?
     public var masterPhaseInverted: Bool?
-    public var masterColor: UInt32? = 0x414141
+    public static let defaultMasterColor: UInt32 = 0x414141
+    public var masterColor: UInt32? = Project.defaultMasterColor
     public var masterAutomation: TrackAutomation?
     public var masterFX: NativeFXSettings?
     public var masterPatch: OutputPatch?
@@ -493,7 +887,8 @@ public struct Project: Codable, Identifiable, Equatable, Sendable {
         let digit = Int(String(text.removeFirst()), radix: 16)!
         return UUID(uuidString: String(digit ^ 8, radix: 16) + text)!
     }
-    public func validate() throws {
+    public func validate() throws { try validate(reusing: nil) }
+    fileprivate func validate(reusing cache: ProjectValidationCache?) throws {
         guard projectFormatVersion == 1, minimumJarasVersion == "1.0.0", !name.isEmpty else { throw ProjectError.invalid("Versão ou nome do projeto inválido.") }
         if let savedCursor {
             guard savedCursor.position.isFinite, savedCursor.position >= 0 else { throw ProjectError.invalid("Invalid saved cursor position") }
@@ -507,7 +902,9 @@ public struct Project: Codable, Identifiable, Equatable, Sendable {
         try masterPatch?.validate(allowMaster: false, allowNone: true)
         try masterSecondaryPatch?.validate(allowMaster: false, allowNone: true)
         for patch in masterOutputPatches { try patch.validate(allowMaster: false, allowNone: true) }
+        guard songs.flatMap(\.tracks).filter({ $0.role.rawValue == "vinhetas" }).count <= 1 else { throw ProjectError.invalid("Only one VINHETAS-FX track is allowed") }
         var identifiers: Set<UUID> = [id]
+        guard songs.flatMap(\.tracks).filter({ $0.kind == .programChange }).count <= 1 else { throw ProjectError.invalid("Only one Program Change track is allowed") }
         guard songs.flatMap(\.tracks).filter({ $0.kind == .timecode }).count <= 1 else { throw ProjectError.invalid("Only one Timecode track is allowed") }
         guard songs.flatMap(\.tracks).filter({ $0.kind == .click }).count <= 1 else { throw ProjectError.invalid("Only one Click track is allowed") }
         func register(_ id: UUID) throws { guard identifiers.insert(id).inserted else { throw ProjectError.invalid("UUID duplicado.") } }
@@ -526,7 +923,7 @@ public struct Project: Codable, Identifiable, Equatable, Sendable {
                 } else { ancestors.removeAll(keepingCapacity: true) }
                 ancestors.append(track.id)
                 try register(track.id)
-                if let fixed = track.fixedName { guard (track.name == fixed || (track.kind == .teleprompt && track.name == "Teleprompter")), (!track.solo || track.kind == .video || track.kind == .click), track.parentTrackID == nil else { throw ProjectError.invalid("Invalid special track") } }
+                if let fixed = track.fixedName { guard (track.name == fixed || (track.kind == .click && track.name == "Click") || (track.kind == .teleprompt && track.name == "Teleprompter")), (!track.solo || track.kind == .video || track.kind == .click || track.kind == .programChange), track.parentTrackID == nil else { throw ProjectError.invalid("Invalid special track") } }
                 guard track.clickSound == nil || track.kind == .click else { throw ProjectError.invalid("Custom click sound requires a Click track") }
                 if track.kind == .click { guard track.fx == nil, track.audioFile == nil, track.midiInput == nil, track.inputPatch == nil, track.midiChannel == nil, track.recordingChannels == nil, track.recordingFormat == nil else { throw ProjectError.invalid("Click tracks cannot record or contain FX") } }
                 if track.kind.isText { guard !track.mute, track.fx == nil, track.audioFile == nil, track.midiInput == nil, track.midiChannel == nil, track.recordingFormat == nil, track.recordingChannels == nil else { throw ProjectError.invalid("Text tracks cannot contain audio controls") } }
@@ -536,16 +933,41 @@ public struct Project: Codable, Identifiable, Equatable, Sendable {
                           !song.tracks.contains(where: { $0.parentTrackID == track.id }),
                           track.volume == other.volume, track.pan == -other.pan,
                           let input = track.inputPatch, let otherInput = other.inputPatch,
-                          input.channelCount == 1, otherInput.channelCount == 1,
-                          otherInput.firstChannel == input.firstChannel + (link.left ? 1 : -1) else { throw ProjectError.invalid("Invalid linked tracks") }
+                          (input == .none && otherInput == .none) ||
+                            (input.channelCount == 1 && otherInput.channelCount == 1 &&
+                             otherInput.firstChannel == input.firstChannel + (link.left ? 1 : -1)) else { throw ProjectError.invalid("Invalid linked tracks") }
                 }
+                // Cross-track links, hierarchy and all global IDs are checked
+                // on every edit. Only unchanged local metadata can reuse a
+                // successful validation; populated waveform arrays never skip.
+                if cache?.canReuse(track, song: song, project: id) == true {
+                    for clip in track.clips { try register(clip.id) }
+                    continue
+                }
+                if track.kind == .programChange {
+                    guard track.clips.isEmpty, track.audioFile == nil, track.fx == nil, track.parentTrackID == nil,
+                          track.inputPatch == nil, track.recordingChannels == nil else { throw ProjectError.invalid("Program Change tracks accept only program markers") }
+                    var ids = Set<UUID>()
+                    guard track.programChangeLaneCount <= 6 else { throw ProjectError.invalid("Only six Program Change markers are allowed at the same position") }
+                    for marker in track.programChanges ?? [] {
+                        guard marker.position.isFinite, marker.position >= 0, (0...127).contains(marker.program),
+                              (1...16).contains(marker.channel), ids.insert(marker.id).inserted, marker.output == nil || (1...6).contains(marker.output!)
+                        else { throw ProjectError.invalid("Invalid Program Change marker") }
+                    }
+                } else if track.programChanges != nil || track.midiOutput != nil { throw ProjectError.invalid("Program Change settings require a Program Change track") }
+                if let chords = track.chordMarkers, !chords.isEmpty {
+                    guard track.kind == .chords, chords.allSatisfy({
+                        $0.offset.isFinite && $0.offset >= 0 && (1...ChordMarker.maximumNameLength).contains($0.name.count)
+                    }), Set(chords.map(\.id)).count == chords.count else { throw ProjectError.invalid("Invalid chord marker") }
+                }
+                guard track.midiOutput == nil || (1...6).contains(track.midiOutput!) else { throw ProjectError.invalid("Invalid MIDI output") }
                 try track.timecode?.validate()
                 guard track.color == nil || track.color! <= 0xffffff else { throw ProjectError.invalid("Invalid track color") }
                 guard track.heightScale == nil || TrackHeightGeometry.isValidScale(track.heightScale!) else { throw ProjectError.invalid("Invalid track height") }
                 try track.fx?.validate()
                 try track.automation?.validate()
                 if track.kind.isSingleLane {
-                    let layers = track.kind.isTeleprompter ? [track.clips.filter { !$0.isProjectionMedia }, track.clips.filter(\.isProjectionMedia)] : [track.clips]
+                    let layers = track.kind.isTeleprompter ? [track.clips.filter(\.isProjectionMedia)] : [track.clips]
                     for layer in layers {
                         let clips = layer.sorted { $0.startTime < $1.startTime }
                         guard zip(clips, clips.dropFirst()).allSatisfy({ $0.startTime + $0.duration <= $1.startTime + 0.0000001 }) else {
@@ -554,8 +976,8 @@ public struct Project: Codable, Identifiable, Equatable, Sendable {
                     }
                 }
                 guard track.midiChannel == nil || (1...16).contains(track.midiChannel!) else { throw ProjectError.invalid("Invalid MIDI channel") }
-                guard track.midiInput == nil || (1...3).contains(track.midiInput!) else { throw ProjectError.invalid("Invalid MIDI input") }
-                try track.inputPatch?.validate(allowMaster: false)
+                guard track.midiInput == nil || (1...6).contains(track.midiInput!) || (track.kind == .programChange && track.midiInput == -1) else { throw ProjectError.invalid("Invalid MIDI input") }
+                try track.inputPatch?.validate(allowMaster: false, allowNone: true)
                 guard track.recordingChannels == nil || TrackRecordingMode(rawValue: track.recordingChannels!) != nil else { throw ProjectError.invalid("Invalid recording channel mode") }
                 guard track.recordingFormat == nil || ["wav", "wav32", "mp3"].contains(track.recordingFormat!) else { throw ProjectError.invalid("Invalid recording format") }
                 try track.patch?.validate(allowMaster: true, allowGroup: track.parentTrackID != nil, allowNone: true)
@@ -567,7 +989,7 @@ public struct Project: Codable, Identifiable, Equatable, Sendable {
                         guard track.kind == .standard, clip.audioFile != nil, clip.midi == nil else { throw ProjectError.invalid("Frozen MIDI requires an audio item") }
                     }
                     if let midi = clip.midi {
-                        guard track.kind == .standard, clip.audioFile == nil, clip.text == nil, clip.loopLength == nil else { throw ProjectError.invalid("MIDI items require an instrument track and cannot contain audio") }
+                        guard track.kind == .standard, clip.audioFile == nil, clip.text == nil else { throw ProjectError.invalid("MIDI items require an instrument track and cannot contain audio") }
                         try midi.validate()
                     }
                     guard track.kind != .click || clip.audioFile == nil || clip.isProjectionMedia else { throw ProjectError.invalid("Click items use the built-in sound") }
@@ -590,10 +1012,14 @@ public struct Project: Codable, Identifiable, Equatable, Sendable {
                     try register(clip.id)
                     guard (clip.waveformChannels ?? []).allSatisfy({ $0.allSatisfy { $0.isFinite && (0...1).contains($0) } }) else { throw ProjectError.invalid("Invalid channel waveform") }
                     guard clip.audioRate.isFinite, (1.0/32...32).contains(clip.audioRate) else { throw ProjectError.invalid("Invalid audio playback rate.") }
+                    guard ElasticPoint.valid(clip.elasticPoints ?? []), clip.elasticSourceScale.map({ $0.isFinite && $0 > 0 }) ?? true else { throw ProjectError.invalid("Invalid elastic points") }
+                    let tempoReferences = clip.tempoRateReferences ?? []
+                    guard Set(tempoReferences.map(\.markerID)).count == tempoReferences.count, tempoReferences.allSatisfy({ $0.rate.isFinite && $0.rate > 0 }) else { throw ProjectError.invalid("Invalid item tempo reference") }
                     if let reference = clip.tempoBasePlaybackRate { guard reference.isFinite, (1.0/32...32).contains(reference) else { throw ProjectError.invalid("Invalid tempo playback reference.") } }
-                    guard clip.channelMode == nil || (0...3).contains(clip.channelMode!) else { throw ProjectError.invalid("Invalid item channel mode") }
+                    guard clip.channelMode == nil || (0...4).contains(clip.channelMode!) else { throw ProjectError.invalid("Invalid item channel mode") }
                 guard (clip.pitchSemitones ?? 0).isFinite, (-12...12).contains(clip.pitchSemitones ?? 0) else { throw ProjectError.invalid("Invalid item pitch") }
-                guard clip.normalizationGain == nil || (clip.normalizationGain!.isFinite && clip.normalizationGain! >= 0 && clip.normalizationGain! <= pow(10, 24.0 / 20)) else { throw ProjectError.invalid("Invalid normalization gain") }
+                guard clip.normalizationGain == nil || (clip.normalizationGain!.isFinite && clip.normalizationGain! >= 0) else { throw ProjectError.invalid("Invalid normalization gain") }
+                    guard [clip.fadeInCurve, clip.fadeInSCurve, clip.fadeOutCurve, clip.fadeOutSCurve].allSatisfy({ $0 == nil || ($0!.isFinite && (-1...1).contains($0!)) }) else { throw ProjectError.invalid("Invalid fade curve") }
                     guard [clip.fadeIn, clip.fadeOut].allSatisfy({ $0 == nil || ($0!.isFinite && $0! >= 0) }) else { throw ProjectError.invalid("Invalid item fade") }
                     guard (clip.pan ?? 0).isFinite, (-1...1).contains(clip.pan ?? 0) else { throw ProjectError.invalid("Invalid item pan") }
                     guard clip.gain == nil || (clip.gain!.isFinite && clip.gain! >= 0) else { throw ProjectError.invalid("Invalid clip gain") }
@@ -606,10 +1032,12 @@ public struct Project: Codable, Identifiable, Equatable, Sendable {
                 }
             }
             for marker in song.markers ?? [] {
+                guard marker.automaticSectionRepeatCount.map({ (1...20).contains($0) }) ?? true else { throw ProjectError.invalid("Invalid automatic section repeat count") }
                 if let bpm = marker.tempoBPM {
                     guard bpm.isFinite, TimelineTempo.bpmRange.contains(bpm), (1...32).contains(marker.tempoBeats ?? 4), TimelineTempo.beatUnits.contains(marker.tempoUnit ?? 4), marker.unifiedRegionID == nil, marker.sourceRegionID == nil else { throw ProjectError.invalid("Invalid tempo marker") }
                     if let reference = marker.tempoReferenceBPM, !reference.isFinite || !TimelineTempo.bpmRange.contains(reference) { throw ProjectError.invalid("Invalid tempo reference") }
-                } else if marker.tempoBeats != nil || marker.tempoUnit != nil || marker.tempoTimebase != nil || marker.tempoReferenceBPM != nil { throw ProjectError.invalid("Invalid tempo marker") }
+                    if let rate = marker.tempoPlaybackRate, !rate.isFinite || rate <= 0 { throw ProjectError.invalid("Invalid tempo playback rate") }
+                } else if marker.tempoBeats != nil || marker.tempoUnit != nil || marker.tempoTimebase != nil || marker.tempoReferenceBPM != nil || marker.tempoPlaybackRate != nil || marker.regionTempoAnchor != nil { throw ProjectError.invalid("Invalid tempo marker") }
                 try register(marker.id)
                 guard !marker.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                       (marker.unifiedRegionID != nil || marker.name.count <= (marker.isSection ? TimelineMarker.maximumSectionNameLength : TimelineMarker.maximumNameLength)), marker.color <= 0xffffff,
@@ -636,8 +1064,15 @@ public struct Project: Codable, Identifiable, Equatable, Sendable {
                 guard !playlist.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                       let song = songs.first(where: { $0.id == playlist.songId }),
                       Set(playlist.regionIds).count == playlist.regionIds.count,
-                      playlist.regionIds.allSatisfy({ id in song.parts.contains { $0.id == id } })
+                      playlist.regionIds.allSatisfy({ id in song.parts.contains { $0.id == playlist.regionSourceID(forEntry: id) } })
                 else { throw ProjectError.invalid("Invalid region playlist") }
+                for duplicate in playlist.duplicates ?? [] {
+                    try register(duplicate.id)
+                    guard playlist.regionIds.contains(duplicate.id),
+                          song.parts.contains(where: { $0.id == duplicate.regionId && $0.parentRegionID == nil }) else {
+                        throw ProjectError.invalid("Invalid region playlist duplicate")
+                    }
+                }
             }
             guard state.selectedId == nil || state.playlists.contains(where: { $0.id == state.selectedId }) else { throw ProjectError.invalid("Invalid selected playlist") }
             for block in state.blocks ?? [] {
@@ -695,13 +1130,23 @@ public enum ProjectError: LocalizedError { case invalid(String); public var erro
 public struct QueueState: Codable, Equatable, Sendable { public var songId: UUID? }
 public struct LoopState: Codable, Equatable, Sendable { public var enabled: Bool; public var start: Double? = nil; public var end: Double? = nil }
 public struct SubPlayState: Codable, Equatable, Sendable { public var playing: Bool; public var position: Double }
+public struct TransportBeatSeek: Codable, Equatable, Sendable {
+    public var boundary: Double
+    public var destination: Double
+}
 public struct TransportState: Codable, Equatable, Sendable {
     public var playbackStartRegionId: UUID? = nil
     public var subPlaybackStartRegionId: UUID? = nil
+    public var exclusivePlaybackRegionId: UUID? = nil
+    public var subExclusivePlaybackRegionId: UUID? = nil
     public var multiLoopsBypassed: Bool? = nil
     public var queuedSectionMarkerId: UUID?
+    public var automaticSectionTriggerId: UUID? = nil
+    public var automaticSectionNotice: String? = nil
     public var sectionQueueStartedAt: Double?
     public var sectionJumpSerial: UInt64?
+    public var repeatWrapSerial: UInt64? = nil
+    public var beatSeek: TransportBeatSeek? = nil
     public var multiLoop: MultiLoopPlayback?
     public var ignoreNextAfter: Double?
     public var ignoreNextEnd: Double?
@@ -711,6 +1156,8 @@ public struct TransportState: Codable, Equatable, Sendable {
     public var paused: Bool?
     public var editPosition: Double?
     public var regionId: UUID?; public var queuedRegionId: UUID?; public var queueStartedAt: Double?
+    public var playlistEntryId: UUID? = nil
+    public var queuedPlaylistEntryId: UUID? = nil
     public var queue: QueueState; public var loop: LoopState; public var subPlay: SubPlayState
 }
 /// Same membership rule as Core/Transport/PlaybackScope.hpp. Playback entry is
@@ -723,20 +1170,76 @@ public struct PlaybackScope: Equatable {
         return itemStart >= minimum - 1e-6 && itemStart < maximum - 1e-6
     }
 }
+/// Immutable lookup for one audio revision. Avoid scanning every region and
+/// every linked marker again for each playback fragment during a tempo edit.
+public struct PlaybackItemStartIndex {
+    private let initialized: Bool
+    private let parts: [UUID: Part]
+    private let starts: [UUID: Double]
+    private let incoming: [UUID: [Part]]
+    public init(song: Song) {
+        initialized = song.regionOwnershipInitialized == true
+        parts = Dictionary(uniqueKeysWithValues: song.parts.map { ($0.id, $0) })
+        var starts: [UUID: Double] = [:], incoming: [UUID: [Part]] = [:]
+        for part in song.parts {
+            let start = song.playbackRegionStart(part)
+            starts[part.id] = start
+            if let parent = part.parentRegionID, start < part.startTime - 1e-6 {
+                incoming[parent, default: []].append(part)
+            }
+        }
+        self.starts = starts; self.incoming = incoming
+    }
+    public func start(for clip: AudioClip) -> Double? {
+        guard initialized else { return clip.startTime }
+        guard let id = clip.regionOwnerID, let part = parts[id] else { return nil }
+        guard let parent = part.parentRegionID else { return clip.startTime }
+        let candidates = (incoming[parent] ?? []).filter {
+            $0.id != part.id && $0.startTime > part.startTime &&
+            clip.startTime >= starts[$0.id]! - 1e-6 && clip.startTime < $0.startTime - 1e-6
+        }
+        if let next = candidates.max(by: { starts[$0.id]! < starts[$1.id]! }) { return starts[next.id] }
+        return starts[part.id]
+    }
+}
 public extension Song {
+    /// Linked flags are editable playback boundaries; stored child bounds
+    /// retain the original song extent for non-destructive arrangement edits.
+    func playbackRegionStart(_ part: Part) -> Double {
+        guard let parent = part.parentRegionID else { return part.startTime }
+        return markers?.first { $0.sourceRegionID == part.id && $0.unifiedRegionID == parent }?.position ?? part.startTime
+    }
     func playbackEntryRegion(at position: Double) -> UUID? {
         guard let root = parts.filter({ $0.parentRegionID == nil && position >= $0.startTime - 1e-6 && position < $0.endTime })
             .min(by: { $0.endTime - $0.startTime < $1.endTime - $1.startTime }) else { return nil }
-        return parts.filter { $0.parentRegionID == root.id && $0.startTime <= position + 1e-6 }
-            .sorted { $0.startTime == $1.startTime ? $0.id.uuidString < $1.id.uuidString : $0.startTime > $1.startTime }.first?.id
+        return parts.filter { $0.parentRegionID == root.id && playbackRegionStart($0) <= position + 1e-6 }
+            .sorted { playbackRegionStart($0) == playbackRegionStart($1) ? $0.id.uuidString < $1.id.uuidString : playbackRegionStart($0) > playbackRegionStart($1) }.first?.id
     }
     func playbackItemStart(_ clip: AudioClip) -> Double? {
         guard regionOwnershipInitialized == true else { return clip.startTime }
         let owner = clip.regionOwnerID
         if let part = parts.first(where: { $0.id == owner }) {
-            return part.parentRegionID != nil ? part.startTime : clip.startTime
+            guard let parent = part.parentRegionID else { return clip.startTime }
+            // Moving a song flag earlier includes onsets in the newly exposed
+            // interval, while previous-song tails and deliberately moved items
+            // beyond that interval keep their persisted attachment.
+            if let incoming = parts.filter({
+                $0.parentRegionID == parent && $0.id != part.id &&
+                playbackRegionStart($0) < $0.startTime - 1e-6 &&
+                clip.startTime >= playbackRegionStart($0) - 1e-6 && clip.startTime < $0.startTime - 1e-6 &&
+                $0.startTime > part.startTime
+            }).max(by: { playbackRegionStart($0) < playbackRegionStart($1) }) {
+                return playbackRegionStart(incoming)
+            }
+            return playbackRegionStart(part)
         }
         return regionOwnershipInitialized == true ? nil : clip.startTime
+    }
+    func allowsExclusiveSubplay(_ transport: TransportState, head: Int, track: UUID, owner: UUID?, selectedTracks: Set<UUID>) -> Bool {
+        guard head != 2, selectedTracks.contains(track), let owner else { return true }
+        if head == 0, transport.subPlay.playing, transport.subExclusivePlaybackRegionId != nil { return false }
+        guard let required = head == 0 ? transport.exclusivePlaybackRegionId : transport.subExclusivePlaybackRegionId else { return true }
+        return owner == required
     }
     func playbackScope(_ transport: TransportState, head: Int = 0, destination: Double? = nil) -> PlaybackScope {
         let entry: UUID?
@@ -744,7 +1247,7 @@ public extension Song {
         else if head == 0 { entry = transport.playbackStartRegionId ?? transport.regionId }
         else { entry = transport.subPlaybackStartRegionId ?? transport.queuedRegionId }
         let part = parts.first { $0.id == entry && $0.parentRegionID != nil }
-        return PlaybackScope(minimum: part?.startTime ?? -.infinity,
+        return PlaybackScope(minimum: part.map { playbackRegionStart($0) } ?? -.infinity,
             maximum: head == 0 ? transport.ignoreNextAfter ?? .infinity : .infinity)
     }
 }
@@ -753,22 +1256,76 @@ public struct AudioRouting: Codable, Sendable { public var routes: [AudioRoute] 
 public struct MixerState: Codable, Sendable { public var tracks: [Track]; public var routing: AudioRouting }
 public struct ShowSnapshot: Codable, Sendable { public var project: Project; public var transport: TransportState; public var nextSongId: UUID? }
 
-public struct PlaybackSnapshot: Codable, Sendable { public var transport: TransportState; public var nextSongId: UUID? }
+public struct ProjectSyncMixer: Codable, Sendable {
+    public struct Track: Codable, Sendable { public var id: UUID; public var volume: Double; public var pan: Double; public var mute: Bool; public var solo: Bool }
+    public var masterVolume: Double; public var masterPan: Double; public var masterMute: Bool; public var masterSolo: Bool
+    public var tracks: [Track]
+}
+public struct PlaybackSnapshot: Codable, Sendable { public var transport: TransportState; public var nextSongId: UUID?; public var syncSetlist: RegionSetlist? = nil; public var syncMixer: ProjectSyncMixer? = nil }
 
 /// Interval partitioning: adjacent items share a lane; simultaneous items never do.
+public enum StemLayoutPreferences {
+    public static let stackedKey = "jaras.timeline.stackedStems"
+    public static let crossfadeKey = "jaras.timeline.crossfadeOverlaps"
+    public static let stackedDefault = true
+    public static var stacksByDefault: Bool {
+        (UserDefaults.standard.object(forKey: stackedKey) as? Bool) ?? stackedDefault
+    }
+}
+
+public extension Track {
+    var usesStackedStems: Bool {
+        stackedStems ?? (!kind.isTeleprompter && StemLayoutPreferences.stacksByDefault)
+    }
+
+    /// Rotate only the occupied slots. Three overlapping clips must all be reachable.
+    mutating func cycleOverlappingStems(at time: Double) -> UUID? {
+        guard usesStackedStems else { return nil }
+        let hits = clips.indices.filter { clips[$0].startTime <= time && time < clips[$0].startTime + clips[$0].duration }
+        guard hits.count > 1, let first = hits.first, let last = hits.last else { return nil }
+        let previous = clips[last]
+        for (lower, upper) in zip(hits, hits.dropFirst()).reversed() { clips[upper] = clips[lower] }
+        clips[first] = previous
+        return clips[last].id
+    }
+}
 public struct TrackLanes: Equatable {
+    // Imports can round clip boundaries to the nearest audio sample.
+    private static let edgeTolerance = 1.0 / 44_100
     public var lanes: [UUID: Int] = [:]
     public var count: Int = 1
+    private var localCounts: [UUID: Int] = [:]
+    private var localLanes: [UUID: Int] = [:]
+    private var stacked = false
+    private var stackedOverlaps: Set<UUID> = []
     public init(track: Track) {
-        var ends: [Double] = []
-        let ordered = track.clips.sorted {
-            if $0.startTime != $1.startTime { return $0.startTime < $1.startTime }
-            return $0.id.uuidString < $1.id.uuidString
+        stacked = track.usesStackedStems
+        if stacked && track.clips.count < 2 { return }
+        let ordered = track.clips.enumerated().sorted {
+            if $0.element.startTime != $1.element.startTime { return $0.element.startTime < $1.element.startTime }
+            // Equal-position lyrics keep their imported top-to-bottom order.
+            if track.kind.isTeleprompter { return $0.offset < $1.offset }
+            return $0.element.id.uuidString < $1.element.id.uuidString
+        }.map(\.element)
+        if stacked {
+            // A clip is in an overlap if it starts before the furthest
+            // earlier end, or the next start falls inside its own interval.
+            var previousEnd = -Double.infinity
+            for (index, clip) in ordered.enumerated() {
+                let end = clip.startTime + clip.duration
+                if clip.startTime < previousEnd - Self.edgeTolerance ||
+                    (index + 1 < ordered.count && ordered[index + 1].startTime < end - Self.edgeTolerance) {
+                    stackedOverlaps.insert(clip.id)
+                }
+                previousEnd = max(previousEnd, end)
+            }
+            return
         }
+        var ends: [Double] = []
         // Lay out existing material first. A new take stays below the material
         // it overlaps, even if recording starts before that material begins.
         for clip in ordered where clip.recordingLane == nil {
-            let lane = ends.firstIndex(where: { $0 <= clip.startTime }) ?? ends.count
+            let lane = ends.firstIndex(where: { $0 <= clip.startTime + Self.edgeTolerance }) ?? ends.count
             if lane == ends.count { ends.append(0) }
             ends[lane] = clip.startTime + clip.duration
             lanes[clip.id] = lane
@@ -785,11 +1342,44 @@ public struct TrackLanes: Equatable {
             placed.append(clip)
         }
         count = max(1, (lanes.values.max() ?? 0) + 1)
+        // Connected overlap components have independent vertical geometry.
+        // A gap (including exactly touching edges) releases the whole height;
+        // a long item connecting two overlaps keeps a stable lane throughout.
+        var component: [AudioClip] = []
+        var componentEnd = -Double.infinity
+        func finishComponent() {
+            guard !component.isEmpty else { return }
+            let used = Set(component.compactMap { lanes[$0.id] }).sorted()
+            let compact = Dictionary(uniqueKeysWithValues: used.enumerated().map { ($0.element, $0.offset) })
+            for clip in component {
+                localCounts[clip.id] = max(1, used.count)
+                localLanes[clip.id] = compact[lanes[clip.id] ?? 0] ?? 0
+            }
+            component.removeAll(keepingCapacity: true)
+        }
+        for clip in ordered {
+            if clip.startTime >= componentEnd - Self.edgeTolerance { finishComponent() }
+            if component.isEmpty { componentEnd = clip.startTime + clip.duration }
+            else { componentEnd = max(componentEnd, clip.startTime + clip.duration) }
+            component.append(clip)
+        }
+        finishComponent()
+    }
+    public func hasStackedOverlap(_ clipID: UUID) -> Bool { stackedOverlaps.contains(clipID) }
+    public func localCount(for clipID: UUID) -> Int { localCounts[clipID] ?? count }
+    public func localLane(for clipID: UUID) -> Int { localLanes[clipID] ?? lanes[clipID] ?? 0 }
+    /// An active take grows independently of the project snapshot. Reserve the
+    /// conventional lanes until Stop commits its complete overlap component.
+    public mutating func reserveRecordingLanes(count reserved: Int) {
+        guard !stacked else { return }
+        count = max(count, reserved)
+        localCounts.removeAll(keepingCapacity: true)
+        localLanes.removeAll(keepingCapacity: true)
     }
     /// No overlapping item means lane zero, regardless of items elsewhere.
     public func recordingLane(start: Double, duration: Double, clips: [AudioClip]) -> Int {
         let end = start + duration
-        return clips.lazy.filter { $0.startTime < end && $0.startTime + $0.duration > start }
+        return clips.lazy.filter { $0.startTime < end - Self.edgeTolerance && $0.startTime + $0.duration > start + Self.edgeTolerance }
             .compactMap { lanes[$0.id] }.max().map { $0 + 1 } ?? 0
     }
 }
@@ -810,11 +1400,12 @@ public struct RegionLanes: Equatable {
 
 
 public enum TrackKind: String, CaseIterable, Sendable {
-    case standard, video, timecode, teleprompt, teleprompt2, chords
+    case standard, video, timecode, teleprompt, teleprompt2, chords, programChange
     case click = "generatedClick"
     public var defaultColor: UInt32? {
         switch self {
         case .click: return 0x77d18b
+        case .programChange: return 0x91a8ff
         case .timecode: return 0xffdc52
         case .chords: return 0x529eff
         case .teleprompt, .teleprompt2: return 0x54ff93
@@ -822,7 +1413,16 @@ public enum TrackKind: String, CaseIterable, Sendable {
         case .standard: return nil
         }
     }
-    public var title: String { switch self { case .click: return "Click"; case .standard: return "Standard"; case .video: return "Video"; case .timecode: return "Timecode"; case .teleprompt: return "Teleprompter 1"; case .teleprompt2: return "Teleprompter 2"; case .chords: return "Chords" } }
+    public var title: String { switch self { case .click: return "Metronome"; case .standard: return "Standard"; case .video: return "Video"; case .programChange: return "Program Change"; case .timecode: return "Timecode"; case .teleprompt: return "Teleprompter 1"; case .teleprompt2: return "Teleprompter 2"; case .chords: return "Chords" } }
+    var defaultInstrumentIcon: String? {
+        switch self {
+        case .standard: return "png:Other/waveform"
+        case .click: return "png:Other/metronome"
+        default: return nil
+        }
+    }
+    public var supportsTrackSolo: Bool { self == .standard || self == .click || self == .video || self == .programChange }
+    public var supportsTrackMute: Bool { supportsTrackSolo || self == .timecode }
     public var isTeleprompter: Bool { self == .teleprompt || self == .teleprompt2 }
     public var isText: Bool { isTeleprompter || self == .chords }
     public var isSingleLane: Bool { isText || self == .video }
@@ -842,9 +1442,10 @@ extension Track {
     public var kind: TrackKind { TrackKind(rawValue: role.rawValue) ?? .standard }
     public var fixedName: String? { kind == .standard ? nil : kind.title }
     public func canPlaceItem(start: Double, duration: Double, excluding id: UUID? = nil, media: Bool? = nil) -> Bool {
-        guard start.isFinite, duration.isFinite, start >= 0, duration > 0 else { return false }
+        guard kind != .programChange, start.isFinite, duration.isFinite, start >= 0, duration > 0 else { return false }
         guard kind.isSingleLane else { return true }
         let media = media ?? (id.flatMap { id in clips.first { $0.id == id }?.isProjectionMedia } ?? false)
+        if kind.isTeleprompter && !media { return true }
         return !clips.contains { $0.id != id && (!kind.isTeleprompter || $0.isProjectionMedia == media) && start < $0.startTime + $0.duration - 0.0000001 && start + duration > $0.startTime + 0.0000001 }
     }
     /// Single-lane items can be dragged past one another, but never stacked.
@@ -857,7 +1458,7 @@ extension Track {
             .min { abs($0 - proposed) < abs($1 - proposed) } ?? item.startTime
     }
     public func constrainedItemEdges(start: Double, end: Double, item: AudioClip) -> (Double, Double) {
-        guard kind.isSingleLane else { return (start, end) }
+        guard kind.isSingleLane, !kind.isTeleprompter || item.isProjectionMedia else { return (start, end) }
         let others = clips.filter { $0.id != item.id && (!kind.isTeleprompter || $0.isProjectionMedia == item.isProjectionMedia) }
         let left = others.filter { $0.startTime + $0.duration <= item.startTime + 0.0000001 }.map { $0.startTime + $0.duration }.max() ?? 0
         let right = others.filter { $0.startTime >= item.startTime + item.duration - 0.0000001 }.map(\.startTime).min() ?? .infinity
@@ -872,6 +1473,11 @@ public extension Song {
         parts.filter { start >= $0.startTime - 1e-6 && start < $0.endTime - 1e-6 && (end == nil || end! <= $0.endTime + 1e-6) }
             .min {
                 if ($0.parentRegionID != nil) != ($1.parentRegionID != nil) { return $0.parentRegionID != nil }
+                // Within a unified region the incoming song owns new onsets,
+                // even while the shorter outgoing song still has a tail.
+                if $0.parentRegionID != nil && $0.parentRegionID == $1.parentRegionID && $0.startTime != $1.startTime {
+                    return $0.startTime > $1.startTime
+                }
                 if $0.endTime - $0.startTime != $1.endTime - $1.startTime { return $0.endTime - $0.startTime < $1.endTime - $1.startTime }
                 return $0.id.uuidString < $1.id.uuidString
             }?.id
@@ -898,6 +1504,57 @@ public extension Song {
     func markerBelongs(_ marker: TimelineMarker, to root: UUID) -> Bool {
         marker.unifiedRegionID == root || regionOwns(root, owner: regionOwnershipInitialized == true ? marker.regionOwnerID : marker.sourceRegionID ?? regionOwner(at: marker.position))
     }
+    /// Drag membership follows the largest portion of an item currently
+    /// covered by a root region. Existing attachment only resolves equal spans.
+    func regionMovementOwner(at start: Double, end: Double? = nil, preferred: UUID? = nil) -> UUID? {
+        var selected: Part?
+        var largest = 0.0
+        for part in parts where part.parentRegionID == nil {
+            let overlap = end.map { max(0, min($0, part.endTime) - max(start, part.startTime)) }
+                ?? (start >= part.startTime - 1e-6 && start < part.endTime - 1e-6 ? 1 : 0)
+            guard overlap > 0 else { continue }
+            let same = selected != nil && abs(overlap - largest) <= 1e-9
+            let preferredHere = regionOwns(part.id, owner: preferred)
+            let preferredBefore = selected.map { regionOwns($0.id, owner: preferred) } ?? false
+            let tie = selected.map { previous in
+                preferredHere != preferredBefore ? preferredHere :
+                    part.endTime - part.startTime != previous.endTime - previous.startTime
+                    ? part.endTime - part.startTime < previous.endTime - previous.startTime
+                    : part.id.uuidString < previous.id.uuidString
+            } ?? false
+            if selected == nil || overlap > largest + 1e-9 || same && tie { selected = part; largest = overlap }
+        }
+        return selected?.id
+    }
+    /// A unified song is delimited by its flag and the next flag, even when
+    /// an outgoing clip extends across that boundary. Assign a media item to
+    /// the child containing the largest portion of its duration.
+    func dominantUnifiedOwner(at start: Double, end: Double, group: UUID, preferred: UUID? = nil) -> UUID? {
+        guard end > start, let root = parts.first(where: { $0.id == group && $0.parentRegionID == nil }) else { return nil }
+        let children = parts.filter { $0.parentRegionID == group }.sorted {
+            playbackRegionStart($0) == playbackRegionStart($1)
+                ? $0.id.uuidString < $1.id.uuidString : playbackRegionStart($0) < playbackRegionStart($1)
+        }
+        var winner: UUID?, longest = 0.0
+        for index in children.indices {
+            let left = max(root.startTime, playbackRegionStart(children[index]))
+            let right = min(root.endTime, index + 1 < children.count ? playbackRegionStart(children[index + 1]) : root.endTime)
+            let overlap = max(0, min(end, right) - max(start, left))
+            if overlap > longest + 1e-9 || abs(overlap - longest) <= 1e-9 && overlap > 0 && children[index].id == preferred {
+                winner = children[index].id; longest = overlap
+            }
+        }
+        return winner
+    }
+    func regionOwnerForMedia(at start: Double, end: Double, preferred: UUID? = nil) -> UUID? {
+        guard end > start, let root = regionMovementOwner(at: start, end: end, preferred: preferred),
+              let region = parts.first(where: { $0.id == root }),
+              max(0, min(end, region.endTime) - max(start, region.startTime)) > (end - start) / 2 else { return nil }
+        return dominantUnifiedOwner(at: start, end: end, group: root, preferred: preferred) ?? root
+    }
+    func markerMoves(_ marker: TimelineMarker, with root: UUID) -> Bool {
+        marker.unifiedRegionID == root || regionMovementOwner(at: marker.position, preferred: marker.regionOwnerID ?? marker.sourceRegionID) == root
+    }
 }
 
 public extension Song {
@@ -909,6 +1566,28 @@ public extension Song {
         let delta = start - region.startTime
         var result = self
         for track in result.tracks.indices {
+            if var automation = result.tracks[track].automation {
+                for envelope in automation.envelopes.indices {
+                    var points = automation.envelopes[envelope].points
+                    for point in points.indices where regionMovementOwner(at: points[point].time) == id {
+                        points[point].time = max(0, points[point].time + delta)
+                    }
+                    points.sort { $0.time < $1.time }
+                    if points.count > 1 {
+                        for point in 1..<points.count where points[point].time <= points[point - 1].time {
+                            points[point].time = points[point - 1].time.nextUp
+                        }
+                    }
+                    automation.envelopes[envelope].points = points
+                }
+                result.tracks[track].automation = automation
+            }
+            if var changes = result.tracks[track].programChanges {
+                for marker in changes.indices where regionMovementOwner(at: changes[marker].position) == id {
+                    changes[marker].position = max(0, changes[marker].position + delta)
+                }
+                result.tracks[track].programChanges = changes.sorted { $0.position < $1.position }
+            }
             for index in result.tracks[track].clips.indices {
                 let clip = result.tracks[track].clips[index]
                 if result.tracks[track].kind == .timecode && result.tracks[track].importedTimecodeItems != true {
@@ -919,8 +1598,9 @@ public extension Song {
                     result.tracks[track].clips[index].startTime = newStart
                     result.tracks[track].clips[index].duration = newEnd - newStart
                     result.duration = max(result.duration, newEnd)
-                } else if itemBelongs(clip, to: id) {
+                } else if regionMovementOwner(at: clip.startTime, end: clip.startTime + clip.duration, preferred: clip.regionOwnerID) == id {
                     result.tracks[track].clips[index].startTime = max(0, clip.startTime + delta)
+                    result.duration = max(result.duration, result.tracks[track].clips[index].startTime + clip.duration)
                 }
             }
         }
@@ -932,7 +1612,7 @@ public extension Song {
         if var markers = result.markers {
             for index in markers.indices {
                 let marker = markers[index]
-                if markerBelongs(marker, to: id) {
+                if markerMoves(marker, with: id) {
                     markers[index].position = max(0, marker.position + delta)
                     result.duration = max(result.duration, markers[index].position)
                 }
@@ -954,7 +1634,7 @@ public struct RegionMarkerRepulsion {
         let gap = minimumGap.isFinite ? max(0.01, minimumGap) : 0.01
         var offsets: [Double] = [], stationary: [Double] = []
         for marker in song.markers ?? [] {
-            if song.markerBelongs(marker, to: region.id) { offsets.append(marker.position - region.startTime) }
+            if song.markerMoves(marker, with: region.id) { offsets.append(marker.position - region.startTime) }
             else { stationary.append(marker.position) }
         }
         minimumStart = max(0, -(offsets.min() ?? 0))
@@ -993,10 +1673,10 @@ public struct RegionMarkerRepulsion {
 
 public extension Song {
     /// Timeline order is the projection priority. Teleprompters opt into their
-    /// own source track; the main video window scans every track from the top.
+    /// own source track; the main video window excludes both teleprompters.
     func firstProjectionItem(at position: Double, trackKind: TrackKind? = nil) -> AudioClip? {
         guard position.isFinite else { return nil }
-        for track in tracks where !track.mute && (trackKind == nil || track.kind == trackKind) {
+        for track in tracks where !track.mute && (trackKind.map { track.kind == $0 } ?? !track.kind.isTeleprompter) {
             for clip in track.clips where clip.isProjectionMedia && clip.muted != true && position >= clip.startTime && position < clip.startTime + clip.duration { return clip }
         }
         return nil
@@ -1056,5 +1736,206 @@ public struct AudioClipPlaybackIndex {
         collect(node.left, from: position, through: end, into: &result)
         if node.entry.start <= end && node.entry.end > position { result.append(node.entry.source) }
         collect(node.right, from: position, through: end, into: &result)
+    }
+}
+
+/// Local colour overrides travel with an item's text; legacy plain text remains unchanged.
+public enum ItemTextColors {
+    public struct Run: Codable, Equatable, Sendable {
+        public var text: String
+        public var color: UInt32?
+        public init(text: String, color: UInt32? = nil) { self.text = text; self.color = color }
+    }
+    public static let columnsPrefix = "\u{001e}CatLiveColumns/1\n"
+    public static func columns(_ value: String) -> [String] {
+        guard value.hasPrefix(columnsPrefix),
+              let data = String(value.dropFirst(columnsPrefix.count)).data(using: .utf8),
+              let result = try? JSONDecoder().decode([String].self, from: data), result.count == 2,
+              result.allSatisfy({ !$0.hasPrefix(columnsPrefix) }) else { return [value] }
+        return result
+    }
+    public static func encodeColumns(_ values: [String]) -> String {
+        guard values.count == 2, let data = try? JSONEncoder().encode(values),
+              let json = String(data: data, encoding: .utf8) else { return values.first ?? "" }
+        return columnsPrefix + json
+    }
+    public static let prefix = "\u{001e}CatLiveText/1\n"
+    public static let palette: [UInt32] = [0xffffff, 0xff4040, 0xff9638, 0xffe740, 0x54ef86, 0x40dfff, 0x5894ff, 0xd477ff]
+    public static func runs(_ value: String) -> [Run] {
+        let parts = columns(value)
+        if parts.count == 2 { return runs(parts[0]) + [Run(text: "\n")] + runs(parts[1]) }
+        guard value.hasPrefix(prefix), let data = String(value.dropFirst(prefix.count)).data(using: .utf8),
+              let runs = try? JSONDecoder().decode([Run].self, from: data),
+              runs.allSatisfy({ $0.color.map { $0 <= 0xffffff } ?? true }) else { return [Run(text: value)] }
+        return runs
+    }
+    public static func plain(_ value: String) -> String { runs(value).map(\.text).joined() }
+    public static func encode(_ values: [Run]) -> String {
+        var merged: [Run] = []
+        for run in values where !run.text.isEmpty {
+            if merged.last?.color == run.color, !merged.isEmpty { merged[merged.count-1].text += run.text }
+            else { merged.append(run) }
+        }
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        guard merged.contains(where: { $0.color != nil }), let data = try? encoder.encode(merged),
+              let json = String(data: data, encoding: .utf8) else { return merged.map(\.text).joined() }
+        return prefix + json
+    }
+}
+
+/// Presentation only: never changes the project timeline or a saved playlist.
+public enum SetlistDisplayOrder {
+    public static func sorted<T>(_ values: [T], mode: Int, name: (T) -> String, start: (T) -> Double) -> [T] {
+        values.enumerated().sorted { a, b in
+            if mode != 0 {
+                let result = name(a.element).compare(name(b.element), options: [.numeric, .caseInsensitive, .diacriticInsensitive], locale: .current)
+                if result != .orderedSame { return mode == 1 ? result == .orderedAscending : result == .orderedDescending }
+            }
+            if start(a.element) != start(b.element) { return start(a.element) < start(b.element) }
+            return a.offset < b.offset
+        }.map(\.element)
+    }
+    public static func entries(_ entries: [SetlistEntry], mode: Int) -> [SetlistEntry] {
+        var groups: [(part: Part, blocks: [SetlistEntry])] = []
+        var pending: [SetlistEntry] = []
+        for entry in entries {
+            switch entry {
+            case .block: pending.append(entry)
+            case .region(let part, _): groups.append((part, pending)); pending = []
+            }
+        }
+        return sorted(groups, mode: mode, name: { $0.part.name }, start: { $0.part.startTime }).enumerated().flatMap {
+            $0.element.blocks + [.region($0.element.part, number: $0.offset + 1)]
+        } + pending
+    }
+}
+
+/// Certificates contain only successfully validated metadata. Callers cannot
+/// seed or mutate them, and project-wide relationships are never cached.
+public final class ProjectValidationCache {
+    private struct SongMetadata {
+        let duration: Double
+        let tracks: [UUID: Track]
+    }
+    private var project: UUID?
+    private var songs: [UUID: SongMetadata] = [:]
+    public init() {}
+    public func validate(_ value: Project) throws {
+        try value.validate(reusing: self)
+        var next: [UUID: SongMetadata] = [:]
+        for song in value.songs {
+            var tracks: [UUID: Track] = [:]
+            for source in song.tracks {
+                var track = source
+                for index in track.clips.indices where !track.clips[index].waveform.isEmpty || track.clips[index].waveformChannels != nil {
+                    track.clips[index].waveform = []
+                    track.clips[index].waveformChannels = nil
+                }
+                tracks[track.id] = track
+            }
+            next[song.id] = SongMetadata(duration: song.duration, tracks: tracks)
+        }
+        project = value.id; songs = next
+    }
+    fileprivate func canReuse(_ track: Track, song: Song, project id: UUID) -> Bool {
+        guard project == id, let previous = songs[song.id], previous.duration == song.duration,
+              track.clips.allSatisfy({ $0.waveform.isEmpty && $0.waveformChannels == nil }) else { return false }
+        return previous.tracks[track.id] == track
+    }
+}
+
+
+/// Count scheduled file voices, including muted items and both playback heads.
+public enum PlaybackCapacity {
+    public static let limit = 250
+    public static let notice = "250+ — Not available"
+    public static let openingNotice = "Your project contains more than 250 simultaneous audio voices at some points. At those points, Parts, real-time BPM changes and Repeat are unavailable."
+    private static func isFile(_ clip: AudioClip, track: Track) -> Bool {
+        guard let file = clip.audioFile ?? track.audioFile, !file.path.isEmpty, !clip.isImage else { return false }
+        return clip.midi == nil || clip.frozenMIDI == true
+    }
+    public static func heads(_ snapshot: ShowSnapshot) -> [Int] {
+        guard let song = snapshot.project.songs.first(where: { $0.id == snapshot.transport.songId }) else { return [0, 0] }
+        let transport = snapshot.transport
+        let starts = PlaybackItemStartIndex(song: song)
+        let exclusive = Set(snapshot.project.regionSetlist?.subplayExclusiveTrackIDs ?? [])
+        var count = [0, 0]
+        for head in 0...1 where head == 0 ? transport.playing : transport.subPlay.playing {
+            let position = head == 0 ? transport.position : transport.subPlay.position
+            let scope = song.playbackScope(transport, head: head)
+            for track in song.tracks { for clip in track.clips {
+                if isFile(clip, track: track), clip.startTime <= position, position < clip.startTime + clip.duration,
+                   scope.allows(starts.start(for: clip)),
+                   song.allowsExclusiveSubplay(transport, head: head, track: track.id, owner: clip.regionOwnerID, selectedTracks: exclusive) { count[head] += 1 }
+            } }
+        }
+        return count
+    }
+    public static func active(_ snapshot: ShowSnapshot) -> Int { heads(snapshot).reduce(0, +) }
+    public static func exceeded(_ snapshot: ShowSnapshot) -> Bool { heads(snapshot).contains { $0 > limit } }
+    public static func peak(_ project: Project) -> Int {
+        var maximum = 0
+        for song in project.songs {
+            var edges: [(Double, Int)] = []
+            for track in song.tracks { for clip in track.clips where isFile(clip, track: track) && clip.duration > 0 && clip.startTime.isFinite && clip.duration.isFinite {
+                edges.append((clip.startTime, 1)); edges.append((clip.startTime + clip.duration, -1))
+            } }
+            edges.sort { $0.0 == $1.0 ? $0.1 < $1.1 : $0.0 < $1.0 }
+            var count = 0
+            for edge in edges { count += edge.1; maximum = max(maximum, count) }
+        }
+        return maximum
+    }
+}
+
+/// Region-relative, portable lyrics. Encoded item text includes colors and columns.
+public struct JLLyricsDocument: Codable, Sendable {
+    public struct Item: Codable, Sendable {
+        public let offset: Double
+        public let duration: Double
+        public let name: String
+        public let text: String
+    }
+    public let version: Int
+    public let teleprompter: Int
+    public let items: [Item]
+
+    public init(teleprompter: Int, clips: [AudioClip], origin: Double) {
+        version = 1
+        self.teleprompter = teleprompter
+        items = clips.compactMap { clip in
+            clip.text.map { Item(offset: clip.startTime - origin, duration: clip.duration, name: clip.name, text: $0) }
+        }
+    }
+    public var kind: TrackKind { teleprompter == 2 ? .teleprompt2 : .teleprompt }
+    public func clips(at origin: Double, region: UUID? = nil) throws -> [AudioClip] {
+        guard version == 1, (1...2).contains(teleprompter), !items.isEmpty, origin.isFinite,
+              items.allSatisfy({ $0.offset.isFinite && (origin + $0.offset).isFinite &&
+                  origin + $0.offset >= 0 && $0.duration.isFinite && $0.duration >= 0.01 }) else {
+            throw ProjectError.invalid("Invalid .jllyrics file.")
+        }
+        return items.map { value in
+            var clip = AudioClip(id: UUID(), name: value.name, startTime: origin + value.offset,
+                                 duration: value.duration, text: value.text)
+            clip.regionOwnerID = region
+            return clip
+        }
+    }
+}
+
+
+extension Song {
+    /// Merge a portable lyrics document onto its channel without changing existing items.
+    mutating func insertLyrics(_ document: JLLyricsDocument, at start: Double, region: UUID? = nil) throws {
+        let clips = try document.clips(at: start, region: region)
+        let kind = document.kind
+        if let row = tracks.firstIndex(where: { $0.kind == kind }) {
+            tracks[row].clips += clips
+        } else {
+            var track = Track(id: UUID(), name: kind.title, role: TrackRole(rawValue: kind.rawValue), color: kind.defaultColor)
+            track.clips = clips
+            tracks.insert(track, at: tracks.firstIndex(where: { $0.kind == .standard }) ?? tracks.endIndex)
+        }
+        duration = max(duration, clips.map { $0.startTime + $0.duration }.max() ?? 0)
     }
 }

@@ -3,38 +3,85 @@
 #include "RemoteTransport.h"
 #include "RemoteDiscovery.h"
 #include "Appearance.h"
+#include "ProjectSync.h"
+#include "RemoteProjectOpening.h"
 namespace catlive::remote {
-class Host final : private Timer {
+class Host final : private Timer, private AsyncUpdater {
   public:
-    explicit Host(Appearance &value) : preferences(value) {}
+    explicit Host(Appearance &value) : sync(value), preferences(value) {
+        transport.eventsReady = [this] { triggerAsyncUpdate(); };
+    }
+    ProjectSync sync;
+    ProjectOpening projectOpening;
+    // A newly-created tab has no playable document yet. Continue serving the
+    // outgoing presentation with its correlated loading state during that gap.
+    var projectSnapshot(int panel, var value) {
+        if (projectPresentationRequest != projectOpening.id()) {
+            projectPresentationRequest = projectOpening.id(); projectPresentations.clear();
+        }
+        if (value.isObject()) {
+            if (projectOpening.active()) projectPresentations[panel] = value.clone();
+        }
+        else if (projectOpening.active() && !projectPresentations.empty()) {
+            const auto found = projectPresentations.find(panel);
+            value = (found != projectPresentations.end() ? found->second : projectPresentations.begin()->second).clone();
+        } else return value;
+        if (projectOpening.id().empty()) return value;
+        auto projects = get(value, "projects").clone();
+        if (!projects.isObject()) projects = object();
+        put(projects, "commandID", wireID(projectOpening.id()));
+        put(projects, "commandState", projectOpening.stateName());
+        if (projectOpening.active()) {
+            put(projects, "busy", true); put(projects, "canOpen", false);
+            put(projects, "status", text(projectOpening.status()));
+        }
+        put(projects, "error", text(projectOpening.error()));
+        put(value, "projects", projects);
+        return value;
+    }
     ~Host() override { stop(); }
     std::function<var(int)> presentation;
     std::function<bool(const Command &)> perform;
     std::function<Bytes(const Command &)> image;
+    std::function<void(bool)> streamMainAudio;
+    std::function<Bytes()> takeMainAudio;
     String error;
     int port = 0;
     bool enabled() const { return transport.running(); }
     DWORD discoveryStatus() const { return advertising ? discovery.status() : ERROR_CANCELLED; }
+    void setHostName(String name) {
+        name = name.trim();
+        if (name.isEmpty()) name = SystemStats::getComputerName();
+        if (name == hostName) return;
+        hostName = name;
+        if (enabled()) start(advertising);
+    }
     void start(bool discover = true) {
         stop();
         error.clear();
-        const auto name = SystemStats::getComputerName();
+        const auto name = hostName.isEmpty() ? SystemStats::getComputerName() : hostName;
         try {
             port = transport.start(name, discover ? "0.0.0.0" : "127.0.0.1");
             if (discover)
                 discovery.start(name, port);
             advertising = discover;
             startTimerHz(30);
+            if (discover) sync.start();
         } catch (...) {
             stop();
             throw;
         }
     }
     void stop() {
+        if (streamMainAudio) streamMainAudio(false);
+        sync.stop();
         stopTimer();
         discovery.stop();
         transport.stop();
+        cancelPendingUpdate();
+        for(auto &entry:clients)releaseVinhetas(entry.second);
         clients.clear();
+        projectPresentations.clear();
         port = 0;
         advertising = false;
     }
@@ -71,7 +118,9 @@ class Host final : private Timer {
         for (auto &entry : clients) {
             auto &client = entry.second;
             if (client.mode == (notices ? "notices" : "director")) {
+                releaseVinhetas(client);
                 client.mode.clear();
+                client.mainAudio = false;
                 client.ack.reset();
                 client.panel = 0;
             }
@@ -81,8 +130,31 @@ class Host final : private Timer {
     }
     // Also called explicitly by the loopback test; all state stays on the UI thread.
     void update() {
+        receiveCommands();
+        publishState();
+        publishMainAudio();
+    }
+  private:
+    void publishMainAudio() {
+        if (!streamMainAudio || !takeMainAudio) return;
+        std::vector<ID> subscribers;
+        for (const auto &entry : clients)
+            if (entry.second.mainAudio) subscribers.push_back(entry.first);
+        streamMainAudio(!subscribers.empty());
+        if (subscribers.empty()) return;
+        for (int i = 0; i < 24; ++i) {
+            const auto pcm = takeMainAudio();
+            if (pcm.empty()) break;
+            Bytes audio{0x4a, 0x4c, 2, 10};
+            audio.insert(audio.end(), pcm.begin(), pcm.end());
+            for (const auto &id : subscribers) transport.send(id, audio, true);
+        }
+    }
+
+    void receiveCommands() {
         for (const auto &event : transport.events()) {
             if (event.type == Transport::Event::disconnected) {
+                if(auto found=clients.find(event.client);found!=clients.end())releaseVinhetas(found->second);
                 clients.erase(event.client);
                 continue;
             }
@@ -99,6 +171,8 @@ class Host final : private Timer {
             auto &client = found->second;
             try {
                 if (event.kind == 5) {
+                    releaseVinhetas(client);
+                    client.mainAudio = false;
                     const auto mode = event.body["mode"], value = event.body["pin"];
                     require(
                         mode.isString() && value.isString() &&
@@ -124,6 +198,8 @@ class Host final : private Timer {
                     client.ack.reset();
                     client.failures = 0;
                     accessStatus(event.client, client);
+                } else if (event.kind == 9) {
+                    client.mainAudio = (client.mode == "director" || client.mode == "observer") && (bool)event.body;
                 } else if (event.kind == 3) {
                     if (client.ack && *client.ack == (uint64)(int64)event.body)
                         client.ack.reset();
@@ -143,7 +219,14 @@ class Host final : private Timer {
                     } else {
                         bool accepted = false;
                         try {
-                            accepted = perform && perform(command);
+                            if(command.action=="vinhetasDown"){
+                                if(client.heldVinhetas.size()>=128||client.heldVinhetas.count(command.target))continue;
+                                accepted=perform&&perform(command);
+                                if(accepted)client.heldVinhetas.emplace(command.target,command);
+                            } else if(command.action=="vinhetasUp"){
+                                if(client.heldVinhetas.erase(command.target)==0)continue;
+                                accepted=perform&&perform(command);
+                            } else accepted = perform && perform(command);
                         } catch (const std::exception &) {
                         }
                         if (command.action == "noticeSend" && command.receipt.value_or(false)) {
@@ -159,6 +242,8 @@ class Host final : private Timer {
                 transport.disconnect(event.client);
             }
         }
+    }
+    void publishState() {
         const auto now = Time::getMillisecondCounterHiRes();
         if (now - lastPublish < 100 || !presentation)
             return;
@@ -180,6 +265,11 @@ class Host final : private Timer {
                 if (!at->second.isObject())
                     continue;
                 auto value = at->second.clone();
+                if (streamMainAudio && takeMainAudio && (client.mode == "director" || client.mode == "observer"))
+                    put(value, "mainAudioAvailable", true);
+                if (client.mode != "director") {
+                    put(value, "projectTabs", var()); put(value, "projects", var()); put(value,"vinhetas",var());
+                }
                 const auto current = ++sequence;
                 put(value, "sequence", (int64)current);
                 if (transport.send(entry.first, packet(2, value))) {
@@ -197,19 +287,31 @@ class Host final : private Timer {
   private:
     struct Client {
         String name, mode;
+        std::map<ID,Command> heldVinhetas;
         std::optional<uint64> ack;
         double sentAt = 0;
         int panel = 0, failures = 0;
+        bool mainAudio = false;
     };
+    void releaseVinhetas(Client &client) {
+        auto held=std::move(client.heldVinhetas);client.heldVinhetas.clear();
+        for(auto &entry:held){auto command=entry.second;command.action="vinhetasUp";command.pad=-1;command.preset=-1;command.value=0;if(perform)perform(command);}
+    }
     Appearance &preferences;
+    String hostName;
     Transport transport;
     Discovery discovery;
     std::map<ID, Client> clients;
+    std::map<int, var> projectPresentations;
+    ID projectPresentationRequest;
     std::deque<double> failedPINs;
     bool advertising = false;
     double lastPublish = 0;
     uint64 sequence = 0;
     void timerCallback() override { update(); }
+    // Dispatch commands as soon as received, without waiting for the 30 Hz
+    // presentation timer. Audio remains owned by its existing render thread.
+    void handleAsyncUpdate() override { receiveCommands(); }
     void accessStatus(const ID &id, const Client &client, const String &message = {}) {
         auto status = object();
         if (client.mode.isNotEmpty())

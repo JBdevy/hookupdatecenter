@@ -1,10 +1,260 @@
 import XCTest
 @testable import JarasApplication
+@MainActor private final class PitchTestExecutor: CommandExecutor {
+    var project = Project.empty(name: "Pitch")
+    func load(_ value: Project) throws { project = value }
+    func applyProjectEdit(_ value: Project) throws { project = value }
+    func snapshot() throws -> ShowSnapshot {
+        ShowSnapshot(project: project, transport: TransportState(playing: false, songId: project.songs[0].id, position: 0,
+            queue: QueueState(), loop: LoopState(enabled: false), subPlay: SubPlayState(playing: false, position: 0)))
+    }
+    func playbackSnapshot() throws -> PlaybackSnapshot { PlaybackSnapshot(transport: try snapshot().transport) }
+    func execute(_ command: ShowCommand, target: UUID?, value: Double) throws {}
+    func addTrack(id: UUID, name: String, role: TrackRole) throws {}
+    func advance(_ elapsed: Double) {}
+    func finishCurrentSong(_ enabled: Bool) {}
+    func setFX(_ id: UUID?, settings: NativeFXSettings) throws {
+        if let id {
+            for s in project.songs.indices {
+                if let t = project.songs[s].tracks.firstIndex(where: { $0.id == id }) { project.songs[s].tracks[t].fx = settings }
+            }
+        } else { project.masterFX = settings }
+    }
+    func setClipFXBypass(_ id: UUID, bypassed: Bool) throws {
+        for s in project.songs.indices { for t in project.songs[s].tracks.indices {
+            if let c = project.songs[s].tracks[t].clips.firstIndex(where: { $0.id == id }) { project.songs[s].tracks[t].clips[c].fxBypassed = bypassed }
+        } }
+    }
+    func setClipFX(_ id: UUID, settings: NativeFXSettings) throws {
+        for s in project.songs.indices { for t in project.songs[s].tracks.indices {
+            if let c = project.songs[s].tracks[t].clips.firstIndex(where: { $0.id == id }) { project.songs[s].tracks[t].clips[c].fx = settings }
+        } }
+    }
+}
 final class NativeFXTests: XCTestCase {
-    func testStemRealtimeMixPersistenceAndIndependentEdits() throws {
+
+    func testAudioUnitSlotAcceptsCanonicalComponentIdentity() throws {
+        let identity = "AU-61756678-64656C79-6170706C"
+        var plugin = ExternalPlugin(classID: identity, name: "Delay", path: "au://" + identity)
+        var settings = NativeFXSettings()
+        settings.externalPlugins = [plugin]
+        settings.inserted = [plugin.effectKey]
+
+        try settings.validate()
+        let reloaded = try JSONDecoder().decode(NativeFXSettings.self, from: JSONEncoder().encode(settings))
+        try reloaded.validate()
+        XCTAssertEqual(reloaded.externalPlugins?.first?.classID, identity)
+
+        plugin.classID = "AU-61756678-64656C79"
+        settings.externalPlugins = [plugin]
+        XCTAssertThrowsError(try settings.validate())
+    }
+
+    func testCatSynthPresetSlotsSurviveProjectEncodingAndEffectBypass() throws {
+        var settings = NativeFXSettings()
+        let key = settings.appendNative("CatSynth", asInstance: true)
+        var draft = settings.settings(for: key)
+        var bank = CatSynthBank()
+        bank.selected = 5
+        bank.slots[5] = Array(repeating: 0.2, count: CatSynthBank.parameterCount)
+        bank.slots[1] = Array(repeating: 0.8, count: CatSynthBank.parameterCount)
+        bank.names = Array(repeating: nil, count: CatSynthBank.count)
+        bank.names?[5] = "Teclas 🎹"
+        draft.catSynth = bank
+        settings = settings.merging(effect: key, from: draft)
+        try settings.validate()
+        XCTAssertTrue(settings.hasNativeMIDIInstrument)
+        var restored = try JSONDecoder().decode(NativeFXSettings.self, from: JSONEncoder().encode(settings))
+        XCTAssertEqual(restored.settings(for: key).catSynth, bank)
+        restored.setEnabled(key, enabled: false)
+        XCTAssertFalse(restored.hasNativeMIDIInstrument)
+        XCTAssertEqual(restored.settings(for: key).catSynth, bank)
+    }
+
+    @MainActor func testNativeAndVSTInstrumentInsertionsSelectMIDIAndClearLineInput() throws {
+        let line = OutputPatch(firstChannel: 1, channelCount: 1)
+        let plugin = ExternalPlugin(classID: String(repeating: "A", count: 32), name: "Synth", path: "/test.vst3",
+                                    category: "Instrument|Synth")
+        for external in [false, true] {
+            var project = Project.empty(name: "Instruments")
+            var track = Track(id: UUID(), name: "Keys", role: .keys)
+            track.inputPatch = line
+            project.songs[0].tracks = [track]
+            let show = try ShowController(executor: PitchTestExecutor(), persistence: MemoryProjectStore(), initialProject: project)
+            show.preferredInstrumentMIDIInput = { 5 }
+            var settings = NativeFXSettings()
+            settings.appendNative("EQ")
+            show.previewFX(track.id, settings: settings)
+            XCTAssertEqual(show.current?.tracks[0].inputPatch, line)
+            if external {
+                settings.externalPlugins = [plugin]
+                settings.inserted.append(plugin.effectKey)
+            } else {
+                settings.appendNative("CatSynth")
+            }
+            show.previewFX(track.id, settings: settings)
+            XCTAssertEqual(show.current?.tracks[0].inputPatch, OutputPatch.none)
+            XCTAssertEqual(show.current?.tracks[0].midiInput, 5)
+            XCTAssertEqual(show.current?.tracks[0].recordingMode, .midi)
+            show.setRecordingInput(track.id, input: line)
+            XCTAssertEqual(show.current?.tracks[0].inputPatch, line)
+            XCTAssertNil(show.current?.tracks[0].midiInput)
+        }
+    }
+
+    @MainActor func testSessionFXBypassAllowsIndependentMainAndTrackOverrides() throws {
+        var project = Project.empty(name: "Session FX")
+        var fx = NativeFXSettings()
+        fx.appendNative("EQ"); fx.appendNative("Delay"); fx.setEnabled("Delay", enabled: false)
+        project.masterFX = fx
+        let ids = (0..<3).map { _ in UUID() }
+        project.songs[0].tracks = ids.map { id in
+            var track = Track(id: id, name: "Track", role: .other); track.fx = fx; return track
+        }
+        let show = try ShowController(executor: PitchTestExecutor(), persistence: MemoryProjectStore(), initialProject: project)
+        show.toggleStripFXBypass(ids[1])
+        show.toggleStripFXBypass(nil, sessionWide: true)
+        for id in [nil] + ids.map(Optional.some) { XCTAssertTrue(show.fxSettings(id).allBypassed) }
+        show.toggleStripFXBypass(nil)
+        show.toggleStripFXBypass(ids[0])
+        XCTAssertEqual(show.fxSettings(nil).sessionFXBypassed, true)
+        XCTAssertTrue(show.fxSettings(nil).isEnabled("EQ"))
+        XCTAssertTrue(show.fxSettings(ids[0]).isEnabled("EQ"))
+        XCTAssertTrue(show.fxSettings(ids[2]).allBypassed)
+        let saved = try JSONDecoder().decode(NativeFXSettings.self, from: JSONEncoder().encode(show.fxSettings(ids[2])))
+        XCTAssertEqual(saved.mixerBypassRestore, ["EQ"])
+        show.toggleStripFXBypass(nil, sessionWide: true)
+        XCTAssertNil(show.fxSettings(nil).sessionFXBypassed)
+        XCTAssertTrue(show.fxSettings(ids[1]).allBypassed, "A manually bypassed track must stay bypassed")
+        XCTAssertTrue(show.fxSettings(ids[2]).isEnabled("EQ"))
+        XCTAssertFalse(show.fxSettings(ids[2]).isEnabled("Delay"))
+    }
+
+    @MainActor func testRemovingAllItemEffectsPreservesTrackEffectsAndTiming() throws {
+        var project = Project.empty(name: "Remove item FX")
+        var fx = NativeFXSettings(); fx.appendNative("EQ"); fx.appendNative("Reverb")
+        var track = Track(id: UUID(), name: "Track", role: .other); track.fx = fx
+        var clip = AudioClip(id: UUID(), name: "Item", startTime: 12, duration: 4, sourceOffset: 2)
+        clip.fx = fx; track.clips = [clip]; project.songs[0].tracks = [track]; project.songs[0].duration = 20
+        let show = try ShowController(executor: PitchTestExecutor(), persistence: MemoryProjectStore(), initialProject: project)
+        show.removeAllClipFX(clip.id)
+        XCTAssertTrue(show.clipFXSettings(clip.id).inserted.isEmpty)
+        XCTAssertEqual(show.current?.tracks[0].fx, fx)
+        XCTAssertEqual(show.current?.tracks[0].clips[0].startTime, 12)
+        XCTAssertEqual(show.current?.tracks[0].clips[0].duration, 4)
+        XCTAssertEqual(show.current?.tracks[0].clips[0].sourceOffset, 2)
+    }
+
+    @MainActor func testSelectedItemFXInsertionBypassAndRemovalPreserveOtherChains() throws {
+        var project = Project.empty(name: "Selected FX")
+        var track = Track(id: UUID(), name: "Audio", role: .other)
+        var items = (0..<3).map { AudioClip(id: UUID(), name: "Item \($0)", startTime: Double($0)*4, duration: 4) }
+        var original = NativeFXSettings(); original.appendNative("Delay"); original.delayTime = 0.375
+        items[0].fx = original; items[1].fx = original; items[2].fx = original
+        track.clips = items; track.fx = original; project.songs[0].tracks = [track]
+        let show = try ShowController(executor: PitchTestExecutor(), persistence: MemoryProjectStore(), initialProject: project)
+        show.reportItemSelection([items[0].id,items[1].id,UUID()])
+        XCTAssertNotNil(show.insertClipFX(items[0].id,effect: "EQ"))
+        for item in items.prefix(2) {
+            let chain = show.clipFXSettings(item.id)
+            XCTAssertEqual(chain.clipEffectKeys.map { chain.kind(of: $0) }, ["Delay", "EQ"])
+        }
+        XCTAssertEqual(show.clipFXSettings(items[0].id).delayTime,0.375)
+        XCTAssertEqual(show.clipFXSettings(items[2].id),original)
+        show.toggleClipFXAllBypass(items[0].id)
+        XCTAssertEqual(show.current?.tracks[0].clips.map { $0.fxBypassed == true },[true,true,false])
+        show.toggleClipFXAllBypass(items[0].id)
+        XCTAssertEqual(show.current?.tracks[0].clips.map { $0.fxBypassed == true },[false,false,false])
+        show.removeAllClipFX(items[0].id)
+        XCTAssertTrue(show.clipFXSettings(items[0].id).inserted.isEmpty)
+        XCTAssertTrue(show.clipFXSettings(items[1].id).inserted.isEmpty)
+        XCTAssertEqual(show.clipFXSettings(items[2].id),original)
+        XCTAssertEqual(show.current?.tracks[0].fx,original)
+        XCTAssertEqual(show.current?.tracks[0].clips.map(\.startTime),items.map(\.startTime))
+        XCTAssertNotNil(show.insertClipFX(items[2].id,effect: "Reverb"))
+        XCTAssertTrue(show.clipFXSettings(items[0].id).inserted.isEmpty,"Clicking an unselected item must affect only that item")
+    }
+
+    @MainActor func testShiftItemTunerPreservesIntervalsAndSharesRangeLimit() throws {
+        var project = Project.empty(name: "Tuner")
+        var track = Track(id: UUID(), name: "Audio", role: .other)
+        var first = AudioClip(id: UUID(), name: "One", startTime: 0, duration: 5)
+        var second = AudioClip(id: UUID(), name: "Two", startTime: 0, duration: 5)
+        first.pitchSemitones = -3; second.pitchSemitones = 10
+        track.clips = [first, second]; project.songs[0].tracks = [track]
+        let show = try ShowController(executor: PitchTestExecutor(), persistence: MemoryProjectStore(), initialProject: project)
+        show.adjustItemPitch([first.id, second.id], by: 1)
+        XCTAssertEqual(show.current?.tracks[0].clips.map { $0.pitchSemitones ?? 0 }, [-2, 11])
+        show.adjustItemPitch([first.id, second.id], by: 2)
+        XCTAssertEqual(show.current?.tracks[0].clips.map { $0.pitchSemitones ?? 0 }, [-1, 12])
+        show.adjustItemPitch([first.id, second.id], by: 1)
+        XCTAssertEqual(show.current?.tracks[0].clips.map { $0.pitchSemitones ?? 0 }, [-1, 12])
+        show.adjustItemPitch([second.id], by: -1)
+        XCTAssertEqual(show.current?.tracks[0].clips.map { $0.pitchSemitones ?? 0 }, [-1, 11])
+    }
+
+    func testTriggerGatePersistenceInstancesAndSampleOwnership() throws {
+        var project = Project.empty(name: "Trigger and gate")
+        var fx = NativeFXSettings()
+        fx.appendNative("CatLive Trigger"); fx.appendNative("Cat Gate")
+        fx.triggerParameters.samplePath = "Stems/Kick.wav"
+        fx.gateParameters.threshold = -35
+        let second = fx.appendNative("CatLive Trigger")
+        var draft = fx.settings(for: second)
+        draft.triggerParameters.samplePath = "Stems/Snare.mp3"
+        draft.triggerParameters.sustain = 0.25
+        fx = fx.merging(effect: second, from: draft)
+        fx.setEnabled("CatLive Trigger", enabled: false)
+        XCTAssertTrue(fx.isEnabled(second)); XCTAssertFalse(fx.isEnabled("CatLive Trigger"))
+        try fx.validateForClip()
+        project.masterFX = fx
+        XCTAssertEqual(project.mediaPaths, ["Stems/Kick.wav", "Stems/Snare.mp3"])
+        XCTAssertEqual(try ProjectDocumentCodec.decode(ProjectDocumentCodec.encode(project)), project)
+        let preset = try FXPreset(name: "Soft snare", settings: fx, effect: second)
+        XCTAssertNil(preset.native?.trigger?.samplePath)
+        let applied = try preset.applying(to: fx, effect: second)
+        XCTAssertEqual(applied.settings(for: second).trigger?.samplePath, "Stems/Snare.mp3")
+        let restored = try JSONDecoder().decode(NativeFXSettings.self, from: JSONEncoder().encode(fx))
+        XCTAssertEqual(restored, fx)
+        project.remapFXSamples(["Stems/Kick.wav":"Stems/Kick-001.wav"])
+        XCTAssertEqual(project.mediaPaths, ["Stems/Kick-001.wav", "Stems/Snare.mp3"])
+        let parameter = NativeFXParameter(effect: second, key: .triggerGain, name: "Gain", range: -24...24)
+        XCTAssertTrue(parameter.apply(127, to: &fx)); XCTAssertEqual(fx.settings(for: second).triggerParameters.gain, 24)
+        XCTAssertEqual(fx.triggerParameters.gain, 0)
+        fx.removeEffect(second); XCTAssertEqual(fx.samplePaths, ["Stems/Kick.wav"])
+        fx.gateParameters.highPass = 10000; fx.gateParameters.lowPass = 5000
+        XCTAssertThrowsError(try fx.validate())
+        fx.gateParameters = NativeGateSettings(); fx.triggerParameters.samplePath = "../kick.wav"
+        XCTAssertThrowsError(try fx.validate())
+    }
+
+    func testRemovedEffectReinsertsFreshWithoutChangingOtherStages() throws {
+        var fx = NativeFXSettings()
+        fx.appendNative("EQ"); fx.appendNative("Compressor"); fx.appendNative("Delay")
+        fx.bands[1].gain = 11; fx.threshold = -47; fx.delayTime = 1.7
+        let duplicate = fx.appendNative("Compressor")
+        var draft = fx.settings(for: duplicate); draft.threshold = -31
+        fx = fx.merging(effect: duplicate, from: draft)
+        fx.removeEffect("EQ"); fx.appendNative("EQ")
+        XCTAssertEqual(fx.bands[1].gain, 0); XCTAssertEqual(fx.threshold, -47)
+        fx.removeEffect("Compressor"); fx.appendNative("Compressor")
+        XCTAssertEqual(fx.threshold, NativeFXSettings().threshold)
+        XCTAssertEqual(fx.settings(for: duplicate).threshold, -31)
+        XCTAssertEqual(fx.delayTime, 1.7)
+        fx.removeEffect(duplicate)
+        XCTAssertFalse(fx.instances?.contains { $0.effectKey == duplicate } ?? false)
+        fx.removeEffect("Delay"); fx.appendNative("Delay")
+        XCTAssertEqual(fx.delayTime, NativeFXSettings().delayTime)
+        try fx.validate(); try fx.validateForClip()
+        fx.inserted.removeAll { $0 == "Compressor" }; fx.threshold = -52
+        fx.appendNative("Compressor")
+        XCTAssertEqual(fx.threshold, NativeFXSettings().threshold)
+    }
+
+    func testLegacyStemMixPersistenceAndIndependentEdits() throws {
         let key = NativeFXSettings.stemSeparator
         var fx = NativeFXSettings()
-        fx.appendNative(key)
+        fx.inserted = [key]; fx.stemSeparatorEnabled = true; fx.stemMix = NativeStemMix()
         var draft = fx
         draft.stemParameters.sources[0].solo = true
         draft.stemParameters.sources[0].gain = 0.5
@@ -20,21 +270,23 @@ final class NativeFXTests: XCTestCase {
         legacy.inserted = [key]; legacy.stemSeparatorEnabled = true
         XCTAssertFalse(legacy.isEnabled(key), "Offline projects must not automatically acquire processing latency")
         legacy.setEnabled(key, enabled: true)
-        XCTAssertTrue(legacy.isEnabled(key))
+        XCTAssertFalse(legacy.isEnabled(key), "Legacy settings cannot reactivate the removed realtime stage")
         legacy.stemParameters.sources.removeLast()
         XCTAssertThrowsError(try legacy.validate())
         legacy.stemParameters = NativeStemMix()
         legacy.stemParameters.sources[0].gain = .nan
         XCTAssertThrowsError(try legacy.validate())
     }
-    func testStemSeparatorIsExplicitRemovableAndPersisted() throws {
+    func testRemovedStemSeparatorCannotBeInsertedAndLegacySettingsRemainReadable() throws {
         var fx = NativeFXSettings()
         let key = NativeFXSettings.stemSeparator
         XCTAssertFalse(fx.inserted.contains(key)); XCTAssertFalse(fx.isEnabled(key))
         XCTAssertEqual(fx.appendNative(key), key)
+        XCTAssertTrue(fx.inserted.isEmpty)
+        fx.inserted = [key]; fx.stemSeparatorEnabled = true; fx.stemMix = NativeStemMix()
         try fx.validate(); try fx.validateForClip()
-        XCTAssertTrue(fx.isEnabled(key))
-        XCTAssertEqual(fx.appendNative(key), key)
+        XCTAssertFalse(fx.isEnabled(key))
+        XCTAssertTrue(fx.effectKeys.isEmpty && fx.clipEffectKeys.isEmpty)
         XCTAssertEqual(fx.inserted, [key])
         let saved = try JSONDecoder().decode(NativeFXSettings.self, from: JSONEncoder().encode(fx))
         XCTAssertEqual(saved, fx)
@@ -127,7 +379,10 @@ final class NativeFXTests: XCTestCase {
         XCTAssertEqual(song.pitch(for: drums.id, region: first), 0)
         XCTAssertEqual(song.pitch(for: video.id, region: first), 0)
         let marker = try XCTUnwrap(song.markers?.first { $0.sourceRegionID == second.id })
-        XCTAssertEqual(song.markerLabel(marker), "-6st  " + marker.name)
+        XCTAssertEqual(song.markerLabel(marker), "-6st  SECOND")
+        song.parts[song.parts.firstIndex { $0.id == second.id }!].uppercaseName = false
+        XCTAssertEqual(song.markerLabel(marker), "-6st  Second")
+        song.parts[song.parts.firstIndex { $0.id == second.id }!].uppercaseName = true
         let copy = try ProjectDocumentCodec.decode(ProjectDocumentCodec.encode(project))
         XCTAssertEqual(copy, project)
         _ = try project.disunifyRegion(group)
@@ -162,6 +417,29 @@ final class NativeFXTests: XCTestCase {
             project.songs[0].parts[0].pitchSemitones = invalid
             XCTAssertThrowsError(try project.validate())
         }
+    }
+
+    func testRegionTunerOwnershipUsesLargestOverlapInsteadOfItemOnset() throws {
+        var song = Project.empty(name: "Overlapping tuner").songs[0]
+        let track = Track(id: UUID(), name: "Keys", role: .keys)
+        let first = Part(id: UUID(), name: "First", startTime: 10, endTime: 20, pitchSemitones: 3)
+        let second = Part(id: UUID(), name: "Second", startTime: 20, endTime: 35, pitchSemitones: -2)
+        song.tracks = [track]; song.parts = [first, second]
+        func pitch(_ start: Double, _ end: Double, preferred: UUID? = nil) -> Int {
+            let owner = song.regionOwnerForMedia(at: start, end: end, preferred: preferred)
+            return song.pitch(for: track.id, region: song.parts.first { $0.id == owner })
+        }
+        XCTAssertEqual(pitch(8, 18), 3, "An item beginning before the region still receives its tuner")
+        XCTAssertEqual(pitch(18, 28, preferred: first.id), -2, "Largest overlap wins over an old attachment")
+        XCTAssertEqual(pitch(0, 10), 0, "An item merely touching the region is outside")
+        XCTAssertEqual(pitch(10, 10), 0, "Empty intervals do not acquire a tuner")
+        let group = Part(id: UUID(), name: "Unified", startTime: 10, endTime: 35)
+        var left = first, right = second
+        left.parentRegionID = group.id; right.parentRegionID = group.id
+        song.parts = [group, left, right]
+        XCTAssertEqual(pitch(18, 28, preferred: left.id), -2, "Unified children use their largest covered duration")
+        XCTAssertEqual(pitch(15, 25, preferred: left.id), 3, "Equal child spans preserve the existing attachment")
+        XCTAssertEqual(pitch(15, 25, preferred: right.id), -2)
     }
 
     func testSettingsPersistIndependentlyOfWhichEditorIsOpen() throws {
@@ -230,7 +508,7 @@ final class NativeFXTests: XCTestCase {
         XCTAssertEqual(parameters.hold, 10)
         XCTAssertEqual(parameters.decay, 10)
         XCTAssertEqual(parameters.sustain, 1)
-        XCTAssertEqual(parameters.release, 0.3)
+        XCTAssertEqual(parameters.release, 0.16)
         XCTAssertEqual(parameters.gain, 0)
         try parameters.validate()
     }
@@ -251,10 +529,10 @@ final class NativeFXTests: XCTestCase {
         parameters.attack = .nan
         XCTAssertThrowsError(try parameters.validate())
     }
-    func testTrackMIDISelectionPersistsAndIsLimitedToThreeSlots() throws {
+    func testTrackMIDISelectionPersistsAndIsLimitedToSixSlots() throws {
         var project = Project.demo()
-        for slot in 1...3 { project.songs[0].tracks[0].midiInput = slot; try project.validate(); XCTAssertEqual(try JSONDecoder().decode(Project.self,from: JSONEncoder().encode(project)),project) }
-        project.songs[0].tracks[0].midiInput = 4
+        for slot in 1...6 { project.songs[0].tracks[0].midiInput = slot; try project.validate(); XCTAssertEqual(try JSONDecoder().decode(Project.self,from: JSONEncoder().encode(project)),project) }
+        project.songs[0].tracks[0].midiInput = 7
         XCTAssertThrowsError(try project.validate())
     }
     func testRecordingWaveformHistoryStaysBounded() {

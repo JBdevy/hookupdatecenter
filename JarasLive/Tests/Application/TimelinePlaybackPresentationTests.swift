@@ -9,6 +9,15 @@ final class TimelinePlaybackPresentationTests: XCTestCase {
                        subPlay: SubPlayState(playing: subPlaying, position: sub))
     }
 
+    func testFreeEmptyTailInterpolatesWithoutChangingTheEditCursor() {
+        var sample = transport(main: 1200)
+        sample.editPosition = 1200
+        let frame = TimelinePlaybackPresentation(transport: sample, elapsed: 0.02, songDuration: 10)
+        XCTAssertEqual(frame.mainPosition, 1200.02, accuracy: 1e-9)
+        XCTAssertEqual(frame.followPosition, frame.mainPosition)
+        sample.playing = false
+        XCTAssertEqual(TimelinePlaybackPresentation(transport: sample, elapsed: 0.02, songDuration: 10).mainPosition, 1200)
+    }
     func testZoomUsesSubPlayThenPlaybackThenEditingHead() {
         var sample = transport(main: 25, sub: 80, playing: false)
         sample.editPosition = 3
@@ -30,6 +39,33 @@ final class TimelinePlaybackPresentationTests: XCTestCase {
         XCTAssertEqual(frame.subPosition, 70)
         XCTAssertEqual(frame.followSource, .main)
         XCTAssertEqual(frame.followPosition, frame.mainPosition)
+    }
+
+    func testAudibleFrameOwnsLoopHandoffWithoutAnotherTransportTickOrExtrapolation() {
+        var sample = transport(main: 19.99, subPlaying: true)
+        sample.loop = LoopState(enabled: true, start: 10, end: 20)
+        let frame = TimelinePlaybackPresentation(transport: sample, elapsed: 0.04, songDuration: 100,
+            mainBoundary: 20, audibleMainPosition: 10.012, audibleSubPosition: 70.045)
+        XCTAssertEqual(frame.mainPosition, 10.012)
+        XCTAssertEqual(frame.subPosition, 70.045)
+        XCTAssertEqual(frame.followPosition, 70.045)
+        let nextRegion = TimelinePlaybackPresentation(transport: sample, elapsed: 0.04, songDuration: 100,
+            mainBoundary: 20, audibleMainPosition: 50.015)
+        XCTAssertEqual(nextRegion.mainPosition, 50.015, "The audible destination wins over stale loop/region bounds.")
+    }
+
+    func testInvalidAudioClockFallsBackAndStoppedHeadsIgnoreRetainedAudioClock() {
+        for invalid in [Double.nan, .infinity, -.infinity] {
+            let frame = TimelinePlaybackPresentation(transport: transport(subPlaying: true), elapsed: 0.02,
+                songDuration: 100, audibleMainPosition: invalid, audibleSubPosition: invalid)
+            XCTAssertEqual(frame.mainPosition, 10.02, accuracy: 1e-12)
+            XCTAssertEqual(frame.subPosition, 70.02, accuracy: 1e-12)
+        }
+        let stopped = TimelinePlaybackPresentation(transport: transport(playing: false), elapsed: 0.05,
+            songDuration: 100, audibleMainPosition: 99, audibleSubPosition: 98)
+        XCTAssertEqual(stopped.mainPosition, 10)
+        XCTAssertEqual(stopped.subPosition, 70)
+        XCTAssertNil(stopped.followPosition)
     }
 
     func testPausedAndStoppedSamplesDoNotAdvanceOrFollow() {
@@ -131,6 +167,35 @@ final class TimelinePlaybackPresentationTests: XCTestCase {
         XCTAssertEqual(TimelinePlaybackPresentation(transport: sample, elapsed: 0.05, songDuration: 5).mainPosition, 10,
                        "A stale duration must not drag the authoritative cursor backwards.")
     }
+    func testTransportTitleUsesTheActiveCursorAndSkipsNonNavigationMarkers() {
+        var song = Project.demo().songs[0]
+        let region = Part(id: UUID(), name: "Next Song", startTime: 30, endTime: 50)
+        let child = Part(id: UUID(), name: "Nested", startTime: 15, endTime: 20, parentRegionID: region.id)
+        song.parts = [child, region]
+        song.markers = [
+            .init(id: UUID(), name: "Tempo", position: 9, color: 0, tempoBPM: 123),
+            .init(id: UUID(), name: "Ordinary", position: 10, color: 0),
+            .init(id: UUID(), name: "Section", position: 12, color: 0, section: true),
+            .init(id: UUID(), name: "Old Title", position: 20, color: 0, sourceRegionID: region.id)
+        ]
+        var state = transport(main: 12, playing: false)
+        state.editPosition = 9
+        XCTAssertNil(TransportTitleMode.markers.cursorTitle(in: song, transport: state))
+        XCTAssertEqual(TransportTitleMode.nextMarker.cursorTitle(in: song, transport: state), "Ordinary")
+        state.editPosition = 10
+        XCTAssertEqual(TransportTitleMode.markers.cursorTitle(in: song, transport: state), "Ordinary")
+        XCTAssertEqual(TransportTitleMode.nextMarker.cursorTitle(in: song, transport: state), region.displayName)
+        XCTAssertEqual(TransportTitleMode.nextTimelineRegion.cursorTitle(in: song, transport: state), region.displayName)
+        state.editPosition = 0
+        state.playing = true
+        state.position = 20
+        XCTAssertEqual(TransportTitleMode.markers.cursorTitle(in: song, transport: state), region.displayName)
+        XCTAssertNil(TransportTitleMode.nextMarker.cursorTitle(in: song, transport: state))
+        state.playing = false
+        state.paused = true
+        XCTAssertEqual(TransportTitleMode.markers.cursorTitle(in: song, transport: state), region.displayName)
+    }
+
     func testSongDisplaysSeparateNextAndQueueAndDoNotBorrowPreviousTempo() {
         var song = Project.demo().songs[0]
         let root = Part(id: UUID(), name: "Medley", startTime: 0, endTime: 30)
@@ -150,8 +215,47 @@ final class TimelinePlaybackPresentationTests: XCTestCase {
         XCTAssertEqual(display.nextBPM, 125)
         XCTAssertNil(display.queuedBPM, "no inherited tempo from another song")
         state.playing = false
+        state.editPosition = 40
         let selected = TransportSongDisplays(song: song, transport: state, focusedRegion: queued.id)
         XCTAssertEqual(selected.current?.id, queued.id)
         XCTAssertNil(selected.currentBPM)
     }
+    func testStoppedDisplayFollowsCursorAndClearsOutsideRegions() {
+        var song = Project.demo().songs[0]
+        let first = Part(id: UUID(), name: "First", startTime: 10, endTime: 20)
+        let second = Part(id: UUID(), name: "Second", startTime: 30, endTime: 40)
+        song.parts = [first, second]
+        var state = transport(playing: false)
+        state.regionId = first.id
+        for position in [0.0, 20, 25, 40, 50] {
+            state.editPosition = position
+            XCTAssertNil(TransportSongDisplays(song: song, transport: state, focusedRegion: first.id).current)
+        }
+        state.editPosition = 35
+        XCTAssertEqual(TransportSongDisplays(song: song, transport: state, focusedRegion: first.id).current?.id, second.id)
+    }
+
+    func testFinishedSelectionClearsOnlyAudibleSongAndPreservesBrowsing() {
+        var song = Project.demo().songs[0]
+        let first = Part(id: UUID(), name: "First", startTime: 0, endTime: 10)
+        let next = Part(id: UUID(), name: "Next", startTime: 20, endTime: 30)
+        song.parts = [first, next]
+        var before = transport(main: 9.99); before.songId = song.id; before.regionId = first.id
+        var after = before; after.regionId = next.id; after.position = 20
+        XCTAssertTrue(FinishedSetlistSelection.shouldClear(first.id, song: song, playlist: nil, before: before, after: after))
+        XCTAssertFalse(FinishedSetlistSelection.shouldClear(next.id, song: song, playlist: nil, before: before, after: after))
+        XCTAssertFalse(FinishedSetlistSelection.shouldClear(first.id, song: song, playlist: nil, before: before, after: before))
+        after = before; after.playing = false; after.position = 10
+        XCTAssertTrue(FinishedSetlistSelection.shouldClear(first.id, song: song, playlist: nil, before: before, after: after))
+        after.paused = true
+        XCTAssertFalse(FinishedSetlistSelection.shouldClear(first.id, song: song, playlist: nil, before: before, after: after))
+        let root = Part(id: UUID(), name: "Drawer", startTime: 0, endTime: 30)
+        song.parts = [root, first, next]
+        song.parts[1].parentRegionID = root.id; song.parts[2].parentRegionID = root.id
+        before.regionId = root.id; after = before; after.position = 20
+        XCTAssertTrue(FinishedSetlistSelection.shouldClear(first.id, song: song, playlist: nil, before: before, after: after))
+        XCTAssertFalse(FinishedSetlistSelection.shouldClear(root.id, song: song, playlist: nil, before: before, after: after))
+        XCTAssertFalse(FinishedSetlistSelection.shouldClear(next.id, song: song, playlist: nil, before: before, after: after))
+    }
+
 }

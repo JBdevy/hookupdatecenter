@@ -1,0 +1,37 @@
+@main struct Test { @MainActor static func main() {
+let app = NSApplication.shared
+let show = ShowController()
+let mixer = DetachedMixerWindow(), parts = DetachedPartsWindow()
+func pump() { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
+for name in ["Mixer", "Parts"] {
+    @MainActor func open() { if name == "Mixer" { mixer.open(show: show, openFX: {_,_ in}, editTrack: {_ in}) } else { parts.open(show: show) } }
+    @MainActor func close() { if name == "Mixer" { mixer.close() } else { parts.close() } }
+    @MainActor func hide() { if name == "Mixer" { mixer.hide() } else { parts.hide() } }
+    func current() -> NSWindow { app.windows.first { $0.isVisible && $0.title == (name == "Mixer" ? "CatLive · Hoz-Mixer" : "CatLive · Parts") }! }
+    open(); pump()
+    if name == "Mixer" {
+        let panel = current() as! DetachedTestWindow
+        panel.simulatedLiveResize = true
+        let saved = DetachedSaveProbe.mixer
+        for _ in 0..<100 { mixer.windowDidResize(Notification(name: NSWindow.didResizeNotification, object: panel)) }
+        precondition(DetachedSaveProbe.mixer == saved, "Live resize must not save window preferences for every pointer sample")
+        panel.simulatedLiveResize = false
+        mixer.windowDidEndLiveResize(Notification(name: NSWindow.didEndLiveResizeNotification, object: panel))
+        precondition(DetachedSaveProbe.mixer == saved + 1, "The final floating mixer placement must be saved once")
+        mixer.windowDidResize(Notification(name: NSWindow.didResizeNotification, object: panel))
+        precondition(DetachedSaveProbe.mixer == saved + 2, "Programmatic resize and maximize must still save their geometry")
+    }
+    let visible = (current().screen ?? NSScreen.main)!.visibleFrame
+    let frame = NSRect(x: (visible.midX - 310).rounded(), y: (visible.midY - 205).rounded(), width: 620, height: 410)
+    current().setFrame(frame, display: true); pump(); hide(); open(); pump()
+    precondition(current().frame == frame, "Hidden window must retain frame")
+    close(); open(); pump()
+    precondition(current().frame == frame, "Recreated window must restore frame and dimensions")
+    if name == "Mixer" { mixer.close(preserveState: true) } else { parts.close(preserveState: true) }
+    precondition(UserDefaults.standard.bool(forKey: "jaras.testlayout." + name.lowercased() + ".detached"), "Project teardown must not overwrite the global detached preference")
+    for suffix in [".detached", ".visible"] { UserDefaults.standard.removeObject(forKey: "jaras.testlayout." + name.lowercased() + suffix) }
+    UserDefaults.standard.removeObject(forKey: "NSWindow Frame CatLiveTestDetached" + name)
+}
+print("DETACHED_MIXER_PARTS_HIDE_RECREATE_GEOMETRY_OK")
+
+}}

@@ -47,6 +47,34 @@ func renderedPCM(_ url: URL) throws -> [Float] {
     try file.read(into: data)
     return Array(UnsafeBufferPointer(start: data.floatChannelData![0], count: Int(data.frameLength)))
 }
+do {
+    var source = Track(id: UUID(), name: "Send source", role: .keys)
+    var target = Track(id: UUID(), name: "Send destination", role: .other)
+    source.clips = [AudioClip(id: UUID(), name: "Tone", startTime: 0, duration: 1, audioFile: AudioFile(path: "b.wav"))]
+    source.outputs = [.none]; target.outputs = [.master]
+    source.volume = 0.25
+    source.routing = TrackRouting(transmitters: [target.id])
+    var fx = NativeFXSettings()
+    fx.inserted = ["Compressor"]; fx.compressorEnabled = true; fx.threshold = -30; fx.attack = 0.001
+    source.fx = fx
+    func peak(_ tap: TrackSendTap) throws -> Float {
+        var testProject = Project.empty(name: "Send taps")
+        source.routing?.setSendTap(tap, to: target.id)
+        testProject.songs[0].tracks = [source, target]
+        let folder = root.appendingPathComponent("send-" + tap.rawValue)
+        let request = AudioExportPlan(jobs: [.init(id: "send", fileName: "send.wav", start: 0, end: 1, track: nil, clip: nil)])
+        try OfflineAudioExport.run(project: testProject, song: testProject.songs[0], plan: request, mediaDirectory: root,
+            outputDirectory: folder, sampleRate: 48000, cancellation: AudioExportCancellation()) { _ in }
+        let samples = try renderedPCM(folder.appendingPathComponent("send.wav"))
+        return samples.suffix(12_000).map { abs($0) }.max() ?? 0
+    }
+    let dry = try peak(.preFX), processed = try peak(.postFX)
+    let prefader = try peak(.preFader), postfader = try peak(.postFader)
+    precondition(abs(dry - 0.3) < 0.001 && processed > 0 && processed < dry * 0.9, "Pre-FX must carry the dry audio")
+    precondition(abs(processed - prefader) < 0.0001, "Post-FX and pre-fader carry the processed chain at full gain")
+    precondition(abs(postfader - 0.25 * prefader) < 0.001, "Post-fader must carry the same PCM through the fader")
+    print("OFFLINE_SEND_TAPS_DRY_COMPRESSED_FADER_PCM_OK")
+}
 var tempoSong = song
 tempoSong.markers = [TimelineMarker(id: UUID(), name: "TEMPO", position: 0.4, color: 0x999999, tempoBPM: 180),
                      TimelineMarker(id: UUID(), name: "TEMPO", position: 0.8, color: 0x999999, tempoBPM: 60)]
@@ -146,6 +174,33 @@ func outputPeak(_ url: URL) throws -> Float {
     try file.read(into:data)
     return UnsafeBufferPointer(start:data.floatChannelData![0],count:Int(data.frameLength)).map { abs($0) }.max()!
 }
+// Context item exports choose raw processing or print both item and track FX.
+do {
+    var itemSong = song
+    var track = a; track.role = .other; track.parentTrackID = nil; track.volume = 0.75
+    track.fx = comp; track.clips[0].gain = 0.5; track.clips[0].fx = comp
+    track.clips[0].sourceOffset = 0.1; track.clips[0].duration = 0.6
+    itemSong.tracks = [track]
+    let original = itemSong
+    for processing in [AudioItemExportProcessing.pre, .post] {
+        let renderSong = processing.song(itemSong)
+        let plan = AudioExportPlan(project: project, song: renderSong, source: .stems, bounds: .project,
+                                   template: "%stem", tracks: [], clips: [track.clips[0].id], regions: [])
+        let destination = root.appendingPathComponent("item-" + processing.rawValue)
+        try OfflineAudioExport.run(project: project, song: renderSong, plan: plan, mediaDirectory: root,
+                                   outputDirectory: destination, sampleRate: 48000,
+                                   cancellation: AudioExportCancellation(), printTrackPolarity: true) { _ in }
+        let url = destination.appendingPathComponent(plan.jobs[0].fileName)
+        let file = try AVAudioFile(forReading: url)
+        precondition(file.length == 28800, "Item export preserves its trim length")
+        let peak = try outputPeak(url)
+        let expected = processing == .pre ? 0.2 : 0.2 * 0.5 * 0.75 * pow(10.0, 12.0 / 20.0)
+        precondition(abs(Double(peak) - expected) < 0.001, "Item export prints both FX stages only in Post: \(peak) / \(expected)")
+        precondition(renderSong.tracks[0].clips[0].sourceOffset == 0.1 && renderSong.tracks[0].clips[0].startTime == track.clips[0].startTime)
+    }
+    precondition(itemSong == original, "Item rendering leaves the live song intact")
+}
+print("ITEM_PRE_POST_PROCESSING_BOTH_FX_AND_TRIMS_OK")
 // Drawer song renders use the same onset exclusion as live playback. Include an
 // ordinary region with identical bounds to catch incorrectly shared graphs.
 var drawerSong = song
@@ -734,3 +789,29 @@ do {
     precondition(FileManager.default.fileExists(atPath: videos.appendingPathComponent("soundtrack.wav").path))
     print("MEDIA_RERENDER_STEMS_ITEM_PHASE_PAN_BAKED_RESET_AND_ORIGINAL_PRESERVED_PCM_OK")
 }
+
+// Existing output remains intact until every replacement has rendered successfully.
+let replacementFolder = root.appendingPathComponent("replace-confirmed")
+try FileManager.default.createDirectory(at: replacementFolder, withIntermediateDirectories: true)
+let replacementJob = AudioExportPlan(jobs: [.init(id: "replacement", fileName: "existing.wav", start: 0, end: 0.1, track: nil, clip: nil)])
+let originalData = Data("original-export".utf8)
+let replacementURL = replacementFolder.appendingPathComponent("existing.wav")
+try originalData.write(to: replacementURL)
+do {
+    try OfflineAudioExport.run(project: project, song: song, plan: replacementJob, mediaDirectory: root, outputDirectory: replacementFolder,
+        sampleRate: 48000, cancellation: AudioExportCancellation()) { _ in }
+    fatalError("Unapproved overwrite must fail")
+} catch AudioExportFailure.exists { }
+precondition(try! Data(contentsOf: replacementURL) == originalData)
+let cancelledReplacement = AudioExportCancellation(); cancelledReplacement.cancel()
+do {
+    try OfflineAudioExport.run(project: project, song: song, plan: replacementJob, mediaDirectory: root, outputDirectory: replacementFolder,
+        sampleRate: 48000, cancellation: cancelledReplacement, replacingFiles: ["existing.wav"]) { _ in }
+    fatalError("Cancelled replacement must stop")
+} catch is CancellationError { }
+precondition(try! Data(contentsOf: replacementURL) == originalData)
+try OfflineAudioExport.run(project: project, song: song, plan: replacementJob, mediaDirectory: root, outputDirectory: replacementFolder,
+    sampleRate: 48000, cancellation: AudioExportCancellation(), replacingFiles: ["existing.wav"]) { _ in }
+precondition(try! Data(contentsOf: replacementURL) != originalData)
+precondition(try! FileManager.default.contentsOfDirectory(atPath: replacementFolder.path) == ["existing.wav"])
+print("OFFLINE_EXPORT_REPLACEMENT_CONFIRMATION_AND_CANCEL_PRESERVE_ORIGINAL_OK")

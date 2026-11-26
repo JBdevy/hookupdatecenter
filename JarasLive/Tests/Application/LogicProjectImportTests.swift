@@ -3,6 +3,45 @@ import XCTest
 @testable import JarasApplication
 
 final class LogicProjectImportTests: XCTestCase {
+    func testIgnoredAudioIdentifiesOriginalFileRegionTrackAndReason() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let source = try fixture(folder, invalidBounds: true)
+        let result = try LogicProjectImporter.read(source)
+        let notice = try XCTUnwrap(result.warnings.first { $0.contains("Logic item ignored") })
+        XCTAssertTrue(notice.contains("Guitar.wav") && notice.contains("Trimmed guitar") && notice.contains("Guitar"), notice)
+        XCTAssertTrue(notice.contains("Invalid audio item bounds") && notice.contains("Alternatives/000/ProjectData"), notice)
+        XCTAssertTrue(result.project.songs[0].tracks.flatMap(\.clips).isEmpty)
+        try result.project.validate()
+    }
+    func testImportDiagnosticsFollowAppLanguageAndPreserveMediaNames() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let source = try fixture(folder, corruptLink: true)
+        let resources = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Apple/Resources")
+        for language in ["pt-BR", "en"] {
+            let bundle = try XCTUnwrap(Bundle(path: resources.appendingPathComponent(language + ".lproj").path))
+            let translate: (String) -> String = { bundle.localizedString(forKey: $0, value: $0, table: nil) }
+            let imported = try LogicProjectImporter.read(source, localizeWarning: translate)
+            XCTAssertTrue(imported.warnings.contains { $0.contains(language == "pt-BR" ? "Item do Logic ignorado" : "Logic item ignored") }, imported.warnings.description)
+            XCTAssertFalse(imported.warnings.contains { $0.contains(language == "pt-BR" ? "unsupported file" : "não compatível") })
+            let error = ProjectMigration.errorDescription(ProjectError.invalid("Logic: Truncated Logic data."), localize: translate)
+            XCTAssertEqual(error, language == "pt-BR" ? "Logic: Dados do Logic incompletos." : "Logic: Truncated Logic data.")
+            let reaper = ProjectMigration.errorDescription(ProjectError.invalid("REAPER: Invalid integer value."), localize: translate)
+            XCTAssertEqual(reaper, language == "pt-BR" ? "REAPER: Valor inteiro inválido." : "REAPER: Invalid integer value.")
+            let filename = "Stems/Órgão % Lead.mid"
+            let missing = ProjectMigration.errorDescription(ProjectError.invalid("REAPER: Missing MIDI source: " + filename + ". Locate it before importing the project."), localize: translate)
+            XCTAssertEqual(missing, language == "pt-BR"
+                ? "REAPER: Fonte MIDI ausente: " + filename + ". Localize-a antes de importar o projeto."
+                : "REAPER: Missing MIDI source: " + filename + ". Locate it before importing the project.")
+            let parameter = ProjectMigration.errorDescription(ProjectError.invalid("REAPER: Invalid VST3 automation parameter identity: Filter-Á%"), localize: translate)
+            XCTAssertEqual(parameter, language == "pt-BR"
+                ? "REAPER: Identificador de parâmetro de automação VST3 inválido: Filter-Á%"
+                : "REAPER: Invalid VST3 automation parameter identity: Filter-Á%")
+        }
+    }
+
     func testMigrationCreatesIndependentFoldersForRepeatedImportsAndEmptyProjects() throws {
         let fm = FileManager.default
         let root = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -16,7 +55,7 @@ final class LogicProjectImportTests: XCTestCase {
         let result = ProjectMigration.Result(project: .empty(name: "Imported"), media: [], warnings: [])
         try ProjectMigration.save(result, to: first)
         let second = ProjectMigration.isolatedDestination(for: selected)
-        XCTAssertEqual(second, root.appendingPathComponent("Imported-001/Imported.jl"))
+        XCTAssertEqual(second, root.appendingPathComponent("Imported (2)/Imported.jl"))
         try ProjectMigration.save(result, to: second)
         XCTAssertTrue(fm.fileExists(atPath: existing.path))
         XCTAssertEqual(try ProjectDocumentCodec.decode(Data(contentsOf: first)), result.project)
@@ -40,7 +79,9 @@ final class LogicProjectImportTests: XCTestCase {
         put(UInt64(utf16 ? value.utf16.count : bytes.count), in: &data, at: offset, width: 2)
         data.replaceSubrange((offset + 2)..<(offset + 2 + bytes.count), with: bytes)
     }
-    private func fixture(_ directory: URL, active: String = "000", corruptLink: Bool = false) throws -> URL {
+    private func fixture(_ directory: URL, active: String = "000", corruptLink: Bool = false,
+                         invalidBounds: Bool = false, rowKind: UInt8 = 1, markerLength: UInt64 = 8 * 960,
+                         nextMarkerTick: UInt64? = nil) throws -> URL {
         let bundle = directory.appendingPathComponent("Migration.logicx")
         let alternative = bundle.appendingPathComponent("Alternatives/" + active)
         try FileManager.default.createDirectory(at: alternative, withIntermediateDirectories: true)
@@ -54,16 +95,16 @@ final class LogicProjectImportTests: XCTestCase {
         for (index, title) in ["Group", "Guitar"].enumerated() {
             var env = Data(count: 200); text(title, in: &env, at: 158)
             records.append(record("ivnE", body: env, owner: (index + 1) << 18, kind: 20))
-            var row = Data(count: 58); row[0] = 1
+            var row = Data(count: 58); row[0] = rowKind
             put(UInt64((index + 1) << 18), in: &row, at: 6)
             put(UInt64(index), in: &row, at: 14, width: 2)
-            records.append(record("karT", body: row, owner: 0x40000, index: index))
+            records.append(record("karT", body: row, owner: 0x40000, index: index, version: 6))
         }
         var file = Data(count: 100); text("Guitar.wav", in: &file, at: 8, utf16: true)
         records.append(record("lFuA", body: file, kind: 11))
         var region = Data(count: 160)
         put(48000, in: &region, at: 6, width: 8)
-        put(480000, in: &region, at: 22, width: 8)
+        put(invalidBounds ? 0 : 480000, in: &region, at: 22, width: 8)
         text("Trimmed guitar", in: &region, at: 74)
         records.append(record("gRuA", body: region, kind: 11))
         var event = Data(count: 80); event[0] = 0x24
@@ -83,13 +124,31 @@ final class LogicProjectImportTests: XCTestCase {
         }
         records.append(record("qSvE", body: tempos, kind: 3))
         var marker = Data(count: 48); marker[0] = 0x12; marker[23] = 0x88; marker[39] = 0x88
-        put(38400, in: &marker, at: 4); put(4, in: &marker, at: 16); put(8 * 960, in: &marker, at: 28)
+        put(38400, in: &marker, at: 4); put(4, in: &marker, at: 16); put(markerLength, in: &marker, at: 28)
+        if let nextMarkerTick {
+            var next = marker
+            put(38400 + nextMarkerTick, in: &next, at: 4); put(5, in: &next, at: 16); put(960, in: &next, at: 28)
+            marker.append(next)
+            records.append(record("qSxT", body: Data("{\\rtf1\\ansi Outro}".utf8), owner: 5 << 16, kind: 32))
+        }
         records.append(record("qSvE", body: marker, kind: 22))
         records.append(record("qSxT", body: Data("{\\rtf1\\ansi Introduction}".utf8), owner: 4 << 16, kind: 32))
         var data = Data(count: 24); put(0xabc04723, in: &data, at: 0); put(UInt64(records.count), in: &data, at: 16)
         data.append(records); try data.write(to: alternative.appendingPathComponent("ProjectData"))
         return bundle
     }
+    func testVersionSixAlternateTrackKindPreservesGroupingAndAudioPlacement() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let result = try LogicProjectImporter.read(fixture(directory, rowKind: 10))
+        let tracks = result.project.songs[0].tracks
+        XCTAssertEqual(tracks.map(\.name), ["Group", "Guitar"])
+        let group = try XCTUnwrap(tracks.first)
+        let guitar = try XCTUnwrap(tracks.last)
+        XCTAssertEqual(guitar.parentTrackID, group.id)
+        XCTAssertEqual(guitar.clips.map(\.name), ["Trimmed guitar"])
+    }
+
     func testDeclaredActiveAlternativeMustExistAndMatchExactly() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -104,7 +163,9 @@ final class LogicProjectImportTests: XCTestCase {
         }
         for value: Any in [7, "007", "missing", 2.5, true, [2]] {
             try active(value)
-            XCTAssertThrowsError(try LogicProjectImporter.read(bundle), "An invalid declared alternative must not read the first available arrangement")
+            let recovered = try LogicProjectImporter.read(bundle)
+            XCTAssertFalse(recovered.project.songs[0].tracks.isEmpty)
+            XCTAssertTrue(recovered.warnings.contains { $0.contains("Recovered alternative") })
         }
         let other = bundle.appendingPathComponent("Alternatives/000")
         try FileManager.default.copyItem(at: bundle.appendingPathComponent("Alternatives/002"), to: other)
@@ -124,9 +185,9 @@ final class LogicProjectImportTests: XCTestCase {
         try PropertyListSerialization.data(fromPropertyList: ["ActiveVariant": "Main"], format: .binary, options: 0).write(to: information)
         XCTAssertNoThrow(try LogicProjectImporter.read(bundle))
         try PropertyListSerialization.data(fromPropertyList: ["ActiveVariant": "Missing"], format: .binary, options: 0).write(to: information)
-        XCTAssertThrowsError(try LogicProjectImporter.read(bundle)) { error in
-            XCTAssertTrue(error.localizedDescription.contains("active project alternative was not found"))
-        }
+        let recovered = try LogicProjectImporter.read(bundle)
+        XCTAssertFalse(recovered.project.songs[0].tracks.isEmpty)
+        XCTAssertTrue(recovered.warnings.contains { $0.contains("alternative") })
     }
 
     func testMissingActiveSelectionIsAllowedOnlyForOneUnambiguousAlternative() throws {
@@ -139,14 +200,14 @@ final class LogicProjectImportTests: XCTestCase {
         try PropertyListSerialization.data(fromPropertyList: [String: String](), format: .binary, options: 0).write(to: information)
         XCTAssertNoThrow(try LogicProjectImporter.read(bundle))
         try Data("corrupt project information".utf8).write(to: information)
-        XCTAssertThrowsError(try LogicProjectImporter.read(bundle), "Corrupt metadata must not be erased as though it was missing")
+        XCTAssertTrue(try LogicProjectImporter.read(bundle).warnings.contains { $0.contains("information ignored") })
         try PropertyListSerialization.data(fromPropertyList: ["not a dictionary"], format: .binary, options: 0).write(to: information)
-        XCTAssertThrowsError(try LogicProjectImporter.read(bundle))
+        XCTAssertTrue(try LogicProjectImporter.read(bundle).warnings.contains { $0.contains("information ignored") })
         try FileManager.default.removeItem(at: information)
         try FileManager.default.copyItem(at: bundle.appendingPathComponent("Alternatives/000"), to: bundle.appendingPathComponent("Alternatives/001"))
-        XCTAssertThrowsError(try LogicProjectImporter.read(bundle)) { error in
-            XCTAssertTrue(error.localizedDescription.contains("without an active selection"))
-        }
+        let recovered = try LogicProjectImporter.read(bundle)
+        XCTAssertTrue(recovered.warnings.contains { $0.contains("without an active selection") })
+        XCTAssertFalse(recovered.project.songs[0].tracks.isEmpty)
     }
 
     func testOfflineMigrationRoundTripAndRecoveryPreserveGrid() async throws {
@@ -177,6 +238,7 @@ final class LogicProjectImportTests: XCTestCase {
         XCTAssertEqual(clip.muted, true)
         XCTAssertEqual(song.parts[0].name, "Introduction")
         XCTAssertEqual(song.parts[0].endTime, 6)
+        XCTAssertTrue((song.markers ?? []).allSatisfy(\.isTempo))
         XCTAssertEqual(ProjectAudioRecovery.missingPaths(in: result.project, directory: directory), [clip.audioFile!.path])
         let search = directory.appendingPathComponent("Relink")
         try FileManager.default.createDirectory(at: search, withIntermediateDirectories: true)
@@ -188,6 +250,22 @@ final class LogicProjectImportTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: directory.appendingPathComponent(clip.audioFile!.path)), bytes)
         let afterRecovery = try await ProjectStore(url: destination).load()
         XCTAssertEqual(afterRecovery, loaded)
+    }
+
+    func testMarkerRangesPreserveSavedAndAutomaticEnds() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        // This item ends at 16 seconds. The next marker starts at 20 seconds.
+        for (length, expectedEnd) in [(12 * 960 as UInt64, 8.0), (1, 20.0)] {
+            let source = try fixture(directory, markerLength: length, nextMarkerTick: 36 * 960)
+            let song = try XCTUnwrap(LogicProjectImporter.read(source).project.songs.first)
+            XCTAssertEqual(song.parts.map(\.name), ["Introduction", "Outro"])
+            XCTAssertEqual(song.parts[0].startTime, 0)
+            XCTAssertEqual(song.parts[0].endTime, expectedEnd, accuracy: 1e-9)
+            XCTAssertEqual(song.parts[1].startTime, 20, accuracy: 1e-9)
+            XCTAssertEqual(song.parts[1].endTime, 20.5, accuracy: 1e-9)
+            XCTAssertTrue((song.markers ?? []).allSatisfy(\.isTempo))
+        }
     }
     func testBundledAudioCopiesAndExistingDestinationIsNotOverwritten() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -206,11 +284,15 @@ final class LogicProjectImportTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: destination), saved)
         XCTAssertEqual(try Data(contentsOf: audio), bytes)
     }
-    func testBrokenReferencesAndTruncatedDataFailWithoutPartialMigration() throws {
+    func testBrokenReferencesRecoverTracksButUnreadableContainerFails() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
         let bundle = try fixture(directory, corruptLink: true)
-        XCTAssertThrowsError(try LogicProjectImporter.read(bundle))
+        let recovered = try LogicProjectImporter.read(bundle)
+        XCTAssertFalse(recovered.project.songs[0].tracks.isEmpty)
+        XCTAssertTrue(recovered.project.songs[0].tracks.flatMap(\.clips).isEmpty)
+        XCTAssertTrue(recovered.warnings.contains { $0.contains("item ignored") })
+        try recovered.project.validate()
         let data = bundle.appendingPathComponent("Alternatives/000/ProjectData")
         try Data([0x23, 0x47]).write(to: data)
         XCTAssertThrowsError(try LogicProjectImporter.read(bundle))
@@ -252,7 +334,7 @@ final class LogicProjectImportTests: XCTestCase {
         XCTAssertEqual(children.map(\.endTime), [4, 6])
         XCTAssertTrue(song.parts.contains { $0.name == "Outside" && $0.parentRegionID == nil && $0.startTime == 12 && $0.endTime == 12.5 })
         let flags = (song.markers ?? []).filter { !$0.isTempo }
-        XCTAssertEqual(flags.count, 3)
+        XCTAssertEqual(flags.count, 2)
         XCTAssertEqual(flags.filter { $0.unifiedRegionID == root.id }.map(\.sourceRegionID), children.map { Optional($0.id) })
         XCTAssertEqual(song.markers?.filter(\.isTempo).count, 2)
         XCTAssertTrue(song.tracks[2].clips.isEmpty)
@@ -325,12 +407,15 @@ final class LogicProjectImportTests: XCTestCase {
         let reopened = try await ProjectStore(url: destination).load()
         XCTAssertEqual(reopened, result.project)
         XCTAssertEqual(try Data(contentsOf: url), data, "source Logic project remains untouched")
-        // A broken linked note must fail, instead of silently producing an empty region.
+        // A broken note is reported without discarding the other notes or regions.
         let noteBytes = Data(notes.prefix(32))
         let range = try XCTUnwrap(data.range(of: noteBytes))
         data[range.lowerBound + 23] = 0x88
         try data.write(to: url)
-        XCTAssertThrowsError(try LogicProjectImporter.read(bundle))
+        let recovered = try LogicProjectImporter.read(bundle)
+        XCTAssertTrue(recovered.warnings.contains { $0.contains("MIDI note ignored") })
+        XCTAssertGreaterThan(recovered.project.songs[0].tracks.flatMap(\.clips).compactMap(\.midi).flatMap(\.notes).count, 0)
+        try recovered.project.validate()
     }
 
     func testMixerUUIDLinkFractionalGainPanAndMuteRoundTrip() async throws {
@@ -387,7 +472,7 @@ final class LogicProjectImportTests: XCTestCase {
         }
     }
 
-    func testUnsupportedMixerIsExplicitAndTruncatedStripFails() throws {
+    func testUnsupportedAndTruncatedMixerKeepArrangementWithWarning() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
         let bundle = try fixture(directory)
@@ -398,14 +483,44 @@ final class LogicProjectImportTests: XCTestCase {
         put(100, in: &strip, at: 26, width: 2) // Points outside the bounded record.
         data.append(record("OCuA", body: strip, owner: 0x240000, kind: 14, version: 7))
         put(UInt64(data.count - 24), in: &data, at: 16); try data.write(to: url)
-        XCTAssertThrowsError(try LogicProjectImporter.read(bundle))
+        let recovered = try LogicProjectImporter.read(bundle)
+        XCTAssertTrue(recovered.warnings.contains { $0.contains("mixer setting ignored") })
+        XCTAssertFalse(recovered.project.songs[0].tracks.flatMap(\.clips).isEmpty)
+        try recovered.project.validate()
+    }
+
+    func testVersionThreeSequenceUsesNameAtOffsetSixteen() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let bundle = try fixture(directory)
+        let url = bundle.appendingPathComponent("Alternatives/000/ProjectData")
+        var data = try Data(contentsOf: url)
+        // The first record is the arrangement's qeSM. Version 3 stores
+        // its length-prefixed name at +16, unlike version 4's +52.
+        put(3, in: &data, at: 24 + 4, width: 2)
+        try data.write(to: url)
+        let result = try LogicProjectImporter.read(bundle)
+        XCTAssertEqual(result.project.songs[0].tracks.count, 2)
+        XCTAssertFalse(result.warnings.contains { $0.contains("Truncated Logic data") })
+        XCTAssertTrue(result.project.songs[0].tracks.flatMap(\.clips).contains { $0.audioFile != nil })
+    }
+
+    func testSelectedLocalLogicProjectWhenProvided() throws {
+        guard let path = ProcessInfo.processInfo.environment["CATLIVE_LOGIC_PROJECT"] else {
+            throw XCTSkip("Local Logic project not supplied")
+        }
+        let result = try LogicProjectImporter.read(URL(fileURLWithPath: path))
+        let song = result.project.songs[0]
+        XCTAssertFalse(song.tracks.isEmpty)
+        print("LOGIC_SELECTED tracks=\(song.tracks.count) clips=\(song.tracks.flatMap(\.clips).count)")
+        for warning in result.warnings { print("LOGIC_WARNING \(warning)") }
     }
 
     func testRealProjectsWhenProvided() throws {
         guard let directory = ProcessInfo.processInfo.environment["JARAS_LOGIC_FIXTURES"] else { throw XCTSkip("Local Logic fixtures not supplied") }
-        for (filename, trackCount, clipCount, markerCount) in [
-            ("VS SHOW KITARA 2026.logicx", 19, 315, 38),
-            ("VS SHOW VICTOR SANTOS 2026 V4.logicx", 60, 1394, 86)
+        for (filename, trackCount, clipCount) in [
+            ("VS SHOW KITARA 2026.logicx", 19, 315),
+            ("VS SHOW VICTOR SANTOS 2026 V4.logicx", 60, 1394)
         ] {
             let url = URL(fileURLWithPath: directory).appendingPathComponent(filename)
             let original = try Data(contentsOf: url.appendingPathComponent("Alternatives/000/ProjectData"))
@@ -415,7 +530,11 @@ final class LogicProjectImportTests: XCTestCase {
             XCTAssertEqual(song.tracks.count, trackCount)
             XCTAssertEqual(song.tracks.flatMap(\.clips).filter { $0.audioFile != nil }.count, clipCount)
             XCTAssertTrue(song.tracks.flatMap(\.clips).contains { $0.midi?.notes.isEmpty == false })
-            XCTAssertEqual(song.markers?.filter { !$0.isTempo }.count, markerCount)
+            XCTAssertFalse((song.markers ?? []).contains { marker in
+                !marker.isTempo && marker.unifiedRegionID == nil && song.parts.contains {
+                    $0.parentRegionID == nil && $0.name == marker.name && $0.startTime == marker.position
+                }
+            })
             XCTAssertTrue(song.tracks.flatMap(\.clips).allSatisfy { ($0.midi != nil || $0.audioFile?.path.hasPrefix("Stems/Logic-") == true) && $0.duration > 0 })
             XCTAssertEqual(try Data(contentsOf: url.appendingPathComponent("Alternatives/000/ProjectData")), original)
             print("LOGIC_REAL_IMPORT \(filename) tracks=\(song.tracks.count) clips=\(song.tracks.flatMap(\.clips).count) groups=\(song.tracks.filter { $0.parentTrackID != nil }.count) duration=\(song.duration) missing=\(result.media.filter { $0.source == nil }.count)")

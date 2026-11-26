@@ -9,7 +9,7 @@ final class SpecialTrackItemTests: XCTestCase {
         return track
     }
     func testSpecialTracksHaveOneLaneAndAcceptAdjacentItems() throws {
-        for kind: TrackKind in [.teleprompt, .video, .chords] {
+        for kind: TrackKind in [.video, .chords] {
             var project = Project.empty(name: "Single lane")
             project.songs[0].duration = 100
             var lane = track(kind)
@@ -27,7 +27,7 @@ final class SpecialTrackItemTests: XCTestCase {
         }
     }
     func testSpecialResizeAndDragPreviewCannotStackItems() throws {
-        for kind: TrackKind in [.teleprompt, .video, .chords] {
+        for kind: TrackKind in [.video, .chords] {
             var project = Project.empty(name: "Single lane")
             project.songs[0].duration = 100
             let lane = track(kind), first = lane.clips[0], second = lane.clips[1]
@@ -49,4 +49,39 @@ final class SpecialTrackItemTests: XCTestCase {
         ordinary.name = "Audio"
         XCTAssertTrue(ordinary.canPlaceItem(start: 15, duration: 10))
     }
+    func testTeleprompterLyricsStackAtTheSamePositionAndRemainEditable() throws {
+        for kind: TrackKind in [.teleprompt, .teleprompt2] {
+            var project = Project.empty(name: "Stacked lyrics")
+            project.songs[0].duration = 100
+            var lane = track(kind)
+            lane.clips[0].text = "First lyric"
+            lane.clips[1].text = "Second lyric"
+            lane.clips[1].startTime = 10
+            project.songs[0].tracks = [lane]
+            try project.validate()
+            XCTAssertEqual(TrackLanes(track: lane).count, 2)
+            XCTAssertEqual(TrackLanes(track: lane).localLane(for: lane.clips[0].id), 0)
+            XCTAssertEqual(TrackLanes(track: lane).localLane(for: lane.clips[1].id), 1)
+            XCTAssertTrue(lane.canPlaceItem(start: 10, duration: 10))
+            XCTAssertFalse(lane.canPlaceItem(start: -1, duration: 10))
+            XCTAssertEqual(lane.constrainedItemStart(12, item: lane.clips[1]), 12)
+            let edges = lane.constrainedItemEdges(start: 5, end: 35, item: lane.clips[1])
+            XCTAssertEqual(edges.0, 5); XCTAssertEqual(edges.1, 35)
+            project.resizeItem(lane.clips[1].id, start: 5, end: 35)
+            XCTAssertEqual(project.songs[0].tracks[0].clips[1].duration, 30)
+            try project.validate()
+            XCTAssertEqual(try ProjectDocumentCodec.decode(ProjectDocumentCodec.encode(project)), project)
+
+            var media = AudioClip(id: UUID(), name: "Movie", startTime: 10, duration: 10, audioFile: AudioFile(path: "Videos/movie.mp4"))
+            lane.clips.append(media)
+            project.songs[0].tracks = [lane]
+            try project.validate()
+            XCTAssertTrue(lane.canPlaceItem(start: 10, duration: 10, media: false))
+            XCTAssertFalse(lane.canPlaceItem(start: 10, duration: 10, media: true))
+            media.id = UUID(); lane.clips.append(media)
+            project.songs[0].tracks = [lane]
+            XCTAssertThrowsError(try project.validate(), "Only lyrics may stack on a teleprompter")
+        }
+    }
+
 }

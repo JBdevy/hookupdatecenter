@@ -12,6 +12,8 @@ from pathlib import Path
 import sys
 out = Path(sys.argv[1])
 source = Path('Apple/Shared/GridSelectionInput.swift').read_text()
+source = source.replace('init(_ text: NSAttributedString, prepareTitle: Bool = false) {', 'init(_ text: NSAttributedString, prepareTitle: Bool = false) {\n            if prepareTitle { HeaderProjectionProbe.titleBuilds += 1 }')
+source = source.replace('if let preparedHeaderProjection, preparedHeaderProjection.key == key { return preparedHeaderProjection }', 'if let preparedHeaderProjection, preparedHeaderProjection.key == key { return preparedHeaderProjection }\n        HeaderProjectionProbe.projections += 1')
 source = source.replace('private func invalidateHeaderProjectionIfNeeded()', 'private func invalidateHeaderProjectionImplementation()')
 needle = '    @discardableResult private func invalidateHeaderProjectionImplementation()'
 wrapper = '''    @discardableResult func invalidateHeaderProjectionIfNeeded() -> Bool {
@@ -22,7 +24,15 @@ wrapper = '''    @discardableResult func invalidateHeaderProjectionIfNeeded() ->
 '''
 source = source.replace(needle, wrapper + needle)
 (out / 'GridSelectionInput.swift').write_text(source)
-(out / 'main.swift').write_text(Path('Tests/Apple/GridHeaderProjectionTests.swift').read_text())
+theme = Path('Apple/Shared/Theme.swift').read_text()
+colors = 'extension Color {' + theme.split('extension Color {', 1)[1].split('\n}', 1)[0] + '\n}\n'
+typography = colors + '// App-owned typography.' + theme.split('// App-owned typography.', 1)[1]
+models = Path('Application/Project/ProjectModels.swift').read_text()
+elastic = models[models.index('public struct ElasticPoint:'):models.index('public struct AudioClip:')]
+transport = Path('Apple/Shared/TransportView.swift').read_text()
+tool = transport[transport.index('enum ProGridTool:'):transport.index('struct ProGridToolPicker:')]
+tool = tool[:tool.index('    @MainActor func apply(')] + tool[tool.index('    var symbol:'):]
+(out / 'main.swift').write_text('import SwiftUI\n' + typography + '\n' + elastic + tool + Path('Tests/Apple/GridHeaderProjectionTests.swift').read_text())
 PY
-swiftc -swift-version 5 -target "$(uname -m)-apple-macos12.0" Apple/Shared/NativeTooltips.swift Apple/Shared/NativeTimelineInputGate.swift "$test_dir/GridSelectionInput.swift" "$test_dir/main.swift" -o "$test_dir/test"
+swiftc Application/Project/ItemFadeCurve.swift -swift-version 5 -target "$(uname -m)-apple-macos12.0" Apple/Shared/NativeTooltips.swift Apple/Shared/NativeTimelineInputGate.swift "$test_dir/GridSelectionInput.swift" "$test_dir/main.swift" -o "$test_dir/test"
 "$test_dir/test"

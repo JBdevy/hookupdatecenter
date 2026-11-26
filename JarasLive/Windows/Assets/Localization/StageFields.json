@@ -1,4 +1,55 @@
 [
+    {
+      "kind": "range",
+      "id": "previewBlockScale",
+      "title": "Preview block scale",
+      "min": 35,
+      "max": 300
+    },
+    {
+      "kind": "range",
+      "id": "previewRegionDurationScale",
+      "title": "Preview region duration scale",
+      "min": 35,
+      "max": 300
+    },
+    {
+      "kind": "range",
+      "id": "previewBlockDurationScale",
+      "title": "Preview block duration scale",
+      "min": 35,
+      "max": 300
+    },
+    {
+      "kind": "choice",
+      "id": "previewRegionColorSource",
+      "title": "Preview region color",
+      "options": [
+        {
+          "label": "Region",
+          "value": "region"
+        },
+        {
+          "label": "Setlist",
+          "value": "setlist"
+        },
+        {
+          "label": "User",
+          "value": "user"
+        }
+      ]
+    },
+    {
+      "kind": "color",
+      "id": "previewRegionColor",
+      "title": "Custom preview region color",
+      "default": 16777215
+    },
+    {
+      "kind": "toggle",
+      "id": "previewLyricsEnabled",
+      "title": "Show lyrics alongside preview"
+    },
   {
     "kind": "color",
     "id": "textColor",
@@ -64,7 +115,7 @@
     "id": "textScale",
     "title": "Lyrics scale",
     "min": 35,
-    "max": 100
+    "max": 150
   },
   {
     "kind": "range",
@@ -102,7 +153,7 @@
   {
     "kind": "range",
     "id": "previewScale",
-    "title": "Preview depth",
+    "title": "Preview region scale",
     "min": 35,
     "max": 300
   },

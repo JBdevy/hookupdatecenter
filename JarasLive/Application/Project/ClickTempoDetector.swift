@@ -45,10 +45,131 @@ public enum ClickTempoDetector {
         }
         return nil
     }
+    /// Keep ordinary accents and quiet passages. Only reject a very weak
+    /// secondary attack when at least two nearby primary clicks agree on a
+    /// much higher level; a single loud bar accent must not halve the tempo.
+    public static func primaryTransients(_ pulses: [Transient]) -> [Transient] {
+        let weak = pulses.indices.map { index -> Bool in
+            let levels = (max(0, index - 3)..<min(pulses.count, index + 4)).filter { $0 != index }
+                .map { pulses[$0].peak }.filter { $0.isFinite && $0 > 0 }.sorted()
+            guard levels.count >= 2 else { return false }
+            let reference = index > 0 && index + 1 < pulses.count
+                ? min(pulses[index - 1].peak, pulses[index + 1].peak) : levels[levels.count - 2]
+            return pulses[index].peak < reference * 0.15
+        }
+        func close(_ a: Double, _ b: Double) -> Bool { abs(a - b) <= max(0.0015, abs(b) * 0.01) }
+        let primary: [Transient] = pulses.indices.compactMap { index in
+            guard weak[index] else { return pulses[index] }
+            let secondary: Bool
+            if index > 0 && index + 1 < pulses.count {
+                let period = pulses[index + 1].position - pulses[index - 1].position
+                var previous = index - 2, next = index + 2
+                while previous >= 0 && weak[previous] { previous -= 1 }
+                while next < pulses.count && weak[next] { next += 1 }
+                secondary = (previous >= 0 && close(pulses[index - 1].position - pulses[previous].position, period)) ||
+                    (next < pulses.count && close(pulses[next].position - pulses[index + 1].position, period))
+            } else if index == 0, pulses.count >= 4 {
+                secondary = weak[2] && close(pulses[2].position - pulses[0].position, pulses[3].position - pulses[1].position)
+            } else if pulses.count >= 4 {
+                secondary = weak[index - 2] && close(pulses[index].position - pulses[index - 2].position, pulses[index - 1].position - pulses[index - 3].position)
+            } else { secondary = false }
+            return secondary ? nil : pulses[index]
+        }
+        return primary.indices.compactMap { index in
+            guard index >= 2, index + 2 < primary.count else { return primary[index] }
+            let previous = primary[index - 1], next = primary[index + 1]
+            let across = next.position - previous.position
+            let tolerance = max(0.0015, across * 0.01)
+            // A single quieter off-grid attack must not turn one established
+            // quarter note into two different tempo sections. Both surrounding
+            // beat intervals must confirm the same original period.
+            let inserted = primary[index].peak < min(previous.peak, next.peak) * 0.5 &&
+                across >= 0.2 && across <= 1 &&
+                abs(previous.position - primary[index - 2].position - across) <= tolerance &&
+                abs(primary[index + 2].position - next.position - across) <= tolerance
+            return inserted ? nil : primary[index]
+        }
+    }
     /// Follow measured click phase, including short changes and gradual ramps.
     /// All marker positions remain measured sample positions.
     public static func sections(onsets: [Double], beatsPerBar: Int = 4) -> [Section] {
         analyze(onsets: onsets, beatsPerBar: beatsPerBar).sections
+    }
+    /// Public tempo markers are musical edits, not every sub-beat correction
+    /// needed by the click analyzer. Sample at most once per two measures and
+    /// absorb small detection errors around an integral BPM (140.164 -> 140).
+    public static func markerSections(_ input: [Section], beatsPerBar: Int = 4, beatUnit: Int = 4,
+                                      until end: Double) -> [Section] {
+        func rounded(_ value: Double) -> Double {
+            let integer = value.rounded()
+            return abs(value - integer) <= 0.25 ? integer : value
+        }
+        let measured = input.filter { $0.position.isFinite && $0.bpm.isFinite && $0.bpm >= 60 && $0.bpm <= 300 && $0.position < end }
+            .sorted { $0.position < $1.position }
+        let bridged = measured.indices.compactMap { index -> Section? in
+            let section = measured[index]
+            guard index > 0, index + 1 < measured.count else { return section }
+            let previous = measured[index - 1], next = measured[index + 1]
+            let nextEnd = index + 2 < measured.count ? measured[index + 2].position : end
+            let beats = (next.position - section.position) * section.bpm / 60
+            let previousBeats = (section.position - previous.position) * previous.bpm / 60
+            let nextBeats = (nextEnd - next.position) * next.bpm / 60
+            // One irregular gap between two stable clocks is not evidence of
+            // another tempo. Publishing it would also hold that false tempo
+            // for two bars and move the following, measured tempo anchor.
+            // Keep raw phase analysis, short intros and gradual ramps intact.
+            let outsideNeighbors = section.bpm < min(previous.bpm, next.bpm) * 0.97 ||
+                section.bpm > max(previous.bpm, next.bpm) * 1.03
+            if abs(beats - 1) <= 0.05, previousBeats >= 4, nextBeats >= 4, outsideNeighbors { return nil }
+            return section
+        }
+        // Voice/noise in a Click file can produce several false clocks in a
+        // short burst. Require the same established clock on both sides, and
+        // limit suppression to two bars; persistent changes and ramps remain.
+        var clocks: [Section] = []
+        for section in bridged {
+            if clocks.last.map({ abs(rounded($0.bpm) - rounded(section.bpm)) < 0.01 }) != true { clocks.append(section) }
+        }
+        var sections: [Section] = []
+        var cursor = 0
+        while cursor < clocks.count {
+            let current = clocks[cursor]
+            if let previous = sections.last {
+                let quarterNotes = Double(max(1, beatsPerBar)) * 4 / Double(max(1, beatUnit))
+                let maximum = 2 * quarterNotes * 60 / previous.bpm
+                let established = (current.position - previous.position) * previous.bpm / 60 >= quarterNotes
+                var returning: Int?
+                if established, cursor + 1 < clocks.count {
+                    for next in (cursor + 1)..<clocks.count {
+                        if clocks[next].position - current.position > maximum { break }
+                        let nextEnd = next + 1 < clocks.count ? clocks[next + 1].position : end
+                        if abs(rounded(clocks[next].bpm) - rounded(previous.bpm)) < 0.01,
+                           (nextEnd - clocks[next].position) * clocks[next].bpm / 60 >= quarterNotes {
+                            returning = next; break
+                        }
+                    }
+                }
+                if let returning { cursor = returning + 1; continue }
+            }
+            sections.append(current); cursor += 1
+        }
+        guard let first = sections.first else { return [] }
+        var result = [Section(position: first.position, bpm: rounded(first.bpm))]
+        var index = 1
+        while index < sections.count {
+            let previous = result.last!
+            if abs(rounded(sections[index].bpm) - previous.bpm) < 0.01 { index += 1; continue }
+            let bars = 2 * Double(max(1, beatsPerBar)) * 4 / Double(max(1, beatUnit)) * 60 / previous.bpm
+            let position = max(sections[index].position, previous.position + bars)
+            guard position < end else { break }
+            // Use the tempo still present at the two-bar boundary, rather than
+            // keeping a short fluctuation which has already returned to normal.
+            while index + 1 < sections.count && sections[index + 1].position <= position { index += 1 }
+            let bpm = rounded(sections[index].bpm)
+            if abs(bpm - previous.bpm) >= 0.01 { result.append(Section(position: position, bpm: bpm)) }
+            index += 1
+        }
+        return result
     }
     private struct Analysis { var sections: [Section] }
     private static func analyze(onsets: [Double], beatsPerBar: Int) -> Analysis {
@@ -208,14 +329,21 @@ public enum ClickTempoDetector {
     public static func markersWithMeter(song: Song, region: Part, transientsFor: (AudioFile) throws -> [Transient]) throws -> (markers: [TimelineMarker], hasClickAudio: Bool) {
         // Analyze a private Free Grid snapshot; never publish a temporary mode.
         var song = song
+        var region = region
+        region.endTime = song.tempoEditEnd(for: region)
         var timing = song.projectTime; timing.timebase = .free
         song.timeSettings = timing
         var pulses: [Transient] = []
         var hasClickAudio = false
-        for track in song.tracks where track.name.trimmingCharacters(in: .whitespacesAndNewlines).caseInsensitiveCompare("click") == .orderedSame || track.role == .click {
+        var hasClickAtRegionStart = false
+        for track in song.tracks {
+            let analyzesAudio = track.role == .click ||
+                track.name.trimmingCharacters(in: .whitespacesAndNewlines).caseInsensitiveCompare("click") == .orderedSame
+            guard analyzesAudio || track.kind == .click else { continue }
             for clip in track.clips where clip.startTime < region.endTime && clip.startTime + clip.duration > region.startTime {
                 if region.parentRegionID != nil && clip.startTime < region.startTime { continue }
-                guard let file = clip.audioFile ?? track.audioFile else { continue }
+                if clip.startTime <= region.startTime { hasClickAtRegionStart = true }
+                guard analyzesAudio, let file = clip.audioFile ?? track.audioFile else { continue }
                 hasClickAudio = true
                 for pulse in try transientsFor(file) {
                     let position = clip.startTime + (pulse.position - clip.sourceOffset) / clip.audioRate
@@ -227,23 +355,24 @@ public enum ClickTempoDetector {
         }
         var unique: [Transient] = []
         for pulse in pulses.sorted(by: { $0.position < $1.position }) where unique.last.map({ pulse.position - $0.position > 0.08 }) ?? true { unique.append(pulse) }
-        let analysis = hasClickAudio ? analyze(onsets: unique.map(\.position), beatsPerBar: meter(transients: unique)?.beats ?? song.meterBeats)
+        unique = primaryTransients(unique)
+        // Detection follows the click timing; imported songs use 4/4.
+        let signature: Meter? = Meter(beats: 4, unit: 4)
+        let analysis = hasClickAudio ? analyze(onsets: unique.map(\.position), beatsPerBar: signature?.beats ?? song.meterBeats)
             : Analysis(sections: [])
-        let sections = analysis.sections
-        var markers = sections.enumerated().map { index, section in
-            let end = index + 1 < sections.count ? sections[index + 1].position : region.endTime
-            let detectedMeter = meter(transients: unique.filter { $0.position >= section.position && $0.position < end })
-            let beats = detectedMeter?.beats ?? song.meterBeats
-            let unit = detectedMeter?.unit ?? song.meterUnit
+        let sections = markerSections(analysis.sections, beatsPerBar: signature?.beats ?? song.meterBeats,
+                                      beatUnit: signature?.unit ?? song.meterUnit, until: region.endTime)
+        var markers = sections.map { section in
+            let beats = 4
+            let unit = 4
             let bpm = section.bpm
             return TimelineMarker(id: UUID(), name: "TEMPO", position: section.position, color: 0x999999,
                            tempoBPM: bpm, tempoBeats: beats,
                            tempoUnit: unit, tempoTimebase: .global, tempoReferenceBPM: bpm)
         }
-        // The first audible click can follow a silent/count-in-free intro.
-        // Protect that intro from the preceding song's tempo without moving
-        // the measured first beat (which anchors both grid and metronome).
-        if var initial = markers.first, initial.position > region.startTime {
+        // A click item can include silence before its first measured beat.
+        // Leave an empty lead-in before the item at the existing tempo.
+        if hasClickAtRegionStart, var initial = markers.first, initial.position > region.startTime {
             initial.id = UUID()
             initial.position = region.startTime
             markers.insert(initial, at: 0)
@@ -259,7 +388,8 @@ public extension Song {
         var timing = projectTime; timing.timebase = .free; timeSettings = timing
         if markers == nil { markers = [] }
         if let region {
-            markers!.removeAll { $0.isTempo && $0.position >= region.startTime && $0.position < region.endTime }
+            let end = tempoEditEnd(for: region)
+            markers!.removeAll { $0.isTempo && $0.position >= region.startTime && $0.position < end }
         }
         for marker in detected {
             // A marker already at the onset is updated, never duplicated.
@@ -269,6 +399,5 @@ public extension Song {
                 markers![index] = replacement
             } else { markers!.append(markerWithRegionOwnership(marker)) }
         }
-        ensureInitialTempoMarker()
     }
 }

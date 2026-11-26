@@ -44,11 +44,14 @@ enum NativeProjectFolderStorage {
         }
         return root
     }
+    static func projectsDirectory(in root: URL) -> URL {
+        root.lastPathComponent == "CatLive" ? root.appendingPathComponent("Projects", isDirectory: true)
+            : root.appendingPathComponent("CatLive/Projects", isDirectory: true)
+    }
     static func prepare(root: URL, legacy: URL, container: URL) throws -> Prepared {
         let fm = FileManager.default
         let root = try externalRoot(root, container: container)
-        let directory = root.lastPathComponent == "CatLive" ? root.appendingPathComponent("Projects", isDirectory: true)
-            : root.appendingPathComponent("CatLive/Projects", isDirectory: true)
+        let directory = projectsDirectory(in: root)
         try fm.createDirectory(at: directory, withIntermediateDirectories: true)
         var moved: [URL: URL] = [:]
         if fm.fileExists(atPath: legacy.path) {
@@ -82,7 +85,7 @@ enum NativeProjectFolderStorage {
         // A .ziplive import uses the user's exact destination. Discover these
         // ordinary projects again when access is granted after reinstalling.
         documents += try projectFiles(root)
-        for folder in try directories(root) where UUID(uuidString: String(folder.lastPathComponent.suffix(36))) != nil {
+        for folder in try directories(root) {
             documents += try projectFiles(folder)
         }
         documents = Array(Set(documents)).sorted { $0.path < $1.path }

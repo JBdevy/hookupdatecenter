@@ -11,7 +11,7 @@ enum Command { case stopAll }
     var canExecute: () -> Bool = { true }
     var snapshot = Snapshot()
     func saveForClosing() async throws { if failSave { throw Failure.disk }; saves += 1; hasUnsavedChanges = false }
-    func send(_ command: Command) {}
+    func send(_ command: Command) { isPlaying = false }
     func replaceProject(_ project: Project) throws { snapshot.project = project; hasUnsavedChanges = false }
     func preparePlayback() {}
 }
@@ -54,6 +54,8 @@ let testPreferences = UserDefaults(suiteName: "jaras-delete-test-\(UUID())")!
     func closeProjectEditors() {}
     func resetProjectSelections() {}
     let show = Show(), store = Store()
+    let projectAudio = StemAudioPlayback.shared
+    func persistRecentProjects() { testPreferences.set(recent.map(\.path), forKey: "jaras.recentProjects") }
     var ready = true, busy = false, importingAudio = false, adding = false
     var status = "", error = "", migrationNotice = ""
     var currentURL: URL? = URL(fileURLWithPath: "/fixture/current/Show.jl")
@@ -78,17 +80,19 @@ Task { @MainActor in
     for (other, failure) in [(false, false), (true, false), (false, true)] {
         let docs = ProjectDocuments(), oldProject = UUID()
         docs.show.snapshot.project.id = oldProject
+        docs.show.isPlaying = true
         let target = docs.recent[other ? 1 : 0]
         var deletion = try ProjectFolderDeletion(document: target)
         deletion.remainingSeconds = 3
         docs.pendingDeletion = deletion
         docs.deleteProject(deletion)
-        require(!docs.busy && docs.ready, "countdown cannot be bypassed through controller")
+        require(!docs.busy && docs.ready && docs.show.isPlaying, "countdown cannot be bypassed or interrupt playback")
         deletion.remainingSeconds = 0; deletion.fail = failure; docs.pendingDeletion = deletion
         docs.deleteProject(deletion)
         while docs.busy { try await Task.sleep(nanoseconds: 1_000_000) }
         let selected = await docs.store.selected
         require(docs.show.canExecute(), "command gate restored")
+        require(!docs.show.isPlaying, "confirmed project deletion stops only at the actual replacement")
         if failure {
             require(docs.importClears == 0, "failed deletion preserves the import selection")
             require(docs.ready && docs.currentURL != nil && selected, "failed deletion keeps current document selected")

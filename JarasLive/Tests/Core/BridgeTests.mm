@@ -30,12 +30,35 @@ static void expectMetadataSnapshot(JarasCoreBridge* core, NSDictionary* full) {
 int main(int argc,char**argv){@autoreleasepool{
     expect(argc==2,"fixture required");
     NSData* input=[NSData dataWithContentsOfFile:[NSString stringWithUTF8String:argv[1]]]; NSError* error=nil;
+    NSMutableDictionary* partialFixture=[NSJSONSerialization JSONObjectWithData:input options:NSJSONReadingMutableContainers error:&error];
+    partialFixture[@"partialImportIDs"]=@[@"EA963926-2749-418C-868F-B011D832CC04"];
+    input=[NSJSONSerialization dataWithJSONObject:partialFixture options:0 error:&error];
     JarasCoreBridge* core=[JarasCoreBridge new]; expect([core loadProjectData:input error:&error],"load bridge");
     NSDictionary* original=[NSJSONSerialization JSONObjectWithData:input options:0 error:&error];
     NSDictionary* snapshot=[NSJSONSerialization JSONObjectWithData:[core snapshotWithError:&error] options:0 error:&error];
     expect(equalJSON(original,snapshot[@"project"]),"bridge round trip preserves all fields and clips");
-    expect([snapshot[@"project"][@"songs"][0][@"regionOwnershipVersion"] intValue] == 2,
+    expect([snapshot[@"project"][@"songs"][0][@"regionOwnershipVersion"] intValue] == 4,
            "native snapshots retain versioned region ownership so loose items are not migrated again");
+    expect([snapshot[@"project"][@"regionSetlist"][@"automaticSubplayNext"] boolValue], "Next mode survives the native bridge");
+    expect([snapshot[@"project"][@"songs"][0][@"parts"][0][@"subplayInitSeconds"] intValue]==3 && [snapshot[@"project"][@"songs"][0][@"parts"][1][@"subplayInitBars"] intValue]==2,
+           "per-song Config Init seconds and bars survive the native bridge");
+    // Two independent bridges must publish the same absolute mixer state to Swift.
+    JarasCoreBridge *leader=[JarasCoreBridge new], *follower=[JarasCoreBridge new];
+    expect([leader loadProjectData:input error:&error] && [follower loadProjectData:input error:&error], "load sync bridge fixtures");
+    NSString *syncID=NSUUID.UUID.UUIDString; [leader setProjectSyncID:syncID]; [follower setProjectSyncID:syncID];
+    NSString *syncTrack=original[@"songs"][0][@"tracks"][0][@"id"];
+    expect([leader executeCommand:@"volume" target:nil value:.6 error:&error], "change leader master");
+    expect([leader executeCommand:@"pan" target:syncTrack value:.4 error:&error], "change leader track pan");
+    NSData *syncFrame=[leader projectSyncFrameWithError:&error];
+    NSData *syncResult=[follower applyProjectSyncData:syncFrame elapsed:0 first:YES error:&error];
+    expect(syncResult!=nil && error==nil,"apply sync frame through native bridge");
+    NSDictionary *synced=[NSJSONSerialization JSONObjectWithData:syncResult options:0 error:&error];
+    expect([synced[@"syncMixer"][@"masterVolume"] doubleValue]==.6,"Swift receives replicated master volume");
+    bool syncPan=false;
+    for(NSDictionary *row in synced[@"syncMixer"][@"tracks"]) if([row[@"id"] isEqual:syncTrack]) syncPan=[row[@"pan"] doubleValue]==.4;
+    expect(syncPan,"Swift receives replicated track ID and pan");
+    synced=[NSJSONSerialization JSONObjectWithData:[follower applyProjectSyncData:syncFrame elapsed:0 first:NO error:&error] options:0 error:&error];
+    expect(!synced[@"syncMixer"],"unchanged frame does not republish mixer edits");
     expectMetadataSnapshot(core,snapshot);
     expect([core executeCommand:@"toggleMultiLoopBypass" target:nil value:0 error:&error], "global bypass command reaches engine");
     NSDictionary* bypassState=[NSJSONSerialization JSONObjectWithData:[core playbackSnapshotWithError:&error] options:0 error:&error];
@@ -72,11 +95,13 @@ int main(int argc,char**argv){@autoreleasepool{
     stopList[@"stopAtRegionEnd"] = @YES;
     stopList[@"prepareWithoutPlayback"] = @YES;
     stopList[@"automaticSubplay"] = @YES; stopList[@"automaticSubplaySeconds"] = @3;
+    stopList[@"automaticSubplayBars"] = @4;
     stopList[@"autoUntilBlockEnd"] = @YES;
     stopList[@"liveEnabled"] = @NO;
     expect([core configureRegionSetlistData:[NSJSONSerialization dataWithJSONObject:stopList options:0 error:&error] error:&error], "enable region Stop through bridge");
     NSDictionary* stopSnapshot = [NSJSONSerialization JSONObjectWithData:[core snapshotWithError:&error] options:0 error:&error];
     expect([stopSnapshot[@"project"][@"regionSetlist"][@"automaticSubplay"] boolValue] && [stopSnapshot[@"project"][@"regionSetlist"][@"automaticSubplaySeconds"] doubleValue] == 3, "automatic subplay settings survive native serialization");
+    expect([stopSnapshot[@"project"][@"regionSetlist"][@"automaticSubplayBars"] intValue] == 4, "automatic subplay bars survive native serialization");
     expect([stopSnapshot[@"project"][@"regionSetlist"][@"prepareWithoutPlayback"] boolValue], "prepare without playback survives native serialization");
     expect([stopSnapshot[@"project"][@"regionSetlist"][@"stopAtRegionEnd"] boolValue], "region Stop survives native serialization");
     expect([stopSnapshot[@"project"][@"regionSetlist"][@"autoUntilBlockEnd"] boolValue], "block queue limit survives native serialization");
@@ -98,7 +123,7 @@ int main(int argc,char**argv){@autoreleasepool{
     expect([core setMIDIInput:midiTrack slot:2 error:&error],"select MIDI slot");
     snapshot=[NSJSONSerialization JSONObjectWithData:[core snapshotWithError:&error] options:0 error:&error];
     expect([snapshot[@"project"][@"songs"][0][@"tracks"][0][@"midiInput"] intValue]==2,"MIDI slot persists in snapshot");
-    expect(![core setMIDIInput:midiTrack slot:4 error:&error],"reject fourth MIDI slot");
+    expect(![core setMIDIInput:midiTrack slot:7 error:&error],"reject seventh MIDI slot");
     expect([core setMIDIInput:midiTrack slot:0 error:&error],"clear MIDI slot");
     snapshot=[NSJSONSerialization JSONObjectWithData:[core snapshotWithError:&error] options:0 error:&error];
     expect(snapshot[@"project"][@"songs"][0][@"tracks"][0][@"midiInput"]==nil,"cleared MIDI slot absent");
@@ -191,10 +216,9 @@ int main(int argc,char**argv){@autoreleasepool{
         tempoSnapshot=[NSJSONSerialization JSONObjectWithData:[core snapshotWithError:&error] options:0 error:&error];
         expect([[tempoSnapshot[@"project"][@"songs"][0][@"markers"] lastObject][@"tempoTimebase"] isEqual:mode], "marker timebase survives bridge snapshot");
         NSMutableDictionary* expectedTransport=[NSJSONSerialization JSONObjectWithData:[NSJSONSerialization dataWithJSONObject:snapshot[@"transport"] options:0 error:&error] options:NSJSONReadingMutableContainers error:&error];
-        // Relative tempo resizes occupied spans after 8 s, keeping the 8 s gap.
-        // The main head at 2 s stays put; the secondary head follows the music.
-        expectedTransport[@"subPlay"][@"position"] = [mode isEqual:@"relative"] ? @19.2 : @22;
-        expect(equalJSON(expectedTransport,tempoSnapshot[@"transport"]), "timebase edit keeps playing state and retimes the secondary head with occupied audio");
+        // Switching timebase preserves the rate already applied and both heads.
+        expectedTransport[@"subPlay"][@"position"] = @22;
+        expect(equalJSON(expectedTransport,tempoSnapshot[@"transport"]), "timebase edit retains applied rate and both playback heads");
     }
     for (double position : {8.137875, 7.932125}) {
         error=nil;

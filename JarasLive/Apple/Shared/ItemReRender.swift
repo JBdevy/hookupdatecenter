@@ -41,6 +41,7 @@ enum ItemReRender {
             var result = clip
             result.name = url.deletingPathExtension().lastPathComponent
             result.audioFile = AudioFile(path: "Stems/" + name)
+            result.fadeInCurve = nil; result.fadeInSCurve = nil; result.fadeOutCurve = nil; result.fadeOutSCurve = nil
             result.fadeIn = nil; result.fadeOut = nil; result.fadeTimelineStart = nil; result.fadeTimelineDuration = nil
             result.pitchSemitones = nil
             result.fx = nil; result.fxBypassed = nil
@@ -49,6 +50,8 @@ enum ItemReRender {
             result.sourceOffset = 0; result.playbackRate = 1; result.gain = 1; result.normalizationGain = nil; result.channelMode = nil; result.phaseInverted = nil; result.pan = nil
             result.tempoBasePlaybackRate = nil
             result.renderedTempo = true
+            result.elasticPoints = nil
+            result.elasticSourceScale = nil
             result.loopStart = nil; result.loopLength = nil; result.fx = nil; result.fxBypassed = nil
             result.automation = nil; result.automationSourceOffset = nil
             result.waveform = overview.waveform; result.waveformChannels = overview.channels
@@ -118,7 +121,7 @@ enum ItemReRender {
         let folder = directory.appendingPathComponent("Stems")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         var names = MediaFileNames(directory: folder)
-        let name = names.allocate((ordered[0].name as NSString).deletingPathExtension + ".wav", forceSuffix: true)
+        let name = names.allocateUnification((ordered[0].name as NSString).deletingPathExtension + ".wav")
         let url = folder.appendingPathComponent(name)
         let id = UUID()
         let job = AudioExportJob(id: id.uuidString, fileName: name, start: start, end: end, track: track.id, clip: nil)
@@ -205,14 +208,14 @@ struct ItemReRenderProgressView: View {
     let close: () -> Void
     var body: some View {
         VStack(spacing: 16) {
-            Text(JarasLocalization.string(title)).font(.headline)
-            Text(progress.fileName).lineLimit(2).textSelection(.enabled)
+            Text(JarasLocalization.string(title)).font(.jarasHeadline)
+            Text(progress.fileName).lineLimit(2).textSelection(.disabled)
             Text("\(progress.index + 1) / \(progress.total)").monospacedDigit()
             if let error = progress.error {
                 Text(error).foregroundStyle(.red)
                 Button("Close", action: close).keyboardShortcut(.defaultAction)
             } else {
-                ProgressView(value: progress.fraction).progressViewStyle(.linear)
+                ProgressView(value: progress.fraction).progressViewStyle(JarasProgressBarStyle())
                 if let cancel { Button("Cancel", action: cancel).keyboardShortcut(.cancelAction) }
             }
         }.padding(24).frame(width: 420).interactiveDismissDisabled()

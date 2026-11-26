@@ -1,6 +1,51 @@
 import XCTest
 @testable import JarasApplication
 final class MIDIItemTests: XCTestCase {
+    func testArpeggioUsesTempoAndGateWithoutChangingTheChord() {
+        var song = Project.empty(name: "Arp").songs[0]
+        song.bpm = 120
+        var track = Track(id: UUID(), name: "Keys", role: .keys)
+        var fx = NativeFXSettings()
+        fx.inserted = ["Arpeggiator"]
+        fx.setEnabled("Arpeggiator", enabled: true)
+        track.fx = fx
+        let notes = [67, 60, 64].map { MIDINote(start: 0, length: 2, pitch: $0) }
+        let clip = AudioClip(id: UUID(), name: "Chord", startTime: 0, duration: 1, midi: MIDIItem(notes: notes, sourceBPM: 120))
+        let rendered = song.instrumentPlaybackNotes(in: clip, track: track)
+        XCTAssertEqual(rendered.map(\.pitch), [60, 64, 67, 60, 64, 67, 60, 64])
+        XCTAssertEqual(rendered[1].start, 0.125, accuracy: 1e-9)
+        XCTAssertEqual(rendered[1].end - rendered[1].start, 0.09375, accuracy: 1e-9)
+        XCTAssertEqual(Set(rendered.map(\.sourceID)).count, 8)
+        XCTAssertEqual(song.midiPlaybackNotes(in: clip).count, 3)
+        track.fx?.setEnabled("Arpeggiator", enabled: false)
+        XCTAssertEqual(song.instrumentPlaybackNotes(in: clip, track: track).count, 3)
+    }
+
+    func testArpeggioParameterChangesMIDIAndSyncUsesTheTempoMap() throws {
+        var song = Project.empty(name: "Arp").songs[0]
+        song.bpm = 120
+        song.markers = [TimelineMarker(id: UUID(), name: "Tempo", position: 0.5, color: 0, tempoBPM: 60)]
+        var track = Track(id: UUID(), name: "Keys", role: .keys)
+        let parameters = try JSONDecoder().decode(NativeArpeggiatorSettings.self,
+            from: Data(#"{"division":8,"direction":1,"octaves":2,"gate":50}"#.utf8))
+        var fx = NativeFXSettings()
+        fx.appendNative("Arpeggiator")
+        fx.arpeggiator = parameters
+        track.fx = fx
+        let notes = [67, 60, 64].map { MIDINote(start: 0, length: 4, pitch: $0) }
+        let clip = AudioClip(id: UUID(), name: "Chord", startTime: 0, duration: 1.5,
+                             midi: MIDIItem(notes: notes, sourceBPM: 120))
+        var rendered = song.instrumentPlaybackNotes(in: clip, track: track)
+        XCTAssertEqual(rendered.map(\.pitch), [79, 76, 72, 67])
+        XCTAssertEqual(rendered.map(\.start), [0, 0.25, 0.5, 1])
+        XCTAssertEqual(rendered[2].end - rendered[2].start, 0.25, accuracy: 1e-9)
+        track.fx?.arpeggiator?.sync = false
+        track.fx?.arpeggiator?.bpm = 120
+        rendered = song.instrumentPlaybackNotes(in: clip, track: track)
+        XCTAssertEqual(rendered.map(\.start), [0, 0.25, 0.5, 0.75, 1, 1.25])
+        XCTAssertEqual(rendered[2].end - rendered[2].start, 0.125, accuracy: 1e-9)
+    }
+
     func testEveryDivisionAndTimingMode() {
         for division in MIDIGrid.divisions {
             let straight=MIDIGrid(division:division)
@@ -77,12 +122,21 @@ final class MIDIItemTests: XCTestCase {
 
 @MainActor private final class MIDIEditExecutor: CommandExecutor {
     var project=Project.empty(name:"MIDI")
+    var editPosition: Double = 0
     func load(_ project:Project) throws {self.project=project}
-    func snapshot() throws -> ShowSnapshot {ShowSnapshot(project:project,transport:TransportState(playing:false,songId:project.songs.first?.id,position:0,queue:QueueState(),loop:LoopState(enabled:false),subPlay:SubPlayState(playing:false,position:0)))}
+    func snapshot() throws -> ShowSnapshot {ShowSnapshot(project:project,transport:TransportState(playing:false,songId:project.songs.first?.id,position:editPosition,editPosition:editPosition,queue:QueueState(),loop:LoopState(enabled:false),subPlay:SubPlayState(playing:false,position:0)))}
     func playbackSnapshot() throws -> PlaybackSnapshot {PlaybackSnapshot(transport:try snapshot().transport)}
     func applyProjectEdit(_ value:Project) throws {try value.validate();project=value}
-    func setRecordingChannels(_ track: UUID, channel: Int) throws { project.songs[0].tracks[0].recordingChannels = channel }
-    func setMIDIInput(_ track: UUID, slot: Int) throws { project.songs[0].tracks[0].midiInput = slot }
+    func setRecordingChannels(_ track: UUID, channel: Int) throws {
+        if channel == TrackRecordingMode.midi.rawValue {
+            let slot = project.songs[0].tracks[0].midiInput
+            project.songs[0].selectMIDIInput(slot, forTrack: 0, clearLineInput: true)
+        }
+        project.songs[0].tracks[0].recordingChannels = channel
+    }
+    func setMIDIInput(_ track: UUID, slot: Int) throws {
+        project.songs[0].selectMIDIInput(slot == 0 ? nil : slot, forTrack: 0)
+    }
     func addRecordedClip(_ clip: AudioClip, track: UUID) throws { project.songs[0].tracks[0].clips.append(clip); project.songs[0].duration = max(project.songs[0].duration, clip.startTime + clip.duration) }
     func insertAudioTracks(_ tracks: [Track], song: UUID) throws {
         guard let index = project.songs.firstIndex(where: { $0.id == song }) else { return }
@@ -91,7 +145,7 @@ final class MIDIItemTests: XCTestCase {
             else { project.songs[index].tracks.append(track) }
         }
     }
-    func execute(_ command:ShowCommand,target:UUID?,value:Double) throws {}
+    func execute(_ command:ShowCommand,target:UUID?,value:Double) throws { if command == .editSeek { editPosition = value } }
     func addTrack(id:UUID,name:String,role:TrackRole) throws {}
     func advance(_ elapsed:Double) {}
     func finishCurrentSong(_ enabled:Bool) {}
@@ -224,6 +278,44 @@ extension MIDIItemTests {
         XCTAssertEqual(playback[1].end, 11.5, accuracy: 0.000001)
         XCTAssertEqual(playback[2].end, 12, accuracy: 0.000001)
     }
+    func testLoopRecordingPreservesPassesAndSustainedKeys() throws {
+        let cycle = try XCTUnwrap(RecordingCycle(loop: LoopState(enabled: true, start: 4, end: 6)))
+        XCTAssertNil(RecordingCycle(loop: LoopState(enabled: false, start: 4, end: 6)))
+        XCTAssertNil(RecordingCycle(loop: LoopState(enabled: true, start: 6, end: 4)))
+        XCTAssertNil(RecordingCycle(4...4))
+        XCTAssertEqual(cycle.transportDeviation(from: 5.9, to: 4.05, advance: 0.15, wrapped: true), 0, accuracy: 1e-8)
+        XCTAssertEqual(cycle.transportDeviation(from: 5.9, to: 4.05, advance: 0.10, wrapped: true), 0.05, accuracy: 1e-8)
+        XCTAssertEqual(cycle.transportDeviation(from: 5.9, to: 4.05, advance: 0.15, wrapped: false), 2, accuracy: 1e-8)
+        XCTAssertEqual(cycle.transportDeviation(from: 4.1, to: 4.3, advance: 4.2, wrapped: true), 0, accuracy: 1e-8)
+        XCTAssertEqual(cycle.transportDeviation(from: 4.3, to: 5.6, advance: 0.1, wrapped: false), 1.2, accuracy: 1e-8)
+        XCTAssertEqual(cycle.pass(start: 5, elapsed: 1).position, 4)
+        XCTAssertEqual(cycle.pass(start: 5, elapsed: 3).index, 2)
+        let captured = 5.125
+        let last = cycle.pass(start: 5, elapsed: captured)
+        XCTAssertEqual(last.index, 3)
+        XCTAssertEqual(last.position, 4.125)
+        let segments = (0...last.index).map { cycle.segment(start: 5, index: $0) }
+        XCTAssertEqual(segments.map(\.offset), [0,1,3,5])
+        XCTAssertEqual(segments.map { min($0.limit,captured-$0.offset) }, [1,2,2,0.125])
+
+        let song = Project.empty(name: "Loop recording").songs[0], track = UUID()
+        var first = MIDIRecordingTake(track: track, song: song, startTime: 5)
+        first.receive(source: 1, status: 0x92, number: 60, value: 87, position: 5.5)
+        first.receive(source: 1, status: 0xb2, number: 64, value: 127, position: 5.7)
+        first.receive(source: 1, status: 0x82, number: 60, value: 0, position: 5.8)
+        var second = MIDIRecordingTake(track: track, song: song, startTime: 4)
+        first.continueHeldNotes(into: &second)
+        let a = try XCTUnwrap(first.finish(at: 6))
+        XCTAssertEqual(second.previewHeld.first?.start, 4)
+        second.receive(source: 1, status: 0xb2, number: 64, value: 0, position: 4.25)
+        let b = try XCTUnwrap(second.finish(at: 4.5))
+        XCTAssertNotEqual(a.id, b.id)
+        XCTAssertNotEqual(a.midi?.notes.first?.id, b.midi?.notes.first?.id)
+        XCTAssertEqual(b.midi?.notes.first?.velocity, 87)
+        XCTAssertEqual(b.midi?.notes.first?.channel, 3)
+        XCTAssertEqual(song.midiPlaybackNotes(in: b).first?.end ?? 0, 4.25, accuracy: 0.000001)
+    }
+
     func testRecordingSustainRetriggerAllNotesOffAndEmptyTake() throws {
         let song = Project.empty(name: "Capture").songs[0]
         var empty = MIDIRecordingTake(track: UUID(), song: song, startTime: 0)
@@ -264,6 +356,7 @@ extension MIDIItemTests {
         let track = Track(id: UUID(), name: "MIDI", role: .keys)
         project.songs[0].tracks = [track]
         let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)
+        show.preferredInstrumentMIDIInput = { 1 }
         XCTAssertEqual(track.recordingMode, .stereo)
         show.setRecordingChannels(track.id, channel: TrackRecordingMode.midi.rawValue)
         XCTAssertEqual(show.current?.tracks[0].recordingMode, .midi)
@@ -305,9 +398,11 @@ extension MIDIItemTests {
     @MainActor func testCreateEditUndoRedoEncryptedSaveResizeAndSplit() throws {
         let executor=MIDIEditExecutor()
         var project=Project.empty(name:"MIDI")
+    var editPosition: Double = 0
         let track=Track(id:UUID(),name:"Piano",role:.keys);project.songs[0].tracks=[track]
         let show=try ShowController(executor:executor,persistence:MemoryProjectStore(),initialProject:project)
         let id=try XCTUnwrap(show.addMIDIItem(track:track.id,start:2,duration:2))
+        XCTAssertEqual(show.snapshot.transport.editPosition,4)
         var midi=MIDIItem(notes:[MIDINote(start:0,length:2,pitch:60)],sourceBPM:120)
         show.setMIDIItem(id,midi:midi)
         XCTAssertEqual(show.current?.tracks[0].clips[0].midi,midi)
@@ -318,11 +413,56 @@ extension MIDIItemTests {
         let saved=try ProjectDocumentCodec.encode(show.snapshot.project)
         XCTAssertEqual(try ProjectDocumentCodec.decode(saved),show.snapshot.project)
         show.resizeItem(id,start:2.5,end:5)
-        let trimmed=try XCTUnwrap(show.current?.tracks[0].clips[0]);XCTAssertNil(trimmed.loopLength);XCTAssertEqual(trimmed.sourceOffset,0.5)
+        let trimmed=try XCTUnwrap(show.current?.tracks[0].clips[0]);XCTAssertEqual(trimmed.loopLength,4);XCTAssertEqual(trimmed.sourceOffset,0.5)
         show.resizeItem(id,start:1,end:5)
-        let extended=try XCTUnwrap(show.current?.tracks[0].clips[0]);XCTAssertEqual(extended.midiPlaybackNotes().first?.start,2)
+        let extended=try XCTUnwrap(show.current?.tracks[0].clips[0]);XCTAssertEqual(extended.midiPlaybackNotes().map(\.start),[1,2]);XCTAssertEqual(extended.midi,midi)
         show.splitItems([id],at:3)
         XCTAssertEqual(show.current?.tracks[0].clips.count,2);XCTAssertTrue(show.current!.tracks[0].clips.allSatisfy{$0.midi != nil})
         show.canExecute={false};XCTAssertNil(show.addMIDIItem(track:track.id))
+    }
+    func testTimelineMIDIExtensionLoopsOriginalNotesBothDirections() throws {
+        let midi = MIDIItem(notes: [MIDINote(start: 0, length: 1, pitch: 60), MIDINote(start: 2, length: 1, pitch: 67)], sourceBPM: 120)
+        let original = AudioClip(id: UUID(), name: "Pattern", startTime: 10, duration: 2, midi: midi)
+        let right = original.resized(start: 10, end: 16)
+        XCTAssertEqual(right.loopLength, 2); XCTAssertEqual(right.loopStart, 0)
+        XCTAssertEqual(right.midiPlaybackNotes().map(\.start).sorted(), [10,11,12,13,14,15])
+        let left = original.resized(start: 6, end: 12)
+        XCTAssertEqual(left.midiPlaybackNotes().map(\.start).sorted(), [6,7,8,9,10,11])
+        XCTAssertEqual(left.midi, midi); XCTAssertEqual(right.midi, midi)
+        XCTAssertEqual(left.resized(start: 10, end: 12).midiPlaybackNotes(), original.midiPlaybackNotes())
+    }
+}
+
+extension MIDIItemTests {
+    func testMIDIExportRoundTripRetainsTrimRateChannelsAndMutedNotes() throws {
+        var clip = AudioClip(id: UUID(), name: "Teclado ç", startTime: 30, duration: 1.5,
+            midi: MIDIItem(notes: [MIDINote(start: 0, length: 4, pitch: 60, velocity: 80, channel: 3),
+                                   MIDINote(start: 4, length: 4, pitch: 64, velocity: 100, channel: 16)]))
+        clip.sourceOffset = 1; clip.playbackRate = 2; clip.muted = true; clip.gain = 0
+        let file = try StandardMIDIFileImport.read(MIDIItemExport.data(for: clip))
+        let notes = file.tracks.flatMap(\.notes)
+        XCTAssertEqual(notes.count, 2)
+        XCTAssertEqual(notes.map(\.channel), [3, 16])
+        XCTAssertEqual(notes.map(\.velocity), [80, 100])
+        XCTAssertEqual(file.seconds(atBeat: notes[0].start), 0, accuracy: 0.001)
+        XCTAssertEqual(file.seconds(atBeat: notes[0].end), 0.5, accuracy: 0.001)
+        XCTAssertEqual(file.seconds(atBeat: notes[1].start), 0.5, accuracy: 0.001)
+        XCTAssertEqual(file.seconds(atBeat: notes[1].end), 1.5, accuracy: 0.001)
+    }
+    func testMIDIExportRepeatsAndEmptyItemAreReadable() throws {
+        var clip = AudioClip(id: UUID(), name: "Loop", startTime: 10, duration: 3,
+            midi: MIDIItem(notes: [MIDINote(start: 0, length: 1, pitch: 60)]))
+        clip.loopLength = 1
+        let file = try StandardMIDIFileImport.read(MIDIItemExport.data(for: clip))
+        XCTAssertEqual(file.tracks.flatMap(\.notes).count, 3)
+        clip.midi?.notes = []
+        XCTAssertNoThrow(try StandardMIDIFileImport.read(MIDIItemExport.data(for: clip)))
+    }
+    func testRecordingNamesStartWithPlainTrackNameAndSkipUsedNames() {
+        var names = RecordingNames(directory: nil, clips: [AudioClip(id: UUID(), name: "Piano - 001", startTime: 0, duration: 1)])
+        XCTAssertEqual(names.allocate(track: "Piano"), "Piano")
+        XCTAssertEqual(names.allocate(track: "Piano"), "Piano - 002")
+        XCTAssertEqual(names.allocate(track: "PIANO"), "PIANO - 003")
+        XCTAssertEqual(names.allocate(track: "Baixo"), "Baixo")
     }
 }

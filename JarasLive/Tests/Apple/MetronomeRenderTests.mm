@@ -1,6 +1,7 @@
 #import "../../Apple/Bridge/JarasTimecode.mm"
 #include <cassert>
 #include <iostream>
+#include <thread>
 
 static std::vector<float> render(MetronomeSignal& signal, double rate, double seconds) {
     std::vector<float> result(size_t(rate*seconds));
@@ -20,6 +21,75 @@ static std::vector<size_t> onsets(const std::vector<float>& samples) {
     return result;
 }
 int main() {
+    @autoreleasepool {
+        JarasPreparedMetronomeProgram *prepared=nil;
+        std::thread worker([&] {
+            @autoreleasepool {
+                assert(![NSThread isMainThread]);
+                std::vector<float> samples(128,.25f);
+                NSData *sound=[NSData dataWithBytes:samples.data() length:samples.size()*sizeof(float)];
+                prepared=[JarasMetronomeGenerator prepareSections:@[@{@"start":@0,@"bpm":@120,@"beats":@4,@"unit":@4}]
+                    soundA:sound soundB:sound mode:0];
+            }
+        });
+        worker.join();assert(prepared && prepared->value && prepared->value->a.size()==128);
+        auto *generator=[[JarasMetronomeGenerator alloc] initWithFormat:[[AVAudioFormat alloc] initStandardFormatWithSampleRate:48000 channels:2]];
+        [generator applyPreparedSections:prepared];assert(!prepared->value);
+        for(int i=0;i<1000;++i)[generator setEnabled:i%2];
+        std::cout<<"METRONOME_WORKER_PREPARATION_TRANSFER_AND_ATOMIC_TOGGLE_OK\n";
+    }
+    // Place the first pulse between hardware blocks. The count must use the
+    // configured sounds and gain even if the playback metronome is off.
+    for (double rate : {44100., 48000.}) for (int mode = 0; mode < 3; ++mode) {
+        MetronomeSignal signal(rate);
+        signal.enabled = false;
+        signal.running = false;
+        auto p = std::make_unique<MetronomeProgram>();
+        p->mode = mode;
+        p->a.assign(16, .8f); p->b.assign(16, -.4f);
+        signal.publish(std::move(p));
+        signal.gainA = .25f; signal.gainB = .5f;
+        signal.countInPeriod = .25;
+        signal.countInBeats = 3;
+        signal.countInHost = 1000000 + uint64_t(37 / rate * signal.ticksPerSecond);
+        const auto buffer = render(signal, rate, .9);
+        const auto pulses = onsets(buffer);
+        assert(pulses.size() == 3);
+        for (size_t beat = 0; beat < pulses.size(); ++beat) {
+            assert(pulses[beat] == 37 + size_t(std::llround(beat * .25 * rate)));
+            const float level = mode == 1 || (mode == 0 && beat == 0) ? .2f : -.2f;
+            assert(std::abs(buffer[pulses[beat]] - level) < .00001f);
+        }
+    }
+    {
+        // Repeated UI publications must never make the callback spin waiting
+        // for a stable program, or reclaim samples while a click tail uses them.
+        MetronomeSignal signal(48000);signal.host=1000000;signal.running=true;signal.gain=1;
+        auto preset=[](float level){
+            auto p=std::make_unique<MetronomeProgram>();p->sections={{0,120,4,4}};p->mode=1;
+            p->a.assign(384,level);return p;
+        };
+        signal.publish(preset(.2f));
+        std::atomic<bool> running{true};std::atomic<unsigned> rendered{0};
+        std::thread audio([&]{
+            std::array<float,64> samples{};
+            AudioBufferList list{};list.mNumberBuffers=1;list.mBuffers[0]={1,sizeof(samples),samples.data()};
+            AudioTimeStamp time{};time.mFlags=kAudioTimeStampSampleTimeValid|kAudioTimeStampHostTimeValid;
+            while(running.load(std::memory_order_acquire)){
+                time.mHostTime=1000000+uint64_t(time.mSampleTime/48000*signal.ticksPerSecond);
+                signal.render(&time,unsigned(samples.size()),&list);
+                for(float value:samples)assert(std::isfinite(value)&&value>=-.30001f&&value<=.20001f);
+                time.mSampleTime+=samples.size();rendered.fetch_add(1,std::memory_order_release);
+            }
+        });
+        while(rendered.load(std::memory_order_acquire)<100)std::this_thread::yield();
+        for(unsigned i=0;i<1000;++i)signal.publish(preset(i&1?.2f:-.3f));
+        running.store(false,std::memory_order_release);audio.join();
+        assert(signal.readers.load()==0);
+        signal.clearVoices();signal.publish(preset(.2f));
+        assert(signal.programs.size()==1);
+    }
+    std::cout<<"METRONOME_CONCURRENT_PRESET_PUBLICATION_AND_TAIL_LIFETIME_OK\n";
     for(double rate : {44100.,48000.}) for(int mode=0;mode<3;++mode) {
         MetronomeSignal signal(rate); signal.host=1000000; signal.running=true;
         auto program=std::make_unique<MetronomeProgram>();
@@ -37,6 +107,26 @@ int main() {
         signal.running=false;
         auto silence=render(signal,rate,0.04);
         for(size_t i=size_t(rate*0.01);i<silence.size();++i) assert(silence[i]==0);
+    }
+    for(double rate : {44100.,48000.}) for (bool downbeat : {false,true}) {
+        MetronomeSignal signal(rate);
+        auto program=std::make_unique<MetronomeProgram>();
+        program->sections={{0,120,4,4}};
+        program->a.assign(size_t(rate*0.02),0.5f);
+        program->b.assign(size_t(rate*0.02),-0.5f);
+        signal.publish(std::move(program));
+        render(signal,rate,0.01);
+        // Simulate the first callback reaching the route 12 ms after REC onset.
+        signal.configure(downbeat ? 0 : 0.20,1000000,true,0,0,-std::round(.012*rate));
+        const auto received=render(signal,rate,0.60);
+        const auto beats=onsets(received);
+        assert(beats.size()==(downbeat ? 2u : 1u));
+        if (downbeat) {
+            assert(beats[0]==0 && received[beats[0]]>0);
+            assert(std::abs(double(beats[1])/rate-.488)<2/rate);
+        } else {
+            assert(std::abs(double(beats[0])/rate-.288)<2/rate);
+        }
     }
     for(double rate : {44100.,48000.}) {
         MetronomeSignal signal(rate); signal.host=1000000; signal.running=true; signal.loopStart=0; signal.loopEnd=1;

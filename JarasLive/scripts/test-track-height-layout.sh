@@ -8,12 +8,16 @@ from pathlib import Path
 import sys
 models=Path('Application/Project/ProjectModels.swift').read_text()
 grid=Path('Apple/Shared/TimelineGridView.swift').read_text()
+project_error=next(line for line in models.splitlines() if line.startswith('public enum ProjectError:')) + '\n'
 geometry=models[models.index('public enum TrackHeightGeometry'):models.index('public struct TrackLinkOriginal')]
 lanes=models[models.index('public struct TrackLanes'):models.index('public enum TrackKind')]
 lanes=lanes.replace('public ', '').replace('init(track: Track) {', 'init(track: Track) { LaneBuildCounter.count += 1')
 cache=grid[grid.index('@MainActor private final class TrackLayoutCache'):grid.index('@MainActor private final class RegionOverlapCache')]
 row_start=grid.index('@MainActor private struct TrackRowLayout')
 rows=grid[row_start:grid.index('private struct TimelineHeader:', row_start)]
+start=grid.index('                                        let heightRatio = slot.height')
+end=grid.index('                                            let silenced',start)
+mixer='\n@MainActor private func retainedMixerHeights(_ rows: TrackRowLayout, index: Int, slotHeight: CGFloat) -> (CGFloat, CGFloat) {\n'+grid[start:end].replace('slot.height','slotHeight')+'\nreturn (audioHeight, envelopeHeight)\n}\n'
 stubs='''import SwiftUI
 struct TrackAutomation {
  var enabled = true
@@ -22,17 +26,21 @@ struct TrackAutomation {
  var visibleEnvelopes: [Envelope] { !enabled || lanesVisible == false ? [] : envelopes.filter(\\.visible) }
  struct Envelope { var visible = true }
 }
-struct Track { var automation: TrackAutomation? = nil; var id = UUID(); var heightScale: Double? = nil; var clips: [AudioClip] = [] }
+enum TrackKind { case standard, programChange, teleprompt, teleprompt2, click; var isTeleprompter: Bool { self == .teleprompt || self == .teleprompt2 } }
+enum StemLayoutPreferences { static let stacksByDefault = false }
+struct Track { var stackedStems: Bool? = nil; var usesStackedStems: Bool { stackedStems ?? StemLayoutPreferences.stacksByDefault }; var kind: TrackKind = .standard; var allowsCompactMixerHeight: Bool { kind == .programChange || kind == .click }; var programChangeLaneCount = 1; var automation: TrackAutomation? = nil; var id = UUID(); var heightScale: Double? = nil; var clips: [AudioClip] = [] }
 struct AudioClip: Equatable { var id = UUID(); var startTime: Double; var duration: Double; var recordingLane: Int? = nil }
 struct Part: Equatable { var id = UUID(); var parentRegionID: UUID? = nil; var startTime: Double; var endTime: Double }
-struct TimelineRenderKey: Equatable { let revision: Int }
+struct TimelineRenderKey: Equatable { let revision: Int; var recordingRevision: Int = 0 }
 enum LaneBuildCounter { static var count = 0 }
 final class RecordingLaneLayout {
+ struct Item { var track: UUID; var clip: AudioClip }
+ var items: [UUID: Item] = [:]
  static let shared = RecordingLaneLayout(); var counts: [UUID:Int] = [:]
  func count(for id: UUID, existing: Int) -> Int { max(existing, counts[id] ?? 1) }
 }
 '''
-Path(sys.argv[1]).write_text(stubs+geometry+lanes+cache+rows+Path('Application/Project/TeleprompterSettings.swift').read_text()+Path('Apple/Shared/DAWRemoteProtocol.swift').read_text()+'\n'+Path('Tests/Apple/TrackHeightLayoutTests.swift').read_text())
+Path(sys.argv[1]).write_text(stubs+project_error+geometry+lanes+cache+rows+mixer+Path('Application/Project/TeleprompterSettings.swift').read_text()+Path('Apple/Shared/DAWRemoteProtocol.swift').read_text()+'\n'+Path('Tests/Apple/TrackHeightLayoutTests.swift').read_text())
 PY
-swiftc -O -swift-version 5 "$test_dir/main.swift" -o "$test_dir/test"
+swiftc -Onone -g -swift-version 5 Application/Project/OutputPatch.swift "$test_dir/main.swift" -o "$test_dir/test"
 "$test_dir/test"

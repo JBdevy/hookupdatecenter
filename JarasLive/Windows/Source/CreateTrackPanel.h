@@ -1,14 +1,19 @@
 #pragma once
+#include "Localization.h"
 #include "Session.h"
 #include "ModalSheet.h"
+#include "TrackTree.h"
 namespace catlive {
 class CreateTrackPanel final : public Component {
   public:
-    CreateTrackPanel(Session &owner, std::function<void(String)> failure)
-        : session(owner), error(std::move(failure)) {
+    CreateTrackPanel(Session &owner, std::function<void(String)> failure, ID after = {})
+        : session(owner), error(std::move(failure)), afterTrack(std::move(after)) {
+        type.setComponentID("createTrackType");
+        confirm.setComponentID("createTrackConfirm");
+        name.setComponentID("createTrackName");
         addAndMakeVisible(type);
         type.addItemList({String::fromUTF8("Padrão"), "Timecode", "Teleprompter 1",
-                          "Teleprompter 2", "Cifras", "Click"},
+                          "Teleprompter 2", "Cifras", "Metronome", "Program Change"},
                          1);
         type.setSelectedId(1, dontSendNotification);
         type.onChange = [this] { update(); };
@@ -23,11 +28,8 @@ class CreateTrackPanel final : public Component {
         count.setText("1");
         count.setJustification(Justification::centredRight);
         count.onReturnKey = [this] { create(); };
-        addAndMakeVisible(sequential);
-        sequential.setButtonText("Sequencial");
         if (auto *device = session.audio.devices.getCurrentAudioDevice())
             inputChannels = device->getInputChannelNames().size();
-        sequential.setEnabled(inputChannels > 0);
         addAndMakeVisible(cancel);
         addAndMakeVisible(confirm);
         cancel.onClick = [this] { ModalSheet::dismiss(*this); };
@@ -40,9 +42,9 @@ class CreateTrackPanel final : public Component {
         g.fillAll(theme::panel);
         g.setColour(Colours::white);
         g.setFont(theme::font(13));
-        g.drawText("Tipo", 28, 16, 36, 26, Justification::centredLeft);
+        g.drawText(localization::translate("Tipo"), 28, 16, 36, 26, Justification::centredLeft);
         if (type.getSelectedId() == 1)
-            g.drawText("Quantidade", 190, 100, 82, 26, Justification::centredLeft);
+            g.drawText(localization::translate("Quantidade"), 190, 100, 82, 26, Justification::centredLeft);
         g.setColour(unavailable ? theme::yellow : theme::secondary);
         g.setFont(theme::font(11));
         g.drawFittedText(message, 28, 140, getWidth() - 56, 44, Justification::centredLeft, 3);
@@ -50,7 +52,6 @@ class CreateTrackPanel final : public Component {
     void resized() override {
         type.setBounds(64, 16, 140, 26);
         name.setBounds(28, 58, getWidth() - 56, 27);
-        sequential.setBounds(25, 100, 154, 26);
         count.setBounds(getWidth() - 90, 100, 62, 26);
         cancel.setBounds(28, getHeight() - 58, 82, 40);
         confirm.setBounds(getWidth() - 84, getHeight() - 58, 56, 40);
@@ -66,18 +67,18 @@ class CreateTrackPanel final : public Component {
 
   private:
     Session &session;
+    ID afterTrack;
     std::function<void(String)> error;
     ComboBox type;
     TextEditor name, count;
-    ToggleButton sequential;
-    TextButton cancel{"Cancelar"}, confirm{"Criar"};
+    TextButton cancel{localization::translate("Cancelar")}, confirm{localization::translate("Criar")};
     int inputChannels = 0;
     bool unavailable = false;
     String message;
     std::string role() const {
         const char *roles[]{"other",       "timecode", "teleprompt",
-                            "teleprompt2", "chords",   "generatedClick"};
-        return roles[jlimit(0, 5, type.getSelectedId() - 1)];
+                            "teleprompt2", "chords",   "generatedClick", "programChange"};
+        return roles[jlimit(0, 6, type.getSelectedId() - 1)];
     }
     void update() {
         const bool standard = type.getSelectedId() == 1;
@@ -89,7 +90,6 @@ class CreateTrackPanel final : public Component {
                         unavailable = true;
         name.setVisible(standard);
         count.setVisible(standard);
-        sequential.setVisible(standard);
         confirm.setEnabled(!unavailable);
         message = unavailable ? String::fromUTF8("Já existe uma pista deste tipo no projeto.")
                   : !standard ? type.getText()
@@ -113,30 +113,30 @@ class CreateTrackPanel final : public Component {
             session.edit([&](jaras::Project &project) {
                 for (auto &song : project.songs)
                     if (song.id == songID) {
-                        if (song.tracks.size() + quantity > 512)
-                            throw std::runtime_error("Track limit reached.");
+                        auto anchor = afterTrack;
                         for (int i = 0; i < quantity; ++i) {
                             jaras::Track track;
                             track.id = uuid();
                             track.role.id = kind;
+                            if (kind == "other") {
+                                track.color = 0x828282;
+                                track.instrumentIcon = "png:Other/waveform";
+                            }
                             track.name =
                                 kind == "other"
                                     ? utf8(label + (quantity > 1 ? " " + String(i + 1) : String()))
-                                    : jaras::fixedTrackName(track.role);
+                                    : kind == "generatedClick" ? "Metronome" : jaras::fixedTrackName(track.role);
                             if (kind == "other" && inputChannels > 0) {
-                                if (sequential.getToggleState()) {
-                                    if (i < inputChannels) {
-                                        track.inputPatch = jaras::OutputPatch{i + 1, 1};
-                                        track.recordingChannels = 1;
-                                    }
-                                } else
-                                    track.inputPatch =
-                                        jaras::OutputPatch{1, std::min(2, inputChannels)};
+                                track.inputPatch = jaras::OutputPatch{1, std::min(2, inputChannels)};
                             }
-                            if (kind == "timecode")
+                            if (kind == "programChange") { track.midiInput=1; track.midiOutput=1; track.patch=jaras::OutputPatch{-1,2}; track.color=0x91a8ff; }
+                            if (kind == "timecode") {
                                 track.timecode = jaras::TimecodeSettings{};
+                                track.patch = jaras::OutputPatch{-1, 2};
+                            }
                             if (kind == "generatedClick") {
                                 track.color = 0xffff00;
+                                track.instrumentIcon = "png:Other/metronome";
                                 for (const auto &region : song.parts)
                                     if (!region.parentRegionID) {
                                         jaras::AudioClip clip;
@@ -148,7 +148,10 @@ class CreateTrackPanel final : public Component {
                                         track.clips.push_back(clip);
                                     }
                             }
-                            song.tracks.push_back(std::move(track));
+                            if (kind == "other") {
+                                const auto next = track.id;
+                                trackTree::insertAfter(song, std::move(track), anchor); anchor = next;
+                            } else song.tracks.push_back(std::move(track));
                         }
                     }
             });

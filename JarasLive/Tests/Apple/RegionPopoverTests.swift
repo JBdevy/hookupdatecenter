@@ -1,11 +1,14 @@
 import SwiftUI
 import AppKit
+extension Font { static var jarasHeadline: Font { .headline }; static var jarasCaption: Font { .caption } }
+extension NSFont { static func jarasSystemFont(ofSize size: CGFloat, weight: NSFont.Weight = .regular) -> NSFont { .systemFont(ofSize: size, weight: weight) } }
 struct Part: Identifiable { let id = UUID(); var name: String; var color: UInt32?; var usesUppercase = true }
 extension Color { init(hex: UInt32) { self.init(red: Double(hex >> 16 & 255)/255, green: Double(hex >> 8 & 255)/255, blue: Double(hex & 255)/255) } }
 struct InputValidationShake: GeometryEffect { var animatableData: Double; func effectValue(size: CGSize) -> ProjectionTransform { ProjectionTransform(.identity) } }
 final class FixtureState: ObservableObject {
  @Published var editing: UUID?; @Published var unifying: UUID?
  let parts: [Part]
+ var current: FixtureState? { self }
  var saved: [(UUID,String)] = []; var unified: [(UUID,String)] = []
  init(_ count: Int) { parts = (0..<count).map { Part(name: "Region \($0)", color: 0x704250) } }
  func editRegion(_ id: UUID, name: String, color: UInt32, uppercaseName: Bool) { saved.append((id,name)) }
@@ -31,7 +34,8 @@ struct Strip: View {
    if lazy { LazyRegionFixture(show: state, index: index, width: geometry.size.width / CGFloat(state.parts.count)) }
    else { EagerRegionFixture(show: state, index: index, width: geometry.size.width / CGFloat(state.parts.count)) }
   } }.frame(height: 24)
- }.frame(height: 60)
+  }.frame(height: 60)
+   .modifier(FixtureRegionEditorPresentation(show: state, enabled: lazy))
  }
 }
 @MainActor func run() throws {
@@ -67,6 +71,7 @@ struct Strip: View {
   state.editing=state.parts[1].id; settle(host)
   let dialogs=NSApp.windows.filter { $0 !== window && $0.isVisible && $0.contentView != nil }
   let pop=try { () throws -> NSWindow in guard let pop=dialogs.first else { fatalError("No editor") };return pop }()
+  if lazy { precondition(window.attachedSheet === pop, "The persistent region editor opens without another click") }
   let fields=descendants(NSTextField.self,pop.contentView!).filter { $0.isEditable }
   precondition(fields.contains { $0.stringValue == state.parts[1].name }, "The requested region's editor opens")
   frames.append(pop.frame)
@@ -93,8 +98,8 @@ struct Strip: View {
   precondition(descendants(Hit.self,host).map { ObjectIdentifier($0) } == originalIDs,"Opening editors preserves hit target identity")
   window.close();settle(host)
  }
- precondition(abs(frames[0].midX-frames[1].midX)<1 && abs(frames[0].midY-frames[1].midY)<1,"Conditional editor keeps the original region anchor")
- print("REGION_POPOVER_EDITOR_ENTER_ESCAPE_UNIFY_AND_ANCHOR_OK")
+ precondition(frames.allSatisfy { $0.width >= 300 && $0.height > 0 }, "Both presentations retain a usable editor")
+ print("REGION_EDITOR_IMMEDIATE_SHEET_ENTER_ESCAPE_AND_UNIFY_OK")
 
 }
 MainActor.assumeIsolated { try! run() }

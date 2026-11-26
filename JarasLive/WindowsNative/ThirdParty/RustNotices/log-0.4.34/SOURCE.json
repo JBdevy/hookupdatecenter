@@ -1,0 +1,7 @@
+﻿{
+    "license":  "MIT OR Apache-2.0",
+    "source":  "registry+https://github.com/rust-lang/crates.io-index",
+    "name":  "log",
+    "version":  "0.4.34",
+    "repository":  "https://github.com/rust-lang/log"
+}

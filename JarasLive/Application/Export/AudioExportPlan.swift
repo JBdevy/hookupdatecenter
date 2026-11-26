@@ -6,12 +6,39 @@ public enum AudioExportFormat: String, CaseIterable, Sendable { case wav = "WAV"
 public struct AudioExportEncoding: Sendable {
     public var format: AudioExportFormat = .wav
     public var bitDepth = 24
+    public var floatingPoint = false
     /// 0 preserves each exported item's source channel count; 1/2 force mono/stereo.
     public var channels = 2
     public var bitrate = 320
     public var sampleRate = 48000.0
-    public init(format: AudioExportFormat = .wav, bitDepth: Int = 24, channels: Int = 2, bitrate: Int = 320, sampleRate: Double = 48000) {
-        self.format = format; self.bitDepth = bitDepth; self.channels = channels; self.bitrate = bitrate; self.sampleRate = sampleRate
+    public init(format: AudioExportFormat = .wav, bitDepth: Int = 24, channels: Int = 2, bitrate: Int = 320, sampleRate: Double = 48000, floatingPoint: Bool = false) {
+        self.floatingPoint = floatingPoint; self.format = format; self.bitDepth = bitDepth; self.channels = channels; self.bitrate = bitrate; self.sampleRate = sampleRate
+    }
+}
+public enum AudioItemExportProcessing: String, Sendable {
+    case pre = "Pre-Processing", post = "Post-Processing"
+    /// Preserve source selection, trim, loops and tempo; remove live mix/FX on a render copy.
+    public func song(_ source: Song) -> Song {
+        guard self == .pre else { return source }
+        var song = source
+        for index in song.tracks.indices {
+            song.tracks[index].volume = 1; song.tracks[index].pan = 0
+            song.tracks[index].mute = false; song.tracks[index].solo = false
+            song.tracks[index].phaseInverted = nil; song.tracks[index].fx = nil
+            song.tracks[index].automation = nil
+            for item in song.tracks[index].clips.indices {
+                song.tracks[index].clips[item].gain = nil; song.tracks[index].clips[item].pan = nil
+                song.tracks[index].clips[item].muted = false; song.tracks[index].clips[item].phaseInverted = nil
+                song.tracks[index].clips[item].normalizationGain = nil
+                song.tracks[index].clips[item].fadeIn = nil; song.tracks[index].clips[item].fadeOut = nil
+                song.tracks[index].clips[item].fadeInCurve = nil; song.tracks[index].clips[item].fadeInSCurve = nil
+                song.tracks[index].clips[item].fadeOutCurve = nil; song.tracks[index].clips[item].fadeOutSCurve = nil
+                song.tracks[index].clips[item].fadeTimelineStart = nil; song.tracks[index].clips[item].fadeTimelineDuration = nil
+                song.tracks[index].clips[item].fx = nil; song.tracks[index].clips[item].fxBypassed = nil
+                song.tracks[index].clips[item].automation = nil; song.tracks[index].clips[item].channelMode = nil
+            }
+        }
+        return song
     }
 }
 public enum AudioExportSource: String, CaseIterable, Sendable { case master = "Master", tracks = "Tracks", masterAndTracks = "Master + Tracks", stems = "Stems" }
@@ -24,6 +51,7 @@ public struct AudioExportJob: Identifiable, Equatable, Sendable {
     public var track: UUID?
     public var clip: UUID?
     public var output = 0
+    public var fileNameStem: String? = nil
     /// A drawer song starts a fresh musical entry; preceding overlapping stems
     /// are excluded, while exports of its parent retain the complete mix.
     public var minimumClipStart: Double? = nil
@@ -44,9 +72,9 @@ public struct AudioExportPlan: Sendable {
     public static func combining(primary: Self, secondary: Self) -> Self {
         var result = primary.jobs, names = Set(primary.jobs.map { $0.fileName.lowercased() })
         for var job in secondary.jobs {
-            let base = (job.fileName as NSString).deletingPathExtension, ext = (job.fileName as NSString).pathExtension
-            var suffix = 2
-            while !names.insert(job.fileName.lowercased()).inserted { job.fileName = "\(base) (\(suffix)).\(ext)"; suffix += 1 }
+            let base = job.fileNameStem ?? (job.fileName as NSString).deletingPathExtension, ext = (job.fileName as NSString).pathExtension
+            var suffix = 1
+            while !names.insert(job.fileName.lowercased()).inserted { job.fileName = "\(base) - \(String(format: "%03d", suffix)).\(ext)"; suffix += 1 }
             job.id = "secondary-" + job.id; job.output = 1
             result.append(job)
         }
@@ -76,14 +104,14 @@ public struct AudioExportPlan: Sendable {
             if track == nil, source == .masterAndTracks, stem != "Master", !stem.hasSuffix(" Master") { stem += " Master" }
             // Leave room for a duplicate suffix within the filesystem byte limit.
             while stem.utf8.count > 220 { stem.removeLast() }
-            var name = stem + "." + format.fileExtension, suffix = 2
-            while !used.insert(name.lowercased()).inserted { name = "\(stem) (\(suffix))." + format.fileExtension; suffix += 1 }
+            var name = stem + "." + format.fileExtension, suffix = 1
+            while !used.insert(name.lowercased()).inserted { name = "\(stem) - \(String(format: "%03d", suffix))." + format.fileExtension; suffix += 1 }
             jobs.append(AudioExportJob(id: "\(jobs.count)", fileName: name, start: start, end: end, track: track?.id, clip: clip?.id,
-                                       minimumClipStart: region?.parentRegionID == nil ? nil : region?.startTime))
+                                       fileNameStem: stem, minimumClipStart: region?.parentRegionID == nil ? nil : region?.startTime))
         }
         if source == .stems {
             for track in song.tracks where track.kind == .standard {
-                for clip in track.clips where selectedClips.contains(clip.id) && (clip.audioFile != nil || track.audioFile != nil) {
+                for clip in track.clips where selectedClips.contains(clip.id) && clip.midi == nil && (clip.audioFile != nil || track.audioFile != nil) {
                     append(track: track, clip: clip, region: song.parts.first { clip.startTime >= $0.startTime && clip.startTime < $0.endTime }, start: clip.startTime, end: clip.startTime + clip.duration)
                 }
             }
@@ -106,4 +134,30 @@ public struct AudioExportPlan: Sendable {
         }
         self.jobs = jobs
     }
+}
+
+/// New takes and frozen items use their own global format preference.
+public struct MediaProcessingFormat: Sendable {
+    public var format: AudioExportFormat
+    public var bitDepth: Int
+    public var bitrate: Int
+    public init(format: AudioExportFormat, bitDepth: Int, bitrate: Int) { self.format = format; self.bitDepth = bitDepth; self.bitrate = bitrate }
+    public static let mp3Bitrates = [128,160,192,224,256,320]
+    public func recordingKey(for track: Track) -> String {
+        switch track.recordingFormat {
+        case "wav": return "wav24pcm"
+        case "wav32": return "wav32"
+        case "mp3": return "mp3-\(bitrate)"
+        default: return recordingKey
+        }
+    }
+    public var recordingDisplayName: String { format.rawValue + (format == .mp3 ? " \(bitrate) kbps" : " \(bitDepth)bit") }
+    public var recordingKey: String { format == .mp3 ? "mp3-\(bitrate)" : format.fileExtension + "\(bitDepth)pcm" }
+    public static func load(_ scope: String, preferences: UserDefaults = .standard) -> Self {
+        let root = "jaras.media." + scope + "."
+        return Self(format: AudioExportFormat(rawValue: preferences.string(forKey: root + "format") ?? "WAV") ?? .wav,
+                    bitDepth: [16,24,32].contains(preferences.integer(forKey: root + "bits")) ? preferences.integer(forKey: root + "bits") : 24,
+                    bitrate: mp3Bitrates.contains(preferences.integer(forKey: root + "bitrate")) ? preferences.integer(forKey: root + "bitrate") : 320)
+    }
+    public var encoding: AudioExportEncoding { AudioExportEncoding(format: format, bitDepth: bitDepth, bitrate: bitrate) }
 }

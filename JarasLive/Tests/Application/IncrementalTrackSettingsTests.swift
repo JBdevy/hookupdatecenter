@@ -75,6 +75,14 @@ import Combine
         }
         throw ProjectError.invalid("Missing clip")
     }
+    func soloTrackExclusively(_ id: UUID) throws {
+        mixerCommands.append(.solo)
+        if failMixerCommand == .solo { throw ProjectError.invalid("Injected solo failure") }
+        guard let song = project.songs.firstIndex(where: { $0.id == transport.songId }) else { return }
+        for track in project.songs[song].tracks.indices {
+            project.songs[song].tracks[track].solo = project.songs[song].tracks[track].id == id
+        }
+    }
     private func mutate(_ id: UUID,operation: String,edit: (inout Track) -> Void) throws {
         settingsCommands.append(operation)
         if failSettingsCommand == operation || failSettingsCommandAt == settingsCommands.count { throw ProjectError.invalid("Injected settings failure") }
@@ -98,6 +106,7 @@ import Combine
         project.masterColor = color
     }
     func editTrack(_ track: UUID,name: String,color: UInt32) throws { try mutate(track,operation: "details") { $0.name = name; $0.color = color } }
+    func renameTrack(_ track: UUID, name: String) throws { try mutate(track, operation: "rename") { $0.name = name } }
     func editRegion(_ id: UUID,name: String,color: UInt32,uppercaseName: Bool) throws {
         settingsCommands.append("region")
         for song in project.songs.indices {
@@ -111,7 +120,7 @@ import Combine
         guard (0...16).contains(channel) else { throw ProjectError.invalid("Invalid MIDI channel") }
         try mutate(track, operation: "midiChannel") { $0.midiChannel = channel == 0 ? nil : channel }
     }
-    func setMIDIInput(_ track: UUID,slot: Int) throws { try mutate(track,operation: "midi") { $0.midiInput = slot == 0 ? nil : slot } }
+    func setMIDIInput(_ track: UUID,slot: Int) throws { try mutate(track,operation: "midi") { $0.selectMIDIInput(slot == 0 ? nil : slot) } }
     func setRecording(_ track: UUID,input: OutputPatch,format: String) throws { try mutate(track,operation: "recording") { $0.inputPatch = input; $0.recordingFormat = format } }
     func setOutputPatch(track: UUID?,patch: OutputPatch,slot: Int) throws {
         if let track {
@@ -152,6 +161,149 @@ private actor PresentationSaveStore: ProjectPersistence {
 }
 
 final class IncrementalTrackSettingsTests: XCTestCase {
+    @MainActor func testAppendingImportedTracksPreservesLiveTransportAndProjectSession() throws {
+        let (controller, executor) = try show(fixture())
+        let before = controller.snapshot, session = controller.projectSessionID
+        var imported = before.project
+        var track = Track(id: UUID(), name: "Imported", role: .other)
+        track.clips = [AudioClip(id: UUID(), name: "New", startTime: 65, duration: 5,
+                                audioFile: AudioFile(path: "Stems/imported.wav"))]
+        imported.songs[0].tracks.append(track)
+        var updates: [ShowSnapshot] = []
+        controller.audioUpdate = { snapshot, _ in updates.append(snapshot) }
+        try controller.applyImportedProject(imported)
+        XCTAssertEqual(controller.snapshot.transport, before.transport)
+        XCTAssertTrue(controller.snapshot.transport.playing)
+        XCTAssertEqual(controller.projectSessionID, session, "Appending must not enter a new project session")
+        XCTAssertEqual(controller.current?.tracks.last?.id, track.id)
+        XCTAssertEqual(executor.fullEdits, 1)
+        XCTAssertFalse(executor.mixerCommands.contains(.stopAll))
+        XCTAssertEqual(updates.last?.project.songs[0].tracks.last?.id, track.id)
+        XCTAssertTrue(controller.hasUnsavedChanges)
+        controller.undo()
+        XCTAssertEqual(controller.snapshot.project, before.project)
+        XCTAssertEqual(controller.snapshot.transport, before.transport)
+        XCTAssertThrowsError(try controller.applyImportedProject(.empty(name: "Other")))
+        XCTAssertEqual(controller.snapshot.project, before.project)
+    }
+    @MainActor func testMixerSlotCopiesNativeParametersAndBypassWithoutMovingSource() throws {
+        var project = fixture()
+        var sourceFX = NativeFXSettings(); sourceFX.appendNative("EQ"); sourceFX.bands[2].gain = -9
+        sourceFX.setEnabled("EQ", enabled: false)
+        project.songs[0].tracks[1].fx = sourceFX
+        var destination = Track(id: UUID(), name: "Destination", role: .other)
+        var targetFX = NativeFXSettings(); targetFX.appendNative("Delay"); targetFX.delayTime = 1.7
+        destination.fx = targetFX; project.songs[0].tracks.append(destination)
+        let source = project.songs[0].tracks[1].id
+        let (show, executor) = try show(project)
+        let copied = try XCTUnwrap(show.copyFX(from: source, effect: "EQ", to: destination.id, before: "Delay"))
+        XCTAssertNotEqual(copied, "EQ")
+        XCTAssertEqual(show.fxSettings(source), sourceFX)
+        XCTAssertEqual(show.fxSettings(destination.id).effectKeys, [copied, "Delay"])
+        XCTAssertEqual(show.fxSettings(destination.id).settings(for: copied).bands, sourceFX.bands)
+        XCTAssertFalse(show.fxSettings(destination.id).isEnabled(copied))
+        XCTAssertEqual(show.fxSettings(destination.id).delayTime, 1.7)
+        XCTAssertEqual(executor.fullEdits, 0, "Slot copies must preserve live readers")
+        show.undo(); XCTAssertEqual(show.fxSettings(destination.id), targetFX)
+        show.redo(); XCTAssertEqual(show.fxSettings(destination.id).effectKeys, [copied, "Delay"])
+        let sameTrackCopy = try XCTUnwrap(show.copyFX(from: destination.id, effect: copied, to: destination.id, before: nil))
+        XCTAssertNotEqual(sameTrackCopy, copied)
+        XCTAssertEqual(show.fxSettings(destination.id).effectKeys, [copied, "Delay", sameTrackCopy])
+        XCTAssertEqual(show.fxSettings(destination.id).settings(for: sameTrackCopy), show.fxSettings(destination.id).settings(for: copied))
+        show.undo(); XCTAssertEqual(show.fxSettings(destination.id).effectKeys, [copied, "Delay"])
+    }
+    @MainActor func testMixerSlotCopiesLiveExternalLibraryAndControllerStateAndUndoesOnce() throws {
+        var project = fixture()
+        var sourceFX = NativeFXSettings()
+        var kontakt = ExternalPlugin(classID: String(repeating: "A", count: 32), name: "Kontakt", path: "/test/Kontakt.vst3", category: "Instrument")
+        kontakt.componentState = "b2xk"; kontakt.controllerState = "b2xk"; kontakt.bypassed = true
+        sourceFX.externalPlugins = [kontakt]; sourceFX.inserted = [kontakt.effectKey]
+        project.songs[0].tracks[1].fx = sourceFX
+        let destination = Track(id: UUID(), name: "Destination", role: .other)
+        project.songs[0].tracks.append(destination)
+        let source = project.songs[0].tracks[1].id
+        let (show, _) = try show(project)
+        show.prepareForFXChange = { [weak show] track, clip, effects in
+            XCTAssertNil(clip)
+            if track == source && effects.contains(kontakt.effectKey) {
+                _ = try show?.storeCapturedPluginState(source, identifier: kontakt.id,
+                    componentState: "bGlicmFyeS1lZGl0ZWQ=", controllerState: "dWktc3RhdGU=")
+            }
+        }
+        let key = try XCTUnwrap(show.copyFX(from: source, effect: kontakt.effectKey, to: destination.id, before: nil))
+        let plugin = try XCTUnwrap(show.fxSettings(destination.id).externalPlugins?.first)
+        XCTAssertNotEqual(plugin.id, kontakt.id); XCTAssertEqual(key, plugin.effectKey)
+        XCTAssertEqual(plugin.componentState, "bGlicmFyeS1lZGl0ZWQ=")
+        XCTAssertEqual(plugin.controllerState, "dWktc3RhdGU=")
+        XCTAssertTrue(plugin.bypassed); XCTAssertEqual(plugin.path, kontakt.path)
+        XCTAssertEqual(show.fxSettings(source).inserted, [kontakt.effectKey])
+        show.undo(); XCTAssertTrue(show.fxSettings(destination.id).inserted.isEmpty)
+        XCTAssertEqual(show.fxSettings(source).externalPlugins?[0].componentState, plugin.componentState)
+        show.redo(); XCTAssertEqual(show.fxSettings(destination.id).externalPlugins, [plugin])
+        show.prepareForFXChange = { _, _, _ in throw ProjectError.invalid("Capture failed") }
+        XCTAssertNil(show.copyFX(from: source, effect: kontakt.effectKey, to: destination.id, before: key))
+        XCTAssertEqual(show.fxSettings(destination.id).externalPlugins, [plugin])
+    }
+    @MainActor func testMixerFXBatchBypassRemovalAndLivePluginStateUndo() throws {
+        var project = fixture()
+        project.songs[0].tracks.append(Track(id: UUID(), name: "Second", role: .other))
+        project.songs[0].tracks.append(Track(id: UUID(), name: "Outside selection", role: .other))
+        var fx = NativeFXSettings()
+        fx.appendNative("EQ"); fx.bands[1].gain = 7
+        fx.appendNative("Compressor"); fx.threshold = -39
+        let duplicate = fx.appendNative("Compressor")
+        fx.setEnabled(duplicate, enabled: false)
+        var plugin = ExternalPlugin(classID: String(repeating: "A", count: 32), name: "Kontakt", path: "/test/Kontakt.vst3")
+        plugin.componentState = "b2xk"; plugin.controllerState = "b2xk"
+        fx.externalPlugins = [plugin]; fx.inserted.append(plugin.effectKey)
+        for index in 1...3 { project.songs[0].tracks[index].fx = fx }
+        project.masterFX = fx
+        let ids = project.songs[0].tracks.map(\.id)
+        let (controller, executor) = try show(project)
+        controller.setMixerTrackSelection([ids[1], ids[2]], anchor: ids[1])
+        controller.changeMixerFX(ids[1])
+        XCTAssertTrue(controller.fxSettings(ids[1]).allBypassed)
+        XCTAssertTrue(controller.fxSettings(ids[2]).allBypassed)
+        XCTAssertEqual(controller.fxSettings(ids[3]), fx)
+        XCTAssertEqual(controller.fxSettings(nil), fx)
+        XCTAssertEqual(executor.fullEdits, 0)
+        controller.undo()
+        XCTAssertEqual(controller.fxSettings(ids[1]), fx)
+        XCTAssertEqual(controller.fxSettings(ids[2]), fx)
+        controller.redo()
+        XCTAssertTrue(controller.fxSettings(ids[1]).allBypassed)
+        controller.changeMixerFX(ids[1])
+        XCTAssertTrue(controller.fxSettings(ids[1]).inserted.allSatisfy { controller.fxSettings(ids[1]).isEnabled($0) })
+        var captures: [UUID?] = []
+        controller.prepareForFXChange = { [weak controller] track, clip, effects in
+            XCTAssertNil(clip); XCTAssertTrue(effects.contains(plugin.effectKey))
+            captures.append(track)
+            _ = try controller?.storeCapturedPluginState(track, identifier: plugin.id, componentState: "bGlicmFyeS1lZGl0ZWQ=", controllerState: "dWktc3RhdGU=")
+        }
+        controller.changeMixerFX(ids[1], remove: true)
+        XCTAssertEqual(captures, [ids[1], ids[2]])
+        XCTAssertTrue(controller.fxSettings(ids[1]).inserted.isEmpty)
+        XCTAssertTrue(controller.fxSettings(ids[2]).inserted.isEmpty)
+        controller.undo()
+        for id in ids[1...2] {
+            XCTAssertEqual(controller.fxSettings(id).inserted, fx.inserted)
+            XCTAssertEqual(controller.fxSettings(id).bands[1].gain, 7)
+            XCTAssertEqual(controller.fxSettings(id).externalPlugins?[0].componentState, "bGlicmFyeS1lZGl0ZWQ=")
+            XCTAssertEqual(controller.fxSettings(id).externalPlugins?[0].controllerState, "dWktc3RhdGU=")
+        }
+        controller.redo()
+        XCTAssertTrue(controller.fxSettings(ids[1]).inserted.isEmpty)
+        XCTAssertTrue(controller.fxSettings(ids[2]).inserted.isEmpty)
+        captures = []
+        controller.removeFX(ids[3], effect: plugin.effectKey)
+        XCTAssertEqual(captures, [ids[3]])
+        controller.undo()
+        XCTAssertEqual(controller.fxSettings(ids[3]).externalPlugins?[0].componentState, "bGlicmFyeS1lZGl0ZWQ=")
+        controller.prepareForFXChange = { _, _, _ in throw ProjectError.invalid("Capture failed") }
+        let before = controller.fxSettings(ids[3])
+        controller.changeMixerFX(ids[3], remove: true)
+        XCTAssertEqual(controller.fxSettings(ids[3]), before, "Failed capture must leave the plugin installed")
+    }
     @MainActor func testBatchFXInsertionUndoesAndRedoesAllTracksInOneStep() throws {
         var project = fixture()
         project.songs[0].tracks.append(Track(id: UUID(), name: "Second", role: .other))
@@ -415,17 +567,20 @@ final class IncrementalTrackSettingsTests: XCTestCase {
         let (controller, executor) = try show(fixture())
         var changes = 0
         let subscription = controller.projectPresentation.objectWillChange.sink { changes += 1 }
-        defer { subscription.cancel() }
+        var selectionChanges = 0
+        let selectionSubscription = controller.trackSelectionPresentation.objectWillChange.sink { selectionChanges += 1 }
+        defer { subscription.cancel(); selectionSubscription.cancel() }
         executor.transport.position += 1
         for _ in 0..<30 { controller.tick() }
         XCTAssertEqual(changes, 0, "Playback position must not rebuild mixer controls")
         let track = try XCTUnwrap(controller.current?.tracks.last?.id)
         controller.setMixerTrackSelection([track], anchor: track)
-        XCTAssertEqual(changes, 1)
+        XCTAssertEqual(selectionChanges, 1)
         controller.setMixerTrackSelection([track], anchor: track)
-        XCTAssertEqual(changes, 1, "Unchanged selection must not invalidate mixer")
+        XCTAssertEqual(selectionChanges, 1, "Unchanged selection must not invalidate mixer")
+        XCTAssertEqual(changes, 0, "Selection must not republish general project changes")
         controller.sendMixerControl(.volume, target: track, value: 0.5)
-        XCTAssertGreaterThan(changes, 1)
+        XCTAssertGreaterThan(changes, 0)
         let afterVolume = changes
         controller.sendMixerControl(.mute, target: track)
         XCTAssertGreaterThan(changes, afterVolume)
@@ -467,6 +622,39 @@ final class IncrementalTrackSettingsTests: XCTestCase {
         XCTAssertEqual(executor.mixerCommands.count, count, "Clearing an already-clear mixer does nothing")
         XCTAssertEqual(executor.fullEdits, 0); XCTAssertEqual(executor.snapshotReads, 0)
     }
+    @MainActor func testExclusiveSoloTargetsOnlyClickedTrackAndPublishesOneEdit() throws {
+        var project = fixture()
+        var a = Track(id: UUID(), name: "A", role: .keys)
+        var b = Track(id: UUID(), name: "B", role: .keys)
+        let c = Track(id: UUID(), name: "C", role: .keys)
+        a.solo = true; b.solo = true; b.mute = true
+        project.songs[0].tracks = [a, b, c]
+        let (controller, executor) = try show(project)
+        controller.setMixerTrackSelection([b.id, c.id], anchor: b.id)
+        var sound: [UUID: Bool] = [:]
+        controller.audioSolo = { sound[$0] = $1 }
+
+        controller.soloTrackExclusively(c.id)
+        controller.soloTrackExclusively(c.id)
+        controller.soloTrackExclusively(UUID())
+
+        let tracks = try XCTUnwrap(controller.current).tracks
+        XCTAssertEqual(tracks.filter(\.solo).map(\.id), [c.id])
+        XCTAssertTrue(tracks[1].mute)
+        XCTAssertEqual(controller.snapshot.project, executor.project)
+        XCTAssertEqual(sound, [a.id: false, b.id: false, c.id: true])
+        XCTAssertEqual(controller.mixerTrackSelection, [b.id, c.id])
+        XCTAssertEqual(controller.projectRevision, 1)
+        XCTAssertEqual(executor.mixerCommands, [.solo])
+        XCTAssertEqual(executor.fullEdits, 0)
+        XCTAssertEqual(executor.snapshotReads, 0)
+
+        executor.failMixerCommand = .solo
+        controller.soloTrackExclusively(a.id)
+        XCTAssertEqual(controller.current?.tracks, tracks)
+        XCTAssertEqual(controller.projectRevision, 1)
+    }
+
     @MainActor func testSelectedMixerControlsShareStatesAndPreserveUnselectedTracks() throws {
         var project = fixture()
         var a = Track(id: UUID(), name: "A", role: .keys)
@@ -488,7 +676,7 @@ final class IncrementalTrackSettingsTests: XCTestCase {
         controller.sendMixerControl(.mute, target: c.id)
         XCTAssertTrue(controller.current!.tracks.allSatisfy(\.mute))
         XCTAssertEqual(controller.mixerTrackSelection, [a.id,b.id])
-        XCTAssertEqual(revisions.count, 1, "Scalar changes retain the same audio project revision")
+        XCTAssertTrue(revisions.isEmpty, "Scalar controls use direct callbacks without refreshing the complete audio project")
         XCTAssertEqual(executor.fullEdits, 0); XCTAssertEqual(executor.snapshotReads, 0)
     }
     @MainActor func testSelectedVolumePreviewMaintainsRatiosAndSilenceEqualizesWithinGesture() throws {
@@ -589,6 +777,33 @@ final class IncrementalTrackSettingsTests: XCTestCase {
         let data = try JSONEncoder().encode(show.snapshot.project)
         XCTAssertEqual(try JSONDecoder().decode(Project.self, from: data), show.snapshot.project)
     }
+    @MainActor func testInlineTrackRenameUsesOneEditAndPreservesColorAudioAndUndo() throws {
+        var project = fixture()
+        project.songs[0].tracks[1].color = nil
+        let track = project.songs[0].tracks[1]
+        let (show, executor) = try show(project)
+        let transport = show.snapshot.transport
+        var audioUpdates = 0
+        show.audioUpdate = { _, _ in audioUpdates += 1 }
+
+        show.renameMixerTrack(track.id, name: "  Stage Keys  ", project: project.id)
+        show.renameMixerTrack(track.id, name: "Stage Keys", project: project.id)
+        show.renameMixerTrack(track.id, name: " ", project: project.id)
+        show.renameMixerTrack(track.id, name: "Neither", project: UUID())
+
+        var expected = track
+        expected.name = "Stage Keys"
+        XCTAssertEqual(show.current?.tracks[1], expected)
+        XCTAssertEqual(show.snapshot.project, executor.project)
+        XCTAssertEqual(show.snapshot.transport, transport)
+        XCTAssertEqual(executor.settingsCommands, ["rename"])
+        XCTAssertEqual(executor.fullEdits, 0)
+        XCTAssertEqual(executor.snapshotReads, 0)
+        XCTAssertEqual(audioUpdates, 0)
+        show.undo()
+        XCTAssertEqual(show.current?.tracks[1], track)
+    }
+
     @MainActor func testTrackDetailsMIDIRecordingAndRoutingUseIncrementalSettingsWithoutSnapshot() throws {
         let project = fixture(), (show,executor) = try show(project)
         let track = project.songs[0].tracks[1].id, originalClips = project.songs[0].tracks[1].clips
@@ -617,8 +832,10 @@ final class IncrementalTrackSettingsTests: XCTestCase {
         XCTAssertEqual(callbacks,[.midi(track,2),.patch(track,OutputPatch(firstChannel: 5,channelCount: 2),1),.patch(nil,OutputPatch(firstChannel: 7,channelCount: 2),0)])
         XCTAssertEqual(show.snapshot.transport,originalTransport); XCTAssertEqual(show.current?.tracks[1].clips,originalClips)
         XCTAssertEqual(show.snapshot.project,executor.project)
-        XCTAssertEqual(show.current?.tracks[1].name,"Piano"); XCTAssertEqual(show.current?.tracks[1].inputPatch,input)
+        XCTAssertEqual(show.current?.tracks[1].name,"Piano")
+        XCTAssertEqual(show.current?.tracks[1].inputPatch,OutputPatch.none)
         XCTAssertEqual(show.current?.tracks[1].midiInput,2)
+        XCTAssertEqual(show.current?.tracks[1].recordingMode,.midi)
     }
     @MainActor func testBatchRegionColorsPreserveNamesAndTimingWithoutReload() throws {
         var project = fixture()
@@ -729,7 +946,7 @@ final class IncrementalTrackSettingsTests: XCTestCase {
         show.send(.mute,target: track)
         XCTAssertEqual(callbacks,[.volume(track,0.4),.pan(track,1),.mute(track,true),.solo(track,true),.clipMute(clip,true),.volume(nil,0.65),.mute(nil,true),.mute(track,false)])
         XCTAssertEqual(executor.mixerCommands,[.volume,.pan,.mute,.solo,.clipMute,.volume,.mute,.mute])
-        XCTAssertEqual(revisions,Array(repeating: 0,count: 8)); XCTAssertEqual(show.projectRevision,8)
+        XCTAssertTrue(revisions.isEmpty, "The exact scalar callbacks above replace full audio updates"); XCTAssertEqual(show.projectRevision,8)
         XCTAssertEqual(executor.snapshotReads,0); XCTAssertEqual(executor.playbackReads,0); XCTAssertEqual(executor.fullEdits,0)
         XCTAssertEqual(show.snapshot.transport,originalTransport); XCTAssertEqual(show.snapshot.project,executor.project)
         XCTAssertEqual(show.current?.tracks[1].clips[0].waveform,project.songs[0].tracks[1].clips[0].waveform)
@@ -748,7 +965,7 @@ final class IncrementalTrackSettingsTests: XCTestCase {
         XCTAssertNotEqual(show.snapshot.project.masterPhaseInverted, true)
         XCTAssertEqual(show.snapshot.transport, transport)
         XCTAssertEqual(executor.fullEdits, 0); XCTAssertEqual(executor.snapshotReads, 0)
-        XCTAssertEqual(show.projectRevision, 1); XCTAssertEqual(revisions, [0])
+        XCTAssertEqual(show.projectRevision, 1); XCTAssertTrue(revisions.isEmpty, "Phase reaches audio through its direct callback")
         show.undo(); show.undo()
         XCTAssertEqual(show.snapshot.project, project)
         show.redo(); show.redo()
@@ -759,9 +976,21 @@ final class IncrementalTrackSettingsTests: XCTestCase {
         let project = fixture(), (show, executor) = try show(project)
         let clips = project.songs[0].tracks[1].clips
         let ids = Set(clips.map(\.id))
+        for mode in [1, 2, 3, 4] {
+            let fullEdits = executor.fullEdits, reads = executor.snapshotReads
+            XCTAssertTrue(show.convertItems(ids, mode: mode))
+            XCTAssertEqual(executor.fullEdits, fullEdits); XCTAssertEqual(executor.snapshotReads, reads)
+            XCTAssertTrue(show.current!.tracks[1].clips.allSatisfy { $0.channelMode == mode })
+            XCTAssertEqual(show.current!.tracks[0], project.songs[0].tracks[0], "Unselected tracks must not be converted")
+            show.undo(); XCTAssertEqual(show.snapshot.project, project)
+            show.redo(); XCTAssertTrue(show.current!.tracks[1].clips.allSatisfy { $0.channelMode == mode })
+            XCTAssertTrue(show.convertItems(ids, mode: 0))
+            XCTAssertEqual(show.current!.tracks[1].clips, clips)
+        }
+        let fullEdits = executor.fullEdits, reads = executor.snapshotReads
         XCTAssertTrue(show.convertItems(ids, mode: 3))
-        XCTAssertEqual(executor.fullEdits, 0)
-        XCTAssertEqual(executor.snapshotReads, 0)
+        XCTAssertEqual(executor.fullEdits, fullEdits)
+        XCTAssertEqual(executor.snapshotReads, reads)
         var converted = show.current!.tracks[1].clips
         XCTAssertTrue(converted.allSatisfy { $0.channelMode == 3 })
         for index in converted.indices { converted[index].channelMode = nil }
@@ -770,16 +999,22 @@ final class IncrementalTrackSettingsTests: XCTestCase {
         show.redo(); XCTAssertTrue(show.current!.tracks[1].clips.allSatisfy { $0.channelMode == 3 })
         XCTAssertTrue(show.convertItems(ids, mode: 0))
         XCTAssertEqual(show.current!.tracks[1].clips, clips)
+        XCTAssertTrue(show.convertItems(ids, mode: 4))
+        XCTAssertTrue(show.current!.tracks[1].clips.allSatisfy { $0.channelMode == 4 })
+        try show.snapshot.project.validate()
+        show.undo(); XCTAssertEqual(show.current!.tracks[1].clips, clips)
+        show.redo(); XCTAssertTrue(show.current!.tracks[1].clips.allSatisfy { $0.channelMode == 4 })
+        XCTAssertTrue(show.convertItems(ids, mode: 0))
+        XCTAssertEqual(show.current!.tracks[1].clips, clips)
     }
     @MainActor func testNormalizationCommitsScalarBatchOnceAndUndoRestoresWholeBatch() throws {
         let project = fixture(), (show,executor) = try show(project)
         let clips = project.songs[0].tracks[1].clips
-        let capped = pow(10,24.0 / 20)
         var gains: [IncrementalSettingsExecutor.GainCommand] = [], revisions: [UInt64] = []
         show.audioItemNormalization = { gains.append(.init(item: $0,value: $1)) }
         show.audioUpdate = { _,revision in revisions.append(revision) }
         XCTAssertTrue(show.normalizeItems([clips[0].id: 100,clips[1].id: 0.25],project: project.id))
-        let expected: [IncrementalSettingsExecutor.GainCommand] = [.init(item: clips[0].id,value: capped),.init(item: clips[1].id,value: 0.25)]
+        let expected: [IncrementalSettingsExecutor.GainCommand] = [.init(item: clips[0].id,value: 100),.init(item: clips[1].id,value: 0.25)]
         XCTAssertEqual(executor.gainCommands,expected); XCTAssertEqual(gains,expected)
         XCTAssertEqual(executor.snapshotReads,0); XCTAssertEqual(executor.playbackReads,0); XCTAssertEqual(executor.fullEdits,0)
         XCTAssertEqual(revisions,[0]); XCTAssertEqual(show.projectRevision,1); XCTAssertTrue(show.canUndo)
@@ -789,7 +1024,7 @@ final class IncrementalTrackSettingsTests: XCTestCase {
         show.undo()
         XCTAssertEqual(show.snapshot.project,project); XCTAssertFalse(show.canUndo); XCTAssertTrue(show.canRedo)
         show.redo()
-        XCTAssertEqual(show.current?.tracks[1].clips.map { $0.normalizationGain ?? 1 },[capped,0.25])
+        XCTAssertEqual(show.current?.tracks[1].clips.map { $0.normalizationGain ?? 1 },[100,0.25])
         XCTAssertEqual(executor.fullEdits,2)
     }
     @MainActor func testFailedNormalizationRollsBackAppliedScalarsWithoutPublishingOrUndo() throws {
@@ -816,6 +1051,37 @@ final class IncrementalTrackSettingsTests: XCTestCase {
         XCTAssertFalse(show.hasUnsavedChanges); XCTAssertFalse(show.canUndo); XCTAssertEqual(show.projectRevision,0)
         XCTAssertEqual(executor.snapshotReads,0); XCTAssertEqual(executor.fullEdits,0)
     }
+    @MainActor func testPreviewActionTogglesPresentationWithoutTouchingAudioOrTransport() throws {
+        let (show, executor) = try show(fixture())
+        let transport = show.snapshot.transport
+        var active = false, calls = 0
+        show.togglePreview = { active.toggle(); calls += 1 }
+        show.performAction(.togglePreview); XCTAssertTrue(active)
+        show.performAction(.togglePreview); XCTAssertFalse(active)
+        XCTAssertEqual(calls, 2); XCTAssertEqual(show.snapshot.transport, transport)
+        XCTAssertEqual(executor.snapshotReads, 0); XCTAssertEqual(executor.fullEdits, 0)
+        XCTAssertTrue(executor.mixerCommands.isEmpty); XCTAssertFalse(show.hasUnsavedChanges)
+        show.canExecute = { false }; show.performAction(.togglePreview)
+        XCTAssertEqual(calls, 2, "Preview mapping must respect the active session's access gate")
+    }
+    @MainActor func testMixerClickRevealsClickedTrackIndependentlyOfRangeAnchor() throws {
+        let project = fixture(), (show, executor) = try show(project)
+        let first = project.songs[0].tracks[0].id, last = project.songs[0].tracks[1].id
+        show.setMixerTrackSelection([first, last], anchor: first)
+        show.revealSelectedMixerTrack(last)
+        let request = try XCTUnwrap(show.trackSelectionRequest)
+        XCTAssertEqual(request.track, last)
+        XCTAssertEqual(show.selectedTrackForActions, first)
+        show.revealSelectedMixerTrack(last)
+        XCTAssertNotEqual(show.trackSelectionRequest?.id, request.id)
+        show.setMixerTrackSelection([first], anchor: first)
+        let previous = show.trackSelectionRequest
+        show.revealSelectedMixerTrack(last)
+        XCTAssertEqual(show.trackSelectionRequest, previous)
+        XCTAssertTrue(executor.mixerCommands.isEmpty)
+        XCTAssertFalse(show.hasUnsavedChanges)
+    }
+
     @MainActor func testActionsSelectTrackAndDeliverMIDIWithoutReloadingProject() throws {
         let project = fixture(), (show, executor) = try show(project)
         let track = project.songs[0].tracks[1].id
@@ -841,7 +1107,7 @@ final class IncrementalTrackSettingsTests: XCTestCase {
         XCTAssertEqual(show.current!.tracks[1].pan, 0)
         XCTAssertEqual(executor.snapshotReads, 0)
         XCTAssertEqual(executor.fullEdits, 0)
-        XCTAssertEqual(Set(audioRefreshes), [0])
+        XCTAssertTrue(audioRefreshes.isEmpty, "Mapped mixer actions must not refresh the entire audio project")
         XCTAssertEqual(show.snapshot.transport, transport)
         show.performAction(.addTrack)
         XCTAssertEqual(show.addTrackRequest, 1)
@@ -886,10 +1152,12 @@ extension IncrementalTrackSettingsTests {
     }
     @MainActor func testAllNativeMasterEffectsExceptInstruments() throws {
         let (controller, _) = try show(fixture())
-        for kind in ["EQ", "Compressor", "Limiter", "Pitch", "Delay", "Reverb", NativeFXSettings.stemSeparator] {
+        for kind in ["EQ", "Compressor", "Limiter", "Pitch", "Delay", "Reverb", "CatLive Trigger", "Cat Gate"] {
             XCTAssertNotNil(controller.insertFX(nil, effect: kind), kind)
             XCTAssertTrue(controller.fxSettings(nil).inserted.contains(kind))
         }
+        XCTAssertNil(controller.insertFX(nil, effect: NativeFXSettings.stemSeparator))
+        XCTAssertFalse(controller.fxSettings(nil).inserted.contains(NativeFXSettings.stemSeparator))
         XCTAssertNil(controller.insertFX(nil, effect: "Instruments"))
         XCTAssertFalse(controller.fxSettings(nil).inserted.contains("Instruments"))
     }

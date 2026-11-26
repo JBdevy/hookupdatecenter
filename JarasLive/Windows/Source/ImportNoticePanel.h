@@ -1,4 +1,5 @@
 #pragma once
+#include "Localization.h"
 #include "ModalSheet.h"
 namespace catlive {
 class ImportNoticePanel final : public Component {
@@ -23,11 +24,11 @@ class ImportNoticePanel final : public Component {
     void paint(Graphics& g) override {
         g.fillAll(theme::panel);
         g.setColour(theme::secondary); g.setFont(theme::font(14));
-        g.drawFittedText(String::fromUTF8("Projeto importado. Confira estes avisos antes de reproduzir."),
+        g.drawFittedText(localization::translate(String::fromUTF8("Projeto importado. Confira estes avisos antes de reproduzir.")),
                         20, 6, getWidth() - 40, 36, Justification::centredLeft, 2);
         g.setColour(theme::background); g.fillRoundedRectangle(viewport.getBounds().toFloat(), 6);
         g.setColour(theme::secondary); g.setFont(theme::font(12));
-        g.drawText(String::fromUTF8("Avisos da importação: ") + String(notes.size()),
+        g.drawText(localization::translate("Import notes: %ld").replace("%ld",String(notes.size())),
                    20, getHeight() - 48, getWidth() - 140, 28, Justification::centredLeft);
     }
     void resized() override {

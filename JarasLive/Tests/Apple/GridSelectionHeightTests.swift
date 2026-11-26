@@ -15,8 +15,8 @@ MainActor.assumeIsolated {
         ids.enumerated().map { index, id -> GridSelectionItem in
             let track = index / clipsPerTrack, local = index % clipsPerTrack, lane = local % lanes[track]
             let rect = CGRect(x: CGFloat(local / lanes[track]) * 12,
-                              y: top + geometry.offsets[track] + CGFloat(lane) * geometry.heights[track] + 3,
-                              width: 10, height: geometry.heights[track] - 6)
+                              y: top + geometry.offsets[track] + CGFloat(lane) * geometry.heights[track] + GridSelectionItem.verticalInset,
+                              width: 10, height: geometry.heights[track] - 2 * GridSelectionItem.verticalInset)
             return GridSelectionItem(id: id, rect: rect, name: "Audio \(index)",
                                      duration: 10, fadeIn: 0.5, trackIndex: track, laneIndex: lane)
         }
@@ -33,6 +33,9 @@ MainActor.assumeIsolated {
         }
     }
     let initial = cached(64)
+    let firstRowItem = initial.projectedItem(at: 0, pixelsPerSecond: 1)
+    let secondRowItem = initial.projectedItem(at: clipsPerTrack, pixelsPerSecond: 1)
+    precondition(secondRowItem.rect.minY - firstRowItem.rect.maxY == 2, "Adjacent tracks keep a two-point item gap")
     let initialStorage = initial.items.withUnsafeBufferPointer { $0.baseAddress }
     var projectedTimes: [Double] = [], rebuildTimes: [Double] = [], hits = 0
     for frame in 0..<50 {
@@ -109,7 +112,7 @@ MainActor.assumeIsolated {
         retainedContent = snapshot
         let fresh = cache.layout(key: TimelineRenderKey(revision: 2), content: snapshot,
             rowHeight: 64, rulerHeight: 71, rowOffsets: [0], laneHeights: [64]) {
-            [GridSelectionItem(id: contentID, rect: CGRect(x: 0, y: 74, width: 1, height: 58), trackIndex: 0)]
+            [GridSelectionItem(id: contentID, rect: CGRect(x: 0, y: 72, width: 1, height: 62), trackIndex: 0)]
         }
         precondition(fresh.items.map(\.id) == [contentID], "A new snapshot with unchanged revision must replace selection items")
     }
@@ -117,9 +120,57 @@ MainActor.assumeIsolated {
     precondition(retainedContent != nil, "Selection retains its snapshot identity while its items remain cached")
     let replacement = cache.layout(key: TimelineRenderKey(revision: 2), content: NSObject(),
         rowHeight: 64, rulerHeight: 71, rowOffsets: [0], laneHeights: [64]) {
-        [GridSelectionItem(id: replacementID, rect: CGRect(x: 0, y: 74, width: 1, height: 58), trackIndex: 0)]
+        [GridSelectionItem(id: replacementID, rect: CGRect(x: 0, y: 72, width: 1, height: 62), trackIndex: 0)]
     }
     precondition(retainedContent == nil && replacement.items.map(\.id) == [replacementID],
                  "Replacing content retires both old hit targets and the retained snapshot")
     print("GRID_SELECTION_SAME_REVISION_CONTENT_REPLACEMENT_RETAINS_IDENTITY_UNTIL_RETIREMENT_OK")
+    let contrastSnapshot = NSObject()
+    let light = cache.layout(key: TimelineRenderKey(revision: 3), content: contrastSnapshot, rowHeight: 64,
+        rulerHeight: 71, rowOffsets: [0], laneHeights: [64]) {
+        var item = replacement.items[0]
+        item.blackTitle = true
+        return [item]
+    }
+    let dark = cache.layout(key: TimelineRenderKey(revision: 3), content: contrastSnapshot, rowHeight: 64,
+        rulerHeight: 71, rowOffsets: [0], laneHeights: [64], inverted: true) { replacement.items }
+    precondition(light.items[0].blackTitle && !dark.items[0].blackTitle)
+    print("GRID_SELECTION_INVERTED_BACKGROUND_REFRESHES_ITEM_CONTRAST_OK")
+    // Lane-zero items in different time components can share Y but have
+    // different heights. The spatial index must retain both boundaries when
+    // track height changes, without rebuilding the immutable clip metadata.
+    let mixedIDs = (0..<6).map { _ in UUID() }
+    let ratios: [CGFloat] = [3, 1.5, 1.5, 1, 1, 1]
+    let localLanes = [0, 0, 1, 0, 1, 2]
+    let times: [CGFloat] = [0, 20, 20, 40, 40, 40]
+    func mixedItems(_ laneHeight: CGFloat) -> [GridSelectionItem] {
+        mixedIDs.indices.map { i in
+            let h = laneHeight * ratios[i]
+            return GridSelectionItem(id: mixedIDs[i],
+                rect: CGRect(x: times[i], y: 71 + CGFloat(localLanes[i]) * h + GridSelectionItem.verticalInset,
+                             width: 10, height: h - 2 * GridSelectionItem.verticalInset),
+                trackIndex: 0, laneIndex: localLanes[i], laneHeightRatio: ratios[i])
+        }
+    }
+    let mixed = GridSelectionLayout(items: mixedItems(64), timeCoordinates: true)
+    for h: CGFloat in [28, 44.8, 64, 131] {
+        let projected = mixed.projectingRows(offsets: [0], laneHeights: [h], top: 71)
+        let rebuilt = GridSelectionLayout(items: mixedItems(h), timeCoordinates: true)
+        for scale: CGFloat in [0.1, 1, 20] {
+            for i in mixedIDs.indices {
+                let rect = projected.projectedItem(at: i, pixelsPerSecond: scale).rect
+                precondition(rect == rebuilt.projectedItem(at: i, pixelsPerSecond: scale).rect)
+                for point in [CGPoint(x: rect.midX, y: rect.minY + 1), CGPoint(x: rect.midX, y: rect.maxY - 1)] {
+                    let hit = CGRect(origin: point, size: .zero)
+                    precondition(projected.candidates(in: hit, pixelsPerSecond: scale) == rebuilt.candidates(in: hit, pixelsPerSecond: scale))
+                    precondition(projected.candidates(in: hit, pixelsPerSecond: scale).contains(i))
+                }
+            }
+        }
+        let lowerHalfOfPair = CGRect(x: 25, y: 71 + h * 2.5, width: 0, height: 0)
+        let hits = projected.candidates(in: lowerHalfOfPair, pixelsPerSecond: 1)
+        precondition(!hits.contains(1) && hits.contains(2), "different heights at identical Y must not share a row bound")
+    }
+    print("GRID_SELECTION_LOCAL_OVERLAP_HEIGHTS_SHARED_Y_PROJECTION_HIT_TEST_OK")
+
 }

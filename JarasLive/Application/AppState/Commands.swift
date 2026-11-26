@@ -1,6 +1,18 @@
 import Foundation
-public enum ShowCommand: String, Sendable { case toggleMultiLoopBypass, queueSection, cancelSection, clipFadeIn, clipFadeOut, loopStart, loopEnd, escape, phase, masterMono, ignoreNext, tempo, beatsPerBar, beatUnit, clipChannelMode, clipNormalization, clipPitch, clipGain, clipPhase, clipPan, clipMute, selectRegion, queueRegion, play, pause, stop, next, previous, queue, select, toggleLoop, seek, editSeek, subPlay, subStop, subSeek, stopAll, volume, pan, mute, solo }
-@MainActor public protocol CommandExecutor {
+public enum ShowCommand: String, Sendable { case toggleMultiLoopBypass, queueSection, cancelSection, clipFadeIn, clipFadeOut, loopStart, loopEnd, escape, phase, masterMono, ignoreNext, tempo, beatsPerBar, beatUnit, clipChannelMode, clipNormalization, clipPitch, clipGain, clipPhase, clipPan, clipMute, selectRegion, queueRegion, play, pause, stop, next, previous, queue, select, toggleLoop, seek, editSeek, queueBeatSeek, queueBarSeek, queueMarkerSeek, queuePartSeek, cancelBeatSeek, subPlay, subStop, subSeek, stopAll, volume, pan, mute, solo, clipFadeInCurve, clipFadeInSCurve, clipFadeOutCurve, clipFadeOutSCurve }
+@MainActor public enum ProjectSyncControl { public static var following = false }
+@MainActor extension ShowCommand {
+    var queuesTimelineSeek: Bool {
+        self == .queueBeatSeek || self == .queueBarSeek || self == .queueMarkerSeek || self == .queuePartSeek
+    }
+}
+
+public protocol CommandExecutor {
+    var subplayPreparationPosition: Double? { get }
+    func setProjectSyncID(_ id: UUID)
+    func executeAutomation(_ command: ShowCommand, target: UUID?, value: Double) throws
+    func projectSyncFrame() throws -> Data
+    func applyProjectSync(_ data: Data, elapsed: Double, first: Bool) throws -> PlaybackSnapshot
     func execute(_ command: ShowCommand, target: UUID?, value: Double) throws
     func configureRegionSetlist(_ state: RegionSetlist) throws
     func setTrackRouting(_ routes: [UUID: TrackRouting]) throws
@@ -14,6 +26,7 @@ public enum ShowCommand: String, Sendable { case toggleMultiLoopBypass, queueSec
     func setFX(_ track: UUID?, settings: NativeFXSettings) throws
     func setClipFX(_ clip: UUID, settings: NativeFXSettings) throws
     func setClipFXBypass(_ clip: UUID, bypassed: Bool) throws
+    func setClipName(_ clip: UUID, name: String) throws
     func setClipText(_ clip: UUID, text: String) throws
     func setMIDIInput(_ track: UUID, slot: Int) throws
     func setMIDIChannel(_ track: UUID, channel: Int) throws
@@ -26,7 +39,11 @@ public enum ShowCommand: String, Sendable { case toggleMultiLoopBypass, queueSec
     func replaceAudioClip(_ clip: AudioClip, track: UUID) throws
     func addRecordedClip(_ clip: AudioClip, track: UUID) throws
     func editMasterColor(_ color: UInt32) throws
+    func setTrackMixerComponents(_ song: UUID, masks: [UUID: Int]) throws
     func editTrack(_ id: UUID, name: String, color: UInt32) throws
+    func renameTrack(_ id: UUID, name: String) throws
+    func soloTrackExclusively(_ id: UUID) throws
+    func setRegionInit(_ id: UUID, count: Int, bars: Bool) throws
     func setRegionPitch(_ id: UUID, semitones: Int, tracks: [UUID], groups: [UUID]) throws
     func editRegion(_ id: UUID, name: String, color: UInt32, uppercaseName: Bool) throws
     func moveClip(_ id: UUID, start: Double, track: UUID?) throws
@@ -39,6 +56,7 @@ public enum ShowCommand: String, Sendable { case toggleMultiLoopBypass, queueSec
     func setProjectTiming(bpm: Double, beats: Int, unit: Int, settings: ProjectTimeSettings) throws
     func deleteManualMarker(_ id: UUID) throws
     func applyProjectEdit(_ project: Project) throws
+    func applyTrackStructureEdit(_ project: Project, previous: Project) throws
     func load(_ project: Project) throws
     func snapshot() throws -> ShowSnapshot
     func playbackSnapshot() throws -> PlaybackSnapshot
@@ -57,6 +75,11 @@ public enum ShowCommand: String, Sendable { case toggleMultiLoopBypass, queueSec
 }
 
 public extension CommandExecutor {
+    var subplayPreparationPosition: Double? { nil }
+    func setProjectSyncID(_ id: UUID) {}
+    func executeAutomation(_ command: ShowCommand, target: UUID?, value: Double) throws { try execute(command, target: target, value: value) }
+    func projectSyncFrame() throws -> Data { throw BackendFailure.notConfigured }
+    func applyProjectSync(_ data: Data, elapsed: Double, first: Bool) throws -> PlaybackSnapshot { throw BackendFailure.notConfigured }
     func replaceAudioClip(_ clip: AudioClip, track: UUID) throws { throw BackendFailure.notConfigured }
     func retimeTempoMarkers(_ markers: [TimelineMarker]) throws { for marker in markers { try setMarker(marker) } }
     func setTempoMarkers(_ markers: [TimelineMarker]) throws { for marker in markers { try setMarker(marker) } }
@@ -66,6 +89,7 @@ public extension CommandExecutor {
     }
     func pasteItems(_ entries: [GridItemClipboard.Entry], song: UUID, moving: Bool) throws { throw BackendFailure.notConfigured }
     func applyProjectEdit(_ project: Project) throws { throw BackendFailure.notConfigured }
+    func applyTrackStructureEdit(_ project: Project, previous: Project) throws { try applyProjectEdit(project) }
     func setTimecode(_ track: UUID, settings: TimecodeSettings) throws { throw BackendFailure.notConfigured }
     func groupTracks(_ ids: [UUID]) throws { throw BackendFailure.notConfigured }
     func setMarker(_ marker: TimelineMarker) throws { throw BackendFailure.notConfigured }
@@ -74,6 +98,7 @@ public extension CommandExecutor {
     func setFX(_ track: UUID?, settings: NativeFXSettings) throws { throw BackendFailure.notConfigured }
     func setClipFX(_ clip: UUID, settings: NativeFXSettings) throws { throw BackendFailure.notConfigured }
     func setClipFXBypass(_ clip: UUID, bypassed: Bool) throws { throw BackendFailure.notConfigured }
+    func setClipName(_ clip: UUID, name: String) throws { throw BackendFailure.notConfigured }
     func setClipText(_ clip: UUID, text: String) throws { throw BackendFailure.notConfigured }
     func setMIDIInput(_ track: UUID, slot: Int) throws { throw BackendFailure.notConfigured }
     func setMIDIChannel(_ track: UUID, channel: Int) throws { throw BackendFailure.notConfigured }
@@ -83,7 +108,10 @@ public extension CommandExecutor {
     func insertAudioTracks(_ tracks: [Track], song: UUID) throws { throw BackendFailure.notConfigured }
     func addRecordedClip(_ clip: AudioClip, track: UUID) throws { throw BackendFailure.notConfigured }
     func editMasterColor(_ color: UInt32) throws { throw BackendFailure.notConfigured }
+    func setTrackMixerComponents(_ song: UUID, masks: [UUID: Int]) throws { throw BackendFailure.notConfigured }
     func editTrack(_ id: UUID, name: String, color: UInt32) throws { throw BackendFailure.notConfigured }
+    func renameTrack(_ id: UUID, name: String) throws { throw BackendFailure.notConfigured }
+    func soloTrackExclusively(_ id: UUID) throws { throw BackendFailure.notConfigured }
     func setTrackRouting(_ routes: [UUID: TrackRouting]) throws { throw BackendFailure.notConfigured }
     func setOutputPatches(track: UUID?, patches: [OutputPatch]) throws { throw BackendFailure.notConfigured }
     func setOutputPatch(track: UUID?, patch: OutputPatch, slot: Int) throws { throw BackendFailure.notConfigured }
@@ -91,6 +119,7 @@ public extension CommandExecutor {
     func configureRegionSetlist(_ state: RegionSetlist) throws { throw BackendFailure.notConfigured }
     func resizeRegion(_ id: UUID, start: Double, end: Double) throws { throw BackendFailure.notConfigured }
     func moveRegion(_ id: UUID, start: Double) throws { throw BackendFailure.notConfigured }
+    func setRegionInit(_ id: UUID, count: Int, bars: Bool) throws { throw BackendFailure.notConfigured }
     func setRegionPitch(_ id: UUID, semitones: Int, tracks: [UUID], groups: [UUID]) throws { throw BackendFailure.notConfigured }
     func editRegion(_ id: UUID, name: String, color: UInt32, uppercaseName: Bool) throws { throw BackendFailure.notConfigured }
     func moveClip(_ id: UUID, start: Double, track: UUID?) throws { throw BackendFailure.notConfigured }

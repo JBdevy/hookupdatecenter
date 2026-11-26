@@ -4,8 +4,13 @@ import XCTest
 @MainActor private final class SessionResetExecutor: CommandExecutor {
     var project = Project.empty(name: "Session")
     var transport = TransportState(playing: false, position: 0, queue: QueueState(), loop: LoopState(enabled: false), subPlay: SubPlayState(playing: false, position: 0))
+    var syncMixer: ProjectSyncMixer?
+    func applyProjectSync(_ data: Data, elapsed: Double, first: Bool) throws -> PlaybackSnapshot {
+        PlaybackSnapshot(transport: transport, syncMixer: syncMixer)
+    }
     var rejectLoad = false
     var commands: [ShowCommand] = []
+    func setProjectSyncID(_ id: UUID) { if project.projectSyncID == nil { project.projectSyncID = id } }
     func load(_ project: Project) throws {
         if rejectLoad { throw ProjectError.invalid("Injected load failure") }
         self.project = project
@@ -18,7 +23,9 @@ import XCTest
     func execute(_ command: ShowCommand, target: UUID?, value: Double) throws {
         commands.append(command)
         switch command {
-        case .play: transport.playing = true
+        case .play: transport.playing = true; transport.paused = false
+        case .subPlay: transport.subPlay.playing = true
+        case .pause: transport.playing = false; transport.paused = true
         case .stop, .stopAll: transport.playing = false; transport.subPlay.playing = false
         case .subSeek: transport.subPlay.position = value
         case .editSeek: transport.editPosition = value; transport.position = value
@@ -64,6 +71,37 @@ final class ProjectSessionResetTests: XCTestCase {
         else { try show.replaceProject(project) }
     }
 
+    @MainActor func testProjectSyncUpdatesSelectionAndMixerWithoutRequeueingOrReloadingAudio() throws {
+        let project = project(), executor = SessionResetExecutor()
+        let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)
+        let track = project.songs[0].tracks[0].id, region = project.songs[0].parts[0].id
+        executor.syncMixer = ProjectSyncMixer(masterVolume: 0.6, masterPan: -0.25, masterMute: true, masterSolo: true,
+            tracks: [.init(id: track, volume: 0.3, pan: 0.5, mute: true, solo: true)])
+        var volumes: [Double] = [], pans: [Double] = [], mutes: [Bool] = [], solos: [Bool] = []
+        show.audioVolume = { _, value in volumes.append(value) }
+        show.audioPan = { _, value in pans.append(value) }
+        show.audioMute = { _, value in mutes.append(value) }
+        show.audioSolo = { _, value in solos.append(value) }
+        let before = show.setlistFocusRequest
+        try show.applyProjectSync(Data(), elapsed: 0, first: true, focused: region)
+        XCTAssertEqual(show.focusedRegion, region)
+        XCTAssertNotEqual(show.setlistFocusRequest, before)
+        XCTAssertEqual(show.snapshot.project.masterVolume, 0.6)
+        XCTAssertEqual(show.snapshot.project.songs[0].tracks[0].volume, 0.3)
+        XCTAssertEqual(show.snapshot.project.songs[0].tracks[0].pan, 0.5)
+        XCTAssertTrue(show.snapshot.project.songs[0].tracks[0].mute)
+        XCTAssertTrue(show.snapshot.project.songs[0].tracks[0].solo)
+        XCTAssertEqual(volumes, [0.6, 0.3]); XCTAssertEqual(pans, [0.5])
+        XCTAssertEqual(mutes, [true, true]); XCTAssertEqual(solos, [true])
+        let selected = show.setlistFocusRequest
+        try show.applyProjectSync(Data(), elapsed: 0, first: false, focused: region)
+        XCTAssertEqual(show.setlistFocusRequest, selected)
+        XCTAssertEqual(volumes, [0.6, 0.3]); XCTAssertEqual(pans, [0.5])
+        XCTAssertTrue(executor.commands.isEmpty, "Replicated focus must not select/queue the song again")
+        try show.applyProjectSync(Data(), elapsed: 0, first: false, focused: nil)
+        XCTAssertNil(show.focusedRegion)
+    }
+
     @MainActor func testReloadAndImportSameIDsClearSelectionGesturesAndPendingUI() throws {
         for importing in [false, true] {
             let project = project(), executor = SessionResetExecutor()
@@ -74,12 +112,13 @@ final class ProjectSessionResetTests: XCTestCase {
             show.sendMixerControl(.pan, target: tracks[0].id, value: 0.4, preview: true)
             show.performAction(.setlistDown)
             show.performAction(.splitItems); show.performAction(.normalizeItems)
+            show.performAction(.reRenderItems)
             show.performAction(.createTempoMarker); show.performAction(.addTrack)
             show.detectBPMRegion = region; show.detectBPMRegions = [region]
             show.modalNotice = "Old modal"
             show.selectTimelineRegion(region)
             show.send(.subSeek, value: 4)
-            XCTAssertTrue(show.subCursorPreview)
+            XCTAssertFalse(show.subCursorVisible, "A manual Subplay seek must not show a queued-region cursor")
             XCTAssertFalse(show.mixerPreviewValues.isEmpty)
             try replace(show, with: project, importing: importing)
             XCTAssertTrue(show.mixerTrackSelection.isEmpty)
@@ -88,9 +127,10 @@ final class ProjectSessionResetTests: XCTestCase {
             XCTAssertFalse(show.mixerPreviewIsPan)
             XCTAssertNil(show.trackSelectionRequest); XCTAssertNil(show.setlistNavigationRequest)
             XCTAssertNil(show.detectBPMRegion); XCTAssertTrue(show.detectBPMRegions.isEmpty)
-            XCTAssertNil(show.modalNotice); XCTAssertFalse(show.subCursorPreview)
+            XCTAssertNil(show.modalNotice); XCTAssertFalse(show.subCursorVisible)
             XCTAssertNil(show.selectedTimelineRegion); XCTAssertFalse(show.timelineFollowPaused)
             XCTAssertEqual(show.splitItemsRequest, 0); XCTAssertEqual(show.normalizeItemsRequest, 0)
+            XCTAssertNil(show.itemProcessingRequest)
             XCTAssertEqual(show.tempoMarkerRequest, 0); XCTAssertEqual(show.addTrackRequest, 0)
             show.sendMixerControl(.volume, target: tracks[0].id, value: 0.4)
             XCTAssertEqual(show.current?.tracks[0].volume, 0.4)
@@ -124,6 +164,46 @@ final class ProjectSessionResetTests: XCTestCase {
         }
     }
 
+    @MainActor func testTapTempoRequiresStoppedHeadsAndUsesFreshIntervalsAfterStop() throws {
+        var project = project()
+        project.songs[0].parts = []
+        project.songs[0].bpm = 100
+        let show = try ShowController(executor: SessionResetExecutor(), persistence: MemoryProjectStore(), initialProject: project)
+        let remote = UUID()
+        show.tapTempo(at: 1000, source: remote)
+        show.tapTempo(at: 1000.5, source: remote)
+        XCTAssertEqual(show.tempoControlBPM, 120)
+        for (start, stop) in [(ShowCommand.play, ShowCommand.pause), (.subPlay, .stopAll)] {
+            show.send(start)
+            XCTAssertTrue(show.isPlaying)
+            show.tapTempo(at: 1001.5, source: remote)
+            show.performAction(.tapTempo)
+            XCTAssertEqual(show.tempoControlBPM, 120)
+            show.send(stop)
+            XCTAssertFalse(show.isPlaying)
+            show.tapTempo(at: 1002, source: remote)
+            XCTAssertEqual(show.tempoControlBPM, 120)
+            show.tapTempo(at: 1003, source: remote)
+            XCTAssertEqual(show.tempoControlBPM, 60)
+            show.resetTapTempo()
+            show.tapTempo(at: 1000, source: remote)
+            show.tapTempo(at: 1000.5, source: remote)
+            XCTAssertEqual(show.tempoControlBPM, 120)
+        }
+        show.recordingBlocksTapTempo = { true }
+        show.tapTempo(at: 1001.5, source: remote)
+        XCTAssertEqual(show.tempoControlBPM, 120)
+        show.recordingBlocksTapTempo = { false }
+        show.tapTempo(at: 50)
+        XCTAssertEqual(show.tempoControlBPM, 120, "Local and remote clocks have different origins")
+        show.tapTempo(at: 50.75)
+        XCTAssertEqual(show.tempoControlBPM, 80)
+        show.tapTempo(at: 50.75)
+        show.tapTempo(at: 50.25)
+        show.tapTempo(at: 51.5)
+        XCTAssertEqual(show.tempoControlBPM, 80, "Repeated or out-of-order events must not restart the series")
+    }
+
     @MainActor func testOpeningSessionClearsTapHistoryButPreservesGlobalAuthorizationAndBypass() throws {
         let defaults = UserDefaults(suiteName: UUID().uuidString)!
         defaults.set(true, forKey: ShowController.multiLoopBypassDefaultsKey)
@@ -148,10 +228,11 @@ final class ProjectSessionResetTests: XCTestCase {
         show.modalNotice = "Current notice"
         try await show.flushProject()
         let saved = show.lastSavedAt
+        let savedProject = show.snapshot.project
         XCTAssertNotNil(saved)
         executor.rejectLoad = true
         XCTAssertThrowsError(try show.replaceProject(.empty(name: "Rejected")))
-        XCTAssertEqual(show.snapshot.project, project)
+        XCTAssertEqual(show.snapshot.project, savedProject)
         XCTAssertEqual(show.lastSavedAt, saved)
         XCTAssertEqual(show.modalNotice, "Current notice")
         XCTAssertEqual(show.mixerTrackSelection, [project.songs[0].tracks[0].id])

@@ -1,0 +1,160 @@
+#pragma once
+#include "ConfirmationPanel.h"
+#include "Localization.h"
+#include "StageState.h"
+#include "ModalSheet.h"
+
+namespace catlive {
+// Matches TeleprompterTimerConfiguration: one selected time field, a numeric
+// keypad, and the same independent timer shared by the transport and TP.
+class StageTimerSettings final : public Component, private Timer {
+  public:
+    explicit StageTimerSettings(StageState &value) : state(value) {
+        modeLabel.setText(localization::translate("Timer"), dontSendNotification);
+        modeLabel.setFont(theme::semiboldFont(13));
+        modeLabel.setJustificationType(Justification::centredLeft);
+        addAndMakeVisible(modeLabel);
+        progressive.onClick = [this] { state.setProgressive(true); refresh(); };
+        countdown.onClick = [this] { state.setProgressive(false); refresh(); };
+        for (auto *tab : {&progressive, &countdown}) {
+            tab->getProperties().set("flat", true);
+            tab->getProperties().set("cornerRadius", 6.f);
+            addAndMakeVisible(tab);
+        }
+        for (int i = 0; i < 3; ++i) {
+            fields[i].setName(StringArray{"Horas", "Minutos", "Segundos"}[i]);
+            fields[i].onClick = [this, i] { field = i; caret = 0; refresh(); };
+            addAndMakeVisible(fields[i]);
+        }
+        const StringArray titles{"1", "2", "3", "4", "5", "6", "7", "8", "9", localization::translate("Clear"), "0", String::fromUTF8("⌫")};
+        for (int i = 0; i < 12; ++i) {
+            keys[i].setButtonText(titles[i]);
+            keys[i].setName(titles[i]);
+            keys[i].setColour(TextButton::buttonColourId, Colour(0xff505050));
+            keys[i].getProperties().set("flat", true);
+            keys[i].getProperties().set("cornerRadius", 6.f);
+            keys[i].onClick = [this, i] { edit(i); };
+            addAndMakeVisible(keys[i]);
+        }
+        start.onClick = [this] {
+            if (!state.running) { state.start(); refresh(); return; }
+            const auto runStarted = state.started;
+            const SafePointer<StageTimerSettings> safe(this);
+            ConfirmationPanel::show(MessageBoxIconType::QuestionIcon,
+                String::fromUTF8("Parar o cronômetro?"),
+                String::fromUTF8("O cronômetro será parado e a contagem atual será zerada."),
+                "Parar", "Cancelar", this, ModalCallbackFunction::create([safe, runStarted](int result) {
+                    if (safe && result && safe->state.running && safe->state.started == runStarted) {
+                        safe->state.reset(); safe->refresh();
+                    }
+                }));
+        };
+        automatic.onClick = [this] { state.autoStart = !state.autoStart; state.saveTimer(); refresh(); };
+        automatic.setTooltip(String::fromUTF8("Iniciar o cronômetro automaticamente quando uma música começar"));
+        for (auto *button : {&start, &automatic}) {
+            button->getProperties().set("flat", true);
+            button->getProperties().set("cornerRadius", 6.f);
+            addAndMakeVisible(button);
+        }
+        refresh();
+        startTimerHz(4);
+    }
+    void paint(Graphics &g) override {
+        g.fillAll(theme::panel);
+        const auto display = getLocalBounds().reduced(16).withTrimmedTop(36).removeFromTop(48).toFloat();
+        g.setColour(theme::display); g.fillRoundedRectangle(display, 6);
+        g.setColour(theme::green); g.drawRoundedRectangle(display.reduced(.5f), 6, 1);
+        const bool expired = state.expired();
+        g.setColour(expired ? Colours::red.withAlpha((int)(StageState::now() * 2) % 2 ? .25f : 1.f) : theme::green);
+        g.setFont(theme::semiboldFont(30));
+        g.drawText(state.timeText(), display, Justification::centred);
+    }
+    void resized() override {
+        const int width = getWidth() - 32;
+        auto selector = juce::Rectangle<int>(0, 16, std::min(width, 272), 25).withCentre({getWidth() / 2, 28});
+        modeLabel.setBounds(selector.removeFromLeft(80));
+        progressive.setBounds(selector.removeFromLeft(selector.getWidth() / 2));
+        countdown.setBounds(selector);
+        for (int i = 0; i < 3; ++i) {
+            const int x = 16 + i * (width + 8) / 3;
+            fields[i].setBounds(x, 112, (width - 16) / 3, 60);
+        }
+        const int keyHeight = std::max(26, (getHeight() - 233 - 15) / 4);
+        for (int i = 0; i < 12; ++i) {
+            const int x = 16 + (i % 3) * (width + 5) / 3;
+            keys[i].setBounds(x, 180 + (i / 3) * (keyHeight + 5), (width - 10) / 3, keyHeight);
+        }
+        const int y = getHeight() - 40;
+        start.setBounds(16, y, 62, 24);
+        automatic.setBounds(88, y, 88, 24);
+    }
+  private:
+    class Field final : public Button {
+      public:
+        Field() : Button({}) {}
+        String digits;
+        bool selected = false;
+        void paintButton(Graphics &g, bool, bool) override {
+            const auto bounds = getLocalBounds().toFloat().reduced(.5f);
+            g.setColour(theme::display); g.fillRoundedRectangle(bounds, 6);
+            g.setColour(selected ? theme::yellow : theme::line); g.drawRoundedRectangle(bounds, 6, 1);
+            g.setColour(Colours::white.withAlpha(isEnabled() ? 1.f : .5f));
+            g.setFont(theme::semiboldFont(11));
+            g.drawText(localization::translate(getName()), 0, 6, getWidth(), 16, Justification::centred);
+            GlyphArrangement numbers;
+            numbers.addLineOfText(theme::semiboldFont(24), digits, 0, 0);
+            const auto ink = numbers.getBoundingBox(0, -1, true);
+            const auto area = juce::Rectangle<float>(0, 24, (float)getWidth(), 30);
+            numbers.draw(g, AffineTransform::translation(area.getCentreX() - ink.getCentreX(),
+                                                        area.getCentreY() - ink.getCentreY()));
+        }
+    };
+    StageState &state;
+    Label modeLabel;
+    Field fields[3];
+    QuietButton keys[12];
+    QuietButton progressive{localization::translate("Progressive")}, countdown{localization::translate("Countdown")};
+    QuietButton start{localization::translate("Iniciar")}, automatic{"INIT AUTO"};
+    int field = 0, caret = 0;
+    void edit(int key) {
+        if (state.running || state.progressive) return;
+        const int divisors[]{3600, 60, 1};
+        int values[]{state.target / 3600, state.target / 60 % 60, state.target % 60};
+        auto digits = String(values[field]).paddedLeft('0', 2);
+        if (key == 9) { digits = "00"; caret = 0; }
+        else if (key == 11) {
+            if (caret > 0) { --caret; digits = digits.replaceSection(caret, 1, "0"); }
+        } else {
+            const auto digit = key == 10 ? String("0") : String(key + 1);
+            if (caret == 2) digits = digits.substring(1) + digit;
+            else { digits = digits.replaceSection(caret, 1, digit); ++caret; }
+        }
+        values[field] = jlimit(0, field == 0 ? 99 : 59, digits.getIntValue());
+        state.target = values[0] * divisors[0] + values[1] * divisors[1] + values[2];
+        state.saveTimer();
+        refresh();
+    }
+    void refresh() {
+        progressive.setEnabled(!state.running); countdown.setEnabled(!state.running);
+        progressive.setColour(TextButton::buttonColourId, state.progressive ? theme::green : theme::display);
+        countdown.setColour(TextButton::buttonColourId, state.progressive ? theme::display : theme::green);
+        progressive.setColour(TextButton::textColourOffId, state.progressive ? Colours::black : Colours::white);
+        countdown.setColour(TextButton::textColourOffId, state.progressive ? Colours::white : Colours::black);
+        const int values[]{state.target / 3600, state.target / 60 % 60, state.target % 60};
+        for (int i = 0; i < 3; ++i) {
+            fields[i].digits = String(values[i]).paddedLeft('0', 2);
+            fields[i].selected = field == i;
+            fields[i].setVisible(!state.progressive);
+            fields[i].setEnabled(!state.running);
+            fields[i].repaint();
+        }
+        for (auto &key : keys) { key.setVisible(!state.progressive); key.setEnabled(!state.running); }
+        start.setButtonText(state.running ? localization::translate("Parar") : localization::translate("Iniciar"));
+        start.setColour(TextButton::buttonColourId, state.running ? Colours::red : theme::green);
+        start.setColour(TextButton::textColourOffId, state.running ? Colours::white : Colours::black);
+        automatic.setColour(TextButton::textColourOffId, state.autoStart ? theme::green : theme::secondary);
+        repaint();
+    }
+    void timerCallback() override { refresh(); }
+};
+} // namespace catlive

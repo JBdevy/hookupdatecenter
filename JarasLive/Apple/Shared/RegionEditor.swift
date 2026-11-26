@@ -1,4 +1,78 @@
 import SwiftUI
+#if os(iOS)
+import UIKit
+#endif
+
+struct SelectionTempoRequest: Identifiable {
+    let id = UUID()
+    let song: Song
+    let range: ClosedRange<Double>
+    let directory: URL?
+
+    @MainActor init?(selection: TimelineAreaSelection.Range, song: Song, documents: ProjectDocuments) {
+        guard selection.song == song.id, selection.end > selection.start else { return nil }
+        self.song = song
+        range = selection.start...selection.end
+        directory = documents.currentURL?.deletingLastPathComponent() ?? documents.projectAudio.mediaDirectory
+    }
+}
+
+@MainActor struct SelectionTempoResultView: View {
+    let request: SelectionTempoRequest
+    let close: () -> Void
+    @Environment(\.locale) private var locale
+    @State private var fraction = 0.0
+    @State private var result: String?
+    @State private var error: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            if let result {
+                Text("BPM detected.").font(.jarasHeadline)
+                Text(verbatim: result).font(.jarasTitle).monospacedDigit().textSelection(.enabled)
+            } else if let error {
+                Text("Detect BPM").font(.jarasHeadline)
+                Text(verbatim: error).font(.jarasBody)
+            } else {
+                BPMDetectionProgress(fraction: fraction)
+            }
+            HStack {
+                Spacer()
+                if result != nil || error != nil {
+                    Button("OK", action: close).keyboardShortcut(.defaultAction)
+                } else {
+                    Button("Cancel", role: .cancel, action: close).keyboardShortcut(.cancelAction)
+                }
+            }
+        }
+        .padding(24).frame(width: 320)
+        .task(id: request.id) { await analyze() }
+    }
+
+    private func analyze() async {
+        guard let directory = request.directory else {
+            error = JarasLocalization.string("The project media folder is unavailable.")
+            return
+        }
+        do {
+            let bpm = try await SelectionTempoAnalysis.detect(song: request.song, range: request.range,
+                directory: directory) { value in
+                    Task { @MainActor in fraction = max(fraction, value) }
+                }
+            try Task.checkCancellation()
+            if let bpm {
+                result = bpm.formatted(.number.locale(locale).precision(.fractionLength(0...2))) + " BPM"
+            } else {
+                error = JarasLocalization.string("No stable tempo was found in the selected audio.")
+            }
+        } catch is CancellationError {
+            return
+        } catch {
+            if !Task.isCancelled { self.error = error.localizedDescription }
+        }
+    }
+}
+
 struct RegionEditor: View {
     let region: Part
     let initialColor: UInt32
@@ -11,7 +85,7 @@ struct RegionEditor: View {
     }
 }
 struct NameColorEditor: View {
-    private static let presetColors: [UInt32] = [
+    fileprivate static let presetColors: [UInt32] = [
         0x000000, 0x414141, 0x828282, 0xbdbdbd, 0xffffff, 0xf44336, 0xff6f00, 0xffc107,
         0xffeb3b, 0xb9e229, 0x70d14d, 0x00a65a, 0x00cfa0, 0x00c9c9, 0x00a3e0, 0x287bff,
         0x4a4ddb, 0x7548dd, 0xae40d6, 0xe13db5, 0xff6993, 0xb84a56, 0x9a613b, 0xc7915e
@@ -28,6 +102,7 @@ struct NameColorEditor: View {
     var showsName = true
     var previewColor: ((UInt32) -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.workspaceEditorDismiss) private var closeEditor
     @FocusState private var nameFocused: Bool
     @State private var name = ""
     @State private var red = 0.0
@@ -37,8 +112,14 @@ struct NameColorEditor: View {
     @State private var colorConfirmed = false
     private var rgb: UInt32 { UInt32(red.rounded()) << 16 | UInt32(green.rounded()) << 8 | UInt32(blue.rounded()) }
     var body: some View {
+        #if os(macOS)
+        // Keep this frequently opened form in one native layout. Building the
+        // slider/palette SwiftUI subtree delayed every marker/track/region edit.
+        NativeNameColorEditor(editor: self, finish: finish)
+            .frame(width: 300, height: NativeNameColorEditorView.height(for: self))
+        #else
         VStack(alignment: .leading, spacing: 14) {
-            Text(LocalizedStringKey(title)).font(.headline)
+            Text(LocalizedStringKey(title)).font(.jarasHeadline)
             if showsName {
             TextField("Nome", text: $name)
                 .disabled(!nameEditable).textFieldStyle(.roundedBorder)
@@ -78,6 +159,9 @@ struct NameColorEditor: View {
                     .disabled(showsName && name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }.padding(18).frame(width: 300)
+            #if os(iOS)
+            .background(Color.clear.contentShape(Rectangle()).onTapGesture { nameFocused = false })
+            #endif
             .onAppear {
                 originalColor = initialColor
                 colorConfirmed = false
@@ -91,6 +175,7 @@ struct NameColorEditor: View {
             .onDisappear {
                 if !colorConfirmed, let originalColor { previewColor?(originalColor) }
             }
+        #endif
     }
     private func chooseColor(_ color: UInt32) {
         red = Double((color >> 16) & 255)
@@ -104,7 +189,13 @@ struct NameColorEditor: View {
         save(trimmed, rgb)
         finish()
     }
-    private func finish() { if let close { close() } else { dismiss() } }
+    private func finish() {
+        #if os(iOS)
+        nameFocused = false
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+        #endif
+        if let close { close() } else { (closeEditor ?? { dismiss() })() }
+    }
     private func channel(_ title: String, value: Binding<Double>, color: Color) -> some View {
         HStack {
             Text(title).frame(width: 14)
@@ -113,23 +204,260 @@ struct NameColorEditor: View {
         }
     }
 }
+#if os(macOS)
+import AppKit
+
+private struct NativeNameColorEditor: NSViewRepresentable {
+    let editor: NameColorEditor
+    let finish: () -> Void
+    @Environment(\.locale) private var locale
+    func makeNSView(context: Context) -> NativeNameColorEditorView {
+        NativeNameColorEditorView(editor: editor, locale: locale.identifier, finish: finish)
+    }
+    func updateNSView(_ view: NativeNameColorEditorView, context: Context) {
+        view.update(editor: editor, locale: locale.identifier, finish: finish)
+    }
+    static func dismantleNSView(_ view: NativeNameColorEditorView, coordinator: ()) {
+        view.restorePreviewIfNeeded()
+    }
+}
+
+/// The draft belongs to the presented form, not the frequently refreshed project
+/// view. Native controls keep editing/focus intact when live color preview updates
+/// its parent; closing the popover without Save restores the original color.
+final class NativeNameColorEditorView: NSView, NSTextFieldDelegate {
+    private var editor: NameColorEditor
+    private var locale: String
+    private var finish: () -> Void
+    private var completed = false
+    private var previewChanged = false
+    private var focused = false
+    private var color: UInt32
+    private let originalColor: UInt32
+    private let titleLabel = NSTextField(labelWithString: "")
+    private let nameField = NSTextField(string: "")
+    private let preview = NativeEditorColorPreview()
+    private let channelLabels = ["R", "G", "B"].map { NSTextField(labelWithString: $0) }
+    private let values = (0..<3).map { _ in NSTextField(labelWithString: "0") }
+    private let sliders = (0..<3).map { _ in NSSlider(value: 0, minValue: 0, maxValue: 255, target: nil, action: nil) }
+    private var swatches: [NativeEditorColorSwatch] = []
+    private let symbolButton = NSButton(checkboxWithTitle: "", target: nil, action: nil)
+    private let uppercaseButton = NSButton(checkboxWithTitle: "", target: nil, action: nil)
+    private let cancelButton = NSButton(title: "", target: nil, action: nil)
+    private let saveButton = NSButton(title: "", target: nil, action: nil)
+
+    static func height(for editor: NameColorEditor) -> CGFloat {
+        // Same 300 pt form, 18 pt inset, 14 pt row gaps and 8 × 3 swatches.
+        369 + (editor.showsName ? 0 : -38)
+            + (editor.symbol == nil ? 0 : 32) + (editor.uppercaseName == nil ? 0 : 32)
+    }
+    override var isFlipped: Bool { true }
+    override var intrinsicContentSize: NSSize { NSSize(width: 300, height: Self.height(for: editor)) }
+    init(editor: NameColorEditor, locale: String, finish: @escaping () -> Void) {
+        self.editor = editor; self.locale = locale; self.finish = finish
+        color = editor.initialColor; originalColor = editor.initialColor
+        super.init(frame: NSRect(x: 0, y: 0, width: 300, height: Self.height(for: editor)))
+        autoresizesSubviews = false
+        titleLabel.font = .jarasSystemFont(ofSize: 13, weight: .bold)
+        nameField.stringValue = editor.maximumNameLength.map { String(editor.initialName.prefix($0)) } ?? editor.initialName
+        nameField.isBezeled = true; nameField.bezelStyle = .roundedBezel
+        nameField.font = .jarasSystemFont(ofSize: 13)
+        nameField.delegate = self
+        nameField.setAccessibilityIdentifier("name-color-name")
+        for control in [symbolButton, uppercaseButton, cancelButton, saveButton] {
+            control.font = .jarasSystemFont(ofSize: 13)
+            control.target = self
+        }
+        cancelButton.bezelStyle = .rounded; saveButton.bezelStyle = .rounded
+        cancelButton.keyEquivalent = "\u{1b}"; saveButton.keyEquivalent = "\r"
+        cancelButton.keyEquivalentModifierMask = []; saveButton.keyEquivalentModifierMask = []
+        cancelButton.action = #selector(cancel); saveButton.action = #selector(confirm)
+        cancelButton.setAccessibilityIdentifier("name-color-cancel")
+        saveButton.setAccessibilityIdentifier("name-color-save")
+        symbolButton.action = #selector(toggleSymbol); uppercaseButton.action = #selector(toggleUppercase)
+        symbolButton.setAccessibilityIdentifier("name-color-symbol")
+        uppercaseButton.setAccessibilityIdentifier("name-color-uppercase")
+        [titleLabel, nameField, preview, symbolButton, uppercaseButton, cancelButton, saveButton].forEach(addSubview)
+        for i in 0..<3 {
+            channelLabels[i].font = .jarasSystemFont(ofSize: 13)
+            channelLabels[i].alignment = .center
+            values[i].font = .monospacedDigitSystemFont(ofSize: 13, weight: .regular)
+            values[i].alignment = .center
+            sliders[i].trackFillColor = [NSColor.systemRed, .systemGreen, .systemBlue][i]
+            sliders[i].tag = i; sliders[i].isContinuous = true
+            sliders[i].target = self; sliders[i].action = #selector(changeChannel(_:))
+            sliders[i].setAccessibilityLabel(["R", "G", "B"][i])
+            sliders[i].setAccessibilityIdentifier("name-color-channel-\(i)")
+            [channelLabels[i], sliders[i], values[i]].forEach(addSubview)
+        }
+        swatches = NameColorEditor.presetColors.map { rgb in
+            let button = NativeEditorColorSwatch(color: rgb)
+            button.target = self; button.action = #selector(selectSwatch(_:))
+            addSubview(button); return button
+        }
+        update(editor: editor, locale: locale, finish: finish)
+        updateColorControls()
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func update(editor: NameColorEditor, locale: String, finish: @escaping () -> Void) {
+        let previousSize = intrinsicContentSize
+        self.editor = editor; self.finish = finish; self.locale = locale
+        func text(_ key: String) -> String { JarasLocalization.string(key, language: locale) }
+        titleLabel.stringValue = text(editor.title)
+        nameField.placeholderString = text("Nome")
+        nameField.isHidden = !editor.showsName; nameField.isEnabled = editor.nameEditable
+        symbolButton.isHidden = editor.symbol == nil; symbolButton.title = text("SIMBOL")
+        symbolButton.state = editor.symbol?.wrappedValue == true ? .on : .off
+        uppercaseButton.isHidden = editor.uppercaseName == nil; uppercaseButton.title = text("Uppercase")
+        uppercaseButton.state = editor.uppercaseName?.wrappedValue == true ? .on : .off
+        cancelButton.title = text("Cancelar"); saveButton.title = text("Salvar")
+        saveButton.isEnabled = !editor.showsName || !nameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        if previousSize != intrinsicContentSize { invalidateIntrinsicContentSize() }
+        needsLayout = true
+    }
+    override func layout() {
+        super.layout()
+        let x: CGFloat = 18, width: CGFloat = 264
+        var y: CGFloat = 18
+        titleLabel.frame = NSRect(x: x - 2, y: y, width: width + 4, height: 16); y += 30
+        if editor.showsName { nameField.frame = NSRect(x: x, y: y, width: width, height: 24); y += 38 }
+        preview.frame = NSRect(x: x, y: y, width: width, height: 28); y += 42
+        for i in 0..<3 {
+            channelLabels[i].frame = NSRect(x: x, y: y, width: 14, height: 16)
+            sliders[i].frame = NSRect(x: x + 22, y: y - 1, width: width - 60, height: 18)
+            values[i].frame = NSRect(x: x + width - 30, y: y, width: 30, height: 16)
+            y += 30
+        }
+        let side = (width - 42) / 8
+        for (i, swatch) in swatches.enumerated() {
+            swatch.frame = NSRect(x: x + CGFloat(i % 8) * (side + 6), y: y + CGFloat(i / 8) * (side + 6), width: side, height: side)
+        }
+        y += side * 3 + 12 + 14
+        for button in [symbolButton, uppercaseButton] where !button.isHidden {
+            button.frame = NSRect(x: x, y: y, width: width, height: 18); y += 32
+        }
+        cancelButton.sizeToFit(); saveButton.sizeToFit()
+        cancelButton.frame = NSRect(x: x, y: y - 3, width: cancelButton.frame.width, height: 30)
+        saveButton.frame = NSRect(x: x + width - saveButton.frame.width, y: y - 3, width: saveButton.frame.width, height: 30)
+    }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard window != nil, !focused, editor.showsName, editor.nameEditable else { return }
+        // Attachment occurs before the sheet/popover becomes key. Focus at the
+        // next event turn, without a timer or delaying its presentation.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let window = self.window, !self.focused else { return }
+            self.focused = true
+            window.makeFirstResponder(self.nameField); self.nameField.selectText(nil)
+        }
+    }
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        guard !isHiddenOrHasHiddenAncestor, !completed,
+              event.modifierFlags.intersection([.command, .control, .option]).isEmpty else {
+            return super.performKeyEquivalent(with: event)
+        }
+        if event.keyCode == 36 || event.keyCode == 76 { confirm(); return true }
+        if event.keyCode == 53 { cancel(); return true }
+        return super.performKeyEquivalent(with: event)
+    }
+    func controlTextDidChange(_ notification: Notification) {
+        if let maximum = editor.maximumNameLength, nameField.stringValue.count > maximum {
+            nameField.stringValue = String(nameField.stringValue.prefix(maximum))
+        }
+        saveButton.isEnabled = !editor.showsName || !nameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+        if selector == #selector(NSResponder.insertNewline(_:)) { confirm(); return true }
+        if selector == #selector(NSResponder.cancelOperation(_:)) { cancel(); return true }
+        return false
+    }
+    @objc private func toggleSymbol() { editor.symbol?.wrappedValue = symbolButton.state == .on }
+    @objc private func toggleUppercase() { editor.uppercaseName?.wrappedValue = uppercaseButton.state == .on }
+    @objc private func changeChannel(_ sender: NSSlider) {
+        let shift = (2 - sender.tag) * 8
+        let value = UInt32(max(0, min(255, sender.doubleValue.rounded())))
+        setColor((color & ~(UInt32(255) << shift)) | (value << shift))
+    }
+    @objc private func selectSwatch(_ sender: NativeEditorColorSwatch) { setColor(sender.color) }
+    private func setColor(_ value: UInt32) {
+        guard value != color else { return }
+        color = value; updateColorControls()
+        previewChanged = true; editor.previewColor?(color)
+    }
+    private func updateColorControls() {
+        preview.color = color
+        for i in 0..<3 {
+            let value = Int((color >> ((2 - i) * 8)) & 255)
+            sliders[i].integerValue = value; values[i].integerValue = value
+        }
+        for swatch in swatches { swatch.state = swatch.color == color ? .on : .off; swatch.needsDisplay = true }
+    }
+    func restorePreviewIfNeeded() {
+        guard !completed else { return }
+        completed = true
+        if previewChanged { editor.previewColor?(originalColor) }
+    }
+    @objc private func cancel() { guard !completed else { return }; restorePreviewIfNeeded(); finish() }
+    @objc private func confirm() {
+        guard !completed else { return }
+        let trimmed = nameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !editor.showsName || !trimmed.isEmpty else { return }
+        completed = true; editor.save(trimmed, color); finish()
+    }
+}
+
+private func nativeEditorColor(_ rgb: UInt32) -> NSColor {
+    NSColor(srgbRed: CGFloat((rgb >> 16) & 255) / 255, green: CGFloat((rgb >> 8) & 255) / 255, blue: CGFloat(rgb & 255) / 255, alpha: 1)
+}
+private final class NativeEditorColorPreview: NSView {
+    var color: UInt32 = 0 { didSet { needsDisplay = true } }
+    override func draw(_ dirtyRect: NSRect) {
+        nativeEditorColor(color).setFill()
+        NSBezierPath(roundedRect: bounds, xRadius: 5, yRadius: 5).fill()
+    }
+}
+private final class NativeEditorColorSwatch: NSButton {
+    let color: UInt32
+    init(color: UInt32) {
+        self.color = color; super.init(frame: .zero)
+        isBordered = false; title = ""
+        setAccessibilityLabel(String(format: "#%06X", color))
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override func draw(_ dirtyRect: NSRect) {
+        let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 3, yRadius: 3)
+        nativeEditorColor(color).setFill(); path.fill()
+        NSColor.white.withAlphaComponent(0.2).setStroke(); path.lineWidth = 1; path.stroke()
+        if state == .on {
+            NSColor.white.setStroke()
+            let selected = NSBezierPath(roundedRect: bounds.insetBy(dx: 2, dy: 2), xRadius: 3, yRadius: 3)
+            selected.lineWidth = 2; selected.stroke()
+            NSColor.black.setStroke()
+            NSBezierPath(roundedRect: bounds.insetBy(dx: 3.5, dy: 3.5), xRadius: 2, yRadius: 2).stroke()
+        }
+    }
+}
+#endif
+
 struct UnifyRegionEditor: View {
     let create: (String) -> Bool
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.workspaceEditorDismiss) private var closeEditor
     @FocusState private var focused: Bool
     @State private var name = ""
     @State private var invalid = false
     @State private var shake = 0.0
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Unify regions").font(.headline)
+            Text("Unify regions").font(.jarasHeadline)
             TextField("Name", text: $name).textFieldStyle(.roundedBorder).focused($focused)
                 .overlay(RoundedRectangle(cornerRadius: 5).stroke(invalid ? Color.red : .clear))
                 .modifier(InputValidationShake(animatableData: shake))
                 .onSubmit(confirm).onChange(of: name) { _ in invalid = false }
-            if invalid { Text("Choose a name").font(.caption).foregroundStyle(.red) }
+            if invalid { Text("Choose a name").font(.jarasCaption).foregroundStyle(.red) }
             HStack {
-                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button("Cancel") { (closeEditor ?? { dismiss() })() }.keyboardShortcut(.cancelAction)
                 Spacer()
                 Button("Unify", action: confirm).keyboardShortcut(.defaultAction)
             }
@@ -142,7 +470,7 @@ struct UnifyRegionEditor: View {
             withAnimation(.linear(duration: 0.3)) { shake += 1 }
             return
         }
-        if create(name) { dismiss() }
+        if create(name) { (closeEditor ?? { dismiss() })() }
     }
 }
 #if os(macOS)
@@ -153,22 +481,29 @@ struct RegionRightClick: NSViewRepresentable {
     var detectBPM: (() -> Void)? = nil
     var disunify: (() -> Void)? = nil
     var delete: (() -> Void)? = nil
+    var exportMultitrack: (() -> Void)? = nil
     var exportAudio: (() -> Void)? = nil
     var resizable = true
     var seek: (() -> Void)? = nil
+    var select: ((NSEvent.ModifierFlags) -> Void)? = nil
+    var cancelDrag: (() -> Void)? = nil
     var drag: (CGFloat, Bool, Int) -> Void = { _, _, _ in }
     func makeNSView(context: Context) -> RegionRightClickView { RegionRightClickView() }
-    func updateNSView(_ view: RegionRightClickView, context: Context) { view.edit = edit; view.detectBPM = detectBPM; view.unify = unify; view.disunify = disunify; view.delete = delete; view.exportAudio = exportAudio; view.drag = drag; view.resizable = resizable; view.seek = seek }
+    func updateNSView(_ view: RegionRightClickView, context: Context) { view.edit = edit; view.detectBPM = detectBPM; view.unify = unify; view.disunify = disunify; view.delete = delete; view.exportAudio = exportAudio; view.exportMultitrack = exportMultitrack; view.drag = drag; view.resizable = resizable; view.seek = seek; view.select = select; view.cancelDrag = cancelDrag }
 }
 final class RegionRightClickView: NSView, NativeTimelineInputObserver {
     var edit: (() -> Void)?
+    var rename: (() -> Void)?
     var detectBPM: (() -> Void)?
     var unify: (() -> Void)?
     var disunify: (() -> Void)?
     var delete: (() -> Void)?
+    var exportMultitrack: (() -> Void)?
     var exportAudio: (() -> Void)?
     var drag: ((CGFloat, Bool, Int) -> Void)?
     var seek: (() -> Void)?
+    var select: ((NSEvent.ModifierFlags) -> Void)?
+    var cancelDrag: (() -> Void)?
     var resizable = true { didSet {
         if resizable != oldValue {
             if !resizable { hoverEdge = 0; if edge != 0 { startX = nil; activeDrag = nil; edge = 0 } }
@@ -195,7 +530,11 @@ final class RegionRightClickView: NSView, NativeTimelineInputObserver {
         if window != nil { NativeTimelineInputGate.shared.add(self) }
     }
     func timelineInputGateChanged(blocked: Bool) {
-        if blocked { startX = nil; activeDrag = nil; activeSeek = nil; activeDelete = nil; didDrag = false }
+        if blocked {
+            let cancellation = didDrag ? cancelDrag : nil
+            startX = nil; activeDrag = nil; activeSeek = nil; activeDelete = nil; didDrag = false
+            cancellation?()
+        }
     }
     func timelinePendingClickCancelled() {
         if !didDrag { timelineInputGateChanged(blocked: true) }
@@ -226,8 +565,8 @@ final class RegionRightClickView: NSView, NativeTimelineInputObserver {
         hoverEdge = 0
         nativeGrip.isHidden = true
         nativeGrip.path = nil
-        edit = nil; detectBPM = nil; unify = nil; disunify = nil; delete = nil; exportAudio = nil
-        drag = nil; seek = nil
+        edit = nil; detectBPM = nil; unify = nil; disunify = nil; delete = nil; exportAudio = nil; exportMultitrack = nil
+        drag = nil; seek = nil; select = nil; cancelDrag = nil
         guard !presentingProjectedMenu else { return false }
         timelineInputGateChanged(blocked: true)
         projectedInteractionEnded = nil
@@ -383,14 +722,16 @@ final class RegionRightClickView: NSView, NativeTimelineInputObserver {
             let item = NSMenuItem(title: JarasLocalization.string(title), action: action, keyEquivalent: "")
             item.target = self; menu.addItem(item)
         }
-        add("Edit", #selector(editSelected))
+        add("Editar região", #selector(editSelected))
         if detectBPM != nil { add("Detect BPM…", #selector(detectSelected)) }
         if unify != nil { add("Unify", #selector(unifySelected)) }
         if disunify != nil { add("Disunify", #selector(disunifySelected)) }
+        if exportMultitrack != nil { add("Export Multitrack", #selector(exportMultitrackSelected)) }
         if exportAudio != nil { add("Export Audio", #selector(exportAudioSelected)) }
         if delete != nil { add("Delete region", #selector(deleteSelected)) }
         return menu
     }
+    @objc private func exportMultitrackSelected() { exportMultitrack?() }
     @objc private func exportAudioSelected() { exportAudio?() }
     @objc private func detectSelected() { detectBPM?() }
     @objc private func deleteSelected() { delete?() }
@@ -399,6 +740,13 @@ final class RegionRightClickView: NSView, NativeTimelineInputObserver {
     @objc private func disunifySelected() { disunify?() }
     override func mouseDown(with event: NSEvent) {
         guard inputAvailable else { timelineInputGateChanged(blocked: true); return }
+        if event.clickCount == 2, event.modifierFlags.intersection([.option, .control, .shift, .command]).isEmpty,
+           regionRect.contains(convert(event.locationInWindow, from: nil)), let rename {
+            rename()
+            return
+        }
+        // Apply Shift/Command selection on mouse-up only if this remained a
+        // click. The same press can begin a free region move or edge resize.
         if event.modifierFlags.contains(.control) { startX = nil; activeDrag = nil; activeSeek = nil; activeDelete = nil; rightMouseDown(with: event) }
         else {
             startX = event.locationInWindow.x
@@ -409,13 +757,16 @@ final class RegionRightClickView: NSView, NativeTimelineInputObserver {
             hoverEdge = edge
             activeDelete = deleting ? delete : nil
             activeDrag = deleting ? nil : drag
-            activeSeek = deleting ? nil : seek; didDrag = false
+            if deleting { activeSeek = nil }
+            else if let select { activeSeek = { select(event.modifierFlags) } }
+            else { activeSeek = seek }
+            didDrag = false
         }
     }
     override func mouseDragged(with event: NSEvent) {
         guard inputAvailable else { timelineInputGateChanged(blocked: true); return }
         if let startX {
-            let delta = event.locationInWindow.x - startX
+            let delta = (event.locationInWindow.x - startX) / max(0.01, abs(convert(NSSize(width: 1, height: 1), to: nil).width))
             if abs(delta) >= (edge == 0 ? 3 : 0.5) || abs(event.locationInWindow.y - startY) >= 3 { didDrag = true }
             if didDrag { activeDrag?(delta, false, edge) }
         }
@@ -423,7 +774,7 @@ final class RegionRightClickView: NSView, NativeTimelineInputObserver {
     override func mouseUp(with event: NSEvent) {
         guard inputAvailable else { timelineInputGateChanged(blocked: true); return }
         if let startX {
-            let delta = event.locationInWindow.x - startX
+            let delta = (event.locationInWindow.x - startX) / max(0.01, abs(convert(NSSize(width: 1, height: 1), to: nil).width))
             if didDrag || abs(delta) >= (edge == 0 ? 3 : 0.5) || abs(event.locationInWindow.y - startY) >= 3 { activeDrag?(delta, true, edge) }
             else if let activeDelete {
                 if regionRect.contains(convert(event.locationInWindow, from: nil)) { activeDelete() }
@@ -435,14 +786,39 @@ final class RegionRightClickView: NSView, NativeTimelineInputObserver {
     }
 }
 struct MarkerEditAnchor: NSViewRepresentable {
+    var normalCursor = false
     let edit: () -> Void
     let delete: () -> Void
     var seek: (() -> Void)? = nil
     var drag: ((CGFloat, Bool) -> Void)? = nil
     func makeNSView(context: Context) -> MarkerEditClickView { MarkerEditClickView() }
-    func updateNSView(_ view: MarkerEditClickView, context: Context) { view.action = edit; view.optionClick = delete; view.seek = seek; view.drag = drag }
+    func updateNSView(_ view: MarkerEditClickView, context: Context) { view.action = edit; view.optionClick = delete; view.seek = seek; view.drag = drag; view.normalCursor = normalCursor }
+}
+@MainActor private final class MarkerMenuActions: NSObject {
+    let edit: () -> Void, convert: () -> Void
+    init(edit: @escaping () -> Void, convert: @escaping () -> Void) { self.edit = edit; self.convert = convert }
+    @objc func editSelected() { edit() }
+    @objc func convertSelected() { convert() }
 }
 final class MarkerEditClickView: RightClickTargetView, NativeTimelineInputObserver {
+    var rename: (() -> Void)?
+    func showMarkerMenu(edit: @escaping () -> Void, convert: @escaping () -> Void) {
+        guard let event = NSApp.currentEvent, inputAvailable else { return }
+        let actions = MarkerMenuActions(edit: edit, convert: convert)
+        let menu = NSMenu()
+        for (title, action) in [("Edit", #selector(MarkerMenuActions.editSelected)), ("Converter para região", #selector(MarkerMenuActions.convertSelected))] {
+            let item = NSMenuItem(title: JarasLocalization.string(title), action: action, keyEquivalent: "")
+            item.target = actions; menu.addItem(item)
+        }
+        withExtendedLifetime(actions) { NSMenu.popUpContextMenu(menu, with: event, for: self) }
+    }
+
+    // Retained native commands read the live zoom on mouse-down, then keep
+    // that origin for the whole gesture even if a preview reprojects the grid.
+    var projectedPixelsPerSecond: CGFloat = 1
+    private(set) var gesturePixelsPerSecond: CGFloat = 1
+    var normalCursor = false { didSet { if normalCursor != oldValue { window?.invalidateCursorRects(for: self) } } }
+    private var moveCursor: NSCursor { normalCursor ? .arrow : .resizeLeftRight }
     private var nativeInputBounds: CGRect?
     var hasActiveProjectedGesture: Bool { startX != nil }
     override var isFlipped: Bool { nativeInputBounds != nil || super.isFlipped }
@@ -460,7 +836,7 @@ final class MarkerEditClickView: RightClickTargetView, NativeTimelineInputObserv
     func updateProjectedPointer(at point: CGPoint?) {
         guard startX == nil || point == nil else { return }
         let movable = point.map { inputAvailable && drag != nil && clickBounds.intersection(visibleRect).contains($0) } ?? false
-        let cursor = movable ? NSCursor.resizeLeftRight : NSCursor.arrow
+        let cursor = movable ? moveCursor : NSCursor.arrow
         if NSCursor.current !== cursor { cursor.set() }
     }
     private static let cursorTargets = NSHashTable<MarkerEditClickView>.weakObjects()
@@ -475,11 +851,12 @@ final class MarkerEditClickView: RightClickTargetView, NativeTimelineInputObserv
     func timelinePendingClickCancelled() {
         if !didDrag { timelineInputGateChanged(blocked: true) }
     }
-    static func usesMoveCursor(for event: NSEvent) -> Bool {
-        cursorTargets.allObjects.contains { view in
+    static func usesMoveCursor(for event: NSEvent) -> Bool { cursor(for: event) != nil }
+    static func cursor(for event: NSEvent) -> NSCursor? {
+        cursorTargets.allObjects.first { view in
             view.window?.windowNumber == event.windowNumber && view.drag != nil && view.inputAvailable
                 && view.clickBounds.intersection(view.visibleRect).contains(view.convert(event.locationInWindow, from: nil))
-        }
+        }?.moveCursor
     }
     var seek: (() -> Void)?
     var drag: ((CGFloat, Bool) -> Void)? { didSet {
@@ -492,10 +869,10 @@ final class MarkerEditClickView: RightClickTargetView, NativeTimelineInputObserv
     private var didDrag = false
     private var tracking: NSTrackingArea?
     private var inputAvailable: Bool {
-        !interactionBlocked && !RightClickRouter.shared.interactionBlocked && !NativeTimelineInputGate.shared.isBlocked(window) && window?.attachedSheet == nil && !isHiddenOrHasHiddenAncestor
+        !interactionBlocked && !NativeTimelineInputGate.shared.isBlocked(window) && window?.attachedSheet == nil && !isHiddenOrHasHiddenAncestor
     }
     override func resetCursorRects() {
-        if nativeInputBounds == nil, drag != nil, inputAvailable { addCursorRect(bounds, cursor: .resizeLeftRight) }
+        if nativeInputBounds == nil, drag != nil, inputAvailable { addCursorRect(bounds, cursor: moveCursor) }
     }
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
@@ -506,7 +883,7 @@ final class MarkerEditClickView: RightClickTargetView, NativeTimelineInputObserv
     override func cursorUpdate(with event: NSEvent) { mouseMoved(with: event) }
     override func mouseEntered(with event: NSEvent) { mouseMoved(with: event) }
     override func mouseMoved(with event: NSEvent) {
-        if drag != nil, inputAvailable { NSCursor.resizeLeftRight.set() }
+        if drag != nil, inputAvailable { moveCursor.set() }
     }
     override func mouseExited(with event: NSEvent) {
         if drag != nil, startX == nil { NSCursor.arrow.set() }
@@ -514,7 +891,7 @@ final class MarkerEditClickView: RightClickTargetView, NativeTimelineInputObserv
     override var priority: Int { 110 }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     override func hitTest(_ point: NSPoint) -> NSView? {
-        guard !interactionBlocked, !RightClickRouter.shared.interactionBlocked, window?.attachedSheet == nil,
+        guard !interactionBlocked, !NativeTimelineInputGate.shared.isBlocked(window), window?.attachedSheet == nil,
               !isHiddenOrHasHiddenAncestor, let event = NSApp.currentEvent,
               [.leftMouseDown, .leftMouseUp, .leftMouseDragged].contains(event.type),
               !event.modifierFlags.contains(.option), !event.modifierFlags.contains(.control),
@@ -525,22 +902,24 @@ final class MarkerEditClickView: RightClickTargetView, NativeTimelineInputObserv
         timelineInputGateChanged(blocked: true)
         guard inputAvailable,
               !event.modifierFlags.contains(.option), !event.modifierFlags.contains(.control) else { return }
+        if event.clickCount == 2, let rename { rename(); return }
         // Capture the original callback and window coordinates: moving the
         // display during preview must never change the gesture's origin.
         startX = event.locationInWindow.x
         startY = event.locationInWindow.y
+        gesturePixelsPerSecond = projectedPixelsPerSecond
         activeDrag = drag; activeSeek = seek; didDrag = false
     }
     override func mouseDragged(with event: NSEvent) {
         guard inputAvailable else { timelineInputGateChanged(blocked: true); return }
         guard let startX else { return }
-        let delta = event.locationInWindow.x - startX
+        let delta = (event.locationInWindow.x - startX) / max(0.01, abs(convert(NSSize(width: 1, height: 1), to: nil).width))
         if hypot(delta, event.locationInWindow.y - startY) >= 3 { didDrag = true }
         if didDrag { activeDrag?(delta, false) }
     }
     override func mouseUp(with event: NSEvent) {
         guard let startX else { return }
-        let delta = event.locationInWindow.x - startX
+        let delta = (event.locationInWindow.x - startX) / max(0.01, abs(convert(NSSize(width: 1, height: 1), to: nil).width))
         let finish = activeDrag, click = activeSeek
         let moved = didDrag || hypot(delta, event.locationInWindow.y - startY) >= 3
         self.startX = nil; activeDrag = nil; activeSeek = nil; didDrag = false
@@ -557,7 +936,9 @@ struct TrackDetailsEditRequest: Identifiable {
     let tracks: Set<UUID>
     let name: String
     let color: UInt32
-    let nameEditable: Bool
+    var instrumentIcon: String? = nil
+    var iconOnly = false
+    var iconRequest: Self { var request = self; request.iconOnly = true; return request }
 }
 private struct EditTrackDetailsKey: EnvironmentKey {
     static let defaultValue: (TrackDetailsEditRequest) -> Void = { _ in }

@@ -5,6 +5,7 @@ import XCTest
     var project = Project.empty(name: "Captured presets")
     var commands = 0, writes = 0
     var failWrites = false
+    func setProjectSyncID(_ id: UUID) { if project.projectSyncID == nil { project.projectSyncID = id } }
     func load(_ project: Project) throws { self.project = project }
     func snapshot() throws -> ShowSnapshot {
         ShowSnapshot(project: project, transport: TransportState(playing: true, songId: project.songs[0].id,

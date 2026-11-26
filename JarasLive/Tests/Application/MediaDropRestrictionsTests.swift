@@ -26,7 +26,7 @@ final class MediaDropRestrictionsTests: XCTestCase {
         XCTAssertEqual(writer.status, .completed)
         return url
     }
-    func testVideoUsesAnyExistingTrackOrCreatesStandardTrackAndMixedBatchesFail() async throws {
+    func testVideoUsesCompatibleTracksAndRejectsProgramChangeAndMixedBatches() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         let source = try await video(root.appendingPathComponent("Source"))
@@ -34,9 +34,13 @@ final class MediaDropRestrictionsTests: XCTestCase {
         let audio = try StemImportTests().fixture(root, folder: "Source", file: "Audio.wav").appendingPathComponent("Audio.wav")
         XCTAssertThrowsError(try StemProjectImporter.prepareDroppedAudio([audio, source], start: 0, destinationTracks: [], destination: destination))
         XCTAssertFalse(FileManager.default.fileExists(atPath: destination.deletingLastPathComponent().path))
+        for media in [source, audio] {
+            XCTAssertThrowsError(try StemProjectImporter.prepareDroppedAudio([media], start: 0, destinationTracks: [UUID()], destination: destination, destinationKind: .programChange))
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: destination.deletingLastPathComponent().path), "Rejected Program Change drops must not copy media")
         let created = try StemProjectImporter.prepareDroppedAudio([source], start: 0, destinationTracks: [], destination: destination)
         XCTAssertEqual(created.tracks[0].kind, .standard)
-        for kind in TrackKind.allCases {
+        for kind in TrackKind.allCases where kind != .programChange {
             let id = UUID()
             let imported = try StemProjectImporter.prepareDroppedAudio([source], start: 10, destinationTracks: [id], destination: destination, destinationKind: kind)
             XCTAssertEqual(imported.tracks[0].id, id)
@@ -75,6 +79,30 @@ final class MediaDropRestrictionsTests: XCTestCase {
         XCTAssertNil(project.songs[0].firstProjectionItem(at: .nan))
         XCTAssertNil(project.songs[0].firstProjectionItem(at: 10, trackKind: .teleprompt))
     }
+    func testMainVideoExcludesTeleprompterMoviesAndPhotosBeforeAndAfterCuts() {
+        var project = Project.empty(name: "Independent projections")
+        var top = Track(id: UUID(), name: "Upper video", role: .other)
+        top.clips = [AudioClip(id: UUID(), name: "Upper", startTime: 0, duration: 1, audioFile: AudioFile(path: "Videos/top.mp4"))]
+        var lower = Track(id: UUID(), name: "Lower video", role: .other)
+        lower.clips = [AudioClip(id: UUID(), name: "Lower", startTime: 0, duration: 3, audioFile: AudioFile(path: "Videos/lower.mp4"))]
+        for ext in ["mp4", "png"] {
+            var tp1 = Track(id: UUID(), name: "TP1", role: TrackRole(rawValue: "teleprompt"))
+            var tp2 = Track(id: UUID(), name: "TP2", role: TrackRole(rawValue: "teleprompt2"))
+            tp1.clips = [AudioClip(id: UUID(), name: "TP1 media", startTime: 0, duration: 10, audioFile: AudioFile(path: "Videos/tp1.\(ext)"))]
+            tp2.clips = [AudioClip(id: UUID(), name: "TP2 media", startTime: 0, duration: 10, audioFile: AudioFile(path: "Videos/tp2.\(ext)"))]
+            project.songs[0].tracks = [tp1, top, tp2, lower]
+            let song = project.songs[0]
+            XCTAssertEqual(song.firstProjectionItem(at: 0.99)?.id, top.clips[0].id)
+            XCTAssertEqual(song.firstProjectionItem(at: 1)?.id, lower.clips[0].id)
+            XCTAssertNil(song.firstProjectionItem(at: 3), "TP media cannot fill a gap in the main Video window")
+            for position in [0.0, 1, 3] {
+                XCTAssertEqual(song.firstProjectionItem(at: position, trackKind: .teleprompt)?.id, tp1.clips[0].id)
+                XCTAssertEqual(song.firstProjectionItem(at: position, trackKind: .teleprompt2)?.id, tp2.clips[0].id)
+            }
+            project.songs[0].tracks = [tp1, tp2]
+            XCTAssertNil(project.songs[0].firstProjectionItem(at: 0), "A TP-only project leaves the Video window empty")
+        }
+    }
     func testMovieAndImageResizeOnSpecialAndStandardTracks() throws {
         for kind: TrackKind in [.standard, .teleprompt, .chords, .timecode, .click] {
             var project = Project.empty(name: "Resize media")
@@ -86,11 +114,17 @@ final class MediaDropRestrictionsTests: XCTestCase {
             project.resizeItem(movie.id, start: 11, end: 18)
             XCTAssertEqual(project.songs[0].tracks[0].clips[0].sourceOffset, 1)
             XCTAssertEqual(project.songs[0].tracks[0].clips[0].duration, 7)
-            XCTAssertEqual(Array(ClipRepetitionBoundaries(clip: project.songs[0].tracks[0].clips[0], visible: 0...100)), [15])
+            XCTAssertEqual(Array(ClipRepetitionBoundaries(clip: project.songs[0].tracks[0].clips[0], visible: 0...100)), [])
             project.resizeItem(image.id, start: 27, end: 38)
-            XCTAssertEqual(project.songs[0].tracks[0].clips[1].duration, 11)
+            XCTAssertEqual(project.songs[0].tracks[0].clips[1].startTime, 30)
+            XCTAssertEqual(project.songs[0].tracks[0].clips[1].duration, 8)
+            XCTAssertEqual(project.songs[0].tracks[0].clips[1].sourceOffset, 0)
+            XCTAssertNil(project.songs[0].tracks[0].clips[1].loopLength)
+            XCTAssertEqual(Array(ClipRepetitionBoundaries(clip: project.songs[0].tracks[0].clips[1], visible: 0...100)), [])
+            // Repetition remains available when the source explicitly declares a loop.
+            project.songs[0].tracks[0].clips[1].loopLength = 5
+            project.resizeItem(image.id, start: 27, end: 38)
             XCTAssertEqual(project.songs[0].tracks[0].clips[1].sourceOffset, 2)
-            XCTAssertEqual(project.songs[0].tracks[0].clips[1].loopLength, 5)
             XCTAssertEqual(Array(ClipRepetitionBoundaries(clip: project.songs[0].tracks[0].clips[1], visible: 0...100)), [30,35])
             XCTAssertNoThrow(try project.validate())
             XCTAssertEqual(try ProjectDocumentCodec.decode(ProjectDocumentCodec.encode(project)), project)

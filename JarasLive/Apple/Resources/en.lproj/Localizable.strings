@@ -55,6 +55,7 @@
 "DEMO · SEM ÁUDIO" = "DEMO · NO AUDIO";
 "Autorização pendente ao parar" = "Authorization pending after playback";
 "Salvar projeto" = "Save project";
+"Toggle fullscreen" = "Toggle fullscreen";
 "Abrir grid" = "Open grid";
 "REPRODUZINDO" = "PLAYING";
 "PARADO" = "STOPPED";
@@ -129,7 +130,7 @@
 
 "Criar região do item" = "Create region from item";
 
-"Editar região" = "Edit region";
+"Editar região" = "Edit Region";
 
 "Salvar" = "Save";
 
@@ -171,6 +172,8 @@
 "Smaller buffers reduce latency and use more CPU." = "Smaller buffers reduce latency and use more CPU.";
 
 "Do you want to save this project?" = "Do you want to save this project?";
+"Do you want to save all projects?" = "Do you want to save all projects?";
+"Save all" = "Save all";
 
 "Mappings" = "Mappings";
 "Enabled" = "Enabled";
@@ -197,7 +200,7 @@
 "Reverb" = "Reverb";
 "Delay — coming soon" = "Delay — coming soon";
 "Track effects" = "Track effects";
-"Master effects" = "Master effects";
+"Master effects" = "Main effects";
 "Arm track for recording" = "Arm track for recording";
 "Record armed tracks" = "Record armed tracks";
 "Repeat (R)" = "Repeat (R)";
@@ -216,6 +219,7 @@
 "Effect" = "Effect";
 
 "Download" = "Download";
+"Delete instrument" = "Delete";
 
 "MIDI input" = "MIDI input";
 
@@ -251,6 +255,8 @@
 
 "Choose folders" = "Choose folders";
 "Search folders" = "Search folders";
+"Check all" = "Check all";
+"Uncheck all" = "Uncheck all";
 "Select all" = "Select all";
 "Deselect all" = "Deselect all";
 "Folders will be placed on the grid in the order you check them." = "Folders will be placed on the grid in the order you check them.";
@@ -347,6 +353,7 @@
 "Volume" = "Volume";
 "Mute" = "Mute";
 "Solo" = "Solo";
+"Exclusive Solo" = "Exclusive Solo";
 "Video" = "Video";
 "Image" = "Image";
 "⌘ / Ctrl: multiple · Shift: range" = "⌘ / Ctrl: multiple · Shift: range";
@@ -385,6 +392,7 @@
 "Copying audio and saving project…" = "Copying audio and saving project…";
 "%lld song folders · %lld audio files" = "%lld song folders · %lld audio files";
 "Browse…" = "Browse…";
+"Open existing" = "Open existing";
 "Parameters" = "Parameters";
 "Velocity" = "Velocity";
 "Controller" = "Controller";
@@ -523,6 +531,9 @@
 "Bottom" = "Bottom";
 "Lyrics" = "Lyrics";
 "Chords" = "Chords";
+"Chord" = "Chord";
+"Insert chord here" = "Insert chord here";
+"The cursor must be inside a region." = "The cursor must be inside a region.";
 "Night" = "Night";
 "Day" = "Day";
 "Teleprompter settings" = "Teleprompter settings";
@@ -584,7 +595,7 @@
 
 "Complete project" = "Complete project";
 
-"Master + Tracks" = "Master + Tracks";
+"Master + Tracks" = "Main + Tracks";
 
 "Stems" = "Stems";
 
@@ -757,7 +768,8 @@
 "Global" = "Global";
 "Free" = "Free";
 "Relative" = "Relative";
-"Tracks show/hide" = "Tracks show/hide";
+"Track Mixer show/hide" = "Track Mixer show/hide";
+"Hoz-Mixer show/hide" = "Hoz-Mixer show/hide";
 "Setlist show/hide" = "Setlist show/hide";
 "Divisions" = "Divisions";
 "Grid divisions" = "Grid divisions";
@@ -769,8 +781,8 @@
 "Restore this mapping?" = "Restore this mapping?";
 "Restore" = "Restore";
 
-"Mute Master" = "Mute Master";
-"Volume Master" = "Volume Master";
+"Mute Master" = "Mute Main";
+"Volume Master" = "Volume Main";
 
 "Video window on/off" = "Video window on/off";
 "Teleprompter window on/off" = "Teleprompter window on/off";
@@ -781,23 +793,27 @@
 
 "Create marker" = "Create marker";
 
+"Insert Elastic Point" = "Insert Elastic Point";
 "Create tempo marker" = "Create tempo marker";
 
 "Tempo marker" = "Tempo marker";
 
 "Invalid tempo or time signature." = "Invalid tempo or time signature.";
 
-"Solo Master" = "Solo Master";
+"Solo Master" = "Solo Main";
 
 "Search plugins" = "Search plugins";
 
 "No plugins found" = "No plugins found";
 
 "Detect BPM…" = "Detect BPM…";
+"Bpm detect" = "Bpm detect";
 "Detect BPM" = "Detect BPM";
 "Detect BPM from the Click track?" = "Detect BPM from the Click track?";
 "Detecting BPM…" = "Detecting BPM…";
 "No stable click tempo was found." = "No stable click tempo was found.";
+"No stable tempo was found in the selected audio." = "No stable tempo was found in the selected audio.";
+"The project media folder is unavailable." = "The project media folder is unavailable.";
 "BPM detected." = "BPM detected.";
 "Quality" = "Quality";
 "Re-render" = "Re-render";
@@ -868,7 +884,7 @@
 
 "Show blocks in the teleprompter" = "Show blocks in the teleprompter";
 
-"Independent normalization gain: up to +24 dB" = "Independent normalization gain: up to +24 dB";
+"Independent normalization gain" = "Independent normalization gain";
 
 "MIDI channel" = "MIDI channel";
 "All channels" = "All";
@@ -879,7 +895,7 @@
 "FX Manager" = "FX Manager";
 
 "Click to open FX Manager" = "Click to open FX Manager";
-"Click: open this plugin in FX Manager. Option/Alt + click: remove plugin. Shift + click: toggle bypass (red slot)." = "Click: open this plugin in FX Manager. Option/Alt + click: remove plugin. Shift + click: toggle bypass (red slot).";
+"Click: open this plugin in FX Manager. Option/Alt + click: remove plugin. Shift + click: toggle bypass (dimmed text)." = "Click: open this plugin in FX Manager. Option/Alt + click: remove plugin. Shift + click: toggle bypass (dimmed text).";
 
 "All Regions song text" = "All Regions song text";
 "Playlist song text" = "Playlist song text";
@@ -911,7 +927,7 @@
 
 "Region ID" = "Region ID";
 
-"Toggle Master Stereo/Mono" = "Toggle Master Stereo/Mono";
+"Toggle Master Stereo/Mono" = "Toggle Main Stereo/Mono";
 
 "Multiloops" = "Multiloops";
 
@@ -965,6 +981,9 @@
 "No backups found" = "No backups found";
 
 "Invert polarity" = "Invert polarity";
+"Phase inverted — restore phase" = "Phase inverted — restore phase";
+"Mono — switch to Stereo" = "Mono — switch to Stereo";
+"Stereo — switch to Mono" = "Stereo — switch to Mono";
 
 "Timeline" = "Timeline";
 
@@ -981,10 +1000,10 @@
 "Sub Play cursor color" = "Sub Play cursor color";
 
 // Local-network Remote
-"Open Remote on the iPad and choose this computer." = "Open Remote on the iPad and choose this computer.";
+"Open Remote on your device and choose this computer." = "Open Remote on your device and choose this computer.";
 "Audio continues on the computer. Both devices must be on the same local network." = "Audio continues on the computer. Both devices must be on the same local network.";
 "Disable Remote" = "Disable Remote";
-"Waiting for iPad" = "Waiting for iPad";
+"Waiting for connection" = "Waiting for connection";
 "Connected" = "Connected";
 "Searching for computers…" = "Searching for computers…";
 "Connecting…" = "Connecting…";
@@ -1100,7 +1119,7 @@
 
 // Manual timeline media cleanup
 "Clean up files deleted from the timeline" = "Clean up files deleted from the timeline";
-"This saves the project and permanently removes audio and video files deleted from the timeline from its Stems and Videos folders. Files still in use are kept. Recovery backups retain their media. The editing undo history will be cleared. This cleanup cannot be undone." = "This saves the project and permanently removes audio and video files deleted from the timeline from its Stems and Videos folders. Files still in use are kept. Recovery backups retain their media. The editing undo history will be cleared. This cleanup cannot be undone.";
+"This saves the project and permanently removes audio and video files deleted from the timeline from its Stems and Videos folders. Files still in use are kept. Old recovery backups of this project will also be deleted. The editing undo history will be cleared. This cleanup cannot be undone." = "This saves the project and permanently removes audio and video files deleted from the timeline from its Stems and Videos folders. Files still in use are kept. Old recovery backups of this project will also be deleted. The editing undo history will be cleared. This cleanup cannot be undone.";
 "Stop playback, recording and imports before cleaning timeline files." = "Stop playback, recording and imports before cleaning timeline files.";
 
 "This project is in a shared folder. Only the selected project file will be permanently deleted and removed from recents. The folder, other projects, audio and backups will be kept. This cannot be undone." = "This project is in a shared folder. Only the selected project file will be permanently deleted and removed from recents. The folder, other projects, audio and backups will be kept. This cannot be undone.";
@@ -1179,6 +1198,9 @@
 "Open CatLive and enable Remote on your Mac." = "Open CatLive and enable Remote on your PC.";
 
 "Exit Remote" = "Exit Remote";
+"Exit Native?" = "Exit Native?";
+"Temporary projects will be discarded. Return to the mode selection?" = "Temporary projects will be discarded. Return to the mode selection?";
+"Close the open projects and return to the mode selection?" = "Close the open projects and return to the mode selection?";
 
 "Observer" = "Observer";
 
@@ -1287,7 +1309,7 @@
 "Turn off Live" = "Turn off Live";
 "Turning off Live clears all played-song marks, including songs inside unified regions. Turning it on again starts the playback count from zero." = "Turning off Live clears all played-song marks, including songs inside unified regions. Turning it on again starts the playback count from zero.";
 
-"Render each selected region through the Master, including tracks routed to hardware outputs." = "Render each selected region through the Master, including tracks routed to hardware outputs.";
+"Render each selected region through the Master, including tracks routed to hardware outputs." = "Render each selected region through the Main, including tracks routed to hardware outputs.";
 
 "Cut" = "Cut";
 
@@ -1409,11 +1431,17 @@
 "Save to Files" = "Save to Files";
 
 "Save the project before exporting." = "Save the project before exporting.";
+"Save the project before sharing." = "Save the project before sharing.";
+"Preparing project package…" = "Preparing project package…";
+"Project package ready." = "Project package ready.";
+"Download the native instrument before sharing: %@" = "Download the native instrument before sharing: %@";
+"Sharing canceled." = "Sharing canceled.";
 
 "Choose a folder for the imported project" = "Choose a folder for the imported project";
 
 "Project not found" = "Project not found";
 
+"Rename" = "Rename";
 "Rename playlist" = "Rename playlist";
 
 "Delete region and its contents?" = "Delete region and its contents?";
@@ -1475,6 +1503,7 @@
 "Add to project" = "Add to project";
 
 "%@ contains no readable WAV, AIFF or MP3 files. Open the folder and select the song folders containing audio." = "%@ contains no readable WAV, AIFF or MP3 files. Open the folder and select the song folders containing audio.";
+"%@ contains a CatLive project. Use Open existing and select the .jl file inside the folder." = "%@ contains a CatLive project. Use Open existing and select the .jl file inside the folder.";
 
 "No audio directly in this folder" = "No audio directly in this folder";
 
@@ -1487,6 +1516,7 @@
 "Could not access the selected file." = "Could not access the selected file.";
 
 "Arm an audio track before recording." = "Arm an audio track before recording.";
+"Arm at least one track before recording." = "Arm at least one track before recording.";
 "The region and its contents will be deleted." = "The region and its contents will be deleted.";
 
 "Open Remote on another device and choose this iPad." = "Open Remote on another device and choose this iPad.";
@@ -1604,3 +1634,1128 @@
 "Loading waveforms…" = "Loading waveforms…";
 
 "%ld REAPER items before the project start were ignored." = "%ld REAPER items before the project start were ignored.";
+
+"Interface scale" = "Interface scale";
+
+"Continuous scroll" = "Continuous scroll";
+
+"Duplicate track" = "Duplicate track";
+
+"Duplicate tracks" = "Duplicate tracks";
+
+"REC Multitrack" = "REC Multitrack";
+
+"Track" = "Track";
+
+"Use Advanced setting" = "Use Advanced setting";
+
+"Mono inputs in sequence, all tracks armed, monitoring on." = "Mono inputs in sequence, all tracks armed, monitoring on.";
+
+"Choose between 1 and 128 channels." = "Choose between 1 and 128 channels.";
+
+"Fadeout…" = "Fadeout…";
+"Fadeout" = "Fadeout";
+"Duration" = "Duration";
+"Choose an unused shortcut. Space and standard shortcuts cannot control Fadeout." = "Choose an unused shortcut. Space and standard shortcuts cannot control Fadeout.";
+"Fadeout requires playback." = "Fadeout requires playback.";
+"Stop Sub Play before starting Fadeout." = "Stop Sub Play before starting Fadeout.";
+"Select tracks in the Fadeout settings." = "Select tracks in the Fadeout settings.";
+"Cancel Fadeout before starting Sub Play." = "Cancel Fadeout before starting Sub Play.";
+
+"Use the same key or MIDI control again to cancel Fadeout and restore the volumes." = "Use the same key or MIDI control again to cancel Fadeout and restore the volumes.";
+
+"Press a MIDI note or controller button." = "Press a MIDI note or controller button.";
+
+"External (VST3)" = "External (VST3)";
+
+"Same track, in sequence" = "Same track, in sequence";
+
+"Same track, same start time" = "Same track, same start time";
+
+"Company" = "Company";
+
+"Cancel scan" = "Cancel scan";
+
+"Scan cancelled." = "Scan cancelled.";
+
+"Destacar Setlist" = "Undock Setlist";
+
+"Setlist à direita" = "Setlist on the right";
+
+"Setlist à esquerda" = "Setlist on the left";
+
+"Parts à esquerda" = "Parts on the left";
+"Visibilidade das pistas" = "Track visibility";
+"Painel" = "Panel";
+
+"Mostrar Master à direita" = "Show Main on the right";
+
+"Mostrar Master à esquerda" = "Show Main on the left";
+
+// Show Mode
+"Show Mode" = "Show Mode";
+"When enabled, the Mac lid can be closed without stopping playback." = "When enabled, the Mac lid can be closed without stopping playback.";
+"When enabled, the notebook lid can be closed without stopping playback." = "When enabled, the notebook lid can be closed without stopping playback.";
+"The system did not confirm the Show Mode change." = "The system did not confirm the Show Mode change.";
+"Unable to read the Windows power plan." = "Unable to read the Windows power plan.";
+"Unable to read the Windows lid settings." = "Unable to read the Windows lid settings.";
+"Show Mode was not changed. Administrator authorization is required." = "Show Mode was not changed. Administrator authorization is required.";
+"Unable to change Show Mode. The previous lid settings were restored." = "Unable to change Show Mode. The previous lid settings were restored.";
+
+"Open in new tab" = "Open in new tab";
+"Previous project tab" = "Previous project tab";
+"Next project tab" = "Next project tab";
+
+"Close tab" = "Close tab";
+
+"Open another project?" = "Open another project?";
+
+"Open project" = "Open project";
+
+"Startup sound" = "Startup sound";
+
+"Undock Setlist" = "Undock Setlist";
+
+"Undock mixer" = "Undock mixer";
+
+"Dock mixer" = "Dock mixer";
+
+"Undock Parts" = "Undock Parts";
+
+"Dock Parts" = "Dock Parts";
+
+"Parts on the left" = "Parts on the left";
+
+"Keyboard style" = "Keyboard style";
+
+"Section start" = "START";
+
+"Allow microphone access in System Settings to record audio." = "Allow microphone access in System Settings to record audio.";
+
+"Recording level" = "Recording level";
+"Recording effects" = "Recording effects";
+"Pre-fader" = "Pre-fader";
+"Post-fader" = "Post-fader";
+"Pre-FX" = "Pre-FX";
+"Post-FX" = "Post-FX";
+/* Confirm application close while any project tab is playing. */
+"Close CatLive?" = "Close CatLive?";
+"Playback is in progress. Do you really want to close CatLive?" = "Playback is in progress. Do you really want to close CatLive?";
+"Close CatLive" = "Close CatLive";
+"Create at least 2 section markers enabled for looping in this song before creating a multiloop." = "Create at least 2 section markers enabled for looping in this song before creating a multiloop.";
+
+"Timeline snapping" = "Timeline snapping";
+"Snap on — Shift temporarily disables snapping" = "Snap on — Shift temporarily disables snapping";
+"Snap off — free positioning" = "Snap off — free positioning";
+
+"Remote · Right-click to configure" = "Remote · Right-click to configure";
+
+"Hoz-Mixer" = "Hoz-Mixer";
+
+"Swap - LR" = "Swap - LR";
+
+"Finish recording before changing the audio device." = "Finish recording before changing the audio device.";
+
+"Finish recording and pending operations before importing audio." = "Finish recording and pending operations before importing audio.";
+
+"Finish recording and imports before cleaning timeline files." = "Finish recording and imports before cleaning timeline files.";
+
+"bar" = "bar";
+"bars" = "bars";
+
+"Config Init" = "Config Init";
+"Initial playback" = "Initial playback";
+
+"%@: item \"%@\" at %.6f s was ignored because it overlaps another item on the same special-track layer. The rest of the project was imported." = "%@: item \"%@\" at %.6f s was ignored because it overlaps another item on the same special-track layer. The rest of the project was imported.";
+
+"Enter a valid project name." = "Enter a valid project name.";
+"A project with this name already exists." = "A project with this name already exists.";
+
+"Open file location" = "Open file location";
+
+"Relative timebase" = "Relative timebase";
+
+"Enable relative timebase?" = "Enable relative timebase?";
+
+"Disable relative timebase?" = "Disable relative timebase?";
+
+"Enable" = "Enable";
+
+"Disable" = "Disable";
+
+"Relative timebase: changing the project BPM adjusts item duration and playback speed to follow the tempo. With Free timebase, changing the project BPM preserves item duration and playback speed. Tempo markers with their own timebase keep their individual settings." = "Relative timebase: changing the project BPM adjusts item duration and playback speed to follow the tempo. With Free timebase, changing the project BPM preserves item duration and playback speed. Tempo markers with their own timebase keep their individual settings.";
+
+"Free timebase: changing the project BPM changes the grid without stretching or shortening items. Item duration and playback speed are preserved. Tempo markers with their own timebase keep their individual settings." = "Free timebase: changing the project BPM changes the grid without stretching or shortening items. Item duration and playback speed are preserved. Tempo markers with their own timebase keep their individual settings.";
+
+"Load sample…" = "Load sample…";
+
+"No sample loaded" = "No sample loaded";
+
+"Save the project before loading a sample." = "Save the project before loading a sample.";
+
+"Choose a WAV or MP3 sample." = "Choose a WAV or MP3 sample.";
+
+"Choose a mono or stereo sample up to 60 seconds." = "Choose a mono or stereo sample up to 60 seconds.";
+
+"WAV / MP3 · Mono / Stereo · 60 s max" = "WAV / MP3 · Mono / Stereo · 60 s max";
+
+"The project folder is unavailable." = "The project folder is unavailable.";
+
+"Duplicate region" = "Duplicate region";
+
+"A duplicated region can only be queued while another song is playing." = "A duplicated region can only be queued while another song is playing.";
+
+"The selected items changed during re-render. Render again to apply the new timing." = "The selected items changed during re-render. Render again to apply the new timing.";
+
+"Cannot queue a duplicate of the song that is playing." = "Cannot queue a duplicate of the song that is playing.";
+
+"Block text color" = "Block text color";
+
+"Recording signal" = "Recording signal";
+
+"Project size" = "Project size";
+
+"Calculating…" = "Calculating…";
+
+"This project is no longer available in the PC's recent projects." = "This project is no longer available in the PC's recent projects.";
+
+"Save and close" = "Save and close";
+
+"The project will be saved before closing." = "The project will be saved before closing.";
+
+"Retry failed plugins" = "Retry failed plugins";
+"Plugin did not respond within 2 minutes; skipped." = "Plugin did not respond within 2 minutes; skipped.";
+
+"Next section" = "Next section";
+
+"Armed section" = "Armed section";
+
+"Delete block" = "Delete block";
+
+"Delete blocks" = "Delete blocks";
+
+"Delete selected blocks?" = "Delete selected blocks?";
+
+"Only the selected block headers will be removed. Songs and timeline items will be kept." = "Only the selected block items will be removed from the setlist.";
+
+"Block ID %02d" = "Block ID %02d";
+
+"Enable Fadeout" = "Enable Fadeout";
+"Tracks included" = "Tracks included";
+"Key" = "Key";
+"Set shortcut" = "Set shortcut";
+"Press a key…" = "Press a key…";
+"Press a MIDI control…" = "Press a MIDI control…";
+"Remove binding" = "Remove binding";
+"Wait for Fadeout to finish before changing these options." = "Wait for Fadeout to finish before changing these options.";
+"No audio tracks in this project." = "No audio tracks in this project.";
+"Esc cancels. Existing shortcuts are preserved." = "Esc cancels. Existing shortcuts are preserved.";
+"Click Map MIDI and press a MIDI note or CC button. MIDI input must be enabled in Settings." = "Click Map MIDI and press a MIDI note or CC button. MIDI input must be enabled in Settings.";
+
+"Cancel queued section" = "Cancel queued section";
+
+"Choose tracks" = "Choose tracks";
+
+"On these tracks, automatic Subplay stops items from the previous song and keeps only the incoming song's items." = "On these tracks, automatic Subplay stops items from the previous song and keeps only the incoming song's items.";
+
+"Text color" = "Text color";
+
+
+/* Unified Native trial and lifetime purchase action. */
+"Buy lifetime access" = "Buy lifetime access";
+"The 7-day trial is free. After it ends, lifetime access is a separate one-time purchase at the price shown above. There is no subscription or automatic charge. Your projects are kept. Remote stays free." = "The 7-day trial is free. After it ends, lifetime access is a separate one-time purchase at the price shown above. There is no subscription or automatic charge. Your projects are kept. Remote stays free.";
+
+"Replace existing files?" = "Replace existing files?";
+
+"Replace" = "Replace";
+
+"Native access unlocked" = "Native access unlocked";
+
+"Name (up to 12 characters)" = "Name (up to 12 characters)";
+
+"Only six Program Change markers are allowed at the same position." = "Only six Program Change markers are allowed at the same position.";
+
+"Choose a MIDI output in Patch." = "Choose a MIDI output in Patch.";
+
+"Lifetime" = "Lifetime";
+
+"1 day remaining — Free trial" = "1 day remaining — Free trial";
+
+"%lld days remaining — Free trial" = "%lld days remaining — Free trial";
+
+"Free trial ended" = "Free trial ended";
+
+"System default" = "System default";
+"Re-render selected items" = "Re-render selected items";
+"Unify selected audio items" = "Unify selected audio items";
+
+"Search actions" = "Search actions";
+
+"No actions found" = "No actions found";
+
+"Favorites" = "Favorites";
+"Add to favorites" = "Add to favorites";
+"Remove from favorites" = "Remove from favorites";
+
+"Only the selected regions will be removed. Timeline items and their audio will be kept." = "Only the selected regions will be removed. Timeline items and their audio will be kept.";
+
+/* DAW import diagnostics use the selected application language. */
+"Overlapping item ignored on this special-track layer. The rest of the project was imported." = "Overlapping item ignored on this special-track layer. The rest of the project was imported.";
+"REAPER: invalid VST3 input count." = "REAPER: invalid VST3 input count.";
+"REAPER: invalid VST3 output count." = "REAPER: invalid VST3 output count.";
+"REAPER: truncated VST3 processor state." = "REAPER: truncated VST3 processor state.";
+"REAPER: truncated VST3 state." = "REAPER: truncated VST3 state.";
+"REAPER: unsupported VST3 routing-state format." = "REAPER: unsupported VST3 routing-state format.";
+"REAPER: unsupported VST3 state record." = "REAPER: unsupported VST3 state record.";
+" automation is not supported and was not applied." = " automation is not supported and was not applied.";
+" automation parameter could not be identified; the envelope was not applied." = " automation parameter could not be identified; the envelope was not applied.";
+" contains automation items; pooled automation items were not imported." = " contains automation items; pooled automation items were not imported.";
+" could not be restored: " = " could not be restored: ";
+" envelope exceeds the CatLive parameter range and was not applied." = " envelope exceeds the CatLive parameter range and was not applied.";
+" is categorized as a MIDI effect; VST3 MIDI-output transformations are not supported and were not migrated." = " is categorized as a MIDI effect; VST3 MIDI-output transformations are not supported and were not migrated.";
+" state was not imported: " = " state was not imported: ";
+" was not found or restored. Its saved state was retained, but the effect was not inserted." = " was not found or restored. Its saved state was retained, but the effect was not inserted.";
+": MIDI take VST3 effects and their saved states were retained, but no active take instrument generates audio for them. MIDI-only transformations are not supported; these take effects are not applied." = ": MIDI take VST3 effects and their saved states were retained, but no active take instrument generates audio for them. MIDI-only transformations are not supported; these take effects are not applied.";
+": MIDI take automation was retained, but cannot be applied independently through a shared track instrument. An active VST3 instrument on the take is required." = ": MIDI take automation was retained, but cannot be applied independently through a shared track instrument. An active VST3 instrument on the take is required.";
+": REAPER FX containers are not supported; effects inside containers were not imported." = ": REAPER FX containers are not supported; effects inside containers were not imported.";
+": alternate REAPER takes ignored on this single-lane special track; the active take was imported." = ": alternate REAPER takes ignored on this single-lane special track; the active take was imported.";
+": only VST3 effects are supported during REAPER migration." = ": only VST3 effects are supported during REAPER migration.";
+": unsupported REAPER automation mode was imported as Read." = ": unsupported REAPER automation mode was imported as Read.";
+"Cannot create the destination directory." = "Cannot create the destination directory.";
+"Cannot create the project directory." = "Cannot create the project directory.";
+"Could not copy media: " = "Could not copy media: ";
+"Incomplete REAPER regions were retained as start markers." = "Incomplete REAPER regions were retained as start markers.";
+"Invalid VS Hook project metadata UTF-8." = "Invalid VS Hook project metadata UTF-8.";
+"Invalid VS Hook project metadata." = "Invalid VS Hook project metadata.";
+"Items before the project start were ignored." = "Items before the project start were ignored.";
+"Logic Flex processing and region automation are not applied. Audio retains its source bounds." = "Logic Flex processing and region automation are not applied. Audio retains its source bounds.";
+"Logic MIDI controller and expression events are not migrated." = "Logic MIDI controller and expression events are not migrated.";
+"Logic MIDI note ignored: " = "Logic MIDI note ignored: ";
+"Logic alternative ignored: " = "Logic alternative ignored: ";
+"Logic alternative selection ignored: " = "Logic alternative selection ignored: ";
+"Logic item ignored: " = "Logic item ignored: ";
+"Logic marker ignored: " = "Logic marker ignored: ";
+"Logic media or mixer setting ignored: " = "Logic media or mixer setting ignored: ";
+"Logic metadata ignored: " = "Logic metadata ignored: ";
+"Logic project information ignored: " = "Logic project information ignored: ";
+"Logic record ignored: " = "Logic record ignored: ";
+"Logic tempo point ignored: " = "Logic tempo point ignored: ";
+"Logic track ignored: " = "Logic track ignored: ";
+"Logic: MIDI region has no event sequence." = "Logic: MIDI region has no event sequence.";
+"Logic: MIDI region references an unknown sequence." = "Logic: MIDI region references an unknown sequence.";
+"Logic: active alternative was not found or is ambiguous." = "Logic: active alternative was not found or is ambiguous.";
+"Logic: active alternative was not found." = "Logic: active alternative was not found.";
+"Logic: an incomplete event tail was ignored." = "Logic: an incomplete event tail was ignored.";
+"Logic: an orphan event continuation was ignored." = "Logic: an orphan event continuation was ignored.";
+"Logic: arrangement track list is not supported." = "Logic: arrangement track list is not supported.";
+"Logic: cannot read file." = "Logic: cannot read file.";
+"Logic: cyclic plist." = "Logic: cyclic plist.";
+"Logic: duplicate mixer channel identifier." = "Logic: duplicate mixer channel identifier.";
+"Logic: incomplete MIDI note." = "Logic: incomplete MIDI note.";
+"Logic: incomplete container; complete records were recovered." = "Logic: incomplete container; complete records were recovered.";
+"Logic: incomplete marker." = "Logic: incomplete marker.";
+"Logic: incomplete project container." = "Logic: incomplete project container.";
+"Logic: integer too wide." = "Logic: integer too wide.";
+"Logic: invalid MIDI bounds." = "Logic: invalid MIDI bounds.";
+"Logic: invalid MIDI note." = "Logic: invalid MIDI note.";
+"Logic: invalid active alternative." = "Logic: invalid active alternative.";
+"Logic: invalid audio bounds." = "Logic: invalid audio bounds.";
+"Logic: invalid audio filename." = "Logic: invalid audio filename.";
+"Logic: invalid event boundary." = "Logic: invalid event boundary.";
+"Logic: invalid file size or missing file: " = "Logic: invalid file size or missing file: ";
+"Logic: invalid mixer controls." = "Logic: invalid mixer controls.";
+"Logic: invalid plist dictionary." = "Logic: invalid plist dictionary.";
+"Logic: invalid plist header." = "Logic: invalid plist header.";
+"Logic: invalid plist key." = "Logic: invalid plist key.";
+"Logic: invalid plist length." = "Logic: invalid plist length.";
+"Logic: invalid plist metadata." = "Logic: invalid plist metadata.";
+"Logic: invalid plist nesting." = "Logic: invalid plist nesting.";
+"Logic: invalid project record." = "Logic: invalid project record.";
+"Logic: invalid real value." = "Logic: invalid real value.";
+"Logic: invalid real." = "Logic: invalid real.";
+"Logic: invalid sample rate ignored; 44100 Hz was used." = "Logic: invalid sample rate ignored; 44100 Hz was used.";
+"Logic: invalid tempo event." = "Logic: invalid tempo event.";
+"Logic: invalid tempo ignored; 120 BPM was used." = "Logic: invalid tempo ignored; 120 BPM was used.";
+"Logic: invalid track group was ignored." = "Logic: invalid track group was ignored.";
+"Logic: item references an unknown track." = "Logic: item references an unknown track.";
+"Logic: metadata must be a dictionary." = "Logic: metadata must be a dictionary.";
+"Logic: missing plist value." = "Logic: missing plist value.";
+"Logic: multiple alternatives without an active selection. Save the desired alternative in Logic first." = "Logic: multiple alternatives without an active selection. Save the desired alternative in Logic first.";
+"Logic: no arrangement tracks." = "Logic: no arrangement tracks.";
+"Logic: no project alternative was found." = "Logic: no project alternative was found.";
+"Logic: no readable arrangement data was found." = "Logic: no readable arrangement data was found.";
+"Logic: plist value exceeds size limit." = "Logic: plist value exceeds size limit.";
+"Logic: too many MIDI notes." = "Logic: too many MIDI notes.";
+"Logic: too many records." = "Logic: too many records.";
+"Logic: truncated data." = "Logic: truncated data.";
+"Logic: truncated plist." = "Logic: truncated plist.";
+"Logic: unsupported audio file or region reference." = "Logic: unsupported audio file or region reference.";
+"Logic: unsupported event layout." = "Logic: unsupported event layout.";
+"Logic: unsupported or incomplete arrangement event." = "Logic: unsupported or incomplete arrangement event.";
+"Logic: unsupported plist type." = "Logic: unsupported plist type.";
+"Logic: unsupported plist value." = "Logic: unsupported plist value.";
+"Logic: unsupported project container." = "Logic: unsupported project container.";
+"Logic: unsupported track kind." = "Logic: unsupported track kind.";
+"MIDI controllers, program changes and SysEx are not migrated; review instrument settings." = "MIDI controllers, program changes and SysEx are not migrated; review instrument settings.";
+"MIDI notes were imported. Choose an instrument in CatLive; Logic plug-ins are not migrated." = "MIDI notes were imported. Choose an instrument in CatLive; Logic plug-ins are not migrated.";
+"Missing media: " = "Missing media: ";
+"REAPER FX envelope ignored: " = "REAPER FX envelope ignored: ";
+"REAPER FX ignored: " = "REAPER FX ignored: ";
+"REAPER automation mode ignored: " = "REAPER automation mode ignored: ";
+"REAPER envelope ignored: " = "REAPER envelope ignored: ";
+"REAPER envelope point ignored: " = "REAPER envelope point ignored: ";
+"REAPER item ignored: " = "REAPER item ignored: ";
+"REAPER line ignored: " = "REAPER line ignored: ";
+"REAPER marker ignored: " = "REAPER marker ignored: ";
+"REAPER setting " = "REAPER setting ";
+"REAPER take ignored: " = "REAPER take ignored: ";
+"REAPER tempo ignored: " = "REAPER tempo ignored: ";
+"REAPER tempo point ignored: " = "REAPER tempo point ignored: ";
+"REAPER: MIDI event is outside the supported range." = "REAPER: MIDI event is outside the supported range.";
+"REAPER: VST3 has no class ID." = "REAPER: VST3 has no class ID.";
+"REAPER: VST3 state too large." = "REAPER: VST3 state too large.";
+"REAPER: data outside project." = "REAPER: data outside project.";
+"REAPER: duplicate VST3 state." = "REAPER: duplicate VST3 state.";
+"REAPER: envelope contains too many resampled points." = "REAPER: envelope contains too many resampled points.";
+"REAPER: incomplete project." = "REAPER: incomplete project.";
+"REAPER: incomplete project; the available arrangement was recovered." = "REAPER: incomplete project; the available arrangement was recovered.";
+"REAPER: invalid MIDI event bytes." = "REAPER: invalid MIDI event bytes.";
+"REAPER: invalid MIDI event offset." = "REAPER: invalid MIDI event offset.";
+"REAPER: invalid MIDI event status." = "REAPER: invalid MIDI event status.";
+"REAPER: invalid MIDI event." = "REAPER: invalid MIDI event.";
+"REAPER: invalid MIDI rate or tempo." = "REAPER: invalid MIDI rate or tempo.";
+"REAPER: invalid MIDI resolution." = "REAPER: invalid MIDI resolution.";
+"REAPER: invalid VST3 class ID." = "REAPER: invalid VST3 class ID.";
+"REAPER: invalid VST3 state encoding." = "REAPER: invalid VST3 state encoding.";
+"REAPER: invalid automation mode." = "REAPER: invalid automation mode.";
+"REAPER: invalid automation parameter ID." = "REAPER: invalid automation parameter ID.";
+"REAPER: invalid automation parameter identity." = "REAPER: invalid automation parameter identity.";
+"REAPER: invalid automation parameter index." = "REAPER: invalid automation parameter index.";
+"REAPER: invalid chunk nesting." = "REAPER: invalid chunk nesting.";
+"REAPER: invalid chunk." = "REAPER: invalid chunk.";
+"REAPER: invalid envelope point shape." = "REAPER: invalid envelope point shape.";
+"REAPER: invalid envelope point." = "REAPER: invalid envelope point.";
+"REAPER: invalid folder structure was ignored." = "REAPER: invalid folder structure was ignored.";
+"REAPER: invalid initial tempo ignored; 120 BPM was used." = "REAPER: invalid initial tempo ignored; 120 BPM was used.";
+"REAPER: invalid item bounds." = "REAPER: invalid item bounds.";
+"REAPER: invalid marker." = "REAPER: invalid marker.";
+"REAPER: invalid media filename." = "REAPER: invalid media filename.";
+"REAPER: invalid numeric value." = "REAPER: invalid numeric value.";
+"REAPER: invalid parameter ID." = "REAPER: invalid parameter ID.";
+"REAPER: invalid project size." = "REAPER: invalid project size.";
+"REAPER: invalid region length." = "REAPER: invalid region length.";
+"REAPER: invalid take nesting." = "REAPER: invalid take nesting.";
+"REAPER: invalid tempo point was ignored." = "REAPER: invalid tempo point was ignored.";
+"REAPER: invalid tempo point." = "REAPER: invalid tempo point.";
+"REAPER: invalid tempo." = "REAPER: invalid tempo.";
+"REAPER: invalid time signature ignored; defaults were used." = "REAPER: invalid time signature ignored; defaults were used.";
+"REAPER: missing or invalid MIDI source." = "REAPER: missing or invalid MIDI source.";
+"REAPER: missing pooled MIDI source." = "REAPER: missing pooled MIDI source.";
+"REAPER: no readable project data was found." = "REAPER: no readable project data was found.";
+"REAPER: project is too large." = "REAPER: project is too large.";
+"REAPER: resolver returned a different plugin class." = "REAPER: resolver returned a different plugin class.";
+"REAPER: special-track folder membership was ignored." = "REAPER: special-track folder membership was ignored.";
+"REAPER: too many MIDI notes." = "REAPER: too many MIDI notes.";
+"REAPER: too many MIDI repetitions." = "REAPER: too many MIDI repetitions.";
+"REAPER: unexpected chunk end." = "REAPER: unexpected chunk end.";
+"REAPER: unsorted envelope points." = "REAPER: unsorted envelope points.";
+"REAPER: unsupported MIDI tick format." = "REAPER: unsupported MIDI tick format.";
+"REAPER: unterminated quoted value." = "REAPER: unterminated quoted value.";
+"Select a valid REAPER .rpp project." = "Select a valid REAPER .rpp project.";
+"Select the .logicx project folder copied from the Mac." = "Select the .logicx project folder copied from the Mac.";
+"Some Logic mixer channels use an unsupported layout. Review volume, pan and mute." = "Some Logic mixer channels use an unsupported layout. Review volume, pan and mute.";
+"VS Hook metadata ignored: " = "VS Hook metadata ignored: ";
+" Recovered: " = " Recovered: ";
+" ignored: " = " ignored: ";
+"Data outside project." = "Data outside project.";
+"Invalid audio filename." = "Invalid audio filename.";
+"Invalid event boundary." = "Invalid event boundary.";
+"Invalid MIDI note." = "Invalid MIDI note.";
+"Project is too large." = "Project is too large.";
+"Invalid numeric value." = "Invalid numeric value.";
+"Invalid project size." = "Invalid project size.";
+"Invalid chunk nesting." = "Invalid chunk nesting.";
+"Invalid VST3 class ID." = "Invalid VST3 class ID.";
+"Invalid take nesting." = "Invalid take nesting.";
+"Invalid MIDI event offset." = "Invalid MIDI event offset.";
+"Unsorted envelope points." = "Unsorted envelope points.";
+"Missing pooled MIDI source." = "Missing pooled MIDI source.";
+"Unexpected chunk end." = "Unexpected chunk end.";
+"MIDI event is outside the supported range." = "MIDI event is outside the supported range.";
+"Unsupported MIDI tick format." = "Unsupported MIDI tick format.";
+"Incomplete marker." = "Incomplete marker.";
+"Incomplete MIDI note." = "Incomplete MIDI note.";
+"Duplicate mixer channel identifier." = "Duplicate mixer channel identifier.";
+"Unsupported event layout." = "Unsupported event layout.";
+"Envelope contains too many resampled points." = "Envelope contains too many resampled points.";
+"Invalid MIDI event bytes." = "Invalid MIDI event bytes.";
+"Invalid project record." = "Invalid project record.";
+"Too many MIDI notes." = "Too many MIDI notes.";
+"Invalid tempo point." = "Invalid tempo point.";
+"Invalid envelope point." = "Invalid envelope point.";
+"No readable arrangement data was found." = "No readable arrangement data was found.";
+"Invalid marker." = "Invalid marker.";
+"Invalid region length." = "Invalid region length.";
+"Unterminated quoted value." = "Unterminated quoted value.";
+"Unsupported project container." = "Unsupported project container.";
+"No project alternative was found." = "No project alternative was found.";
+" Recovered alternative: " = " Recovered alternative: ";
+"%@: alternate REAPER takes ignored on this single-lane special track; the active take was imported." = "%@: alternate REAPER takes ignored on this single-lane special track; the active take was imported.";
+"%@: automation ignored: %@" = "%@: automation ignored: %@";
+"%@: invalid folder structure was ignored." = "%@: invalid folder structure was ignored.";
+"%@: invalid mixer setting ignored: %@" = "%@: invalid mixer setting ignored: %@";
+"%@: special-track folder membership was ignored." = "%@: special-track folder membership was ignored.";
+"A MIDI region contains too many notes." = "A MIDI region contains too many notes.";
+"A MIDI region has no event sequence." = "A MIDI region has no event sequence.";
+"A MIDI region references an unknown sequence." = "A MIDI region references an unknown sequence.";
+"An audio item has an unsupported file or region reference." = "An audio item has an unsupported file or region reference.";
+"An item references an unknown track." = "An item references an unknown track.";
+"Choose a new .jl project filename." = "Choose a new .jl project filename.";
+"Incomplete arrangement item." = "Incomplete arrangement item.";
+"Incomplete or invalid .rpp project." = "Incomplete or invalid .rpp project.";
+"Incomplete project container; recovering complete records." = "Incomplete project container; recovering complete records.";
+"Incomplete project: recovered the available arrangement." = "Incomplete project: recovered the available arrangement.";
+"Invalid Logic name." = "Invalid Logic name.";
+"Invalid MIDI event data." = "Invalid MIDI event data.";
+"Invalid MIDI playback rate." = "Invalid MIDI playback rate.";
+"Invalid MIDI project tempo." = "Invalid MIDI project tempo.";
+"Invalid MIDI region bounds." = "Invalid MIDI region bounds.";
+"Invalid MIDI tempo point." = "Invalid MIDI tempo point.";
+"Invalid REAPER tempo ignored; 120 BPM was used." = "Invalid REAPER tempo ignored; 120 BPM was used.";
+"Invalid REAPER time signature ignored; 4/4 was used." = "Invalid REAPER time signature ignored; 4/4 was used.";
+"Invalid VS Hook metadata was ignored; arrangement data was retained." = "Invalid VS Hook metadata was ignored; arrangement data was retained.";
+"Invalid VST3 automation parameter identity: " = "Invalid VST3 automation parameter identity: ";
+"Invalid active project alternative." = "Invalid active project alternative.";
+"Invalid audio item bounds." = "Invalid audio item bounds.";
+"Invalid envelope point time or shape." = "Invalid envelope point time or shape.";
+"Invalid imported media path." = "Invalid imported media path.";
+"Invalid integer value." = "Invalid integer value.";
+"Invalid item position or length." = "Invalid item position or length.";
+"Invalid mixer channel controls." = "Invalid mixer channel controls.";
+"Invalid project data size." = "Invalid project data size.";
+"Invalid project metadata." = "Invalid project metadata.";
+"Invalid source MIDI tempo." = "Invalid source MIDI tempo.";
+"Invalid text encoding." = "Invalid text encoding.";
+"Logic alternative " = "Logic alternative ";
+"Logic: invalid group ignored for " = "Logic: invalid group ignored for ";
+"Master automation ignored: %@" = "Main automation ignored: %@";
+"Missing MIDI source: " = "Missing MIDI source: ";
+"Missing VST3 automation parameter identity." = "Missing VST3 automation parameter identity.";
+"Multiple project alternatives were found without an active selection. Open and save the desired alternative in Logic first." = "Multiple project alternatives were found without an active selection. Open and save the desired alternative in Logic first.";
+"Multiple project roots." = "Multiple project roots.";
+"No arrangement tracks were found." = "No arrangement tracks were found.";
+"REAPER FX ignored: %@" = "REAPER FX ignored: %@";
+"REAPER envelope ignored: %@" = "REAPER envelope ignored: %@";
+"REAPER envelope point ignored: %@" = "REAPER envelope point ignored: %@";
+"REAPER item ignored: %@" = "REAPER item ignored: %@";
+"REAPER marker ignored: %@" = "REAPER marker ignored: %@";
+"REAPER take ignored: %@" = "REAPER take ignored: %@";
+"REAPER tempo point ignored: %@" = "REAPER tempo point ignored: %@";
+"REAPER track ignored: %@" = "REAPER track ignored: %@";
+"Select a .logicx project." = "Select a .logicx project.";
+"Select a .rpp project." = "Select a .rpp project.";
+"The arrangement track list is not supported." = "The arrangement track list is not supported.";
+"Too many MIDI loop repetitions." = "Too many MIDI loop repetitions.";
+"Too many imported MIDI notes." = "Too many imported MIDI notes.";
+"Truncated Logic data." = "Truncated Logic data.";
+"Truncated MIDI event." = "Truncated MIDI event.";
+"Unsupported arrangement event." = "Unsupported arrangement event.";
+"Unsupported arrangement track kind." = "Unsupported arrangement track kind.";
+"Unsupported tempo event." = "Unsupported tempo event.";
+"O gerador Timecode deve usar LTC ou MTC individualmente para migrar." = "The Timecode generator must use LTC or MTC individually for migration.";
+"O item da pista Timecode não contém as configurações do gerador SMPTE. Use o gerador LTC/MTC do REAPER para migrar esse item." = "The Timecode item does not contain SMPTE generator settings. Use the REAPER LTC/MTC generator to migrate this item.";
+"Timecode com user bits personalizados ainda não é suportado pelo CatLive." = "Timecode with custom user bits is not yet supported by CatLive.";
+"Timecode com velocidade alterada não pode ser recriado com a mesma configuração." = "Timecode with an altered playback rate cannot be recreated with the same settings.";
+"%@" = "%@";
+"%@: %@" = "%@: %@";
+"Logic: " = "Logic: ";
+"REAPER: " = "REAPER: ";
+
+". Locate it before importing the project." = ". Locate it before importing the project.";
+
+"REAPER project setting ignored" = "REAPER project setting ignored";
+
+"The active project alternative was not found." = "The active project alternative was not found.";
+
+"The active project alternative is ambiguous." = "The active project alternative is ambiguous.";
+
+"Locate missing files" = "Locate missing files";
+
+": invalid project media path." = ": invalid project media path.";
+
+"Could not recover the file." = "Could not recover the file.";
+
+"Could not capture the current state of plugin %@. The operation was cancelled to preserve its settings." = "Could not capture the current state of plugin %@. The operation was cancelled to preserve its settings.";
+
+"2 columns" = "2 columns";
+"Return to Default?" = "Return to Default?";
+"Remove second column" = "Remove second column";
+"The text in the second column must be removed to continue." = "The text in the second column must be removed to continue.";
+
+"Default text layout" = "Default";
+
+"Pin while transport is stopped" = "Pin while transport is stopped";
+
+/* Timeline appearance and grandMA2 Integration */
+"Invert colors of waveform items" = "Invert colors of waveform items";
+"Inverted" = "Inverted";
+"Select songs and create the grandMA2 macros on the Integration computer. Timecode: 30 FPS." = "Select songs and create the grandMA2 macros on the Integration computer. Timecode: 30 FPS.";
+"Advanced configuration" = "Advanced configuration";
+"First sequence" = "First sequence";
+"Page" = "Page";
+"First executor" = "First executor";
+"First timecode" = "First timecode";
+"MTC Slot" = "MTC Slot";
+"Cues" = "Cues";
+"MTC start" = "MTC start";
+"In grandMA2, import the “Import all” macro from the generated folder and run it once." = "In grandMA2, import the “Import all” macro from the generated folder and run it once.";
+"Save map to project" = "Save map to project";
+"Create grandMA2 macros" = "Create grandMA2 macros";
+"Lighting map saved. Save the CatLive project to keep these changes." = "Lighting map saved. Save the CatLive project to keep these changes.";
+"Stop playback before creating files" = "Stop playback before creating files";
+"Creating grandMA2 macros on CatLive Integration…" = "Creating grandMA2 macros on CatLive Integration…";
+"Macros saved on the Integration computer:" = "Macros saved on the Integration computer:";
+"Select at least one song for grandMA2" = "Select at least one song for grandMA2";
+"Update CatLive Integration to create grandMA2 macros." = "Update CatLive Integration to create grandMA2 macros.";
+"Integration did not confirm saving the files" = "Integration did not confirm saving the files";
+"Sequence, page, executor and timecode must be 1–9999; MTC slot must be 1–8." = "Sequence, page, executor and timecode must be 1–9999; MTC slot must be 1–8.";
+"The song exceeds its reserved MTC space. Review the lighting map before extending it." = "The song exceeds its reserved MTC space. Review the lighting map before extending it.";
+"Starting numbers leave insufficient space for all songs." = "Starting numbers leave insufficient space for all songs.";
+"The lighting map exceeds the 24-hour MTC limit." = "The lighting map exceeds the 24-hour MTC limit.";
+"Clear selection" = "Clear selection";
+"File creation is still running" = "File creation is still running";
+"File creation already running" = "File creation already running";
+"Invalid grandMA2 numbering" = "Invalid grandMA2 numbering";
+"Invalid grandMA2 timecode position" = "Invalid grandMA2 timecode position";
+"Could not save grandMA2 files" = "Could not save grandMA2 files";
+"Invalid grandMA2 region ID" = "Invalid grandMA2 region ID";
+"Duplicate grandMA2 destinations" = "Duplicate grandMA2 destinations";
+"grandMA2 destination exceeds 9999" = "grandMA2 destination exceeds 9999";
+"Invalid grandMA2 region duration" = "Invalid grandMA2 region duration";
+"Invalid grandMA2 cues" = "Invalid grandMA2 cues";
+"grandMA2 cue outside its song" = "grandMA2 cue outside its song";
+"Select fewer songs for this grandMA2 export" = "Select fewer songs for this grandMA2 export";
+"grandMA2 destination already exists" = "grandMA2 destination already exists";
+
+"Choose the folder containing the selected project and its media." = "Choose the folder containing the selected project and its media.";
+
+"Choose a .jl, .bkjl or .ziplive project." = "Choose a .jl, .bkjl or .ziplive project.";
+
+"Select a destination track before pasting." = "Select a destination track before pasting.";
+
+"Not enough destination tracks to paste these items." = "Not enough destination tracks to paste these items.";
+
+"The destination project is no longer active." = "The destination project is no longer active.";
+
+"Could not access the clipboard. Try copying again." = "Could not access the clipboard. Try copying again.";
+
+"Could not copy media for the pasted items." = "Could not copy media for the pasted items.";
+
+"No project media directory" = "No project media directory";
+
+"Copying media…" = "Copying media…";
+"The copied tracks no longer exist." = "The copied tracks no longer exist.";
+
+"Matrix Patch" = "Matrix Patch";
+
+"Search tracks" = "Search tracks";
+
+"Sources" = "Sources";
+
+"Destinations →" = "Destinations →";
+
+"Click a cell to connect or disconnect" = "Click a cell to connect or disconnect";
+
+"Loop ativo" = "Loop active";
+
+"Bluetooth microphone" = "Bluetooth microphone";
+"Using the Bluetooth microphone may reduce headset playback quality." = "Using the Bluetooth microphone may reduce headset playback quality.";
+
+"Preview on/off" = "Preview on/off";
+
+"Insert media" = "Insert media";
+
+"Connect Bluetooth MIDI…" = "Connect Bluetooth MIDI…";
+"Connect your MIDI controller here, even if it is already paired in Bluetooth settings." = "Connect your MIDI controller here, even if it is already paired in Bluetooth settings.";
+
+"The entire project folder and everything inside it will be permanently deleted, including media, presets, waveform caches, backups and unused files. This cannot be undone." = "The entire project folder and everything inside it will be permanently deleted, including media, presets, waveform caches, backups and unused files. This cannot be undone.";
+
+"Temporary" = "Temporary";
+
+// SMK37 desktop firmware manager
+"Backup Firmware SMK-37 Pro" = "Backup Firmware SMK-37 Pro";
+"Install SMK Integration" = "Install SMK Integration";
+"Install Backup/Firmware…" = "Install Backup/Firmware…";
+"Connect one SMK-37 Pro using a USB data cable. Firmware operations are unavailable during playback or recording." = "Connect one SMK-37 Pro using a USB data cable. Firmware operations are unavailable during playback or recording.";
+"Choose where to save your backup. Installing firmware first saves and verifies the current firmware at the location you select. Keep the USB cable connected until the operation finishes." = "Choose where to save your backup. Installing firmware first saves and verifies the current firmware at the location you select. Keep the USB cable connected until the operation finishes.";
+"Supported files: .smkbackup, .fwsc, and full .bin backups with their matching .json file. Only compatible SMK-37 Pro firmware is accepted." = "Supported files: .smkbackup, .fwsc, and full .bin backups with their matching .json file. Only compatible SMK-37 Pro firmware is accepted.";
+"Install firmware on SMK-37 Pro?" = "Install firmware on SMK-37 Pro?";
+"This replaces the keyboard firmware and can change its controls, sounds and settings. Choose where to save the current firmware backup before continuing." = "This replaces the keyboard firmware and can change its controls, sounds and settings. Choose where to save the current firmware backup before continuing.";
+"Save current firmware backup" = "Save current firmware backup";
+"Show saved backup" = "Show saved backup";
+"Show operation log" = "Show operation log";
+"Firmware licenses and source" = "Firmware licenses and source";
+"Preparing firmware backup…" = "Preparing firmware backup…";
+"Connecting to SMK-37 Pro…" = "Connecting to SMK-37 Pro…";
+"Reading and verifying the current firmware…" = "Reading and verifying the current firmware…";
+"Backup saved. Restarting the keyboard…" = "Backup saved. Restarting the keyboard…";
+"Installing firmware. Keep the USB cable connected…" = "Installing firmware. Keep the USB cable connected…";
+"Restoring the backup. Keep the USB cable connected…" = "Restoring the backup. Keep the USB cable connected…";
+"Operation completed. The firmware backup is saved." = "Operation completed. The firmware backup is saved.";
+"Operation stopped. See the details below." = "Operation stopped. See the details below.";
+"Invalid or damaged SMK backup." = "Invalid or damaged SMK backup.";
+"The connected firmware could not be identified as SMK-37 Pro. Nothing was installed." = "The connected firmware could not be identified as SMK-37 Pro. Nothing was installed.";
+"The saved backup could not be verified." = "The saved backup could not be verified.";
+"The bundled SMK firmware is missing or damaged." = "The bundled SMK firmware is missing or damaged.";
+"Choose a different file for the current firmware backup." = "Choose a different file for the current firmware backup.";
+"The SMK firmware utility is not compatible." = "The SMK firmware utility is not compatible.";
+"Connect only one SMK-37 Pro using a USB data cable." = "Connect only one SMK-37 Pro using a USB data cable.";
+"The keyboard did not enter USB download mode. Reconnect it and try again." = "The keyboard did not enter USB download mode. Reconnect it and try again.";
+"This backup belongs to another keyboard. Nothing was restored." = "This backup belongs to another keyboard. Nothing was restored.";
+"Choose a compatible SMK-37 Pro .fwsc firmware file." = "Choose a compatible SMK-37 Pro .fwsc firmware file.";
+"The SMK firmware utility is missing. Reinstall CatLive." = "The SMK firmware utility is missing. Reinstall CatLive.";
+"Cannot create the firmware workspace." = "Cannot create the firmware workspace.";
+"Cannot create the firmware log." = "Cannot create the firmware log.";
+"Cannot start the SMK firmware utility." = "Cannot start the SMK firmware utility.";
+"Cannot save the firmware backup." = "Cannot save the firmware backup.";
+"Cannot read the firmware backup." = "Cannot read the firmware backup.";
+"Cannot read the firmware file." = "Cannot read the firmware file.";
+"Cannot copy the firmware file." = "Cannot copy the firmware file.";
+"Cannot save the firmware backup at this location." = "Cannot save the firmware backup at this location.";
+"Cannot prepare the firmware backup." = "Cannot prepare the firmware backup.";
+
+"Reset rate" = "Reset rate";
+"Reset duration" = "Reset duration";
+"Restore the full original file duration for the selected items?" = "Remove expanded portions without moving the selected items or extending trimmed items?";
+"Set region end to longest item" = "Set region end to longest item";
+"Space regions by 30 s" = "Space regions by 30 s";
+"Reset selected items to 1x without changing tempo markers?" = "Reset selected items to 1x without changing tempo markers?";
+
+"Adjust volume" = "Adjust volume";
+"Adjust pan" = "Adjust pan";
+
+"Duplicate" = "Duplicate";
+
+"Config rate" = "Config rate";
+
+"BPM offset" = "BPM offset";
+
+"Playback rate" = "Playback rate";
+
+"Item starts before the project timeline." = "Item starts before the project timeline.";
+
+"REAPER source has no file reference." = "REAPER source has no file reference.";
+
+"Unsupported REAPER source type: " = "Unsupported REAPER source type: ";
+
+"Audio file reference: " = "Audio file reference: ";
+
+"Media file was not found." = "Media file was not found.";
+
+"No audio decoder could open this file." = "No audio decoder could open this file.";
+
+"Audio data could not be read completely or has invalid sample information." = "Audio data could not be read completely or has invalid sample information.";
+
+"Bloqueios da grade" = "Grid locks";
+"Bloquear tudo" = "Lock all";
+"Regiões e marcadores" = "Regions and markers";
+"Itens" = "Items";
+"Posição dos itens" = "Item position";
+"Volume dos itens" = "Item volume";
+"Pan dos itens" = "Item pan";
+"Mute dos itens" = "Item mute";
+
+"Open project location" = "Open project location";
+
+"Preparing audio…" = "Preparing audio…";
+
+"Track group" = "Group";
+
+"Create region from selected items" = "Create region from selected items";
+"Saving project…" = "Saving project…";
+"Copying files: %lld/%lld" = "Copying files: %lld/%lld";
+"Writing project…" = "Writing project…";
+
+"Open backup?" = "Open backup?";
+
+"Open this backup as a recovered project?" = "Open this backup as a recovered project?";
+
+"Restoring backup…" = "Restoring backup…";
+
+"Opening backup…" = "Opening backup…";
+
+"Full lyrics" = "Full lyrics";
+
+"Create items" = "Create items";
+
+"Separate each stanza with two blank lines. Items will fill the whole song equally." = "Separate each stanza with two blank lines. Items will fill the whole song equally.";
+
+"Separate at least one stanza with two blank lines." = "Separate at least one stanza with two blank lines.";
+
+"Place the edit cursor inside a song region." = "Place the edit cursor inside a song region.";
+
+"Invalid song duration." = "Invalid song duration.";
+
+"Too many stanzas for this song duration." = "Too many stanzas for this song duration.";
+
+"The text track is no longer available." = "The text track is no longer available.";
+
+"The song changed. Open Full lyrics again." = "The song changed. Open Full lyrics again.";
+
+"Could not create the lyrics items." = "Could not create the lyrics items.";
+
+"250+ — Not available" = "250+ — Not available";
+
+"Your project contains more than 250 simultaneous audio voices at some points. At those points, Parts, real-time BPM changes and Repeat are unavailable." = "Your project contains more than 250 simultaneous audio voices at some points. At those points, Parts, real-time BPM changes and Repeat are unavailable.";
+
+"Export ziplive" = "Export ziplive";
+
+"Preparing project deletion…" = "Preparing project deletion…";
+
+"Hold Shift and click − or + to adjust all listed items by the same amount." = "Hold Shift and click − or + to adjust all listed items by the same amount.";
+
+"Current song" = "Current song";
+
+"Information" = "Information";
+
+"Bypass de todos os Multiloops" = "Bypass all Multiloops";
+
+"Reduzir projeto" = "Reduce project";
+
+"Insert" = "Insert";
+
+"MIDI activity" = "MIDI activity";
+
+"Master Patch" = "Main Patch";
+
+"Master Stereo/Mono" = "Main Stereo/Mono";
+
+"Track number" = "Track number";
+
+"Track volume" = "Track volume";
+
+"Ícone da pista" = "Track icon";
+
+"Abrir ajustes de Rede Local" = "Open Local Network settings";
+
+"Abrir barra lateral" = "Open sidebar";
+
+"Adaptador desconectado" = "Adapter disconnected";
+
+"Atualizar dispositivos" = "Refresh devices";
+
+"Atualizar lista" = "Refresh list";
+
+"Atualize o CatLive no computador para controlar as Vinhetas." = "Update CatLive on the computer to control the pads.";
+
+"Aumentar BPM" = "Increase BPM";
+
+"Aumentar afinação" = "Raise pitch";
+
+"Automático" = "Automatic";
+
+"BPM / Compasso" = "BPM / Time signature";
+
+"Bem-vindo ao CatLive" = "Welcome to CatLive";
+
+"Buscar na rede" = "Search network";
+
+"Captura o áudio do Mac. Monitor Off silencia o retorno, mantendo a gravação e os meters de entrada." = "Captures Mac audio. Monitor Off silences monitoring while keeping recording and input meters active.";
+
+"Conecte os dois computadores por cabo Ethernet. O Remote do app continua disponível pelo Wi-Fi." = "Connect both computers by Ethernet cable. App Remote remains available over Wi-Fi.";
+
+"Configuração salva." = "Settings saved.";
+
+"Configurações de áudio" = "Audio settings";
+
+"Conversão de marcadores" = "Marker conversion";
+
+"Converter" = "Convert";
+
+"Converter marcadores em regiões" = "Convert markers to regions";
+
+"Crie a pista VINHETAS-FX no computador para tocar os pads." = "Create the VINHETAS-FX track on the computer to play the pads.";
+
+"Deixe vazio e salve para entrar sem senha. Observadores entram sem senha e não controlam o PC." = "Leave empty and save to connect without a PIN. Observers connect without a PIN and cannot control the PC.";
+
+"Diminuir BPM" = "Decrease BPM";
+
+"Diminuir afinação" = "Lower pitch";
+
+"Dispositivos conectados" = "Connected devices";
+
+"Editar nome" = "Edit name";
+
+"Engatilhamento automático" = "Automatic trigger";
+
+"Escolha o trecho de destino. O aviso começa 5 segundos antes do marcador." = "Choose the destination section. The notice starts 5 seconds before the marker.";
+
+"Escolha um instrumento no FX da pista para ouvir as notas." = "Choose an instrument in the track FX to hear the notes.";
+
+"Escolher arquivo…" = "Choose file…";
+
+"Escolher local…" = "Choose location…";
+
+"Escolher pistas e grupos do Tuner" = "Choose Tuner tracks and groups";
+
+"Esta música não tem trechos." = "This song has no sections.";
+
+"Exportar projeto completo" = "Export complete project";
+
+"FX da pista" = "Track FX";
+
+"Faixa da região " = "Region strip ";
+
+"Fechar vídeo" = "Close video";
+
+"Formato do projeto reduzido" = "Reduced project format";
+
+"Gerenciar dispositivos" = "Manage devices";
+
+"Imagem indisponível" = "Image unavailable";
+
+"Imagem salva" = "Image saved";
+
+"Import Presets substitui os seis presets atuais. Uma cópia da configuração anterior é guardada no dispositivo." = "Import Presets replaces all six current presets. A copy of the previous configuration is kept on the device.";
+
+"Learn MIDI — aguardando controlador…" = "Learn MIDI — waiting for controller…";
+
+"Login / Trocar conta" = "Login / Switch account";
+
+"Marcadores da música" = "Song markers";
+
+"Mostrar no Finder" = "Show in Finder";
+
+"Mute do item " = "Item mute ";
+
+"Nenhum dispositivo conectado." = "No devices connected.";
+
+"O formato vale para os áudios renderizados. Pistas individuais mantidas sem renderização conservam os arquivos originais. MP3 usa compressão com perda." = "The format applies to rendered audio. Individual tracks kept without rendering retain their original files. MP3 uses lossy compression.";
+
+"O item MIDI foi removido." = "The MIDI item was removed.";
+
+"Opções de salvar" = "Save options";
+
+"PC A controla o transporte. PC B continua tocando de forma independente se o A falhar." = "PC A controls transport. PC B keeps playing independently if A fails.";
+
+"Personalizado" = "Custom";
+
+"Prazo de tolerância" = "Grace period";
+
+"Quantizar…" = "Quantize…";
+
+"Remova um computador para liberar sua licença e entrar em outro." = "Remove a computer to release its license and sign in on another.";
+
+"Rolar pistas para baixo" = "Scroll tracks down";
+
+"Rolar pistas para cima" = "Scroll tracks up";
+
+"Salvar / Exportar" = "Save / Export";
+
+"Salvar recado" = "Save notice";
+
+"Salvar senha" = "Save PIN";
+
+"Salve o projeto antes de reduzir." = "Save the project before reducing.";
+
+"Selecionar playlist" = "Select playlist";
+
+"Selecione as origens à direita. Apenas as pistas escolhidas serão levadas; os áudios serão separados por região." = "Select sources on the right. Only selected tracks will be included; audio will be separated by region.";
+
+"Selecione um computador" = "Select a computer";
+
+"Senha de quatro dígitos · Four-digit PIN" = "Four-digit PIN";
+
+"Senha do modo Diretor" = "Director mode PIN";
+
+"Shift: mover e redimensionar sem encaixe" = "Shift: move and resize without snapping";
+
+"Sincronizar novamente" = "Sync again";
+
+"Solicitar pareamento" = "Request pairing";
+
+"Tamanho aproximado do projeto, incluindo as mídias que serão copiadas." = "Approximate project size, including media to be copied.";
+
+"Tempo da agulha" = "Playhead time";
+
+"Transferindo…" = "Transferring…";
+
+"Transfira os seis presets completos, com nomes, cores, volumes, Gate, mapeamentos MIDI e áudios, em um arquivo .zipfx." = "Transfer all six complete presets, including names, colors, volumes, Gate, MIDI mappings and audio, in a .zipfx file.";
+
+"Usar padrão" = "Use default";
+
+"Use dois dedos em pinça nesta barra para ajustar a altura das pistas" = "Pinch this bar with two fingers to adjust track heights";
+
+"Verificar licença" = "Verify license";
+
+"Volume do item " = "Item volume ";
+
+"Volume do pad" = "Pad volume";
+
+"WAV, AIFF ou MP3. O som escolhido será copiado para a pasta Stems deste projeto." = "WAV, AIFF or MP3. The selected sound will be copied to this project’s Stems folder.";
+
+"Área de rolagem do Track-Mixer" = "Track-Mixer scroll area";
+
+"Último acesso: " = "Last access: ";
+
+"88-key keyboard" = "88-key keyboard";
+
+"Create Track" = "Create Track";
+
+"Disunify regions" = "Disunify regions";
+
+"Export Preset" = "Export Preset";
+
+"Fadeout settings" = "Fadeout settings";
+
+"Import Presets" = "Import Presets";
+
+"Insert audio" = "Insert audio";
+
+"Learn MIDI" = "Learn MIDI";
+
+"Lock timeline movement" = "Lock timeline movement";
+
+"Lower pitch" = "Lower pitch";
+
+"Master pan" = "Main pan";
+
+"Master volume" = "Main volume";
+
+"Mute item" = "Mute item";
+
+"Raise pitch" = "Raise pitch";
+
+"Resize Vinhetas" = "Resize Vinhetas";
+
+"Resize setlist" = "Resize setlist";
+
+"Sound Designer" = "Sound Designer";
+
+"Increase BPM" = "Increase BPM";
+
+"Decrease BPM" = "Decrease BPM";
+
+"On these tracks, Subplay stops items from the previous song and keeps only the incoming song's items." = "On these tracks, Subplay stops items from the previous song and keeps only the incoming song's items.";
+
+"Open multiple projects" = "Open multiple projects";
+
+"Select projects in the order you want their tabs to appear." = "Select projects in the order you want their tabs to appear.";
+
+"Opening projects…" = "Opening projects…";
+
+"Could not open project." = "Could not open project.";
+
+"Could not open project" = "Could not open project";
+
+"Open" = "Open";
+
+"Itens mutados" = "Muted items";
+"Existem um ou mais itens mutados. Deseja desmutar todos antes de reduzir?" = "One or more items are muted. Unmute them before reducing the project?";
+
+"Pin track" = "Pin track";
+"Unpin track" = "Unpin track";
+"You can pin up to six tracks." = "You can pin up to six tracks.";
+
+"Update CatLive on the connected computer to edit outputs." = "Update CatLive on the connected computer to edit outputs.";
+
+"Home" = "Início";
+"Add Projects" = "Add Projects";
+"Recents" = "Recents";
+
+"Master" = "Main";
+"Main Stereo/Mono" = "Main Stereo/Mono";
+"Switch Main to Mono?" = "Switch Main to Mono?";
+"Switch Main to Stereo?" = "Switch Main to Stereo?";
+"Main Patch" = "Main Patch";
+"Main pan" = "Main pan";
+"Main volume" = "Main volume";
+"Mostrar Main à esquerda" = "Show Main on the left";
+"Mostrar Main à direita" = "Show Main on the right";
+
+"Track style" = "Track style";
+"Stripe only" = "Stripe only";
+
+"Vertical grid color" = "Vertical grid color";
+"Horizontal grid color" = "Horizontal grid color";
+"Create category" = "Create category";
+"Delete category?" = "Delete category?";
+"Remove %@ and its samples from the Library?" = "Remove “%@” and its samples from the Library?";
+"Add Samplers" = "Add Samplers";
+"New note" = "New note";
+"Delete note" = "Delete note";
+"Do you want to save the project %@?" = "Do you want to save the project %@?";
+"Don't Save" = "Don't Save";
+"Resize Library" = "Resize Library";
+"Resize Library folders" = "Resize Library folders";
+"Collapse all categories" = "Collapse all categories";
+"Sample preview volume" = "Sample preview volume";
+"Pads accept audio up to 60 seconds." = "Pads accept audio up to 60 seconds.";
+"Drag along a row or column. Hold Shift and drag right to connect diagonally or left to disconnect." = "Drag along a row or column. Hold Shift and drag right to connect diagonally or left to disconnect.";
+"Desktop battery" = "Desktop battery";
+"The .jl project and all its media files will be copied to a different folder." = "The .jl project and all its media files will be copied to a different folder.";
+"Select another track." = "Select another track.";
+"Could not read the MIDI file." = "Could not read the MIDI file.";
+"The MIDI file contains no notes." = "The MIDI file contains no notes.";
+"BPM Sync" = "BPM Sync";
+"Division" = "Division";
+"Smoothing" = "Smoothing";
+"Rate" = "Rate";
+"Tone" = "Tone";
+"Channel %lld" = "Channel %lld";
+"Bypass effect" = "Bypass effect";
+"Enable effect" = "Enable effect";
+
+"Track - I show/hide" = "Track - I show/hide";
+
+"Library show/hide" = "Library show/hide";
+
+"Input Monitor · Selected track" = "Input Monitor · Selected track";
+
+"By All Fx · Selected track" = "By All Fx · Selected track";
+
+"By Fx Session" = "By Fx Session";
+
+"Tap or drag to route. Scroll with two fingers. Use the diagonal button or hold Shift." = "Tap or drag to route. Scroll with two fingers. Use the diagonal button or hold Shift.";
+
+"Convert To Audio Mono" = "Convert To Audio Mono";
+
+"Convert To Audio Stereo" = "Convert To Audio Stereo";
+
+"Import SF2…" = "Import SF2…";
+
+"Could not import SF2:" = "Could not import SF2:";
+
+"Receive Audio Transmitter" = "Receive Audio Transmitter";
+"Edit note" = "Edit note";
+"Confirm note edit" = "Confirm note edit";
+"Preview region color" = "Preview region color";
+"Custom preview region color" = "Custom preview region color";
+"Preview region scale" = "Preview region scale";
+"Preview block scale" = "Preview block scale";
+"Preview region duration scale" = "Preview region duration scale";
+"Preview block duration scale" = "Preview block duration scale";
+"Show lyrics alongside preview" = "Show lyrics alongside preview";
+
+"Stem organization in the grid" = "Stem organization in the grid";
+
+"Separated" = "Separated";
+
+"Crossfade overlapping items" = "Crossfade overlapping items";
+"Hoz Mixer All" = "All";
+"Sends" = "Sends";
+"Bus" = "Bus";
+"Standard channels" = "Standard channels";
+"Wide channels" = "Wide channels";
+"Files" = "Files";
+"Locations" = "Locations";
+"Refresh folders" = "Refresh folders";
+"Empty folder" = "Empty folder";
+"Home folder" = "Home folder";
+"Documents folder" = "Documents folder";
+"List view" = "List view";
+"Column view" = "Column view";
+"Search files" = "Search files";
+"No matching files" = "No matching files";
+"Forward" = "Forward";
+"Loading" = "Loading";

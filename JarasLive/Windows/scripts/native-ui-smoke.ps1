@@ -1,5 +1,6 @@
 param([Parameter(Mandatory=$true)][string]$Executable,[string]$OutputDirectory=(Join-Path $env:LOCALAPPDATA 'CatLiveBuild/qa/native'),[switch]$DownloadInstrument,[switch]$HomePreview,[switch]$TextOnly)
 . "$PSScriptRoot/native-ui-common.ps1"
+Add-Type -AssemblyName System.Windows.Forms
 if(Get-Process CatLive -ErrorAction SilentlyContinue | Where-Object Path -EQ ([IO.Path]::GetFullPath($Executable))){throw 'The test executable is already running.'}
 $appearanceFile=Join-Path $OutputDirectory 'appearance.json'
 $launchMode=if($HomePreview){'--home-preview'}else{'--visual-test'}
@@ -24,14 +25,15 @@ try {
   [void][CatNativeUI]::SetForegroundWindow($handle)
   Click ($rect.Left+300) ($rect.Top+117);ScreenCapture 'home-add'
   Click ($rect.Left+490) ($rect.Top+117);ScreenCapture 'home-recent'
-  Click ($rect.Right-26) ($rect.Top+17)
+  Click ($rect.Right-23) ($rect.Top+17)
   if(-not $process.WaitForExit(5000)){throw 'Home preview did not close.'}
   @{success=$true;initial=$initial;home=$true}|ConvertTo-Json -Depth 8|Set-Content (Join-Path $OutputDirectory 'results.json') -Encoding utf8
   Write-Host "Home, Create/Add/Recent, REAPER/Logic selectors and close passed: $OutputDirectory"
   return
  }
  if(-not $initial.uiRegressionPassed){throw 'Embedded editing regression did not complete.'}
- [void][CatNativeUI]::SetWindowPos($handle,[IntPtr]::Zero,12,12,1280,740,0x0040)
+ $testArea=([System.Windows.Forms.Screen]::AllScreens | Sort-Object { $_.WorkingArea.Width * $_.WorkingArea.Height } -Descending | Select-Object -First 1).WorkingArea
+ [void][CatNativeUI]::SetWindowPos($handle,[IntPtr]::Zero,($testArea.Left+8),($testArea.Top+8),1280,740,0x0040)
  Start-Sleep -Milliseconds 250;$rect=Rect $handle
  [void][CatNativeUI]::SetForegroundWindow($handle)
  Click ($rect.Left+450) ($rect.Top+17)
@@ -58,8 +60,6 @@ try {
  Click ($rect.Left+203) ($rect.Top+195)
  Click ($rect.Left+203) ($rect.Top+195) -Right
  ScreenCapture 'track-record-context';Key 0x1b
- $padsButton=$small.controls.railSections
- Click ($rect.Left+$padsButton.x+14) ($rect.Top+$padsButton.y+14)
  $tuner=$small.tuner
  Click ($rect.Left+$tuner.x+106) ($rect.Top+$tuner.y+13)
  $tuned=Capture 'tuner-up'
@@ -72,33 +72,53 @@ try {
  Click ($rect.Left+700) ($rect.Top+570)
  $tunerCancel=Capture 'tuner-cancel'
  if(@($tunerCancel.modals).Count -ne 0){throw 'Tuner Cancel did not dismiss the target editor.'}
- $pads=Capture 'pads'
- if(-not $pads.partsVisible -or $pads.pads.current.count -ne 3){throw 'Pads did not expose the selected region and its sections.'}
- Click ($rect.Left+191) ($rect.Top+560)
- $padSeek=Capture 'pads-select-section'
- if([Math]::Abs($padSeek.editPosition-20) -gt .001){throw 'Pad selection did not seek to the section.'}
- Click ($rect.Left+90) ($rect.Top+560)
- $padStart=Capture 'pads-select-start'
- if([Math]::Abs($padStart.editPosition) -gt .001){throw 'Start pad did not return to the region start.'}
- Click ($rect.Left+$padsButton.x+14) ($rect.Top+$padsButton.y+14)
+ # Parts now occupy independent sidebars; opening them must preserve the lower docks.
  $mixerButton=$small.controls.railMixer
- $partsButton=$small.setlist.partsButton
- Click ($rect.Left+$partsButton.x+20) ($rect.Top+$partsButton.y+10)
- $partsList=Capture 'parts-sidebar'
- if(-not $partsList.partsListVisible -or $partsList.partsVisible -or -not $partsList.partsSidebar.vertical){throw 'Setlist Parts did not open the vertical section list.'}
- $sectionBounds=$partsList.partsSidebarBounds
- Click ($rect.Left+$sectionBounds.x+40) ($rect.Top+$sectionBounds.y+140)
- $sectionSeek=Capture 'parts-sidebar-seek'
- if([Math]::Abs($sectionSeek.editPosition-20) -gt .001){throw 'Vertical section click did not seek.'}
- Click ($rect.Left+$sectionBounds.x+40) ($rect.Top+$sectionBounds.y+100)
- Click ($rect.Left+$sectionBounds.x+$sectionBounds.width-40) ($rect.Top+$sectionBounds.y+55)
- $sectionQueued=Capture 'parts-sidebar-queued'
- if(-not $sectionQueued.partsSidebar.secondaryTab){throw 'Queued sections tab did not open.'}
- $partsButton=$sectionQueued.setlist.partsButton
- Click ($rect.Left+$partsButton.x+20) ($rect.Top+$partsButton.y+10)
- $partsClosed=Capture 'parts-sidebar-closed'
- if($partsClosed.partsListVisible){throw 'Parts did not close the vertical section list.'}
+ $keyboardButton=$small.controls.railKeyboard
  Click ($rect.Left+$mixerButton.x+14) ($rect.Top+$mixerButton.y+14)
+ Click ($rect.Left+$keyboardButton.x+14) ($rect.Top+$keyboardButton.y+14)
+ $partsDocks=Capture 'parts-docks-open'
+ if(-not $partsDocks.mixerVisible -or -not $partsDocks.keyboardVisible){throw 'Mixer and keyboard did not open before the Parts sidebar check.'}
+ $leftPartsButton=$partsDocks.controls.railParts
+ if($null -eq $leftPartsButton){throw 'The left Parts button was not exposed in diagnostics.'}
+ Click ($rect.Left+$leftPartsButton.x+14) ($rect.Top+$leftPartsButton.y+14)
+ $partsLeft=Capture 'parts-left'
+ if(-not $partsLeft.partsLeftVisible -or $partsLeft.partsRightVisible -or $partsLeft.partsLeft.current.count -ne 3){throw 'Left Parts did not expose the selected region and its sections.'}
+ if(-not $partsLeft.mixerVisible -or -not $partsLeft.keyboardVisible){throw 'Opening left Parts closed the mixer or keyboard.'}
+ $leftBounds=$partsLeft.partsLeftBounds
+ if($leftBounds.width -le 0 -or $leftBounds.height -le 140){throw 'Left Parts has no usable sidebar bounds.'}
+ Click ($rect.Left+$leftBounds.x+40) ($rect.Top+$leftBounds.y+140)
+ $leftSeek=Capture 'parts-left-select-section'
+ if([Math]::Abs($leftSeek.editPosition-20) -gt .001){throw 'Left Parts selection did not seek to the section.'}
+ Click ($rect.Left+$leftBounds.x+40) ($rect.Top+$leftBounds.y+100)
+ $leftStart=Capture 'parts-left-select-start'
+ if([Math]::Abs($leftStart.editPosition) -gt .001){throw 'Left Parts start did not return to the region start.'}
+ $rightPartsButton=$leftStart.setlist.partsButton
+ Click ($rect.Left+$rightPartsButton.x+20) ($rect.Top+$rightPartsButton.y+10)
+ $partsBoth=Capture 'parts-both-sidebars'
+ if(-not $partsBoth.partsLeftVisible -or -not $partsBoth.partsRightVisible -or $partsBoth.partsSidebar.current.count -ne 3){throw 'Setlist Parts did not open the right sidebar alongside the left sidebar.'}
+ if(-not $partsBoth.mixerVisible -or -not $partsBoth.keyboardVisible){throw 'Opening both Parts sidebars changed the lower docks.'}
+ $rightBounds=$partsBoth.partsSidebarBounds
+ if($rightBounds.width -le 0 -or $rightBounds.height -le 140){throw 'Right Parts has no usable sidebar bounds.'}
+ Click ($rect.Left+$rightBounds.x+40) ($rect.Top+$rightBounds.y+140)
+ $rightSeek=Capture 'parts-right-select-section'
+ if([Math]::Abs($rightSeek.editPosition-20) -gt .001){throw 'Right Parts selection did not seek to the section.'}
+ Click ($rect.Left+$rightBounds.x+40) ($rect.Top+$rightBounds.y+100)
+ Click ($rect.Left+$rightBounds.x+$rightBounds.width-40) ($rect.Top+$rightBounds.y+55)
+ $rightQueued=Capture 'parts-right-queued'
+ if(-not $rightQueued.partsSidebar.secondaryTab -or $rightQueued.partsLeft.secondaryTab){throw 'The right queued tab did not stay independent of the left current tab.'}
+ $leftPartsButton=$rightQueued.controls.railParts
+ Click ($rect.Left+$leftPartsButton.x+14) ($rect.Top+$leftPartsButton.y+14)
+ $leftClosed=Capture 'parts-left-closed'
+ if($leftClosed.partsLeftVisible -or -not $leftClosed.partsRightVisible){throw 'Closing left Parts changed the right sidebar.'}
+ $rightPartsButton=$leftClosed.setlist.partsButton
+ Click ($rect.Left+$rightPartsButton.x+20) ($rect.Top+$rightPartsButton.y+10)
+ $partsClosed=Capture 'parts-sidebars-closed'
+ if($partsClosed.partsLeftVisible -or $partsClosed.partsRightVisible){throw 'Parts sidebars did not close independently.'}
+ if(-not $partsClosed.mixerVisible -or -not $partsClosed.keyboardVisible){throw 'Closing Parts changed the lower docks.'}
+ $keyboardButton=$partsClosed.controls.railKeyboard
+ $mixerButton=$partsClosed.controls.railMixer
+ Click ($rect.Left+$keyboardButton.x+14) ($rect.Top+$keyboardButton.y+14)
  $mixerOpen=Capture 'mixer'
  if(-not $mixerOpen.mixerVisible){throw 'Lower mixer did not open.'}
  Wheel ($rect.Left+650) ($rect.Top+600) -480
@@ -494,28 +514,35 @@ try {
   if($stem.export.source -ne 4 -or $stem.export.jobs -ne 1){throw 'Item Export did not select the clicked stem.'}
   Key 0x1b
  }
+ $beforeUnmapped=Capture 'before-unmapped-f'
  Key 0x46
- $fit=Capture 'timeline-fit'
- if($fit.timeline.horizontal -ne 0 -or $fit.timeline.zoom -ge 2 -or $fit.timeline.zoom*1680 -gt $fit.timeline.width){throw 'Fit did not display the full 28-minute inspection timeline.'}
+ $afterUnmapped=Capture 'after-unmapped-f'
+ if($afterUnmapped.timeline.zoom -ne $beforeUnmapped.timeline.zoom){throw 'Unmapped F unexpectedly changed timeline zoom.'}
  [void][CatNativeUI]::SetForegroundWindow($handle)
- Click ($rect.Right-52) ($rect.Top+17)
+ Click ($rect.Right-69) ($rect.Top+17)
  if(-not [CatNativeUI]::IsZoomed($handle)){throw 'Custom maximize button failed.'}
  $maximized=Rect $handle;ScreenCapture 'maximized'
- Click ($maximized.Right-52) ($maximized.Top+17)
+ $workArea=[System.Windows.Forms.Screen]::FromHandle($handle).WorkingArea
+ if($maximized.Left -lt $workArea.Left -or $maximized.Top -lt $workArea.Top -or $maximized.Right -gt $workArea.Right -or $maximized.Bottom -gt $workArea.Bottom){throw 'Maximized window covers the Windows taskbar.'}
+ Click ($maximized.Right-69) ($maximized.Top+17)
  if([CatNativeUI]::IsZoomed($handle)){throw 'Custom restore button failed.'}
  $restored=Rect $handle
- Click ($restored.Right-78) ($restored.Top+17)
+ Click ($restored.Right-115) ($restored.Top+17)
  if(-not [CatNativeUI]::IsIconic($handle)){throw 'Custom minimize button failed.'}
  [void][CatNativeUI]::ShowWindow($handle,9);[void][CatNativeUI]::SetForegroundWindow($handle)
  Start-Sleep -Milliseconds 180
  $restored=Rect $handle
- Click ($restored.Right-26) ($restored.Top+17)
+ Click ($restored.Right-23) ($restored.Top+17)
  Start-Sleep -Milliseconds 250;$process.Refresh()
  if(-not $process.HasExited){
   $dialog=[Windows.Automation.AutomationElement]::FromHandle([CatNativeUI]::GetForegroundWindow())
-  $condition=[Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::NameProperty,'Descartar')
+  $condition=[Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::NameProperty,'Fechar sem salvar')
   $discard=$dialog.FindFirst([Windows.Automation.TreeScope]::Descendants,$condition)
   if($null -ne $discard){$discard.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern).Invoke()}
+  if($null -eq $discard){
+   $closeBounds=Rect $handle
+   Click ([int](($closeBounds.Left+$closeBounds.Right)/2)) ([int](($closeBounds.Top+$closeBounds.Bottom)/2+58))
+  }
   if(-not $process.WaitForExit(5000)){throw 'Custom close button did not finish the closing logo sequence.'}
  }
  @{success=$true;textOnly=[bool]$TextOnly;initial=$initial;small=$small;scroll=$scroll;keys=$keys} | ConvertTo-Json -Depth 8 | Set-Content (Join-Path $OutputDirectory 'results.json') -Encoding utf8

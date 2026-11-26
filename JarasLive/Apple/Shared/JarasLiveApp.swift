@@ -3,21 +3,30 @@ import SwiftUI
 import UIKit
 
 @MainActor final class JarasMobileApplicationDelegate: NSObject, UIApplicationDelegate {
-    private static var iPadOrientations: UIInterfaceOrientationMask = .landscape
+    private static var landscapeOnly = false
 
-    func application(_ application: UIApplication, supportedInterfaceOrientationsFor window: UIWindow?) -> UIInterfaceOrientationMask {
-        UIDevice.current.userInterfaceIdiom == .pad ? Self.iPadOrientations : .portrait
+    private static var orientations: UIInterfaceOrientationMask {
+        if UIDevice.current.userInterfaceIdiom == .phone { return .portrait }
+        return landscapeOnly ? .landscape : .all
     }
 
-    static func setObserverOrientation(_ observer: Bool) {
-        guard UIDevice.current.userInterfaceIdiom == .pad else { return }
-        iPadOrientations = observer ? .all : .landscape
+    func application(_ application: UIApplication, supportedInterfaceOrientationsFor window: UIWindow?) -> UIInterfaceOrientationMask {
+        Self.orientations
+    }
+
+    static func setLandscapeOnly(_ locked: Bool) {
+        guard landscapeOnly != locked else { return }
+        landscapeOnly = locked
         updateOrientations()
     }
 
-    static func updateOrientations() {
+    static func setRemoteOrientation(active: Bool, director: Bool = false) {
         guard UIDevice.current.userInterfaceIdiom == .pad else { return }
-        for scene in UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene })
+        setLandscapeOnly(active && director)
+    }
+
+    static func updateOrientations() {
+        for case let scene as UIWindowScene in UIApplication.shared.connectedScenes
             where scene.activationState == .foregroundActive {
             for window in scene.windows {
                 var controller = window.rootViewController
@@ -26,8 +35,8 @@ import UIKit
                     controller = current.presentedViewController
                 }
             }
-            scene.requestGeometryUpdate(.iOS(interfaceOrientations: iPadOrientations)) { error in
-                NSLog("CatLive: unable to update iPad orientation: %@", error.localizedDescription)
+            scene.requestGeometryUpdate(.iOS(interfaceOrientations: orientations)) { error in
+                NSLog("CatLive: unable to update orientation: %@", error.localizedDescription)
             }
         }
     }
@@ -43,7 +52,13 @@ import UIKit
         retry()
         #endif
     }
-    func retry() { do { container = try AppContainer(); error = nil } catch { self.error = error.localizedDescription } }
+    func retry() { do {
+        let initial = try AppContainer(); container = initial
+        #if os(macOS)
+        DesktopProjectTabs.shared.install(initial)
+        #endif
+        error = nil
+    } catch { self.error = error.localizedDescription } }
 }
 @main @MainActor struct JarasLiveApp: App {
     @StateObject private var bootstrap = Bootstrap()
@@ -62,8 +77,14 @@ import UIKit
         #endif
     }
     @ViewBuilder private var bootstrappedContent: some View {
-        if let container = bootstrap.container { RootView(container: container) }
-        else { VStack(spacing: 20) { Text("CatLive").font(.largeTitle.bold()); Text(LocalizedStringKey(bootstrap.error ?? "Iniciando…")); Button("Tentar novamente") { bootstrap.retry() } }.padding(40) }
+        if let container = bootstrap.container {
+            #if os(macOS)
+            DesktopProjectRoot(initial: container)
+            #else
+            RootView(container: container)
+            #endif
+        }
+        else { VStack(spacing: 20) { Text("CatLive").font(.jarasLargeTitle.bold()); Text(LocalizedStringKey(bootstrap.error ?? "Iniciando…")); Button("Tentar novamente") { bootstrap.retry() } }.padding(40) }
     }
     var body: some Scene {
         #if os(macOS)
@@ -79,11 +100,13 @@ import UIKit
                 Button("Cut") { RegionShortcutView.performClipboard("x") }.keyboardShortcut("x")
                 Button("Copy") { RegionShortcutView.performClipboard("c") }.keyboardShortcut("c")
                 Button("Paste") { RegionShortcutView.performClipboard("v") }.keyboardShortcut("v")
+                Button("Duplicate") { RegionShortcutView.performClipboard("d") }.keyboardShortcut("d")
             }
         }
         #else
         WindowGroup("CatLive") {
             appContent.statusBarHidden(true).persistentSystemOverlays(.hidden)
+                .background(IpadTextKeyboardScope())
                 .onAppear { UIApplication.shared.isIdleTimerDisabled = scenePhase == .active }
         }
         .onChange(of: scenePhase) { phase in
@@ -94,12 +117,23 @@ import UIKit
     }
 }
 struct RootView: View {
+    @AppStorage(TransportPanelColor.key) private var transportPanelColor = ""
+    @AppStorage(JarasInterfaceTheme.preferenceKey) private var interfaceTheme = JarasInterfaceTheme.defaultTheme
     @AppStorage("jaras.language") private var language = "en"
     @ObservedObject var container: AppContainer
     @ObservedObject private var auth: AuthService
     @ObservedObject private var documents: ProjectDocuments
     var leaveNative: (() -> Void)? = nil
     @State private var browsingNative = false
+    #if os(macOS)
+    @State private var browsingDesktop = false
+    @State private var desktopBrowserRequest: ProjectBrowserNavigation?
+    private var desktopBrowserVisible: Bool { browsingDesktop || !documents.ready }
+    private var desktopLoginVisible: Bool {
+        !container.starting && !auth.workspaceAllowed &&
+        ![.launching, .checkingSession, .checkingLicense, .checkingDevice].contains(auth.phase)
+    }
+    #endif
     init(container: AppContainer, leaveNative: (() -> Void)? = nil) {
         self.container = container; self.leaveNative = leaveNative; auth = container.auth; documents = container.documents
     }
@@ -117,8 +151,9 @@ struct RootView: View {
             } else if canEnter {
                 #if os(iOS)
                 if documents.ready && !browsingNative {
-                    IpadStandaloneWorkspace(show: container.show, documents: documents, auth: auth, backend: container.backend, onExit: {
-                        Task { if await container.closeNativeProject() { browsingNative = true } }
+                    IpadStandaloneWorkspace(show: container.show, documents: documents, auth: auth, backend: container.backend,
+                                            onExit: leaveNative ?? {
+                        browsingNative = true
                     })
                         .id(documents.opened)
                 } else {
@@ -126,39 +161,62 @@ struct RootView: View {
                         HStack {
                             Button("Modes") { leaveNative?() }.disabled(documents.busy)
                             Spacer()
-                            Text("Native").font(.headline).foregroundStyle(JarasTheme.green)
+                            NativeAccessTitle()
                             Spacer()
                             if documents.ready { Button("Back to project") { browsingNative = false } }
-                        }.padding(16).background(JarasTheme.panel)
-                        ProjectBrowserView(documents: documents) { if documents.ready { browsingNative = false } }
+                        }.padding(16).background(JarasTheme.homeBackground)
+                        ProjectBrowserView(documents: documents, completed: { if documents.ready { browsingNative = false } })
                     }
                 }
                 #else
-                if documents.ready {
-                    MainView(show: container.show, auth: auth, backend: container.backend, documents: documents)
-                        // A successful open starts a new workspace, even for
-                        // a backup/copy carrying the same project UUID. Native
-                        // surfaces, gestures and local editors cannot survive it.
-                        .id(documents.opened)
+                ZStack {
+                    DesktopWorkspaceView(container: container, browserVisible: desktopBrowserVisible || documents.openingProgress != nil, showProjects: { recents in
+                        desktopBrowserRequest = ProjectBrowserNavigation(recents: recents)
+                        browsingDesktop = true
+                    })
+                        .opacity(documents.ready ? 1 : 0)
+                        .allowsHitTesting(!desktopBrowserVisible)
+                        .accessibilityHidden(desktopBrowserVisible)
+                    if desktopBrowserVisible && documents.ready {
+                        Color.black.opacity(0.28).contentShape(Rectangle())
+                    }
+                    ProjectBrowserView(documents: documents, completed: { browsingDesktop = false },
+                                       returnToProject: documents.ready ? { browsingDesktop = false } : nil,
+                                       navigation: desktopBrowserRequest)
+                        .frame(width: 600, height: 432)
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                        .overlay { RoundedRectangle(cornerRadius: 10).strokeBorder(interfaceTheme.line).allowsHitTesting(false) }
+                        .shadow(color: .black.opacity(0.60), radius: 20, y: 6)
+                        .opacity(desktopBrowserVisible ? 1 : 0)
+                        .allowsHitTesting(desktopBrowserVisible)
+                        .accessibilityHidden(!desktopBrowserVisible)
+                    if !documents.ready { ProjectTitlebarContent { EmptyView() } }
                 }
-                else { ProjectBrowserView(documents: documents) }
                 #endif
             }
             else if [.launching,.checkingSession,.checkingLicense,.checkingDevice].contains(auth.phase) {
                 StartupView(progress: nil, stage: [.launching, .checkingSession].contains(auth.phase) ? "Restaurando ativação…" : "Validando acesso…")
-            } else { LoginView(auth: auth, backend: container.backend) }
+            } else {
+                LoginView(auth: auth, backend: container.backend,
+                          offersTrial: true,
+                          showsCloseButton: false)
+            }
         }
+        .overlay { MultipleProjectOpeningOverlay() }
         #if os(macOS)
-        .frame(minWidth: documents.ready ? 1408 : 600, minHeight: documents.ready ? 650 : 460)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(InterfaceScaleAnchor(preserveFrame: true))
         .background(TrialTitlebar(auth: auth))
-        .background(ProjectWindowSizing(editor: documents.ready && auth.workspaceAllowed,
-                                        login: !auth.workspaceAllowed, documents: documents))
+        .background(ProjectWindowSizing(editor: canEnter && (documents.ready || documents.projectTabCount > 1),
+                                        login: desktopLoginVisible, documents: documents,
+                                        chromeColor: canEnter && documents.ready ? (TransportPanelColor(rawValue: transportPanelColor) ?? .purple).topColor : interfaceTheme.titlebar))
         .overlay {
             GeometryReader { geometry in
-                JarasTheme.titlebar
+                let inWorkspace = canEnter && documents.ready
+                (inWorkspace ? (TransportPanelColor(rawValue: transportPanelColor) ?? .purple).topColor : interfaceTheme.titlebar)
                     .frame(height: geometry.safeAreaInsets.top)
                     .overlay(alignment: .bottom) {
-                        Rectangle().fill(JarasTheme.line.opacity(0.65)).frame(height: 1)
+                        if !inWorkspace { Rectangle().fill(JarasTheme.line.opacity(0.65)).frame(height: 1) }
                     }
                     .frame(maxHeight: .infinity, alignment: .top)
                     .ignoresSafeArea(edges: .top)
@@ -170,20 +228,49 @@ struct RootView: View {
         #endif
         .onOpenURL { url in
             #if os(macOS)
-            if ["jl", "bkjl", "logicx", "rpp", "ziplive", "zip"].contains(url.pathExtension.lowercased()) { documents.open(url) }
+            if ["jl", "bkjl", "ziplive", "zip"].contains(url.pathExtension.lowercased()) { documents.open(url) }
             #else
             if ["ziplive", "zip"].contains(url.pathExtension.lowercased()) { documents.importPortablePackage(url) }
             #endif
         }
-        #if os(iOS)
-        .disabled(documents.busy)
         .overlay {
-            if documents.busy {
+            if let progress = documents.temporarySaveProgress {
+                ZStack {
+                    Color.black.opacity(0.45).ignoresSafeArea()
+                    VStack(alignment: .leading, spacing: 14) {
+                        Text("Saving project…").font(.jarasHeadline)
+                        ProgressView(value: progress.fraction)
+                            .progressViewStyle(JarasProgressBarStyle()).tint(JarasTheme.green)
+                        HStack {
+                            if progress.stage == .copying {
+                                Text("Copying files: \(progress.completedFiles)/\(progress.totalFiles)")
+                            } else if progress.stage == .writing {
+                                Text("Writing project…")
+                            } else {
+                                Text(LocalizedStringKey(documents.status))
+                            }
+                            Spacer()
+                            Text(verbatim: "\(Int(progress.fraction * 100))%")
+                                .monospacedDigit()
+                        }.font(.jarasCaption)
+                        if !progress.fileName.isEmpty {
+                            Text(verbatim: progress.fileName).font(.jarasCaption)
+                                .foregroundStyle(JarasTheme.secondary).lineLimit(1).truncationMode(.middle)
+                        }
+                    }.padding(24).frame(width: 400).background(JarasTheme.panel)
+                        .foregroundStyle(JarasTheme.text).clipShape(RoundedRectangle(cornerRadius: 12))
+                }
+            }
+        }
+        #if os(iOS)
+        .disabled(documents.showsBlockingProgress)
+        .overlay {
+            if documents.showsBlockingProgress && documents.temporarySaveProgress == nil && documents.openingProgress == nil {
                 ZStack {
                     Color.black.opacity(0.45).ignoresSafeArea()
                     VStack(spacing: 16) {
-                        ProgressView(value: documents.audioImportProgress).tint(JarasTheme.green)
-                        Text(LocalizedStringKey(documents.status)).font(.callout)
+                        ProgressView(value: documents.audioImportProgress).progressViewStyle(JarasProgressBarStyle()).tint(JarasTheme.green)
+                        Text(LocalizedStringKey(documents.status)).font(.jarasCallout)
                         if documents.canCancelOpening { Button("Cancel") { documents.cancelOpening() } }
                     }.padding(28).frame(width: 360).background(JarasTheme.panel)
                         .clipShape(RoundedRectangle(cornerRadius: 14))
@@ -193,6 +280,24 @@ struct RootView: View {
         .modifier(NativeProjectPresentation(documents: documents))
         .onChange(of: documents.folderReview != nil || documents.scan != nil) { reviewing in if reviewing { browsingNative = true } }
         #endif
+        .overlay {
+            if let progress = documents.openingProgress {
+                ZStack {
+                    Color.black.opacity(0.45).ignoresSafeArea()
+                    VStack(alignment: .leading, spacing: 14) {
+                        Text(progress.isBackup ? "Opening backup…" : "Opening project…").font(.jarasHeadline)
+                        ProgressView(value: progress.fraction).progressViewStyle(JarasProgressBarStyle()).tint(JarasTheme.green)
+                        Text(LocalizedStringKey(documents.status)).font(.jarasCallout)
+                        if !progress.fileName.isEmpty {
+                            Text(verbatim: progress.fileName).font(.jarasCaption)
+                                .foregroundStyle(JarasTheme.secondary).lineLimit(1).truncationMode(.middle)
+                        }
+                        if documents.canCancelOpening { Button("Cancel") { documents.cancelOpening() } }
+                    }.padding(24).frame(width: 400).background(JarasTheme.panel)
+                        .foregroundStyle(JarasTheme.text).clipShape(RoundedRectangle(cornerRadius: 12))
+                }
+            }
+        }
         .sheet(item: $documents.missingAudioPrompt) { _ in
             MissingAudioRecoveryView(documents: documents)
         }
@@ -203,7 +308,7 @@ struct RootView: View {
         }
         .overlay(alignment: .top) {
             if !documents.closeNotice.isEmpty {
-                Text(LocalizedStringKey(documents.closeNotice)).font(.callout)
+                Text(LocalizedStringKey(documents.closeNotice)).font(.jarasCallout)
                     .padding(12).background(JarasTheme.panel)
                     .clipShape(RoundedRectangle(cornerRadius: 8)).padding(.top, 20)
                     .accessibilityAddTraits(.updatesFrequently)
@@ -213,8 +318,90 @@ struct RootView: View {
         .preferredColorScheme(.dark)
         .jarasHideScrollIndicators()
         .environment(\.locale, Locale(identifier: language)).task { await container.start() }
+        #if os(macOS)
+        .interfaceScaled()
+        .font(.jarasBody)
+        #endif
     }
 }
+#if os(macOS)
+/// Each tab owns its mounted workspace. Switching tabs detaches and reattaches
+/// that host, preserving timeline/mixer views and their local presentation state.
+@MainActor private struct DesktopWorkspaceView: NSViewRepresentable {
+    let container: AppContainer
+    let browserVisible: Bool
+    let showProjects: (Bool) -> Void
+    @ObservedObject private var documents: ProjectDocuments
+    init(container: AppContainer, browserVisible: Bool, showProjects: @escaping (Bool) -> Void) {
+        self.container = container; self.browserVisible = browserVisible
+        self.showProjects = showProjects; documents = container.documents
+    }
+    @Environment(\.locale) private var locale
+    @Environment(\.displayScale) private var displayScale
+    private var environmentKey: String { locale.identifier + "|" + String(describing: displayScale) + "|" + String(browserVisible) }
+    private func content() -> AnyView {
+        AnyView(MainView(show: container.show, auth: container.auth, backend: container.backend, documents: container.documents,
+                         showProjects: showProjects)
+            .environment(\.locale,locale).environment(\.colorScheme,.dark)
+            .environment(\.gridInteractionBlocked, browserVisible)
+            .workspaceControlsAppearActive()
+            .environment(\.displayScale,displayScale).font(.jarasBody))
+    }
+    final class Deck: NSView {
+        var browserVisible = false
+        override func hitTest(_ point: NSPoint) -> NSView? {
+            browserVisible ? nil : super.hitTest(point)
+        }
+        override func layout() {
+            super.layout()
+            for view in subviews where !view.isHidden && view.frame != bounds { view.frame = bounds }
+        }
+        override var isFlipped: Bool { true }
+    }
+    func makeNSView(context: Context) -> Deck { Deck() }
+    func updateNSView(_ deck: Deck, context: Context) {
+        deck.browserVisible = browserVisible
+        // A new tab mounts before its asynchronous document load finishes.
+        // Observe that completion here: the container reference itself never
+        // changes, so SwiftUI can otherwise retain the previous tab's host.
+        guard documents.ready else {
+            for view in deck.subviews where !view.isHidden { view.isHidden = true }
+            return
+        }
+        let host: NSHostingView<AnyView>
+        if container.desktopWorkspaceIdentity == documents.opened,
+           let cached = container.desktopWorkspaceHost { host = cached }
+        else {
+            container.desktopWorkspaceHost?.removeFromSuperview()
+            host = NativeWorkspaceHostingView(rootView: content())
+            if #available(macOS 13, *) { host.sizingOptions = [] }
+            if #available(macOS 13.3, *) { host.safeAreaRegions = [] }
+            host.setContentHuggingPriority(.defaultLow, for: .horizontal)
+            host.setContentHuggingPriority(.defaultLow, for: .vertical)
+            container.desktopWorkspaceHost = host
+            container.desktopWorkspaceIdentity = documents.opened
+            container.desktopWorkspaceEnvironment = environmentKey
+        }
+        if container.desktopWorkspaceEnvironment != environmentKey {
+            container.desktopWorkspaceEnvironment = environmentKey
+            host.rootView = content()
+        }
+        // Keep mounted workspaces attached to the same window. Removing a
+        // hosting view from its window tears down native descendants on a switch.
+        if host.superview !== deck { deck.addSubview(host) }
+        let live = DesktopProjectTabs.shared.projects.compactMap { $0.desktopWorkspaceHost }
+        for view in deck.subviews {
+            if !live.contains(where: { $0 === view }) && view !== host { view.removeFromSuperview() }
+            else if view.isHidden != (view !== host) { view.isHidden = view !== host }
+        }
+        if host.frame != deck.bounds { host.frame = deck.bounds }
+    }
+    @available(macOS 13, *)
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: Deck, context: Context) -> CGSize? {
+        CGSize(width: proposal.width ?? nsView.bounds.width, height: proposal.height ?? nsView.bounds.height)
+    }
+}
+#endif
 /// A native alert sizes itself to all of its text, which can put its dismiss
 /// button below the screen for projects with many unsupported effects. Only
 /// the details scroll here; the title and confirmation remain in view.
@@ -228,9 +415,9 @@ struct ProjectMigrationNotice: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             VStack(alignment: .leading, spacing: 6) {
-                Text(verbatim: text("Project migration")).font(.headline)
+                Text(verbatim: text("Project migration")).font(.jarasHeadline)
                 Text(verbatim: text("Project imported. Review these notes before playback."))
-                    .font(.callout).foregroundStyle(JarasTheme.secondary)
+                    .font(.jarasCallout).foregroundStyle(JarasTheme.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }.accessibilityIdentifier("migration-notice-header")
             ScrollView(.vertical, showsIndicators: true) {
@@ -239,10 +426,10 @@ struct ProjectMigrationNotice: View {
                         HStack(alignment: .top, spacing: 8) {
                             Text(verbatim: "\(index + 1).").foregroundStyle(JarasTheme.yellow)
                             Text(verbatim: note).frame(maxWidth: .infinity, alignment: .leading)
-                                .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                                .fixedSize(horizontal: false, vertical: true).textSelection(.disabled)
                         }
                     }
-                }.font(.system(size: 12)).padding(12)
+                }.font(.jarasSystem(size: 12)).padding(12)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(JarasTheme.background)
@@ -250,7 +437,7 @@ struct ProjectMigrationNotice: View {
             .accessibilityIdentifier("migration-notice-details")
             HStack {
                 Text(verbatim: String(format: text("Import notes: %ld"), notes.count))
-                    .font(.caption).foregroundStyle(JarasTheme.secondary)
+                    .font(.jarasCaption).foregroundStyle(JarasTheme.secondary)
                 Spacer()
                 Button(action: dismiss) {
                     Text(verbatim: text("OK")).frame(minWidth: 64, minHeight: 24)
@@ -268,36 +455,75 @@ struct ProjectMigrationNotice: View {
 struct UnauthorizedPreview: PreviewProvider { static var previews: some View { let container = try! AppContainer(preview: true); LoginView(auth: container.auth, backend: container.backend).frame(width: 1100, height: 720) } }
 
 struct StartupView: View {
+    static let panelWidth: CGFloat = 600
+    static let panelHeight: CGFloat = 280
+    static func fit(in available: CGSize) -> CGFloat {
+        let margin: CGFloat = 24
+        return max(0, min(1, (available.width - margin * 2) / panelWidth,
+                          (available.height - margin * 2) / panelHeight))
+    }
     let progress: Double?
     let stage: String
     var transparent = false
-    @State private var pulse = false
     var body: some View {
-        ZStack {
-            if !transparent { JarasTheme.background.ignoresSafeArea() }
-            VStack(spacing: 22) {
+        if transparent {
+            card
+        } else {
+            GeometryReader { geometry in
+                card.scaleEffect(Self.fit(in: geometry.size))
+                    .position(x: geometry.size.width / 2, y: geometry.size.height / 2)
+            }.background(JarasTheme.homeBackground.ignoresSafeArea())
+        }
+    }
+
+    private var card: some View {
+            HStack(spacing: 0) {
                 Image("CatLiveSplash").resizable().scaledToFit()
-                    .frame(width: 330, height: 330).accessibilityLabel("CatLive")
-                Group {
-                    if let progress {
-                        GeometryReader { geometry in
-                            Capsule().fill(JarasTheme.green.opacity(0.14))
-                            Capsule().fill(JarasTheme.green)
-                                .frame(width: geometry.size.width * min(1, max(0, progress)))
-                                .opacity(pulse ? 1 : 0.55)
-                                .shadow(color: JarasTheme.green.opacity(pulse ? 0.5 : 0.15), radius: pulse ? 5 : 2)
-                        }.frame(height: 5)
-                    } else {
-                        ProgressView().progressViewStyle(.linear).tint(JarasTheme.green)
+                    .padding(24)
+                    .frame(width: Self.panelWidth * 0.4, height: Self.panelHeight)
+                    .accessibilityLabel("CatLive")
+                Rectangle().fill(Color.white.opacity(0.12)).frame(width: 1)
+                VStack(alignment: .leading, spacing: 0) {
+                    Spacer(minLength: 0)
+                    HStack(spacing: 10) {
+                        HStack(alignment: .center, spacing: 2) {
+                            ForEach(Array([10.0, 20, 30, 38, 26, 18, 8].enumerated()), id: \.offset) { _, height in
+                                Capsule().frame(width: 3, height: height)
+                            }
+                        }.frame(width: 33, height: 38).accessibilityHidden(true)
+                        Text(verbatim: "CatLive").font(.jarasSystem(size: 54, weight: .bold))
+                            .lineLimit(1).minimumScaleFactor(0.8)
                     }
-                }.frame(width: 300)
+                    .foregroundStyle(LinearGradient(colors: [Color(hex: 0x72FFB3), Color(hex: 0x00CF64)],
+                                                    startPoint: .topLeading, endPoint: .bottomTrailing))
+                    #if os(macOS)
+                    Text(verbatim: "Version " + (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""))
+                        .font(.jarasSystem(size: 12)).foregroundStyle(JarasTheme.secondary).padding(.top, 8)
+                    #endif
+                    Spacer(minLength: 24)
+                    Group {
+                        if let progress {
+                            GeometryReader { geometry in
+                                Capsule().fill(JarasTheme.green.opacity(0.14))
+                                Capsule().fill(JarasTheme.green)
+                                    .frame(width: geometry.size.width * min(1, max(0, progress)))
+                            }.frame(height: 5)
+                        } else {
+                            ProgressView().progressViewStyle(JarasProgressBarStyle()).tint(JarasTheme.green)
+                        }
+                    }
                     .accessibilityLabel(LocalizedStringKey(stage))
                     .accessibilityValue(progress.map { "\(Int($0 * 100))%" } ?? "")
-                Text(LocalizedStringKey(stage)).font(.system(size: 12))
-                    .foregroundStyle(JarasTheme.secondary)
+                    Text(LocalizedStringKey(stage)).font(.jarasSystem(size: 12))
+                        .foregroundStyle(JarasTheme.secondary).padding(.top, 10)
+                    Text(verbatim: "© reivsoficial").font(.jarasSystem(size: 10))
+                        .foregroundStyle(JarasTheme.secondary).padding(.top, 4)
+                }.padding(24).frame(width: Self.panelWidth * 0.6 - 1, height: Self.panelHeight)
             }
-            .onAppear { withAnimation(.easeInOut(duration: 0.85).repeatForever(autoreverses: true)) { pulse = true } }
-        }
+            .frame(width: Self.panelWidth, height: Self.panelHeight)
+            .background(JarasTheme.panel)
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color.white.opacity(0.12), lineWidth: 1))
     }
 }
 
@@ -322,6 +548,11 @@ private final class FloatingStartupAnchor: NSView {
     var splashContent = AnyView(EmptyView())
     private var panel: NSPanel?
     private var hosting: NSHostingView<AnyView>?
+    private var artworkScale: CGFloat = 1
+    private var sizedContent: AnyView {
+        AnyView(splashContent.scaleEffect(artworkScale)
+            .frame(width: StartupView.panelWidth * artworkScale, height: StartupView.panelHeight * artworkScale))
+    }
     private var hidMain = false
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
     override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); refresh() }
@@ -331,21 +562,27 @@ private final class FloatingStartupAnchor: NSView {
             window.alphaValue = 0
             hidMain = true
             if panel == nil {
-                let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 390, height: 430), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+                let screen = window.screen ?? NSScreen.main
+                artworkScale = screen.map { StartupView.fit(in: $0.visibleFrame.size) } ?? 1
+                let size = NSSize(width: StartupView.panelWidth * artworkScale, height: StartupView.panelHeight * artworkScale)
+                let panel = NSPanel(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
                 panel.isOpaque = false
                 panel.backgroundColor = .clear
-                panel.hasShadow = false
+                panel.hasShadow = true
                 panel.level = .floating
                 panel.isReleasedWhenClosed = false
                 panel.ignoresMouseEvents = true
-                let hosting = NSHostingView(rootView: splashContent)
+                let hosting = NSHostingView(rootView: sizedContent)
                 panel.contentView = hosting
                 self.hosting = hosting
                 self.panel = panel
-                panel.center()
+                if let area = screen?.visibleFrame {
+                    panel.setFrameOrigin(NSPoint(x: area.midX - size.width / 2, y: area.midY - size.height / 2))
+                } else { panel.center() }
                 panel.orderFrontRegardless()
+                DispatchQueue.main.async { AppStartupPresentation.playSoundOnce() }
             }
-            hosting?.rootView = splashContent
+            hosting?.rootView = sizedContent
         } else { finish() }
     }
     func finish() {
@@ -363,17 +600,33 @@ private final class FloatingStartupAnchor: NSView {
 
 #if os(macOS)
 @MainActor final class JarasApplicationDelegate: NSObject, NSApplicationDelegate {
+    private var closeApproved = false
     func applicationWillFinishLaunching(_ notification: Notification) {
         NSWindow.allowsAutomaticWindowTabbing = false
+        MacShowMode.shared.refresh()
     }
+    func applicationWillTerminate(_ notification: Notification) { MacShowLidBrightness.shared.stop() }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if SMK37FirmwareTask.shared.busy { NSApp.activate(ignoringOtherApps: true); return .terminateCancel }
+        if closeApproved { return .terminateNow }
+        if ProjectSyncControl.following {
+            DesktopProjectTabs.shared.active?.documents.closeNotice = "Project Sync: o PC B está seguindo o PC A. Desative a sincronização antes de encerrar."
+            return .terminateCancel
+        }
         let guardClose = ProjectCloseGuard.shared
         guard !guardClose.pending else { guardClose.focusCurrentDialog(); return .terminateCancel }
         guard guardClose.attached else { return .terminateNow }
-        Task { @MainActor in
-            guardClose.request { allowed in sender.reply(toApplicationShouldTerminate: allowed) }
+        Task { @MainActor [weak self] in
+            guardClose.request { [weak self] allowed in
+                guard allowed, let self else { return }
+                self.closeApproved = true
+                sender.terminate(nil)
+            }
         }
-        return .terminateLater
+        // terminateLater enters AppKit's termination run loop. Playback timers
+        // and main-queue audio scheduling must keep advancing while a save
+        // sheet waits for the user; request termination again after approval.
+        return .terminateCancel
     }
 }
 
@@ -384,13 +637,14 @@ private final class FloatingStartupAnchor: NSView {
     func begin() {
         remaining = 1
         hiddenWindows = NSApp.windows.filter { $0.isVisible }
-        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 390, height: 430), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
-        panel.isOpaque = false; panel.backgroundColor = .clear; panel.hasShadow = false
+        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: StartupView.panelWidth, height: StartupView.panelHeight), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        panel.isOpaque = false; panel.backgroundColor = .clear; panel.hasShadow = true
+        panel.appearance = NSAppearance(named: .darkAqua)
         panel.level = .floating; panel.isReleasedWhenClosed = false; panel.ignoresMouseEvents = true
         panel.contentView = NSHostingView(rootView: ClosingLogoView(state: self)
             .environment(\.locale, Locale(identifier: UserDefaults.standard.string(forKey: "jaras.language") ?? "en")))
         if let screen = NSApp.mainWindow?.screen {
-            panel.setFrameOrigin(NSPoint(x: screen.visibleFrame.midX - 195, y: screen.visibleFrame.midY - 215))
+            panel.setFrameOrigin(NSPoint(x: screen.visibleFrame.midX - StartupView.panelWidth / 2, y: screen.visibleFrame.midY - StartupView.panelHeight / 2))
         } else { panel.center() }
         self.panel = panel
         hiddenWindows.forEach { $0.orderOut(nil) }
@@ -416,6 +670,114 @@ private struct ClosingLogoView: View {
 }
 
 /// Window close and Quit share an explicit Save / Discard / Cancel decision.
+/// Save confirmation shared visually with Windows, with an explicit app logo.
+/// AppKit can omit the app icon from NSAlert sheets, so own this small surface.
+@MainActor final class ProjectSaveAlert: NSObject {
+    static let appIcon: NSImage? = {
+        if let url = Bundle.main.url(forResource: "CatLiveIcon", withExtension: "icns"),
+           let image = NSImage(contentsOf: url) {
+            return image
+        }
+        return NSImage(named: "CatLiveLogo")
+    }()
+
+    private final class Panel: NSPanel {
+        override var canBecomeKey: Bool { true }
+    }
+    private final class Content: NSView {
+        override var isFlipped: Bool { true }
+    }
+    private final class Action: NSButton {
+        var primary = false
+        override func draw(_ dirtyRect: NSRect) {
+            let fill = primary ? NSColor(srgbRed: 0.376, green: 0.710, blue: 0.239, alpha: 1)
+                               : NSColor(white: 0.28, alpha: 0.85)
+            (isHighlighted ? fill.blended(withFraction: 0.15, of: .black)! : fill).setFill()
+            NSBezierPath(roundedRect: bounds, xRadius: bounds.height / 2, yRadius: bounds.height / 2).fill()
+            let style = NSMutableParagraphStyle(); style.alignment = .center
+            let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 13, weight: .medium),
+                .foregroundColor: NSColor.white, .paragraphStyle: style]
+            let height = (title as NSString).size(withAttributes: attrs).height
+            (title as NSString).draw(in: NSRect(x: 4, y: (bounds.height-height)/2, width: bounds.width-8, height: height), withAttributes: attrs)
+            if window?.firstResponder === self {
+                NSColor.white.withAlphaComponent(0.5).setStroke()
+                NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: bounds.height/2, yRadius: bounds.height/2).stroke()
+            }
+        }
+    }
+    var messageText = ""
+    private var buttons: [NSButton] = []
+    private let panel = Panel(contentRect: NSRect(x: 0, y: 0, width: 260, height: 244),
+                              styleMask: .borderless, backing: .buffered, defer: false)
+    private var finishing = false
+    override init() {
+        super.init()
+        panel.isReleasedWhenClosed = false; panel.isOpaque = false
+        panel.backgroundColor = .clear; panel.hasShadow = true
+        panel.appearance = NSAppearance(named: .darkAqua)
+    }
+    @discardableResult func addButton(withTitle title: String) -> NSButton {
+        let button = Action(title: title, target: self, action: #selector(answer(_:)))
+        button.primary = buttons.isEmpty
+        button.tag = NSApplication.ModalResponse.alertFirstButtonReturn.rawValue + buttons.count
+        button.isBordered = false; button.focusRingType = .none
+        buttons.append(button)
+        return button
+    }
+    private func prepare() {
+        let titleHeight: CGFloat = 44
+        let content = Content(frame: NSRect(x: 0, y: 0, width: 280, height: 268))
+        content.wantsLayer = true
+        let glass = NSVisualEffectView(frame: content.bounds)
+        glass.material = .hudWindow; glass.blendingMode = .behindWindow; glass.state = .active
+        content.addSubview(glass)
+        let tint = NSView(frame: content.bounds); tint.wantsLayer = true
+        tint.layer?.backgroundColor = NSColor(white: 0.12, alpha: 0.82).cgColor
+        content.addSubview(tint)
+        content.layer?.cornerRadius = 25; content.layer?.masksToBounds = true
+        content.layer?.borderWidth = 1; content.layer?.borderColor = NSColor.white.withAlphaComponent(0.22).cgColor
+        let logo = NSImageView(frame: NSRect(x: (content.bounds.width-64)/2, y: 24, width: 64, height: 64))
+        logo.image = Self.appIcon ?? NSApp.applicationIconImage
+        logo.imageScaling = .scaleProportionallyUpOrDown
+        logo.setAccessibilityLabel("CatLive")
+        content.addSubview(logo)
+        let title = NSTextField(wrappingLabelWithString: messageText)
+        title.font = .systemFont(ofSize: 14, weight: .bold); title.textColor = NSColor(white: 0.87, alpha: 1)
+        title.alignment = .center; title.frame = NSRect(x: 16, y: 98, width: content.bounds.width-32, height: titleHeight)
+        content.addSubview(title)
+        for (index, button) in buttons.enumerated() {
+            button.frame = NSRect(x: 16, y: 152 + index * 34, width: Int(content.bounds.width)-32, height: 28)
+            content.addSubview(button)
+        }
+        panel.setContentSize(content.bounds.size)
+        panel.contentView = content
+        panel.title = messageText
+        panel.setAccessibilityLabel(messageText)
+    }
+    @objc private func answer(_ sender: NSButton) {
+        guard !finishing else { return }; finishing = true
+        let response = NSApplication.ModalResponse(rawValue: sender.tag)
+        if let parent = panel.sheetParent { parent.endSheet(panel, returnCode: response) }
+        else { NSApp.stopModal(withCode: response) }
+    }
+    func beginSheetModal(for parent: NSWindow, completionHandler: @escaping (NSApplication.ModalResponse) -> Void) {
+        prepare()
+        parent.makeKeyAndOrderFront(nil)
+        parent.beginSheet(panel) { [self] response in
+            panel.orderOut(nil)
+            ProjectionWindow.dismissWorkspaceConfirmation(panel)
+            completionHandler(response)
+        }
+        ProjectionWindow.presentWorkspaceConfirmation(panel)
+    }
+    func runModal() -> NSApplication.ModalResponse {
+        prepare(); panel.center()
+        let response = NSApp.runModal(for: panel)
+        panel.orderOut(nil)
+        return response
+    }
+}
+
 @MainActor final class ProjectCloseGuard: NSObject {
     static let shared = ProjectCloseGuard()
     private weak var window: NSWindow?
@@ -426,7 +788,8 @@ private struct ClosingLogoView: View {
 
     var attached: Bool { documents != nil }
     var needsConfirmation: Bool {
-        documents?.show.hasUnsavedChanges == true || documents?.show.saving == true ||
+        DesktopProjectTabs.shared.needsSaveOnClose ||
+        (documents?.show.hasUnsavedChanges == true && documents?.isTemporary != true) || documents?.show.saving == true ||
         documents?.busy == true || TrackRecording.shared.recording || TrackRecording.shared.busy
     }
     func attach(window: NSWindow, documents: ProjectDocuments) {
@@ -477,7 +840,7 @@ private struct ClosingLogoView: View {
     private func localized(_ key: String) -> String {
         JarasLocalization.string(key)
     }
-    func request(completion: @escaping (Bool) -> Void) {
+    func request(confirmPlayback: Bool = true, completion: @escaping (Bool) -> Void) {
         guard !pending else { focusCurrentDialog(); completion(false); return }
         guard let documents else { completion(false); return }
         // Finish the current dialog before allowing a close request to open another sheet.
@@ -499,13 +862,31 @@ private struct ClosingLogoView: View {
         }
         documents.closeNotice = ""
         pending = true
+        if confirmPlayback && (documents.show.isPlaying || DesktopProjectTabs.shared.anyPlaying) {
+            let alert = NSAlert()
+            alert.messageText = localized("Close CatLive?")
+            alert.informativeText = localized("Playback is in progress. Do you really want to close CatLive?")
+            alert.addButton(withTitle: localized("Cancel")).keyEquivalent = "\r"
+            alert.addButton(withTitle: localized("Close CatLive"))
+            let answer: (NSApplication.ModalResponse) -> Void = { [weak self] response in
+                guard let self else { completion(false); return }
+                self.pending = false
+                guard response == .alertSecondButtonReturn else { completion(false); return }
+                // Playback continues until all close/save decisions succeed.
+                // Cancelling a later save dialog must not interrupt the music.
+                DispatchQueue.main.async { self.request(confirmPlayback: false, completion: completion) }
+            }
+            presentCloseAlert(alert, completion: answer)
+            return
+        }
         if !needsConfirmation {
             finishClosing(documents: documents, save: false, completion: completion)
             return
         }
-        let alert = NSAlert()
-        alert.messageText = localized("Do you want to save this project?")
-        alert.addButton(withTitle: localized("Save")).keyEquivalent = "\r"
+        let alert = ProjectSaveAlert()
+        let multipleProjects = DesktopProjectTabs.shared.projects.count > 1
+        alert.messageText = localized(multipleProjects ? "Do you want to save all projects?" : "Do you want to save this project?")
+        alert.addButton(withTitle: localized(multipleProjects ? "Save all" : "Save")).keyEquivalent = "\r"
         alert.addButton(withTitle: localized("Close without saving"))
         alert.addButton(withTitle: localized("Cancel")).keyEquivalent = "\u{1b}"
         let answer: (NSApplication.ModalResponse) -> Void = { [weak self] response in
@@ -519,13 +900,28 @@ private struct ClosingLogoView: View {
                 self.pending = false; completion(false)
             }
         }
-        if let window { window.makeKeyAndOrderFront(nil); alert.beginSheetModal(for: window, completionHandler: answer) }
+        if let window { alert.beginSheetModal(for: window, completionHandler: answer) }
         else { answer(alert.runModal()) }
     }
+    private func presentCloseAlert(_ alert: NSAlert, completion: ((NSApplication.ModalResponse) -> Void)? = nil) {
+        guard let window else {
+            let response = alert.runModal()
+            completion?(response)
+            return
+        }
+        window.makeKeyAndOrderFront(nil)
+        let sheet = alert.window
+        alert.beginSheetModal(for: window) { response in
+            ProjectionWindow.dismissWorkspaceConfirmation(sheet)
+            completion?(response)
+        }
+        ProjectionWindow.presentWorkspaceConfirmation(sheet)
+    }
     private func finishClosing(documents: ProjectDocuments, save: Bool, completion: @escaping (Bool) -> Void) {
-        closingLogo.begin()
         Task { @MainActor in
             do {
+                try await DesktopProjectTabs.shared.prepareBackgroundProjectsForClosing(excluding: documents, save: save)
+                closingLogo.begin()
                 // Let the transparent logo paint before releasing playback resources.
                 await Task.yield()
                 let capture = TrackRecording.shared
@@ -539,8 +935,14 @@ private struct ClosingLogoView: View {
                 closingLogo.advance(0.25)
                 FXWindows.shared.closeAll()
                 capture.closeProject()
-                StemAudioPlayback.shared.prepareForClosing()
-                try await documents.rememberProjectMedia()
+                DesktopProjectTabs.shared.stopAll(forApplicationTermination: true)
+                // The ownership inventory supports optional media cleanup; it
+                // must not block closing a project whose save already succeeded.
+                // Keep explicit cleanup strict when the inventory is unreadable.
+                do { try await documents.rememberProjectMedia() }
+                catch { NSLog("CatLive: could not update media inventory while closing: %@", error.localizedDescription) }
+                for project in DesktopProjectTabs.shared.projects { try project.documents.discardTemporarySession() }
+                try documents.discardTemporarySession()
                 closingLogo.advance(1)
                 await Task.yield()
                 closingLogo.finish(restore: false)
@@ -556,8 +958,7 @@ private struct ClosingLogoView: View {
                 failure.messageText = localized("Could not close the project.")
                 failure.informativeText = localized(error.localizedDescription)
                 failure.addButton(withTitle: "OK")
-                if let window { window.makeKeyAndOrderFront(nil); failure.beginSheetModal(for: window, completionHandler: nil) }
-                else { failure.runModal() }
+                presentCloseAlert(failure)
             }
         }
     }

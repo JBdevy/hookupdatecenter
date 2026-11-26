@@ -1,6 +1,7 @@
 #pragma once
 #include "RemoteCipher.h"
 #include <winsock2.h>
+#include <ws2tcpip.h>
 #include <deque>
 namespace catlive::remote {
 // Socket ownership, ciphers and frame assembly stay on this worker. The UI only
@@ -13,9 +14,12 @@ class Transport final : private Thread {
         String name;
         uint8_t kind = 0;
         var body;
+        MemoryBlock binding;
     };
     Transport() : Thread("CatLive Remote") {}
     ~Transport() override { stop(); }
+    // Set before start. Runs on the network worker, only to wake its UI owner.
+    std::function<void()> eventsReady;
     int start(String name, const String &address = "127.0.0.1", int requestedPort = 0) {
         stop();
         displayName = std::move(name);
@@ -39,6 +43,12 @@ class Transport final : private Thread {
         outgoing.clear();
         queuedBytes = 0;
         active.clear();
+        connections.clear();
+    }
+    ID connectTo(const String &address, int port, const String &localAddress = {}, ULONG interfaceIndex = 0) {
+        const ScopedLock lock(mutex);
+        if (connections.size() >= 8) return {};
+        const auto id=uuid(); connections.push_back({id,address,port,localAddress,interfaceIndex}); notify(); return id;
     }
     bool running() const { return isThreadRunning(); }
     std::vector<Event> events() {
@@ -51,14 +61,14 @@ class Transport final : private Thread {
         const ScopedLock lock(mutex);
         return active;
     }
-    bool send(const ID &client, const Bytes &packet) {
+    bool send(const ID &client, const Bytes &packet, bool audio = false) {
         if (packet.empty() || packet.size() > maximumPacket)
             return false;
         const ScopedLock lock(mutex);
         if (!active.count(client) || queuedBytes + packet.size() > maximumFrame * 8 ||
-            outgoing.size() >= 256)
+            outgoing.size() >= 256 || (audio && queuedBytes >= maximumFrame * 2))
             return false;
-        outgoing.push_back({client, packet, false});
+        outgoing.push_back({client, packet, false, audio});
         queuedBytes += packet.size();
         notify();
         return true;
@@ -72,8 +82,11 @@ class Transport final : private Thread {
 
   private:
     struct Client {
-        Client(std::unique_ptr<StreamingSocket> value, const String &name)
-            : socket(std::move(value)), cipher(Cipher::host, name) {
+        Client(std::unique_ptr<StreamingSocket> value, const String &name, Cipher::Role role=Cipher::host)
+            : socket(std::move(value)), cipher(role, name) {
+            const BOOL immediate = TRUE;
+            require(setsockopt((SOCKET)socket->getRawSocketHandle(), IPPROTO_TCP, TCP_NODELAY,
+                              reinterpret_cast<const char *>(&immediate), sizeof(immediate)) == 0);
             u_long nonblocking = 1;
             require(ioctlsocket((SOCKET)socket->getRawSocketHandle(), FIONBIO, &nonblocking) == 0);
             push(Frames::encode(cipher.hello()));
@@ -101,7 +114,10 @@ class Transport final : private Thread {
         ID client;
         Bytes packet;
         bool close;
+        bool audio = false;
     };
+    struct Connection { ID id; String address; int port; String localAddress; ULONG interfaceIndex=0; };
+    std::vector<Connection> connections;
     String displayName;
     std::unique_ptr<StreamingSocket> listener;
     std::vector<std::unique_ptr<Client>> clients;
@@ -112,9 +128,12 @@ class Transport final : private Thread {
     size_t queuedBytes = 0;
     std::deque<double> invitations;
     void post(Event event) {
-        const ScopedLock lock(mutex);
-        require(pending.size() < 512);
-        pending.push_back(std::move(event));
+        {
+            const ScopedLock lock(mutex);
+            require(pending.size() < 512);
+            pending.push_back(std::move(event));
+        }
+        if (eventsReady) eventsReady();
     }
     void received(Client &client, const Bytes &data) {
         if (!client.hello) {
@@ -131,14 +150,14 @@ class Transport final : private Thread {
                 const ScopedLock lock(mutex);
                 active.insert(client.id);
             }
-            post({Event::connected, client.id, client.name});
+            post({Event::connected, client.id, client.name, 0, {}, client.cipher.sessionBinding});
             return;
         }
         require(plain.size() >= 6 && plain[0] == 1 && plain[1] == 0x4a && plain[2] == 0x4c &&
                 plain[3] == 2);
         const uint8_t kind = plain[4];
-        require(kind == 1 || kind == 3 || kind == 5);
-        const size_t maximum = kind == 1 ? 8192 : kind == 3 ? 64 : 256;
+        require(kind == 1 || kind == 3 || kind == 5 || kind == 8 || kind == 9);
+        const size_t maximum = kind == 8 ? 524292 : kind == 1 ? 8192 : kind == 3 ? 64 : kind == 9 ? 9 : 256;
         require(plain.size() - 1 <= maximum);
         const auto now = Time::getMillisecondCounterHiRes();
         if (now - client.rateStarted >= 1000) {
@@ -151,9 +170,17 @@ class Transport final : private Thread {
         const int jsonSize = (int)plain.size() - 5;
         require(std::memchr(json, 0, (size_t)jsonSize) == nullptr &&
                 CharPointer_UTF8::isValidString(json, jsonSize));
-        require(JSON::parse(String::fromUTF8(json, jsonSize), value).wasOk());
-        require(kind == 3 ? (value.isInt() || value.isInt64()) && (int64)value >= 0
-                          : value.isObject());
+        // JUCE's document parser accepts objects/arrays, whereas an ACK is a
+        // JSON integer in the Mac protocol. Parse a single wrapped value so
+        // scalar acknowledgements retain strict syntax/trailing-data checks.
+        var wrapper;
+        require(JSON::parse("[" + String::fromUTF8(json, jsonSize) + "]", wrapper).wasOk() &&
+                wrapper.isArray() && wrapper.size() == 1);
+        value = wrapper[0];
+        if (kind == 3)
+            require((value.isInt() || value.isInt64()) && (int64)value >= 0);
+        else
+            require(kind == 9 ? value.isBool() : value.isObject());
         post({Event::packetReceived, client.id, {}, kind, value});
     }
     void poll(Client &client) {
@@ -209,6 +236,29 @@ class Transport final : private Thread {
                     }
                 }
             }
+            std::vector<Connection> connects;
+            { const ScopedLock lock(mutex); connects.swap(connections); }
+            for(const auto &request:connects) {
+                try {
+                    auto socket=std::make_unique<StreamingSocket>();
+                    if(!socket->connect(request.address,request.port,1000)) { post({Event::disconnected,request.id,{}}); continue; }
+                    if (request.interfaceIndex) {
+                        // Check before exchanging any application data. A system
+                        // route choosing Wi-Fi must not turn into a Sync session.
+                        sockaddr_in local{}; int size = sizeof(local);
+                        char address[INET_ADDRSTRLEN]{};
+                        const auto handle = static_cast<SOCKET>(socket->getRawSocketHandle());
+                        const DWORD index = htonl(request.interfaceIndex);
+                        if (getsockname(handle, reinterpret_cast<sockaddr *>(&local), &size) != 0 ||
+                            !InetNtopA(AF_INET, &local.sin_addr, address, sizeof(address)) || request.localAddress != address ||
+                            setsockopt(handle, IPPROTO_IP, IP_UNICAST_IF, reinterpret_cast<const char *>(&index), sizeof(index)) != 0) {
+                            post({Event::disconnected,request.id,{}}); continue;
+                        }
+                    }
+                    auto client=std::make_unique<Client>(std::move(socket),displayName,Cipher::client);
+                    client->id=request.id; clients.push_back(std::move(client));
+                } catch(...) { post({Event::disconnected,request.id,{}}); }
+            }
             std::vector<Outgoing> messages;
             {
                 const ScopedLock lock(mutex);
@@ -220,7 +270,7 @@ class Transport final : private Thread {
                     if (client->id == message.client) {
                         if (message.close)
                             client->closed = true;
-                        else if (client->ready && !client->closed)
+                        else if (client->ready && !client->closed && (!message.audio || client->pendingBytes < maximumFrame * 3))
                             try {
                                 message.packet.insert(message.packet.begin(), 1);
                                 client->push(Frames::encode(client->cipher.seal(message.packet)));
@@ -246,6 +296,7 @@ class Transport final : private Thread {
                                                  pending.clear();
                                              pending.push_back(
                                                  {Event::disconnected, client->id, client->name});
+                                             if (eventsReady) eventsReady();
                                              return true;
                                          }),
                           clients.end());

@@ -134,9 +134,11 @@ print("NATIVE_TIMELINE_MOUNTS_SHRINK_GROW_ORIGIN_PINNING_INPUT_AND_REUSE_OK")
     window.isReleasedWhenClosed = false
     let mount = NativeTimelineBaseMountView(frame: CGRect(x: 0, y: 0, width: 600, height: 400))
     window.contentView = mount
-    mount.headerInteractionHeight = 100
+    mount.headerInteractionHeight = 40
     var clicks = 0
+    var selectionClicks: [CGPoint] = []
     mount.headerInteraction = { clicks += 1 }
+    mount.regionSelectionInteraction = { selectionClicks.append(mount.convert($0, from: nil)) }
     func click(_ x: CGFloat, _ y: CGFloat, type: NSEvent.EventType = .leftMouseDown,
                windowNumber: Int? = nil) {
         let event = NSEvent.mouseEvent(with: type, location: mount.convert(CGPoint(x: x, y: y), to: nil),
@@ -145,13 +147,12 @@ print("NATIVE_TIMELINE_MOUNTS_SHRINK_GROW_ORIGIN_PINNING_INPUT_AND_REUSE_OK")
             clickCount: 1, pressure: 1)!
         mount.handleHeaderMouseDown(event)
     }
-    // All header lanes, including their empty parts; body/outside/right clicks
-    // must not change follow or steal the original controls' event.
-    for y in [1.0, 25, 50, 75, 99] { click(300, y) }
-    precondition(clicks == 5, "Every visible header lane pauses follow")
-    click(300, 100); click(300, 250); click(-1, 20); click(601, 20); click(300, -1)
+    for y in [1.0, 8, 16, 28, 39] { click(300, y) }
+    precondition(clicks == 5, "The whole region band pauses follow, including empty areas")
+    for y in [40.0, 50, 75, 99, 250] { click(300, y) }
+    click(-1, 20); click(601, 20); click(300, -1)
     click(300, 20, type: .rightMouseDown)
-    precondition(clicks == 5, "Only left clicks inside the visible header count")
+    precondition(clicks == 5, "Marker, ruler, grid and right clicks cannot trigger the region pause")
     NativeTimelineInputGate.shared.setBlocked(true, for: window)
     click(300, 20)
     NativeTimelineInputGate.shared.setBlocked(false, for: window)
@@ -160,11 +161,14 @@ print("NATIVE_TIMELINE_MOUNTS_SHRINK_GROW_ORIGIN_PINNING_INPUT_AND_REUSE_OK")
     other.isReleasedWhenClosed = false
     click(300, 20, windowNumber: other.windowNumber)
     precondition(clicks == 5, "Modal, hidden and unrelated windows cannot pause timeline navigation")
+    precondition(selectionClicks.count == 13 && selectionClicks.contains(CGPoint(x: 300, y: 250)),
+                 "Region deselection sees clicks outside the header and honors the window and input gates")
+    mount.regionSelectionInteraction = nil
     mount.headerInteraction = { clicks += 10 }
     click(300, 20)
     precondition(clicks == 15, "A reused mount uses its latest project callback")
     mount.headerInteraction = nil; click(300, 20)
     precondition(clicks == 15, "Detached input callback cannot affect a closed project")
     other.close(); window.close()
-    print("NATIVE_TIMELINE_HEADER_ALL_LANES_BOUNDS_GATING_AND_CALLBACK_REUSE_OK")
+    print("NATIVE_TIMELINE_REGION_BAND_CLICK_BOUNDS_GATING_AND_CALLBACK_REUSE_OK")
 }

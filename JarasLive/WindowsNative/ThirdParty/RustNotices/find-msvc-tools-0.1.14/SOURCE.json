@@ -1,0 +1,7 @@
+﻿{
+    "license":  "MIT OR Apache-2.0",
+    "source":  "registry+https://github.com/rust-lang/crates.io-index",
+    "name":  "find-msvc-tools",
+    "version":  "0.1.14",
+    "repository":  "https://github.com/rust-lang/cc-rs"
+}

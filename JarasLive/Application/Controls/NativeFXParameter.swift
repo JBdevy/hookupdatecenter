@@ -4,8 +4,9 @@ import Foundation
 /// or EQ bands change order. They never identify a band by its array position.
 public struct NativeFXParameter: Codable, Equatable, Sendable {
     public enum Key: String, Codable, Sendable {
+        case triggerThreshold, triggerRetrigger, triggerGain, triggerMix, triggerAttack, triggerDecay, triggerSustain, triggerRelease, gateThreshold, gateAttack, gateDecay, gateHold, gateRelease, gateHighPass, gateLowPass
         case limiterGain, limiterCeiling, limiterRelease
-        case pitchSemitones
+        case pitchSemitones, pitchFormant
         case enabled, threshold, ratio, makeup, attack, release
         case delayTime, feedback, delayMix, reverbMix, reverbDecay, reverbLowCut, reverbHighCut, reverbRoom
         case bandFrequency, bandGain, bandQ, bandType, bandSlope
@@ -19,6 +20,7 @@ public struct NativeFXParameter: Codable, Equatable, Sendable {
     public var band: UUID?
     public var source: Int?
     public var name: String
+    public var displayName: String { key == .limiterGain ? "Gain" : name }
     public var minimum: Double
     public var maximum: Double
     public var logarithmic: Bool
@@ -51,6 +53,21 @@ public struct NativeFXParameter: Codable, Equatable, Sendable {
         }
         let value = value(normalized: normalized), enabled = normalized >= 0.5
         switch key {
+        case .triggerThreshold: settings.triggerParameters.threshold = value
+        case .triggerRetrigger: settings.triggerParameters.retrigger = value
+        case .triggerGain: settings.triggerParameters.gain = value
+        case .triggerMix: settings.triggerParameters.mix = value
+        case .triggerAttack: settings.triggerParameters.attack = value
+        case .triggerDecay: settings.triggerParameters.decay = value
+        case .triggerSustain: settings.triggerParameters.sustain = value
+        case .triggerRelease: settings.triggerParameters.release = value
+        case .gateThreshold: settings.gateParameters.threshold = value
+        case .gateAttack: settings.gateParameters.attack = value
+        case .gateDecay: settings.gateParameters.decay = value
+        case .gateHold: settings.gateParameters.hold = value
+        case .gateRelease: settings.gateParameters.release = value
+        case .gateHighPass: settings.gateParameters.highPass = min(value, settings.gateParameters.lowPass)
+        case .gateLowPass: settings.gateParameters.lowPass = max(value, settings.gateParameters.highPass)
         case .stemGain, .stemMute, .stemSolo:
             guard let source, (0..<5).contains(source) else { return false }
             var mix = settings.stemParameters
@@ -59,6 +76,7 @@ public struct NativeFXParameter: Codable, Equatable, Sendable {
             if key == .stemSolo { mix.sources[source].solo = enabled }
             settings.stemParameters = mix
         case .enabled: settings.setEnabled(effect, enabled: enabled)
+        case .pitchFormant: settings.pitchFormant = min(12, max(-12, value))
         case .pitchSemitones: settings.pitchSemitones = min(12, max(-12, value.rounded()))
         case .limiterGain: settings.limiterParameters.inputGain = min(24, max(-24, value))
         case .limiterCeiling: settings.limiterParameters.ceiling = min(0, max(-24, value))
@@ -142,11 +160,27 @@ public extension NativeFXParameter {
     func currentValue(in chain: NativeFXSettings) -> Double {
         let s = chain.settings(for: effect), p = s.instrumentParameters ?? InstrumentParameters()
         switch key {
+        case .triggerThreshold: return s.triggerParameters.threshold
+        case .triggerRetrigger: return s.triggerParameters.retrigger
+        case .triggerGain: return s.triggerParameters.gain
+        case .triggerMix: return s.triggerParameters.mix
+        case .triggerAttack: return s.triggerParameters.attack
+        case .triggerDecay: return s.triggerParameters.decay
+        case .triggerSustain: return s.triggerParameters.sustain
+        case .triggerRelease: return s.triggerParameters.release
+        case .gateThreshold: return s.gateParameters.threshold
+        case .gateAttack: return s.gateParameters.attack
+        case .gateDecay: return s.gateParameters.decay
+        case .gateHold: return s.gateParameters.hold
+        case .gateRelease: return s.gateParameters.release
+        case .gateHighPass: return s.gateParameters.highPass
+        case .gateLowPass: return s.gateParameters.lowPass
         case .stemGain, .stemMute, .stemSolo:
             guard let source, (0..<5).contains(source) else { return minimum }
             let item = s.stemParameters.sources[source]
             return key == .stemGain ? item.gain : (key == .stemMute ? item.mute : item.solo) ? 1 : 0
         case .enabled: return chain.isEnabled(effect) ? 1 : 0
+        case .pitchFormant: return s.formantSemitones
         case .pitchSemitones: return s.semitones
         case .limiterGain: return s.limiterParameters.inputGain
         case .limiterCeiling: return s.limiterParameters.ceiling
@@ -219,12 +253,24 @@ public extension NativeFXParameter {
                     add(.bandSlope, prefix+"Slope", 0...7, band: band.id, choices: ["6", "12", "24", "36", "48", "72", "96", "192"])
                     add(.bandType, prefix+"Type", 0...4, band: band.id, choices: ["bell", "lowCut", "highCut", "lowShelf", "highShelf"])
                 }
+            case "CatLive Trigger":
+                add(.triggerThreshold, "Threshold", -80...0); add(.triggerRetrigger, "Retrigger", 0.005...2, log: true)
+                add(.triggerGain, "Gain", -24...24); add(.triggerMix, "Mix", 0...100)
+                add(.triggerAttack, "Attack", 0...10, log: true); add(.triggerDecay, "Decay", 0...10, log: true)
+                add(.triggerSustain, "Sustain", 0...1); add(.triggerRelease, "Release", 0...20, log: true)
+            case "Cat Gate":
+                add(.gateThreshold, "Threshold", -80...0); add(.gateAttack, "Attack", 0...2, log: true)
+                add(.gateDecay, "Decay", 0...2, log: true); add(.gateHold, "Hold", 0...2, log: true)
+                add(.gateRelease, "Release", 0...5, log: true)
+                add(.gateHighPass, "High-pass", 20...20000, log: true); add(.gateLowPass, "Low-pass", 20...20000, log: true)
             case "Compressor":
                 add(.threshold, "Threshold", -60...0); add(.ratio, "Ratio", 1...20); add(.makeup, "Gain", -12...24)
                 add(.attack, "Attack", 0.0001...0.2, log: true); add(.release, "Release", 0.01...3, log: true)
             case "Limiter":
-                add(.limiterGain, "Input gain", -24...24); add(.limiterCeiling, "Ceiling", -24...0); add(.limiterRelease, "Release", 0.01...3, log: true)
-            case "Pitch": add(.pitchSemitones, "Semitones", -12...12)
+                add(.limiterGain, "Gain", -24...24); add(.limiterCeiling, "Ceiling", -24...0); add(.limiterRelease, "Release", 0.01...3, log: true)
+            case "Pitch":
+                add(.pitchSemitones, "Semitones", -12...12)
+                add(.pitchFormant, "Formant", -12...12)
             case "Delay": add(.delayTime, "Time", 0.01...2, log: true); add(.feedback, "Feedback", 0...90); add(.delayMix, "Mix", 0...100)
             case "Reverb":
                 add(.reverbMix, "Mix", 0...100); add(.reverbDecay, "Decay", 0.1...20, log: true)

@@ -15,7 +15,7 @@ const CREATE_PROJECT_INTERNAL_PEAK_DB = -1;
 const CREATE_PROJECT_DESTINATION_EXISTS_MESSAGE = 'Não é possível criar este projeto. Já existe outro projeto com esse nome nessa pasta.';
 const CREATE_PROJECT_TRACK_RULES = [
   { name: 'Click', pattern: /\b(click|metronomo|metronome)\b/ },
-  { name: 'Regência', pattern: /\b(regencia|maestro|gps|contagem|count in|countin)\b/ },
+  { name: 'Regência', pattern: /\b(regencia|cagueite|maestro|gps|contagem|count in|countin)\b/ },
   { name: 'Backing Vocal', pattern: /\b(back(?:ing)?(?: vocals?| vocais| vozes?| voz)?|backs?|bk|bgv)\b/ },
   // O nome da pista pode vir acompanhado pelo título da música, pelo artista
   // ou por uma seção. A correspondência deve funcionar em qualquer parte
@@ -24,7 +24,7 @@ const CREATE_PROJECT_TRACK_RULES = [
   { name: 'Vocal', pattern: /\bvocals?\b/ },
   { name: 'Vox', pattern: /\bvox\b/ },
   { name: 'Guia', pattern: /\b(guia|guide|voz|vz)\b/ },
-  { name: 'Sanfona', pattern: /\b(sanfona|acordeon|accordion)\b/ },
+  { name: 'Sanfona', pattern: /\b(sanfona|acordeon|accordion|acc)\b/ },
   { name: 'Ukulele', pattern: /\b(ukulele|ukelele|uke)\b/ },
   { name: 'Cavaquinho', pattern: /\b(cavaquinho|cavaquinhos|cavaco|cavacos)\b/ },
   { name: 'Banjo', pattern: /\b(banjo|banjos)\b/ },
@@ -54,8 +54,8 @@ const CREATE_PROJECT_TRACK_RULES = [
   { name: 'Bacurinha', pattern: /\b(bacurinha|bacurinhas)\b/ },
   { name: 'Tamborim', pattern: /\b(tamborim|tamborins)\b/ },
   { name: 'Shaker', pattern: /\b(shaker|shakers)\b/ },
-  { name: 'Ganzá', pattern: /\b(ganza|ganzas)\b/ },
-  { name: 'Agogô', pattern: /\b(agogo|agogos|sambago bells?)\b/ },
+  { name: 'Ganzá', pattern: /\b(ganzas?|ganzas? shaker)\b/ },
+  { name: 'Agogô', pattern: /\b(agogos?|agogo bells?|sambago bells?)\b/ },
   { name: 'Cowbell', pattern: /\b(cowbell|cowbells|cow bell|cow bells)\b/ },
   { name: 'Clave', pattern: /\b(clave|claves)\b/ },
   { name: 'Triângulo', pattern: /\b(triangulo|triangle)\b/ },
@@ -92,13 +92,15 @@ const CREATE_PROJECT_TRACK_RULES = [
   { name: 'Gong', pattern: /\b(gong|gongs)\b/ },
   { name: 'Jamblock', pattern: /\b(jam ?blocks?|jamblocks?)\b/ },
   { name: 'Bloco', pattern: /\b(blast blocks?|granite blocks?|temple blocks?|blocks? de percussao)\b/ },
-  { name: 'Woodblock', pattern: /\b(woodblock|wood block|wood blocks)\b/ },
+  { name: 'Woodblock', pattern: /\b(woodblocks?|wood blocks?|blocos? de madeira)\b/ },
   { name: 'Bar Chimes', pattern: /\b(bar chimes?|mark trees?|wind chimes?)\b/ },
   { name: 'Bell Tree', pattern: /\b(bell trees?)\b/ },
   { name: 'Waterfall', pattern: /\b(percussion waterfalls?|waterfall percussion|waterfalls?)\b/ },
   { name: 'Vibraslap', pattern: /\b(vibraslap|vibra slap)\b/ },
   { name: 'Castanholas', pattern: /\b(castanholas?|castanets?)\b/ },
   { name: 'Apito', pattern: /\b(apito|apitos|whistle|whistles)\b/ },
+  { name: 'Manjira', pattern: /\b(manjiras?|manjeeras?)\b/ },
+  { name: 'Mridangam', pattern: /\b(mridangam|mridangams|mridang)\b/ },
   { name: 'Udu', pattern: /\b(udu|udus)\b/ },
   { name: 'Marimba', pattern: /\b(marimba|marimbas)\b/ },
   { name: 'Vibrafone', pattern: /\b(vibrafone|vibraphone|vibes)\b/ },
@@ -106,7 +108,7 @@ const CREATE_PROJECT_TRACK_RULES = [
   { name: 'Kalimba', pattern: /\b(kalimba|kalimbas)\b/ },
   { name: 'Steel Pan', pattern: /\b(steel pan|steelpan|steel drum)\b/ },
   { name: 'Handpan', pattern: /\b(handpan|handpans|hang drum)\b/ },
-  { name: 'Bateria', pattern: /\b(baterias?|bateras?|drums?|drum ?kits?|drum ?sets?|drumsets?|kit de bateria|(?:606|707|808|909) ?kits?|linndrum|drum machine)\b/ },
+  { name: 'Bateria', pattern: /\b(baterias?|bateras?|drums?|drumms?|drum ?kits?|drum ?sets?|drumsets?|kit de bateria|(?:606|707|808|909) ?kits?|linndrum|drum machine)\b/ },
   { name: 'Rhodes', pattern: /\b(rhodes|rhode)\b/ },
   { name: 'Wurlitzer', pattern: /\b(wurlitzer|wurli|wurly)\b/ },
   { name: 'Electric Piano', pattern: /\b(electric piano|e piano|ep)\b/ },
@@ -179,8 +181,8 @@ const CREATE_PROJECT_TRACK_RULES = [
   { name: 'Orquestra', pattern: /\b(orquestra|orchestra|ensemble)\b/ },
   { name: 'Coro', pattern: /\b(coro|choir)\b/ },
   { name: 'Sequencer', pattern: /\b(sequencer|sequence|sequencia|sequenciador|seq)\b/ },
-  { name: 'FX', pattern: /\b(fx|sfx|efeito|efeitos)\b/ },
-  { name: 'Loop', pattern: /\b(loop)\b/ },
+  { name: 'FX', pattern: /\b(fx|sfx|efx|efeitos?|sound effects?)\b/ },
+  { name: 'Loop', pattern: /\b(loops?)\b/ },
   { name: 'Playback', pattern: /\b(playback|pb)\b/ },
   { name: 'Solo', pattern: /\bsolo\b/ },
   { name: 'Vinheta', pattern: /\b(vinheta|vinhetas)\b/ },
@@ -242,7 +244,7 @@ const CREATE_PROJECT_TRACK_GROUPS = [
   {
     key: 'percussivo',
     name: 'Percussivo',
-    trackNames: new Set(['Bumbo', 'Caixa', 'Hi-Hat', 'Tom', 'Over', 'Reverse Cymbal', 'Pratos', 'Ride', 'Crash', 'Conga', 'Bongo', 'Timbal', 'Surdo', 'Repique de Mão', 'Repique', 'Meia Lua', 'Pandeiro', 'Pandeirola', 'Bacurinha', 'Tamborim', 'Shaker', 'Ganzá', 'Agogô', 'Cowbell', 'Clave', 'Triângulo', 'Cajón', 'Djembe', 'Darbuka', 'Cabasa', 'Maracas', 'Chocalho', 'Cuíca', 'Berimbau', 'Caxixi', 'Reco-Reco', 'Afoxé', 'Alfaia', 'Zabumba', 'Atabaque', 'Tantã', 'Rebolo', 'Sopapo', 'Tarol', 'Xequerê', 'Rocar', 'Palmas', 'Snap', 'Rimshot', 'Tímpano', 'Tabla', 'Taiko', 'Tambora', 'Bodhrán', 'Frame Drum', 'Talking Drum', 'Gong', 'Jamblock', 'Bloco', 'Woodblock', 'Bar Chimes', 'Bell Tree', 'Waterfall', 'Vibraslap', 'Castanholas', 'Apito', 'Udu', 'Bateria', 'Percussão'])
+    trackNames: new Set(['Bumbo', 'Caixa', 'Hi-Hat', 'Tom', 'Over', 'Reverse Cymbal', 'Pratos', 'Ride', 'Crash', 'Conga', 'Bongo', 'Timbal', 'Surdo', 'Repique de Mão', 'Repique', 'Meia Lua', 'Pandeiro', 'Pandeirola', 'Bacurinha', 'Tamborim', 'Shaker', 'Ganzá', 'Agogô', 'Cowbell', 'Clave', 'Triângulo', 'Cajón', 'Djembe', 'Darbuka', 'Cabasa', 'Maracas', 'Chocalho', 'Cuíca', 'Berimbau', 'Caxixi', 'Reco-Reco', 'Afoxé', 'Alfaia', 'Zabumba', 'Atabaque', 'Tantã', 'Rebolo', 'Sopapo', 'Tarol', 'Xequerê', 'Rocar', 'Palmas', 'Snap', 'Rimshot', 'Tímpano', 'Tabla', 'Taiko', 'Tambora', 'Bodhrán', 'Frame Drum', 'Talking Drum', 'Gong', 'Jamblock', 'Bloco', 'Woodblock', 'Bar Chimes', 'Bell Tree', 'Waterfall', 'Vibraslap', 'Castanholas', 'Apito', 'Manjira', 'Mridangam', 'Udu', 'Bateria', 'Percussão'])
   },
   { key: 'back-vocais', name: 'Back Vocais', trackNames: new Set(['Backing Vocal', 'Vocal', 'Vox', 'Coro']) },
   { key: 'outros', name: 'Outros', trackNames: null }
@@ -468,6 +470,7 @@ function findVariant(normalizedName, rule) {
   if (has(/\b(lead)\b/)) variants.push('Lead');
   if (has(/\b(clean|limpo)\b/)) variants.push('Clean');
   if (has(/\b(drive|dist|distorcao|distortion)\b/)) variants.push('Drive');
+  if (rule.name === 'Guitarra' && has(/\bwah(?: wah)?\b/)) variants.push('Wah');
   if (has(/\b(midi)\b/)) variants.push('MIDI');
 
   const left = has(/\b(l|left|esq|esquerda)\b/);
@@ -484,7 +487,10 @@ function classifyCreateProjectTrack(filePath, folderName = '') {
   const fileName = path.basename(String(filePath || ''));
   const fileStem = path.basename(fileName, path.extname(fileName));
   const normalizedName = stripSongName(fileStem, folderName);
-  const rule = CREATE_PROJECT_TRACK_RULES.find((item) => item.pattern.test(normalizedName));
+  // A guide label may describe an instrumental stem ("Bateria guia").
+  // Prefer its instrument identity while preserving the existing ordering.
+  const matches = CREATE_PROJECT_TRACK_RULES.filter((item) => item.pattern.test(normalizedName));
+  const rule = matches.find((item) => item.name !== 'Guia') || matches[0];
 
   if (!rule) {
     const candidate = inferUnknownTrackCandidate(fileStem, folderName);
@@ -684,6 +690,7 @@ function removalName(name, text, directory) {
 
 function suggestRepeatedNames(names, { limit = 5 } = {}) {
   const counts = new Map();
+  const displayNames = new Map();
   const sourceLabels = new Map();
   const trackLabels = new Map();
   const cached = (cache, detector, value) => {
@@ -715,11 +722,14 @@ function suggestRepeatedNames(names, { limit = 5 } = {}) {
     for (const { start, size, text } of windows) {
       if (Array.from({ length: size }, (_, i) => start + i).some((i) => trackTokens.has(i))) continue;
       if (text.length < 2 || text.length > 120 || !/\p{L}/u.test(text)) continue;
-      perItem.add(text);
+      const key = foldRemovalValue(text).text.trim();
+      if (!displayNames.has(key)) displayNames.set(key, text);
+      perItem.add(key);
     }
     for (const text of perItem) counts.set(text, (counts.get(text) || 0) + 1);
   }
   const candidates = [...counts]
+    .map(([key, count]) => [displayNames.get(key), count])
     .filter(([text, count]) => count > 1 && !containsCreateProjectTrackName(text))
     .map(([text, count]) => [text, count, cached(sourceLabels, isCreateProjectSourceLabel, text)])
     // Prefer the complete provider tag over generic pieces such as "VS".
@@ -730,7 +740,11 @@ function suggestRepeatedNames(names, { limit = 5 } = {}) {
   const suggestions = [];
   for (const [text, count] of candidates) {
     // Prefer the complete repeated phrase over five variations of its words.
-    if (suggestions.some((item) => item.text.includes(text) || text.includes(item.text))) continue;
+    const phrase = ` ${foldRemovalValue(text).text.trim()} `;
+    if (suggestions.some((item) => {
+      const previous = ` ${foldRemovalValue(item.text).text.trim()} `;
+      return previous.includes(phrase) || phrase.includes(previous);
+    })) continue;
     suggestions.push({ text, count });
     if (suggestions.length >= limit) break;
   }
@@ -744,7 +758,7 @@ function calculatePeakNormalizationGain(peakDb, targetDb = CREATE_PROJECT_INTERN
   return 10 ** ((targetPeak - sourcePeak) / 20);
 }
 
-function auditCreateProjectFolders({ folderPaths = [], durationResolver, peakResolver, onProgress } = {}) {
+function auditCreateProjectFolders({ folderPaths = [], durationResolver, peakResolver, onProgress, classifyTrack = classifyCreateProjectTrack, resolveTrackKey = key => key } = {}) {
   if (typeof durationResolver !== 'function') throw new Error('Leitor de duração de áudio indisponível.');
   const uniqueFolders = [...new Set(folderPaths.map((item) => path.resolve(String(item || ''))).filter(Boolean))];
   if (!uniqueFolders.length) throw new Error('Escolha pelo menos uma pasta de música.');
@@ -789,7 +803,7 @@ function auditCreateProjectFolders({ folderPaths = [], durationResolver, peakRes
 
   for (const discovered of discoveredSongs) {
     const measured = discovered.audioFiles.map((filePath) => {
-      const classification = classifyCreateProjectTrack(filePath, discovered.inferredSongName.name);
+      const classification = classifyTrack(filePath, discovered.inferredSongName.name);
       try {
         const resolvedDuration = durationResolver(filePath);
         const duration = Number(resolvedDuration);
@@ -811,6 +825,7 @@ function auditCreateProjectFolders({ folderPaths = [], durationResolver, peakRes
           trackName: classification.name,
           trackKey: classification.key,
           recognized: classification.recognized,
+          matchedExistingName: classification.matchedExistingName === true,
           candidateName: classification.candidateName || '',
           candidateKey: classification.candidateKey || '',
           // O primeiro valor de VOLPAN é o volume do item e permanece 1.
@@ -882,7 +897,7 @@ function auditCreateProjectFolders({ folderPaths = [], durationResolver, peakRes
   for (const song of songs) {
     const reservedKeys = new Set(song.files.map((file) => file.trackKey));
     const usedKeys = new Set();
-    for (const file of song.files) {
+    for (const file of [...song.files].sort((a, b) => Number(b.matchedExistingName) - Number(a.matchedExistingName))) {
       if (!usedKeys.has(file.trackKey)) {
         usedKeys.add(file.trackKey);
         continue;
@@ -898,6 +913,7 @@ function auditCreateProjectFolders({ folderPaths = [], durationResolver, peakRes
           ? `custom:${normalizeTrackKey(duplicateName)}`
           : normalizeTrackKey(duplicateName);
         index += 1;
+        duplicateKey = resolveTrackKey(duplicateKey);
       } while (reservedKeys.has(duplicateKey) || usedKeys.has(duplicateKey));
 
       file.trackName = duplicateName;
@@ -945,19 +961,121 @@ function auditCreateProjectFolders({ folderPaths = [], durationResolver, peakRes
 }
 
 function canonicalExistingTrackKey(trackName) {
+  // Numbered internal channels were created to keep simultaneous stems apart.
+  // Classifying them as filenames would discard that distinguishing suffix.
+  const exact = normalizeTrackKey(trackName);
+  if (/^(click|guia|regencia) [1-9]\d*$/.test(exact)) return exact;
   const classification = classifyCreateProjectTrack(`${String(trackName || '')}.wav`);
   return classification.recognized ? classification.key : normalizeTrackKey(trackName);
 }
 
 function groupKeyFromFolderName(folderName) {
-  const key = normalizeTrackKey(folderName);
+  const key = normalizeTrackKey(String(folderName || '').replace(/^[#\s]+/, ''));
   const exact = CREATE_PROJECT_TRACK_GROUPS.find((group) => normalizeTrackKey(group.name) === key);
   if (exact) return exact.key;
+  if (key === 'guitarra') return 'guitarras';
+  if (key === 'sanfona') return 'sanfonas';
+  if (key === 'teclado') return 'teclados';
   if (key === 'percussao' || key === 'percussivo') return 'percussivo';
   if (key === 'back-vocal' || key === 'back-vocais' || key === 'backing-vocals') return 'back-vocais';
   return '';
 }
 
+// Shared with CatLive's embedded import rules. A category can live in any
+// user-named folder, or loose in the arrangement. Resolve only where NEW
+// tracks belong; this function never changes existing parents or order.
+function existingImportGroupDestination(tracks, groupKey) {
+  const named = tracks.find(track => track.isFolder && groupKeyFromFolderName(track.name) === groupKey);
+  if (named) return { folderIndex: named.index, anchorIndex: null };
+  const members = tracks.filter(track => {
+    if (track.isFolder) return false;
+    const classification = classifyCreateProjectTrack(`${track.name}.wav`);
+    return classification.recognized && resolveCreateProjectTrackGroup(classification.name).key === groupKey;
+  });
+  const grouped = members.find(track => track.parentIndex != null && tracks.some(folder => folder.index === track.parentIndex && folder.isFolder));
+  if (grouped) return { folderIndex: grouped.parentIndex, anchorIndex: null };
+  const loose = members.filter(track => track.parentIndex == null);
+  return { folderIndex: null, anchorIndex: loose.length ? loose[loose.length - 1].index : null };
+}
+
+
+// Use the exact artwork IDs bundled by CatLive on every platform. The track
+// taxonomy has already removed song names and resolved numbered variants.
+const catLiveStemIcons = new Map(Object.entries({
+ 'Other/metronome': ['Click', 'Metronome'],
+ 'Other/dynamic-mic': ['Guia', 'Regência'],
+ 'Other/vocals': ['Vocal', 'Vox', 'Coro', 'Backing Vocal', 'Back Vocais'],
+ 'Keyboards/accordion': ['Sanfona', 'Sanfonas'],
+ 'Guitar/double-cut-electric': ['Guitarra', 'Guitarras'],
+ 'Guitar/classical-guitar': ['Violão Nylon'],
+ 'Guitar/steel-string-acoustic': ['Violão', 'Violões'],
+ 'Guitar/banjo': ['Banjo'],
+ 'Guitar/ukulele': ['Ukulele'],
+ 'Strings/mandolin': ['Bandolim'],
+ 'Bass/precision-bass': ['Baixo'],
+ 'Drums/acoustic-drum-kit': ['Bateria', 'Over', 'Percussivo'],
+ 'Drums/kick-drum': ['Bumbo'],
+ 'Drums/snare-drum': ['Caixa', 'Rimshot', 'Tarol'],
+ 'Drums/hi-hat': ['Hi-Hat'],
+ 'Drums/floor-tom': ['Surdo'],
+ 'Drums/rack-toms': ['Tom'],
+ 'Drums/ride-cymbal': ['Ride'],
+ 'Drums/crash-cymbal': ['Crash', 'Pratos', 'Reverse Cymbal'],
+ 'Percussion/congas': ['Conga'],
+ 'Percussion/bongos': ['Bongo'],
+ 'Percussion/tambourine': ['Pandeiro', 'Pandeirola', 'Meia Lua'],
+ 'Percussion/shaker': ['Shaker', 'Ganzá'],
+ 'Percussion/cowbell': ['Cowbell'],
+ 'Percussion/claves': ['Clave'],
+ 'Percussion/triangle': ['Triângulo'],
+ 'Percussion/cajon': ['Cajón'],
+ 'Percussion/djembe': ['Djembe'],
+ 'Percussion/maracas': ['Maracas'],
+ 'Percussion/guiro': ['Reco-Reco'],
+ 'Percussion/wood-block': ['Woodblock', 'Bloco'],
+ 'Percussion/chime-tree': ['Bar Chimes'],
+ 'Percussion/vibraphone': ['Vibrafone'],
+ 'Other/kalimba': ['Kalimba'],
+ 'Keyboards/grand-piano': ['Piano'],
+ 'Keyboards/upright-piano': ['Honky Tonk'],
+ 'Keyboards/electric-piano': ['Rhodes', 'Wurlitzer', 'Electric Piano', 'CP80', 'Clavi'],
+ 'Keyboards/tonewheel-organ': ['Hammond', 'Órgão'],
+ 'Keyboards/synth-workstation': ['Teclado', 'Teclados', 'Triton', 'Trinity', 'Kronos', 'Nautilus', 'Krome', 'Kross', 'Fantom'],
+ 'Keyboards/digital-synth': ['DX', 'Vox Synth', 'Synth Brass', 'Synth Strings', 'M1', 'D-50', 'JD-800', 'JV-1080', 'XV-5080', 'XP', 'Opsix', 'Modwave', 'Wavestation', 'Wavestate'],
+ 'Keyboards/analog-synth': ['Synth', 'Saw', 'Square', 'Pulse', 'Pad', 'Lead', 'Pluck', 'Arp', 'Juno', 'Jupiter', 'MS-20', 'Polysix', 'Minilogue', 'SH-101', 'JX', 'System-8'],
+ 'Strings/string-ensemble': ['Cordas', 'Orquestra'],
+ 'Strings/violin': ['Violino'],
+ 'Strings/viola': ['Viola'],
+ 'Strings/cello': ['Cello'],
+ 'Strings/concert-harp': ['Harpa'],
+ 'Strings/sitar': ['Sitar'],
+ 'Strings/koto': ['Koto'],
+ 'Brass/trumpet': ['Metais', 'Trompete', 'Trompete Piccolo', 'Trompete Baixo', 'Clarim'],
+ 'Brass/trombone': ['Trombone', 'Trombone Alto', 'Trombone Tenor'],
+ 'Brass/bass-trombone': ['Trombone Baixo'],
+ 'Brass/cornet': ['Corneta'],
+ 'Brass/flugelhorn': ['Flugelhorn'],
+ 'Brass/tuba': ['Tuba'],
+ 'Brass/sousaphone': ['Sousafone'],
+ 'Brass/euphonium': ['Bombardino', 'Barítono de Metal'],
+ 'Brass/french-horn': ['Trompa', 'Trompa Alto', 'Mellophone'],
+ 'Wind/alto-saxophone': ['Sax', 'Sax Soprano', 'Sax Alto', 'Sax Tenor', 'Sax Barítono'],
+ 'Wind/flute': ['Flauta', 'Piccolo'],
+ 'Wind/clarinet': ['Clarinete'],
+ 'Wind/oboe': ['Oboé'],
+ 'Wind/bassoon': ['Fagote'],
+ 'Wind/harmonica': ['Harmônica'],
+ 'Sound Effects/impact': ['Hit']
+}).flatMap(([icon, names]) => names.map(name => [name, 'png:' + icon])));
+
+function catLiveStemIcon(trackName) {
+ const name = String(trackName || '').trim().replace(/^#+\s*/, '');
+ const base = getCreateProjectTrackBaseName(name);
+ const canonical = base === 'Out' && !/^out(?:\s+\d+)?$/i.test(name)
+   ? getCreateProjectTrackBaseName(classifyCreateProjectTrack(name + '.wav').name)
+   : base;
+ return catLiveStemIcons.get(name) || catLiveStemIcons.get(canonical) || 'png:Other/waveform';
+}
 
 function suggestImportRemovals(names, { limit = 12 } = {}) {
  const groups = new Set(CREATE_PROJECT_TRACK_GROUPS.map(group => normalizeTrackKey(group.name)));
@@ -965,12 +1083,53 @@ function suggestImportRemovals(names, { limit = 12 } = {}) {
    .filter(item => !groups.has(normalizeTrackKey(item.text)))
    .slice(0, limit);
 }
-function analyzeImport(folders) {
+function existingImportClassifier(tracks) {
+ const exact = new Map(), canonical = new Map();
+ for (const track of tracks) {
+   if (track.isFolder || !Number.isInteger(track.index)) continue;
+   const name = normalizeTrackKey(track.name);
+   if (name && !exact.has(name)) exact.set(name, track);
+   const key = canonicalExistingTrackKey(track.name);
+   if (key && !canonical.has(key)) canonical.set(key, track);
+   if (key && !canonical.has('custom:' + key)) canonical.set('custom:' + key, track);
+ }
+ const resolveKey = key => canonical.has(key) ? 'existing:' + canonical.get(key).index : key;
+ const classify = (filePath, folderName) => {
+   const name = path.basename(filePath, path.extname(filePath));
+   // Exact filename first, then the normal import cleanup (song/ordering prefix).
+   const target = exact.get(normalizeTrackKey(name)) || exact.get(stripSongName(name, folderName));
+   if (target) {
+     const normalized = normalizeTrackKey(target.name);
+     const internal = /^(click|regencia)( \d+)?$/.exec(normalized);
+     const label = internal ? (internal[1] === 'click' ? 'Click' : 'Regência') + (internal[2] || '') : target.name;
+     return { name: label, key: 'existing:' + target.index, recognized: true, matchedExistingName: true, sourceName: name };
+   }
+   const result = classifyCreateProjectTrack(filePath, folderName);
+   const key = resolveKey(result.key);
+   if (!result.recognized || key !== result.key) return { ...result, key };
+
+   // Providers frequently append 1 to the first stem even when the
+   // equivalent destination has no number. Prefer an explicit numbered
+   // destination and keep 2 and later separate for simultaneous stems.
+   const first = result.key.endsWith(' 1');
+   if (first || !/ \d+$/.test(result.key)) {
+     const alternate = first ? result.key.slice(0, -2) : result.key + ' 1';
+     const target = canonical.get(alternate);
+     if (target) {
+       return { ...result, name: first ? result.name.slice(0, -2) : result.name, key: 'existing:' + target.index };
+     }
+   }
+   return result;
+ };
+ return { classify, resolveKey };
+}
+function analyzeImport(folders, existingTracks = []) {
+ const matching = existingImportClassifier(existingTracks);
  const entries = new Map(folders.map(folder => [folder.path, folder.files]));
  const durations = new Map(folders.flatMap(folder => folder.files.map(file => [folder.path + '/' + file.name, file.duration])));
  const peaks = new Map(folders.flatMap(folder => folder.files.map(file => [folder.path + '/' + file.name, file.peakDb])));
  globalThis.fs = { promises: { readdir(folder) { return entries.get(folder).map(file => ({ name: file.name, isFile() { return true; } })); } } };
- return auditCreateProjectFolders({ folderPaths: folders.map(folder => folder.path), durationResolver: file => durations.get(file), peakResolver: file => peaks.get(file) });
+ return auditCreateProjectFolders({ folderPaths: folders.map(folder => folder.path), durationResolver: file => durations.get(file), peakResolver: file => peaks.get(file), classifyTrack: matching.classify, resolveTrackKey: matching.resolveKey });
 }
 
 """#

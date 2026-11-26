@@ -14,18 +14,22 @@ import sys
 source = Path('Apple/Shared/MainView.swift').read_text()
 start = source.index('enum FooterHeightRole')
 subject = source[start:source.index('\n#else\nfinal class FooterVerticalResizeCoordinator', start)]
+grid = Path('Apple/Shared/GridScrollView.swift').read_text()
+active_controls = grid.index('    @ViewBuilder func workspaceControlsAppearActive()')
+subject += '\nextension View {\n' + grid[active_controls:grid.index('\n}', active_controls)] + '\n}\n'
 transport = Path('Apple/Shared/TransportView.swift').read_text()
 start = transport.index('struct FooterPlaylistDisplay:')
 playlist = transport[start:transport.index('\n#endif', start)]
 start = transport.index('struct SongNameDisplay:')
-display = transport[start:transport.index('private struct PanelCollapseButton:', start)]
+display = transport[start:transport.index('struct PanelCollapseButton:', start)]
 # Count the font actually requested by the production view, without adding a
 # test counter or extra observation to the application.
 display = display.replace('private var fontScale: CGFloat { max(1, sqrt(height / 25)) }',
     'private var fontScale: CGFloat { let value = max(1, sqrt(height / 25)); FooterJournal.fontScales.append(value); return value }')
 theme = Path('Apple/Shared/Theme.swift').read_text()
-colors = theme[theme.index('enum JarasTheme {'):theme.index('    static func track(')] + '}\n'
+colors = theme[theme.index('enum JarasInterfaceTheme:'):theme.index('    static func track(')] + '}\n'
 colors += theme[theme.index('extension Color {'):theme.index('struct StageButtonStyle:')]
+colors = colors.replace('            .desktopIconTooltip(title == "File" ? nil : title)\n', '')
 fx = Path('Apple/Shared/FXEditor.swift').read_text()
 keys = fx[fx.index('private struct OpenFXKey:'):fx.index('enum FXModelLookup')]
 region = Path('Apple/Shared/RegionEditor.swift').read_text()

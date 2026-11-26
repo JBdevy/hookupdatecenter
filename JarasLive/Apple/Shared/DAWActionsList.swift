@@ -3,67 +3,97 @@ import SwiftUI
 struct DAWActionsList: View {
     @ObservedObject var show: ShowController
     @ObservedObject private var mappings = ControlMappings.shared
-    #if os(iOS)
-    @State private var inputKind = "midi"
-    #else
     @State private var inputKind = "keyboard"
-    #endif
     @State private var category = DAWActionCategory.transport
-    private var categories: [DAWActionCategory] {
+    @State private var searchText = ""
+    private var query: String { searchText.trimmingCharacters(in: .whitespacesAndNewlines) }
+    private var categories: [DAWActionCategory] { DAWActionCategory.allCases }
+    private var categoryActions: [DAWAction] {
+        let actions = query.isEmpty ? category.actions : DAWAction.visible
         #if os(iOS)
-        [.transport, .volume, .mute, .solo, .setlist]
+        // Native iPad has a Track Mixer and teleprompter panel, but no separate
+        // Hoz-Mixer/video windows or local project tabs to control.
+        return actions.filter { ![.toggleBarMixer, .toggleVideo, .previousProjectTab, .nextProjectTab].contains($0) }
         #else
-        DAWActionCategory.allCases
+        return actions
         #endif
     }
-    private struct ResetRequest { let action: DAWAction; let kind: String }
+    private var filteredActions: [DAWAction] {
+        categoryActions.filter { action in
+            (inputKind == "midi" ? action.supportsMIDI : !action.continuous) &&
+            (query.isEmpty || JarasLocalization.string(action.title).localizedStandardContains(query) ||
+             action.title.localizedStandardContains(query) ||
+             (action.needsTrack && JarasLocalization.string("Selected track").localizedStandardContains(query)))
+        }
+    }
+    @State private var trackNumbers: [DAWAction: String] = [:]
+    private struct ResetRequest { let action: DAWAction; let kind: String; var number: Int? = nil }
     @State private var resetRequest: ResetRequest?
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass").foregroundStyle(JarasTheme.secondary)
+                TextField("Search actions", text: $searchText).textFieldStyle(.plain)
+                if !searchText.isEmpty {
+                    Button { searchText = "" } label: { Image(systemName: "xmark.circle.fill") }
+                        .buttonStyle(.plain).foregroundStyle(JarasTheme.secondary).accessibilityLabel("Clear search")
+                }
+            }.padding(8).background(JarasTheme.display).cornerRadius(6)
             categoryTabs
-            #if os(macOS)
             Picker("Input", selection: $inputKind) {
                 Text("Keyboard").tag("keyboard")
                 Text("MIDI").tag("midi")
             }.pickerStyle(.segmented)
-            #endif
-            Text("Actions are saved for all projects.").font(.caption).foregroundStyle(JarasTheme.secondary)
-            if !mappings.error.isEmpty { Text(mappings.error).font(.caption).foregroundStyle(.red) }
-            ForEach(category.actions.filter { inputKind == "midi" ? $0.supportsMIDI : !$0.continuous }, id: \.self) { action in
-                let binding = mappings.actions.binding(action)
+            Text("Actions are saved for all projects.").font(.jarasCaption).foregroundStyle(JarasTheme.secondary)
+            if !mappings.error.isEmpty { Text(mappings.error).font(.jarasCaption).foregroundStyle(.red) }
+            if filteredActions.isEmpty { Text("No actions found").font(.jarasCaption).foregroundStyle(JarasTheme.secondary) }
+            ForEach(filteredActions, id: \.self) { action in
+                let number = Int(trackNumbers[action] ?? "").flatMap { $0 > 0 ? $0 : nil }
+                let binding = mappings.actions.binding(action, trackNumber: number)
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
-                        Text(LocalizedStringKey(action.title)).font(.headline)
+                        Text(LocalizedStringKey(action.title)).font(.jarasHeadline)
                         Spacer()
-                        Button("Reset") { resetRequest = ResetRequest(action: action, kind: inputKind) }.font(.caption)
+                        Button("Reset") { resetRequest = ResetRequest(action: action, kind: inputKind, number: number) }.font(.jarasCaption).disabled(action.needsTrack && number == nil)
                     }
                     if action.needsTrack {
                         HStack {
-                            Text("Track").font(.caption)
-                            TextField("Selected track", text: Binding(get: { binding.trackNumber.map(String.init) ?? "" }, set: { text in
-                                if text.isEmpty { mappings.setActionTrack(action, number: nil) }
-                                else if let number = Int(text) { mappings.setActionTrack(action, number: number) }
+                            Text("Track").font(.jarasCaption)
+                            TextField("Track", text: Binding(get: { trackNumbers[action] ?? "" }, set: {
+                                trackNumbers[action] = String($0.filter { $0.isASCII && $0.isNumber }.prefix(6))
                             })).frame(width: 90).textFieldStyle(.roundedBorder)
-                            Text(targetName(binding.trackNumber)).font(.caption).foregroundStyle(JarasTheme.secondary).lineLimit(1)
+                            if let number { Text(targetName(number)).font(.jarasCaption).foregroundStyle(JarasTheme.secondary).lineLimit(1) }
                         }
                     }
                     HStack(spacing: 10) {
                         if inputKind == "keyboard" && action.fixedKeyboard {
-                            Label(binding.keyboard?.label ?? "", systemImage: "lock.fill").font(.caption).frame(width: 140, alignment: .leading)
-                        } else {
-                            inputButton(action, kind: inputKind, input: inputKind == "keyboard" ? binding.keyboard : binding.midi)
+                            Label(binding.keyboard?.label ?? "", systemImage: "lock.fill").font(.jarasCaption).frame(width: 140, alignment: .leading)
+                        } else if !action.needsTrack || number != nil {
+                            inputButton(action, kind: inputKind, input: inputKind == "keyboard" ? binding.keyboard : binding.midi, number: number)
                         }
                     }
                 }.padding(12).frame(maxWidth: .infinity, alignment: .leading).background(JarasTheme.panel).cornerRadius(6)
+                if action.needsTrack && action != .selectTrack {
+                    let selected = mappings.actions.binding(action)
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text(JarasLocalization.string(action.title) + " · " + JarasLocalization.string("Selected track")).font(.jarasHeadline)
+                            Spacer()
+                            Button("Reset") { resetRequest = ResetRequest(action: action, kind: inputKind) }.font(.jarasCaption)
+                        }
+                        inputButton(action, kind: inputKind, input: inputKind == "keyboard" ? selected.keyboard : selected.midi)
+                    }.padding(12).frame(maxWidth: .infinity, alignment: .leading).background(JarasTheme.panel).cornerRadius(6)
+                }
             }
         }
         .onChange(of: category) { value in
+            searchText = ""
             if value == .volume { inputKind = "midi" }
             if value == .shortcuts { inputKind = "keyboard" }
         }
         .alert("Restore this mapping?", isPresented: Binding(get: { resetRequest != nil }, set: { if !$0 { resetRequest = nil } }), presenting: resetRequest) { request in
             Button("Cancel", role: .cancel) { resetRequest = nil }
-            Button("Restore") { mappings.resetAction(request.action, kind: request.kind); resetRequest = nil }
+            Button("Restore") { mappings.resetAction(request.action, kind: request.kind, trackNumber: request.number); resetRequest = nil }
         } message: { request in
             Text(LocalizedStringKey(request.action.title))
         }
@@ -76,12 +106,12 @@ struct DAWActionsList: View {
             ForEach(categories) { item in
                 Button { category = item } label: {
                     Text(LocalizedStringKey(item.rawValue))
-                        .font(.system(size: 12, weight: .semibold)).lineLimit(1)
+                        .font(.jarasSystem(size: 12, weight: .semibold)).lineLimit(1)
                         .frame(maxWidth: .infinity, minHeight: 30)
-                        .background(category == item ? JarasTheme.accent.opacity(0.18) : JarasTheme.panel)
+                        .background(query.isEmpty && category == item ? JarasTheme.accent.opacity(0.18) : JarasTheme.panel)
                         .clipShape(RoundedRectangle(cornerRadius: 5)).contentShape(Rectangle())
-                }.buttonStyle(.plain).foregroundStyle(category == item ? JarasTheme.accent : JarasTheme.text)
-                    .accessibilityAddTraits(category == item ? .isSelected : [])
+                }.buttonStyle(.plain).foregroundStyle(query.isEmpty && category == item ? JarasTheme.accent : JarasTheme.text)
+                    .accessibilityAddTraits(query.isEmpty && category == item ? .isSelected : [])
             }
         }
         #else
@@ -90,20 +120,19 @@ struct DAWActionsList: View {
         }.pickerStyle(.segmented)
         #endif
     }
-    private func targetName(_ number: Int?) -> String {
-        guard let number else { return JarasLocalization.string("Selected track") }
+    private func targetName(_ number: Int) -> String {
         return show.actionTrack(number: number)?.name ?? JarasLocalization.string("Track unavailable")
     }
-    private func inputButton(_ action: DAWAction, kind: String, input: ControlInput?) -> some View {
+    private func inputButton(_ action: DAWAction, kind: String, input: ControlInput?, number: Int? = nil) -> some View {
         HStack(spacing: 4) {
-            Button { mappings.beginAction(action, kind: kind) } label: {
+            Button { mappings.beginAction(action, kind: kind, trackNumber: number) } label: {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(LocalizedStringKey(kind == "keyboard" ? "Keyboard" : "MIDI")).font(.caption2).foregroundStyle(JarasTheme.secondary)
-                    Text(input?.label ?? JarasLocalization.string("Map control")).font(.caption).lineLimit(1).truncationMode(.middle)
+                    Text(LocalizedStringKey(kind == "keyboard" ? "Keyboard" : "MIDI")).font(.jarasCaption2).foregroundStyle(JarasTheme.secondary)
+                    Text(input?.label ?? JarasLocalization.string("Map control")).font(.jarasCaption).lineLimit(1).truncationMode(.middle)
                 }.frame(maxWidth: .infinity, alignment: .leading).padding(6).contentShape(Rectangle())
             }.buttonStyle(.plain).background(JarasTheme.display).cornerRadius(4)
             if input != nil {
-                Button { mappings.removeActionInput(action, kind: kind) } label: { Image(systemName: "xmark") }.buttonStyle(.plain).accessibilityLabel("Remove mapping")
+                Button { mappings.removeActionInput(action, kind: kind, trackNumber: number) } label: { Image(systemName: "xmark") }.buttonStyle(.plain).accessibilityLabel("Remove mapping")
             }
         }.frame(maxWidth: .infinity)
     }

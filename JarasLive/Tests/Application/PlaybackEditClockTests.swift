@@ -24,6 +24,7 @@ import XCTest
             }
         case .seek: transport.position = value
         case .subSeek: transport.subPlay.position = value
+        case .play: transport.playing = true
         case .stopAll: transport.playing = false; transport.subPlay.playing = false
         default: break
         }
@@ -47,10 +48,34 @@ import XCTest
 }
 
 final class PlaybackEditClockTests: XCTestCase {
-    @MainActor private func fixture() throws -> (ShowController, EditClockExecutor, () -> Double, () -> Void) {
+    @MainActor func testCountInLaunchSchedulesAudioBeforeRevealingTheGrid() throws {
+        let (show, _, now, _) = try fixture(withRegion: true)
+        show.send(.stopAll)
+        let oldFocus = show.setlistFocusRequest
+        let deadline = now() + 0.12
+        var playingAudioUpdates = 0
+        show.audioUpdate = { snapshot, _ in
+            guard snapshot.transport.playing else { return }
+            playingAudioUpdates += 1
+            XCTAssertEqual(show.timelinePlaybackSampleTime, deadline)
+            XCTAssertEqual(show.setlistFocusRequest, oldFocus)
+        }
+
+        show.startRecordingPlayback(at: deadline)
+
+        XCTAssertEqual(playingAudioUpdates, 1)
+        XCTAssertNotEqual(show.setlistFocusRequest, oldFocus)
+        XCTAssertTrue(show.snapshot.transport.playing)
+        show.send(.stopAll)
+    }
+
+    @MainActor private func fixture(withRegion: Bool = false) throws -> (ShowController, EditClockExecutor, () -> Double, () -> Void) {
         var now = 100.0
         var project = Project.empty(name: "Live editing")
         project.songs[0].duration = 100
+        if withRegion {
+            project.songs[0].parts = [Part(id: UUID(), name: "Intro", startTime: 0, endTime: 60)]
+        }
         project.songs[0].tracks = [Track(id: UUID(), name: "First", role: .other), Track(id: UUID(), name: "Second", role: .other)]
         project.songs[0].tracks[0].clips = [AudioClip(id: UUID(), name: "Stem", startTime: 0, duration: 90,
             audioFile: AudioFile(path: "Stems/stem.wav"))]
@@ -77,9 +102,15 @@ final class PlaybackEditClockTests: XCTestCase {
         let (show, _, now, delay) = try fixture()
         let track = show.current!.tracks[0].id, clip = show.current!.tracks[0].clips[0].id
         let count = observe(show, now: now)
-        show.audioMute = { _, _ in delay() }; show.audioClipMute = { _, _ in delay() }
+        let transport = show.snapshot.transport, sampleTime = show.timelinePlaybackSampleTime
+        var scalarUpdates = 0
+        show.audioMute = { id, _ in XCTAssertEqual(id, track); scalarUpdates += 1; delay() }
+        show.audioClipMute = { id, _ in XCTAssertEqual(id, clip); scalarUpdates += 1; delay() }
         for _ in 0..<4 { show.send(.mute, target: track); show.send(.clipMute, target: clip) }
-        XCTAssertEqual(count(), 8)
+        XCTAssertEqual(scalarUpdates, 8)
+        XCTAssertEqual(count(), 0, "Mute changes must not rebuild the audio project on the UI thread")
+        XCTAssertEqual(show.snapshot.transport, transport)
+        XCTAssertEqual(show.timelinePlaybackSampleTime, sampleTime)
         show.tick()
         XCTAssertEqual(show.snapshot.transport.position, 5 + now() - 100, accuracy: 0.000001)
         XCTAssertFalse(show.current!.tracks[0].mute)

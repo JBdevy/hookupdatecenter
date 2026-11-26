@@ -13,7 +13,7 @@ for i in 0..<48000 { input.floatChannelData![0][i] = 0.2; input.floatChannelData
 player.scheduleBuffer(input, at: nil, options: .loops, completionHandler: nil)
 try engine.start(); player.play()
 let output = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 1024)!
-for (mode, left, right) in [(0,0.2,-0.6), (1,0.2,0.2), (2,-0.6,-0.6), (3,-0.2,-0.2), (0,0.2,-0.6)] {
+for (mode, left, right) in [(0,0.2,-0.6), (1,0.2,0.2), (2,-0.6,-0.6), (3,-0.2,-0.2), (4,-0.6,0.2), (0,0.2,-0.6)] {
     JarasEqualizer.setInputChannelMode(effect, mode: Int32(mode))
     for _ in 0..<5 { let status = try engine.renderOffline(1024, to: output); precondition(status == .success) }
     for i in 0..<1024 {

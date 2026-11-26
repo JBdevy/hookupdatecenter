@@ -9,7 +9,7 @@ test_dir="$(mktemp -d "${TMPDIR:-/tmp}/jaras-native-header.XXXXXX")"
 trap 'rm -rf "$test_dir"' EXIT
 python3 - "$test_dir" <<'PY'
 from pathlib import Path
-import sys
+import sys, os, re
 source = Path('Apple/Shared/TimelineGridView.swift').read_text()
 def between(a,b):
  start=source.index(a)
@@ -18,6 +18,18 @@ parts = [between('/// The closed header owns no SwiftUI zoom graph.', '@MainActo
  between('private enum TimelineHeaderViewport', 'private struct TimelineStaticHeaderIdentity'),
  between('private final class MarkerTargetLabelWidths', 'private struct MarkerEditTargets'),
  between('private final class TimelineResolvedName', 'private struct RegionBoundaryOverlay')]
+item_source = Path('Apple/Shared/GridSelectionInput.swift').read_text()
+item_constants = item_source[item_source.index('struct GridSelectionItem {'):item_source.index('    let id: UUID', item_source.index('struct GridSelectionItem {'))]
+parts.append(item_constants + '}')
+parts.append(between('private let markerLaneHeight', '\nstruct TimelineBandsGlyph'))
+environment = Path('Apple/Shared/FXWindows.swift').read_text()
+region_editor = Path('Apple/Shared/RegionEditor.swift').read_text()
+Path(sys.argv[1], 'RegionEditor.swift').write_text('import SwiftUI\n' + region_editor[region_editor.index('struct RegionEditor: View'):])
+start = environment.index('private struct WorkspaceEditorDismissKey: EnvironmentKey')
+parts.append(environment[start:environment.index('extension View {', start)])
+parts.append(between('enum TimelineSnapPreference {', 'struct TimelineMagnetIcon'))
+conversion = Path('Application/Project/ProjectEditing.swift').read_text()
+parts.append(conversion[conversion.index('public struct MarkerRegionConversion {'):conversion.index('public extension Project {')])
 # Instrument the extracted fixture only; production carries no test counters.
 # Instrument layer properties only inside the header drawing class. Native
 # input shape layers keep their independent selection/hover lifecycle.
@@ -51,13 +63,24 @@ extension NativeTimelineHeaderView {
     var colorsForTest: [UInt32] { regions.map(\\.color) }
 }
 '''
-Path(sys.argv[1], 'main.swift').write_text('import AppKit\nimport SwiftUI\nimport CoreText\nprivate let markerLaneHeight: CGFloat = 16\n'+'\n'.join(parts)+probes+Path('Tests/Apple/TimelineNativeHeaderTests.swift').read_text()+'\n'+Path('Tests/Apple/TimelineHeaderLayerStateTests.swift').read_text())
+tests = Path('Tests/Apple/TimelineNativeHeaderTests.swift').read_text()+'\n'+Path('Tests/Apple/TimelineHeaderLayerStateTests.swift').read_text()
+if os.environ.get('CATLIVE_ZOOM_BENCHMARK') == '1':
+    tests = re.sub(r'^MainActor\.assumeIsolated.*$', '', tests, flags=re.M)
+    tests += '\n'+Path('Tests/Apple/TimelineZoomHeaderPerformanceTests.swift').read_text()
+Path(sys.argv[1], 'main.swift').write_text('import AppKit\nimport SwiftUI\nimport CoreText\n'+'\n'.join(parts)+probes+tests)
 PY
-swiftc -swift-version 5 -target "$(uname -m)-apple-macos12.0" \
-  Application/Project/OutputPatch.swift Application/Project/NativeFXSettings.swift \
+swiftc ${CATLIVE_ZOOM_BENCHMARK:+-O} -swift-version 5 -target "$(uname -m)-apple-macos12.0" \
+  Apple/Shared/TimelineGridInk.swift Apple/Shared/TimelineVisibleClipIndex.swift Application/Project/OutputPatch.swift Application/Project/DrummerPadKit.swift Application/Project/NativeFXSettings.swift \
   Application/Project/TrackRouting.swift Application/Project/MultiLoop.swift \
-  Application/Project/TrackAutomation.swift Application/Controls/NativeFXParameter.swift Application/Project/ProjectModels.swift Application/Project/MIDIItem.swift \
+  Application/Project/TrackAutomation.swift Application/Controls/NativeFXParameter.swift Application/Project/ProjectModels.swift Application/Project/MIDIItem.swift Application/Project/ItemFade.swift Application/Project/ItemFadeCurve.swift \
   Application/Project/TimelineTempo.swift Apple/Shared/Theme.swift Apple/Shared/NativeTooltips.swift \
   Apple/Shared/NativeTimelineInputGate.swift Apple/Shared/RightClickRouting.swift \
-  Apple/Shared/RegionEditor.swift Apple/Shared/TimelineStaticText.swift "$test_dir/main.swift" -o "$test_dir/test"
-"$test_dir/test"
+  "$test_dir/RegionEditor.swift" Apple/Shared/TimelineStaticText.swift "$test_dir/main.swift" -o "$test_dir/test"
+if [[ "${CATLIVE_ZOOM_PROFILE:-0}" == "1" ]]; then
+  "$test_dir/test" &
+  benchmark_pid=$!
+  sample "$benchmark_pid" 12 -file /tmp/catlive-zoom-header-sample.txt >/dev/null 2>&1
+  wait "$benchmark_pid"
+else
+    "$test_dir/test" "$@"
+fi

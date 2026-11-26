@@ -44,6 +44,8 @@ class EnvelopeLane final : public Component {
             g.fillEllipse(x - 3, y - 3, 6, 6);
         }
     }
+    bool displays(const ID &track, const var &curve) const { return trackID == track && str(envelope,"id") == str(curve,"id"); }
+    void refreshEnvelope(var curve) { envelope=std::move(curve); repaint(); }
     void mouseDown(const MouseEvent &e) override {
         grabKeyboardFocus();
         selected.clear();
@@ -57,24 +59,13 @@ class EnvelopeLane final : public Component {
             }
         if (e.mods.isPopupMenu()) {
             PopupMenu menu;
-            if (selected.isNotEmpty()) {
-                menu.addItem(1, "Excluir ponto");
-                menu.addSeparator();
-                menu.addItem(2, "Linear");
-                menu.addItem(3, "Square");
-                menu.addItem(4, "Smooth");
-                menu.addItem(5, "Fast start");
-                menu.addItem(6, "Fast end");
-            } else
-                menu.addItem(7, "Adicionar ponto aqui");
+            menu.addItem(2,"Linear");menu.addItem(3,"Square");menu.addItem(4,"Smooth");menu.addItem(5,"Fast start");menu.addItem(6,"Fast end");
             menu.showMenuAsync(
                 PopupMenu::Options().withTargetComponent(this),
-                [safe = SafePointer<EnvelopeLane>(this), position = e.position](int action) {
+                [safe = SafePointer<EnvelopeLane>(this)](int action) {
                     if (!safe)
                         return;
-                    if (action == 1)
-                        safe->remove();
-                    else if (action >= 2 && action <= 6) {
+                    if (action >= 2 && action <= 6) {
                         auto points = list(get(safe->envelope, "points"));
                         static const char *shapes[]{"linear", "square", "smooth", "fastStart",
                                                     "fastEnd"};
@@ -83,8 +74,7 @@ class EnvelopeLane final : public Component {
                                 put(point, "shape", shapes[action - 2]);
                         put(safe->envelope, "points", points);
                         safe->commit();
-                    } else if (action == 7)
-                        safe->add(position, false);
+                    }
                 });
         }
         repaint();

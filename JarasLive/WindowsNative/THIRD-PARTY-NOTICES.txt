@@ -1,0 +1,154 @@
+CATLIVE WINDOWSNATIVE — THIRD-PARTY NOTICES
+
+Scope
+-----
+These notices describe the default Windows x64 native foundation in this
+folder, not the old JUCE Windows application, the complete macOS application,
+or optional dependencies enabled by a different Cargo feature set. Preserve
+this notice and the referenced license files with distributions containing
+these components. Cargo.lock fixes the Rust dependency versions.
+
+C++ components
+--------------
+
+nlohmann/json 3.12.0
+Copyright (c) 2013-2025 Niels Lohmann.
+License: MIT.
+Upstream: https://github.com/nlohmann/json
+Full license: ThirdParty/nlohmann/LICENSE.MIT
+Source/version/hash: ThirdParty/nlohmann/SOURCE.txt
+
+The license above also contains upstream notices for the single-header code.
+
+D. R. audio libraries (dr_wav, dr_flac, dr_mp3)
+Pinned revision: dfe8377631000664666519fdb83da193fd8037f4
+License selected for this distribution: MIT No Attribution (MIT-0).
+The unmodified upstream headers retain their alternative public-domain notice.
+Upstream: https://github.com/mackron/dr_libs
+Full license: ThirdParty/dr_libs/LICENSE
+Source/version/hashes: ThirdParty/dr_libs/SOURCE.txt
+
+TinySoundFont v0.9, shared CatLive/Hook Keys version
+Upstream: https://github.com/schellingb/TinySoundFont
+Source: ../Core/ThirdParty/TinySoundFont/tsf.h
+License: MIT. The shared source includes local interpolation/renderer changes.
+
+Copyright (C) 2017-2025 Bernhard Schelling
+Based on SFZero, Copyright (C) 2012 Steve Folta
+(https://github.com/stevefolta/SFZero)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software is furnished to do so,
+subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+Rust dependencies
+-----------------
+The following inventory includes the default Windows x64 runtime and build
+crates whose notices are stored here. Each package directory under
+ThirdParty/RustNotices/<name>-<version>/ contains SOURCE.json and the upstream
+license texts, including copyright notices. The expressions below retain the
+upstream choice of licenses; these are not additional CatLive license terms.
+The inventory excludes ASIO and non-Windows platform dependency branches.
+
+audio_thread_priority 0.34.0: MPL-2.0
+cc 1.8.0: MIT OR Apache-2.0
+cfg-if 1.0.5: MIT OR Apache-2.0
+cpal 0.17.3: Apache-2.0
+dasp_sample 0.11.0: MIT OR Apache-2.0
+find-msvc-tools 0.1.14: MIT OR Apache-2.0
+itoa 1.0.18: MIT OR Apache-2.0
+lock_api 0.4.14: MIT OR Apache-2.0
+log 0.4.34: MIT OR Apache-2.0
+memchr 2.8.3: Unlicense OR MIT
+midir 0.11.0: MIT
+parking_lot 0.12.5: MIT OR Apache-2.0
+parking_lot_core 0.9.12: MIT OR Apache-2.0
+proc-macro2 1.0.107: MIT OR Apache-2.0
+quote 1.0.47: MIT OR Apache-2.0
+scopeguard 1.2.0: MIT OR Apache-2.0
+serde 1.0.229: MIT OR Apache-2.0
+serde_core 1.0.229: MIT OR Apache-2.0
+serde_derive 1.0.229: MIT OR Apache-2.0
+serde_json 1.0.154: MIT OR Apache-2.0
+shlex 2.0.1: MIT OR Apache-2.0
+smallvec 1.16.3: MIT OR Apache-2.0
+syn 2.0.119: MIT OR Apache-2.0
+syn 3.0.9: MIT OR Apache-2.0
+unicode-ident 1.0.27: (MIT OR Apache-2.0) AND Unicode-3.0
+windows 0.62.2: MIT OR Apache-2.0
+windows-collections 0.3.2: MIT OR Apache-2.0
+windows-core 0.62.2: MIT OR Apache-2.0
+windows-future 0.3.2: MIT OR Apache-2.0
+windows-implement 0.60.2: MIT OR Apache-2.0
+windows-interface 0.59.3: MIT OR Apache-2.0
+windows-link 0.2.1: MIT OR Apache-2.0
+windows-numerics 0.3.1: MIT OR Apache-2.0
+windows-result 0.4.1: MIT OR Apache-2.0
+windows-strings 0.5.1: MIT OR Apache-2.0
+windows-sys 0.52.0: MIT OR Apache-2.0
+windows-targets 0.52.6: MIT OR Apache-2.0
+windows-threading 0.2.1: MIT OR Apache-2.0
+windows_x86_64_msvc 0.52.6: MIT OR Apache-2.0
+zmij 1.0.23: MIT
+
+MPL-2.0 source availability
+---------------------------
+audio_thread_priority 0.34.0 is used without modification. Its complete source,
+including Windows scheduling support, Cargo metadata and MPL-2.0 license, is
+included in this archive:
+
+ThirdParty/RustNotices/audio_thread_priority-0.34.0/audio_thread_priority-0.34.0.crate
+
+SHA-256:
+7203799cd8063907524460aa8b632a46baba80c50947295aa6b92d7793c26447
+
+This equals the package checksum in src-tauri/Cargo.lock. The .crate is a
+standard gzip-compressed tar archive and can be unpacked with tar -xzf.
+Upstream source: https://github.com/padenot/audio_thread_priority
+License text: ThirdParty/RustNotices/audio_thread_priority-0.34.0/LICENSE
+
+Keep this source archive and its license available with binaries containing
+this crate. If the covered source is changed, distribute the corresponding
+modified source under MPL-2.0 as required by that license; the unmodified
+archive would no longer be sufficient for those changes.
+
+Font used by the UI components
+------------------------------
+Inter 4.1, unmodified static TrueType fonts.
+Copyright (c) 2016 The Inter Project Authors.
+License: SIL Open Font License 1.1.
+Upstream: https://github.com/rsms/inter/releases/tag/v4.1
+Font files/source metadata/full license: ../Resources/Fonts/Inter/
+The final UI package must include LICENSE.txt with the fonts. The CSS names
+Inter, but this foundation build does not produce a font-containing installer.
+
+Other code and media
+--------------------
+The shared CatLive project/transport implementation is project code, not a
+third-party framework. System APIs/toolchains are supplied separately. No
+commercial SoundFont, user project audio, external instrument library or
+third-party plugin is licensed or distributed by this notice. Adding a new
+feature/dependency or shipping an installer requires updating the inventory
+and including the corresponding license/source files in that distribution.
+
+Windows VST3 host foundation
+----------------------------
+Steinberg VST3 pluginterfaces, MIT. Copyright (c) 2026 Steinberg Media Technologies GmbH.
+Pinned source: ../Core/ThirdParty/VST3/VST3-SOURCE.txt
+Full license: ../Core/ThirdParty/VST3/VST3-LICENSE.txt
+The native host uses these interfaces directly, without JUCE. The commercial
+plugins used for local validation are not distributed with CatLive.

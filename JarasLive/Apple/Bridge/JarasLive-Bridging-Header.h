@@ -4,10 +4,9 @@
 
 #import "JarasEffects.h"
 
-#import <TargetConditionals.h>
-#if TARGET_OS_OSX
 #import "JarasSoundFont.h"
-#endif
+#import "JarasDrummerPad.h"
+#import "JarasCatSynth.h"
 
 #import "JarasTimecode.h"
 

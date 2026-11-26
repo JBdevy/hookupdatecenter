@@ -33,7 +33,8 @@ let worker = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appe
 let state = RunState()
 do {
     // Exercise the actual meter timer on the main run loop while offline work runs.
-    let playback = StemAudioPlayback(engine: AVAudioEngine())
+    let liveEngine = AVAudioEngine()
+    let playback = StemAudioPlayback(engine: liveEngine)
     do {
         try playback.startDeviceSession()
         let heartbeat = Timer(timeInterval: 0.01, repeats: true) { _ in
@@ -48,8 +49,11 @@ do {
             }
         }.value
         precondition(tracks.count == 5)
-        for stem in tracks {
+        for (index, stem) in tracks.enumerated() {
             let item = stem.clips[0]
+            let expected = AudioSeparation.outputName(CatStem.allCases[index], original: clip.name)
+            precondition(stem.name == expected && item.name == expected)
+            precondition(item.audioRate == 1 && item.sourceOffset == 0)
             precondition(item.startTime == clip.startTime && item.duration == clip.duration)
             let file = try AVAudioFile(forReading: root.appendingPathComponent(item.audioFile!.path))
             precondition(file.length == 33075 && file.processingFormat.channelCount == 2)
@@ -63,8 +67,44 @@ do {
             _ = try CatStemRenderer.run(request, runtime: runtime, worker: worker, cancellation: cancellation) { _, _ in }
             fatalError("Cancellation was ignored")
         } catch is CancellationError {}
+        // Cancellation inside input preparation must leave live hardware
+        // playback working, including AAC/M4A decoder state and meter clocks.
+        let sourceFile = try AVAudioFile(forReading: root.appendingPathComponent("source.wav"))
+        let sourcePCM = AVAudioPCMBuffer(pcmFormat: sourceFile.processingFormat, frameCapacity: AVAudioFrameCount(sourceFile.length))!
+        try sourceFile.read(into: sourcePCM)
+        do {
+            let aac = try AVAudioFile(forWriting: root.appendingPathComponent("source.m4a"), settings: [AVFormatIDKey:kAudioFormatMPEG4AAC,AVSampleRateKey:44100,AVNumberOfChannelsKey:2,AVEncoderBitRateKey:192000])
+            try aac.write(from: sourcePCM)
+        }
+        for (index, name) in ["source.wav", "source.m4a"].enumerated() {
+            var live = original
+            live.masterVolume = 0.02
+            live.songs[0].tracks[0].clips[0].audioFile = AudioFile(path: name)
+            let interrupted = CatStemRequest(project: live, song: live.songs[0], track: live.songs[0].tracks[0], clip: live.songs[0].tracks[0].clips[0], directory: root)
+            let token = AudioExportCancellation()
+            do {
+                _ = try await Task.detached {
+                    try CatStemRenderer.run(interrupted, runtime: runtime, worker: worker, cancellation: token) { fraction, _ in
+                        if fraction > 0 { token.cancel() }
+                    }
+                }.value
+                fatalError("Cancellation during input preparation was ignored")
+            } catch is CancellationError {}
+            playback.open(directory: root)
+            var snapshot = ShowSnapshot(project: live, transport: TransportState(playing: true, songId: live.songs[0].id, position: clip.startTime, queue: QueueState(), loop: LoopState(enabled: false), subPlay: SubPlayState(playing: false, position: 0)))
+            _ = playback.meter(for: track.id)
+            try playback.update(snapshot, revision: UInt64(index * 2 + 10))
+            let began = playback.presentationPosition(head: 0, sampledAt: ProcessInfo.processInfo.systemUptime)
+            try await Task.sleep(nanoseconds: 250_000_000)
+            let ended = playback.presentationPosition(head: 0, sampledAt: ProcessInfo.processInfo.systemUptime)
+            precondition(liveEngine.isRunning && (ended ?? 0) > (began ?? 0) + 0.05, "Play clock stalled after cancelling " + name)
+            precondition(playback.meter(for: track.id).level > 0.0001, "Audio stopped after cancelling " + name)
+            snapshot.transport.playing = false
+            try playback.update(snapshot, revision: UInt64(index * 2 + 11))
+            print("CATSTEM_CANCEL_DURING_PREPARATION_PLAY_CLOCK_AND_AUDIO_OK " + name)
+        }
         let outputFolders = try FileManager.default.contentsOfDirectory(atPath: root.appendingPathComponent("Stems").path)
-        precondition(outputFolders.count == 1, "Cancelled work leaves no partial stems")
+        precondition(outputFolders.count == 5 && outputFolders.allSatisfy { $0.hasSuffix(".wav") }, "Cancelled work leaves no partial stems or nested media folders")
         print("CATSTEM_REAL_MODEL_FIVE_STEMS_ORIGINAL_PRESERVED_METERS_RESPONSIVE_AND_CANCEL_OK")
         state.done = true
     } catch { playback.prepareForClosing(); print("FAILED: \(error)"); exit(1) }

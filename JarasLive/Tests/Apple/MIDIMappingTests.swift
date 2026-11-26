@@ -11,7 +11,8 @@ let mappingTestApplicationActive = true
 // production MIDI learner, conflict detection, latch and continuous routing.
 enum ShowCommand: String { case mute, solo, volume, pan }
 enum Project { static let maximumTrackCount = 1000 }
-struct MappingTestTrack { let id: UUID; let name: String }
+enum MappingTestTrackKind { case standard, programChange }
+struct MappingTestTrack { let id: UUID; let name: String; var kind: MappingTestTrackKind = .standard; var midiInput: Int? }
 struct MappingTestSong { var tracks: [MappingTestTrack] = [] }
 struct MappingTestProject { var id = UUID(); var songs: [MappingTestSong] = [] }
 struct MappingTestSnapshot { var project = MappingTestProject() }
@@ -19,6 +20,14 @@ struct MappingTestSnapshot { var project = MappingTestProject() }
     @Published var snapshot = MappingTestSnapshot()
     var commands: [(ShowCommand, UUID?, Double)] = []
     var previews: [(UUID?, Double)] = []
+    var selectedProgramChange: UUID?
+    var hasProgramChangeClipboard = false
+    var pastedProgramChanges = 0
+    func copyProgramChange() -> Bool {
+        guard selectedProgramChange != nil else { return false }
+        hasProgramChangeClipboard = true; return true
+    }
+    func pasteProgramChange() { pastedProgramChanges += 1 }
     var nativeFX = NativeFXSettings()
     func fxSettings(_ track: UUID?) -> NativeFXSettings { nativeFX }
     func clipFXSettings(_ clip: UUID) -> NativeFXSettings { nativeFX }
@@ -26,7 +35,11 @@ struct MappingTestSnapshot { var project = MappingTestProject() }
     func previewClipFX(_ clip: UUID, settings: NativeFXSettings) { nativeFX = settings }
     func commitFX() {}
     var bpm = 120.0
+    var tempoTapTimes: [Double] = []
+    func tapTempo(at time: Double) { tempoTapTimes.append(time) }
     var actionsReceived: [DAWAction] = []
+    var focusedBlocks: [Int] = []
+    func focusSetlistBlock(number: Int) -> Bool { focusedBlocks.append(number); return true }
     var current: MappingTestSong? { snapshot.project.songs.first }
     func actionTrack(number: Int?) -> MappingTestTrack? {
         guard let tracks = current?.tracks else { return nil }
@@ -59,9 +72,25 @@ struct MappingTestSnapshot { var project = MappingTestProject() }
     func releaseMIDINotes() {}
     func receiveMIDI(device: Int32, status: UInt8, number: UInt8, value: UInt8) { forwarded += 1 }
 }
+@MainActor final class VinhetasController {
+    static let shared = VinhetasController()
+    var claimedNumber: UInt8?
+    var received: [(ControlInput, UInt8)] = []
+    var library = VinhetasLibrary()
+    var persistedLibrary: Data?
+    func update(_ edit: (inout VinhetasLibrary) -> Void) {
+        edit(&library); try! library.validate(); persistedLibrary = try! JSONEncoder().encode(library)
+    }
+    // INSERT_VINHETAS_BLOCK_CONFLICTS
+    func receive(input: ControlInput, value: UInt8) -> Bool {
+        received.append((input, value))
+        return (claimedNumber != nil && input.number == claimedNumber) || library.handles(input)
+    }
+}
 @MainActor final class KeyboardMIDIMonitor {
     static let shared = KeyboardMIDIMonitor()
     func receive(source: Int32, status: UInt8, number: UInt8, value: UInt8) {}
+    func disconnect(_ devices: Set<Int32>) {}
 }
 
 struct FXParameterMapping: Codable, Equatable {
@@ -92,13 +121,28 @@ enum ProjectError: Error { case invalid(String) }
         oldSubPlay.keyboard = ControlInput(kind: "keyboard", label: "Enter", key: 36, modifiers: 0)
         defaults.set(try! JSONEncoder().encode([oldSubPlay]), forKey: "jaras.actions")
         let mappings = ControlMappings.shared
+        var idleChanges = 0
+        let observer = mappings.objectWillChange.sink { idleChanges += 1 }
+        mappings.endEditing()
+        observer.cancel()
+        precondition(idleChanges == 0, "Closing Settings with no active mapping must leave workspace observers idle")
         precondition(mappings.actions.binding(.subPlayStop).keyboard == DAWAction.subPlayStop.defaultKeyboard, "stored Enter defaults migrate to Shift+Space at startup")
         show.snapshot.project.songs = [MappingTestSong(tracks: [MappingTestTrack(id: track, name: "Piano")])]
         mappings.show = show
         mappings.migrateActionMappings()
-        precondition(mappings.mappings.isEmpty && mappings.actions.binding(.muteTrack).trackNumber == 1)
+        precondition(mappings.mappings.isEmpty && mappings.actions.binding(.muteTrack, trackNumber: 1).trackNumber == 1)
         precondition(mappings.actions.binding(.muteMaster).midi?.number == 90, "legacy master mappings migrate without a project dependency")
         mappings.sources[100] = (123, "Test MIDI")
+        mappings.beginAction(.tapTempo, kind: "midi")
+        mappings.receive(endpoint: 100, status: 0x90, number: 98, value: 100, timestamp: 2)
+        mappings.save()
+        mappings.receive(endpoint: 100, status: 0x80, number: 98, value: 64, timestamp: 2.2)
+        mappings.receive(endpoint: 100, status: 0x90, number: 98, value: 100, timestamp: 3)
+        mappings.receive(endpoint: 100, status: 0x90, number: 98, value: 100, timestamp: 3.1)
+        mappings.receive(endpoint: 100, status: 0x90, number: 98, value: 0, timestamp: 3.2)
+        mappings.receive(endpoint: 100, status: 0x90, number: 98, value: 100, timestamp: 3.5)
+        mappings.receive(endpoint: 100, status: 0x80, number: 98, value: 0, timestamp: 3.7)
+        precondition(show.tempoTapTimes == [3, 3.5], "Use the original MIDI timestamps and only one tap per press")
         var recorded: [(Int32, UInt8, UInt8, UInt8, Double)] = []
         mappings.onMIDIReceived = { recorded.append(($0, $1, $2, $3, $4)) }
         mappings.receive(endpoint: 100, status: 0x95, number: 60, value: 100, timestamp: 10.125)
@@ -130,7 +174,7 @@ enum ProjectError: Error { case invalid(String) }
         mappings.begin(track: nil, command: "volume")
         cc(7, 100); mappings.save()
         precondition(mappings.editing != nil && mappings.transferRequest != nil, "A shared CC requires confirmation")
-        precondition(mappings.actions.binding(.volumeTrack).midi?.number == 7, "the old mapping remains until confirmation")
+        precondition(mappings.actions.binding(.volumeTrack, trackNumber: 1).midi?.number == 7, "the old mapping remains until confirmation")
         mappings.cancelTransfer()
         cc(11, 10); mappings.save()
         cc(11, 127)
@@ -153,7 +197,7 @@ enum ProjectError: Error { case invalid(String) }
         let stored = defaults.data(forKey: "jaras.controlMappings")!
         let decoded = try! JSONDecoder().decode([MappedControl].self, from: stored)
         precondition(decoded.filter { $0.command == "volume" }.isEmpty, "quick mappings have no duplicate per-project store")
-        precondition(mappings.actions.binding(.volumeTrack).midi?.number == 7 && mappings.actions.binding(.volumeTrack).trackNumber == 1)
+        precondition(mappings.actions.binding(.volumeTrack, trackNumber: 1).midi?.number == 7 && mappings.actions.binding(.volumeTrack, trackNumber: 1).trackNumber == 1)
         precondition(mappings.actions.binding(.volumeMaster).midi?.number == 11)
         mappings.beginAction(.panTrack, kind: "midi")
         mappings.receive(endpoint: 100, status: 0x90, number: 61, value: 100)
@@ -183,8 +227,8 @@ enum ProjectError: Error { case invalid(String) }
         mappings.mode = "keyboard"
         let shortcut = ControlInput(kind: "keyboard", label: "F", key: 3, modifiers: 0)
         mappings.candidate = shortcut; mappings.save()
-        precondition(mappings.actions.binding(.muteTrack).keyboard == shortcut && mappings.actions.binding(.muteTrack).midi?.number == 20)
-        mappings.beginAction(.muteTrack, kind: "keyboard")
+        precondition(mappings.actions.binding(.muteTrack, trackNumber: 1).keyboard == shortcut && mappings.actions.binding(.muteTrack, trackNumber: 1).midi?.number == 20)
+        mappings.beginAction(.muteTrack, kind: "keyboard", trackNumber: 1)
         precondition(mappings.candidate == shortcut, "Actions reads the shortcut saved through the quick editor")
         mappings.editing = nil
         mappings.execute(shortcut)
@@ -192,7 +236,7 @@ enum ProjectError: Error { case invalid(String) }
         mappings.begin(track: otherTrack, command: "volume")
         precondition(mappings.candidate?.number == 7 && mappings.editing?.action == .volumeTrack)
         mappings.editing = nil
-        mappings.beginAction(.volumeTrack, kind: "midi")
+        mappings.beginAction(.volumeTrack, kind: "midi", trackNumber: 1)
         cc(12, 0); mappings.save()
         mappings.begin(track: otherTrack, command: "volume")
         precondition(mappings.candidate?.number == 12, "the quick editor reads the same action after remapping in Actions")
@@ -200,9 +244,19 @@ enum ProjectError: Error { case invalid(String) }
         let extraTrack = UUID(), beforeCancel = mappings.actions
         other.snapshot.project.songs[0].tracks.append(MappingTestTrack(id: extraTrack, name: "Second piano"))
         mappings.begin(track: extraTrack, command: "volume")
-        precondition(mappings.editing?.trackNumber == 2 && mappings.actions == beforeCancel, "opening quick mapping cannot change the global track target")
+        precondition(mappings.editing?.trackNumber == 2 && mappings.candidate == nil && mappings.actions == beforeCancel, "opening quick mapping cannot change the global track target")
         mappings.editing = nil
         precondition(mappings.actions == beforeCancel, "cancelling the quick editor preserves the entire global binding")
+        mappings.beginAction(.soloTrack, kind: "midi")
+        cc(92, 127); mappings.save()
+        mappings.beginAction(.soloTrack, kind: "midi", trackNumber: 2)
+        precondition(mappings.candidate == nil, "Numbered solo must not inherit selected-track MIDI")
+        cc(93, 127); mappings.save()
+        cc(92, 0); cc(92, 127)
+        precondition(other.commands.last?.0 == .solo && other.commands.last?.1 == otherTrack)
+        cc(93, 0); cc(93, 127)
+        precondition(other.commands.last?.0 == .solo && other.commands.last?.1 == extraTrack)
+
         cc(90, 0); cc(90, 127)
         precondition(other.commands.last?.0 == .mute && other.commands.last?.1 == nil)
         cc(11, 64)
@@ -256,6 +310,7 @@ enum ProjectError: Error { case invalid(String) }
         precondition(mappings.transferRequest == nil && mappings.actions.binding(.setlistUp).keyboard == DAWAction.setlistUp.defaultKeyboard)
         mappings.editing = nil
         print("KEYBOARD_MIDI_CONFLICT_CANCEL_CONFIRMED_TRANSFER_FIXED_ARROWS_AND_GLOBAL_PERSISTENCE_OK")
+        if ProcessInfo.processInfo.environment["CATLIVE_MAPPING_TEST_NO_UI"] != "1" {
         _ = NSApplication.shared
         // Exercise the real event handler, including remapped navigation. A held
         // key must execute every repeat; transport toggles must execute only once.
@@ -318,6 +373,14 @@ enum ProjectError: Error { case invalid(String) }
         let afterSubPlay = show.actionsReceived.count
         precondition(mappings.handleKey(key(49, modifiers: .shift, in: parent, isRepeat: true)))
         precondition(show.actionsReceived.count == afterSubPlay, "holding Shift+Space must not toggle Sub Play repeatedly")
+        for modifiers: NSEvent.ModifierFlags in [.command, .control] {
+            mappings.beginAction(.togglePreview, kind: "keyboard")
+            mappings.candidate = ControlInput(kind: "keyboard", label: "Duplicate", key: 2, modifiers: modifiers.rawValue)
+            mappings.save()
+            let before = show.actionsReceived.count
+            precondition(!mappings.handleKey(key(2, modifiers: modifiers, in: parent)) && show.actionsReceived.count == before,
+                         "Command/Ctrl D belongs to item/track duplication before custom Actions")
+        }
         for code: UInt16 in [51, 117, 53] {
             mappings.beginAction(.projectEnd, kind: "keyboard")
             mappings.candidate = ControlInput(kind: "keyboard", label: "Envelope key", key: code, modifiers: 0)
@@ -335,8 +398,13 @@ enum ProjectError: Error { case invalid(String) }
         precondition(mappings.handleKey(key(53, in: parent)) && mappings.editing == nil, "the shortcut learner retains its explicit Escape priority")
         RegionShortcutView.editingEnvelope = false
         print("ENVELOPE_DELETE_ESCAPE_KEYS_BEFORE_GLOBAL_MAPPINGS_OK")
+        show.selectedProgramChange = UUID()
+        precondition(mappings.handleHardwareKey(HardwareKeyboardEvent(keyCode: 8, modifiers: .command)) && show.hasProgramChangeClipboard)
+        precondition(mappings.handleHardwareKey(HardwareKeyboardEvent(keyCode: 9, modifiers: .command)) && show.pastedProgramChanges == 1)
+        show.selectedProgramChange = nil; show.hasProgramChangeClipboard = false
         parent.orderOut(nil)
         print("DIALOG_ENTER_ESCAPE_PRIORITY_AND_TRANSPORT_RESTORATION_OK")
+        }
         // Exercise the real CoreMIDI receive thread, not only the injected
         // learner calls above. Actor race checks stay enabled in this harness.
         var virtualClient: MIDIClientRef = 0, virtualSource: MIDIEndpointRef = 0
@@ -347,7 +415,7 @@ enum ProjectError: Error { case invalid(String) }
         precondition(MIDIObjectGetIntegerProperty(virtualSource, kMIDIPropertyUniqueID, &sourceID) == noErr)
         AudioDeviceSettings.shared.midiSlots = [sourceID]
         mappings.bind(show)
-        mappings.beginAction(.play, kind: "midi")
+        mappings.beginAction(.playStop, kind: "midi")
         func transmit(_ words: UInt32...) {
             var list = MIDIEventList()
             withUnsafeMutablePointer(to: &list) { pointer in
@@ -371,8 +439,166 @@ enum ProjectError: Error { case invalid(String) }
         while show.actionsReceived.count == beforePlay && ProcessInfo.processInfo.systemUptime < deadline {
             try? await Task.sleep(nanoseconds: 10_000_000)
         }
-        precondition(show.actionsReceived.count == beforePlay + 1 && show.actionsReceived.last == .play)
-        print("REAL_COREMIDI_UMP_PORT_LEARNING_AND_MAPPED_PLAY_ON_MAIN_ACTOR_OK")
+        precondition(show.actionsReceived.count == beforePlay + 1 && show.actionsReceived.last == .playStop)
+        print("REAL_COREMIDI_UMP_PORT_LEARNING_AND_MAPPED_PLAYSTOP_ON_MAIN_ACTOR_OK")
+        mappings.sources[100] = (123, "Test MIDI")
+        let instrumentBefore = StemAudioPlayback.shared.forwarded
+        VinhetasController.shared.claimedNumber = 61
+        mappings.receive(endpoint: 100, status: 0x95, number: 61, value: 100)
+        mappings.receive(endpoint: 100, status: 0x85, number: 61, value: 0)
+        let padMessages = VinhetasController.shared.received.suffix(2)
+        precondition(padMessages.map { $0.0.status } == [0x90, 0x80] && padMessages.allSatisfy { $0.0.channel == 5 })
+        precondition(StemAudioPlayback.shared.forwarded == instrumentBefore, "Pad notes must not also play an armed instrument")
+        VinhetasController.shared.claimedNumber = nil
+        print("VINHETAS_MIDI_NOTE_OFF_CHANNEL_AND_EXCLUSIVE_ROUTING_OK")
+        mappings.show = show
+        mappings.beginSetlistBlock(1)
+        precondition(mappings.learningSetlistBlock && mappings.mode == "midi" && mappings.candidate == nil)
+        cc(100, 127); mappings.save()
+        let firstBlockBinding = mappings.mappings.first { $0.globalSetlistBlockNumber == 1 }!
+        precondition(firstBlockBinding.command == "setlistBlock:1" && firstBlockBinding.track == nil)
+        let savedBlocks = try! JSONDecoder().decode([MappedControl].self, from: defaults.data(forKey: "jaras.controlMappings")!)
+        precondition(savedBlocks.contains { $0.id == firstBlockBinding.id && $0.globalSetlistBlockNumber == 1 }, "Global block bindings survive the existing JSON persistence schema")
+        mappings.show = other
+        precondition(mappings.current.contains { $0.id == firstBlockBinding.id }, "A block learned in another project remains active")
+        let actionsBeforeBlock = other.actionsReceived.count
+        cc(100, 0); cc(100, 127); cc(100, 64)
+        precondition(other.focusedBlocks == [1] && other.actionsReceived.count == actionsBeforeBlock, "A mapped block only requests focus, without Play and without repeated activation while held")
+        cc(100, 0); cc(100, 127, channel: 1)
+        precondition(other.focusedBlocks == [1], "The learned MIDI channel remains part of the match")
+        cc(100, 127)
+        precondition(other.focusedBlocks == [1, 1], "Release allows another press to select the current playlist's block again")
+        mappings.beginSetlistBlock(1)
+        precondition(mappings.candidate == firstBlockBinding.input && mappings.hasSetlistBlockMapping, "The editor reopens the same global binding in a different project")
+        cc(101, 127); mappings.editing = nil
+        precondition(mappings.mappings.contains { $0.id == firstBlockBinding.id && $0.input.number == 100 }, "Cancel preserves the original mapping")
+        mappings.beginSetlistBlock(1); cc(101, 0); cc(101, 127); mappings.save()
+        precondition(mappings.mappings.filter { $0.globalSetlistBlockNumber == 1 }.count == 1, "Saving in another project replaces one global mapping instead of creating a project duplicate")
+        mappings.beginSetlistBlock(2); cc(101, 0); cc(101, 127); mappings.save()
+        precondition(mappings.transferRequest != nil && mappings.mappings.contains { $0.globalSetlistBlockNumber == 1 }, "Two block IDs cannot silently share the same MIDI input")
+        mappings.cancelTransfer(); mappings.editing = nil
+        precondition(!mappings.mappings.contains { $0.globalSetlistBlockNumber == 2 }, "Canceling a transfer leaves the second block unmapped")
+        mappings.beginSetlistBlock(2); cc(101, 0); cc(101, 127); mappings.save(); mappings.confirmTransfer()
+        precondition(!mappings.mappings.contains { $0.globalSetlistBlockNumber == 1 } && mappings.mappings.contains { $0.globalSetlistBlockNumber == 2 }, "Confirmed transfer moves the input between global block IDs")
+        mappings.beginSetlistBlock(2); mappings.removeEditingSetlistBlockMapping()
+        let afterRemove = try! JSONDecoder().decode([MappedControl].self, from: defaults.data(forKey: "jaras.controlMappings")!)
+        precondition(mappings.editing == nil && !afterRemove.contains { $0.globalSetlistBlockNumber == 2 }, "Remove mapping persists and closes the block learner")
+        mappings.beginAction(.repeatPlayback, kind: "midi"); cc(104, 127); mappings.save()
+        mappings.beginSetlistBlock(129); cc(104, 0); cc(104, 127); mappings.save()
+        precondition(mappings.transferRequest != nil && mappings.actions.binding(.repeatPlayback).midi?.number == 104, "Block learn respects existing global action conflicts")
+        mappings.confirmTransfer()
+        precondition(mappings.actions.binding(.repeatPlayback).midi == nil && mappings.mappings.contains { $0.globalSetlistBlockNumber == 129 }, "Global block ordinals are not limited to a fixed enum")
+        mappings.beginSetlistBlock(129)
+        mappings.mode = "keyboard"; mappings.candidate = ControlInput(kind: "keyboard", label: "Z", key: 6, modifiers: 0); mappings.save()
+        precondition(mappings.editing != nil && mappings.mappings.first { $0.globalSetlistBlockNumber == 129 }?.input.kind == "midi", "A block Learn MIDI cannot accidentally save a keyboard binding")
+        mappings.removeEditingSetlistBlockMapping()
+        mappings.beginSetlistBlock(0)
+        precondition(mappings.editing == nil && SetlistBlockMIDICommand.number("setlistBlock:0") == nil && SetlistBlockMIDICommand.number("setlistBlock:-1") == nil && SetlistBlockMIDICommand.number("setlistBlock:+1") == nil, "Invalid block IDs cannot enter the global namespace")
+        // A project-specific FX control in a different project must also be
+        // transferred explicitly before making its input globally active.
+        mappings.show = other
+        mappings.beginFX(track: otherTrack, parameter: parameter); cc(106, 127); mappings.save()
+        let foreignFX = mappings.mappings.first { $0.project == other.snapshot.project.id && $0.input.number == 106 }!
+        mappings.show = show
+        mappings.beginSetlistBlock(3); cc(106, 0); cc(106, 127); mappings.save()
+        precondition(mappings.transferRequest != nil && mappings.mappings.contains { $0.id == foreignFX.id }, "Learning a global block detects FX conflicts outside the current project")
+        mappings.confirmTransfer()
+        precondition(!mappings.mappings.contains { $0.id == foreignFX.id } && mappings.current.contains { $0.globalSetlistBlockNumber == 3 })
+        mappings.beginFX(track: track, parameter: parameter); cc(106, 127); mappings.save()
+        precondition(mappings.transferRequest != nil, "A project-specific FX mapping cannot silently shadow a global block")
+        mappings.confirmTransfer()
+        precondition(!mappings.mappings.contains { $0.globalSetlistBlockNumber == 3 }, "Reverse transfer removes the global block mapping")
+        mappings.beginSetlistBlock(4)
+        mappings.receive(endpoint: 100, status: 0x92, number: 108, value: 90); mappings.save()
+        mappings.receive(endpoint: 100, status: 0x82, number: 108, value: 0)
+        mappings.receive(endpoint: 100, status: 0x92, number: 108, value: 90)
+        precondition(show.focusedBlocks.last == 4, "MIDI notes as well as CC can select a numbered block")
+        let beforeZeroVelocity = show.focusedBlocks.count
+        mappings.receive(endpoint: 100, status: 0x92, number: 108, value: 0)
+        precondition(show.focusedBlocks.count == beforeZeroVelocity, "Note On velocity zero releases the binding without selecting another block")
+        mappings.receive(endpoint: 100, status: 0x92, number: 108, value: 90)
+        precondition(show.focusedBlocks.count == beforeZeroVelocity + 1, "A fresh note press works after a velocity-zero release")
+        print("GLOBAL_SETLIST_BLOCK_ORDINAL_MIDI_PERSISTENCE_FOCUS_LATCH_CHANNEL_CANCEL_REMOVE_AND_CROSS_PROJECT_CONFLICTS_OK")
+        // Real Vinhetas channel matching and transfer helpers are compiled into
+        // the stub; only its audio/persistence environment is replaced.
+        let vinhetas = VinhetasController.shared
+        var padInput = ControlInput(kind: "midi", label: "Pad CC", device: 123, channel: 7, status: 0xb0, number: 110)
+        var otherPadInput = padInput; otherPadInput.number = 111
+        var otherDeviceInput = padInput; otherDeviceInput.device = 777
+        vinhetas.update {
+            $0.padMappings[0] = padInput; $0.padMappings[1] = otherPadInput
+            $0.padMappings[3] = otherDeviceInput; $0.presetMappings[2] = padInput
+        }
+        let originalVinhetas = vinhetas.library
+        let originalPersistedVinhetas = vinhetas.persistedLibrary
+        mappings.beginSetlistBlock(10); cc(110, 127); mappings.save()
+        precondition(mappings.transferRequest?.message.contains("Vinhetas · Pad 1") == true && mappings.transferRequest?.message.contains("Vinhetas · Preset 3") == true,
+                     "Block learn reports both pad and preset consumers, including an empty pad and effective Omni channel")
+        precondition(vinhetas.library == originalVinhetas && vinhetas.persistedLibrary == originalPersistedVinhetas)
+        mappings.cancelTransfer(); mappings.editing = nil
+        precondition(vinhetas.library == originalVinhetas && !mappings.mappings.contains { $0.globalSetlistBlockNumber == 10 },
+                     "Cancel must leave both Vinhetas and block bindings unchanged")
+        mappings.beginSetlistBlock(10); cc(110, 0); cc(110, 127); mappings.save(); mappings.confirmTransfer()
+        var expectedVinhetas = originalVinhetas; expectedVinhetas.padMappings[0] = nil; expectedVinhetas.presetMappings[2] = nil
+        precondition(vinhetas.library == expectedVinhetas && (try! JSONDecoder().decode(VinhetasLibrary.self, from: vinhetas.persistedLibrary!)) == expectedVinhetas,
+                     "Confirmed transfer removes and persists only matching pad/preset bindings, preserving other devices, pads and all preset content")
+        let beforeTransferredBlock = show.focusedBlocks.count
+        cc(110, 0); cc(110, 127)
+        precondition(show.focusedBlocks.count == beforeTransferredBlock + 1 && show.focusedBlocks.last == 10,
+                     "After transfer the receive path reaches the block instead of being swallowed by Vinhetas")
+        padInput.status = 0x90; padInput.number = 112
+        vinhetas.update { $0.midiChannel = 3; $0.padMappings[2] = padInput }
+        mappings.beginSetlistBlock(11)
+        mappings.receive(endpoint: 100, status: 0x90, number: 112, value: 100); mappings.save()
+        precondition(mappings.editing == nil && vinhetas.library.padMappings[2] == padInput,
+                     "A block on another effective channel does not remove a Vinhetas binding")
+        mappings.beginSetlistBlock(12)
+        mappings.receive(endpoint: 100, status: 0x92, number: 112, value: 100); mappings.save()
+        precondition(mappings.transferRequest?.message.contains("Vinhetas · Pad 3") == true,
+                     "Vinhetas' selected channel overrides the channel remembered by its learned note")
+        let oldRequest = mappings.transferRequest!
+        mappings.candidate?.number = 113; mappings.confirmTransfer(oldRequest)
+        precondition(vinhetas.library.padMappings[2] == padInput && !mappings.mappings.contains { $0.globalSetlistBlockNumber == 12 },
+                     "A stale confirmation cannot remove a Vinhetas binding after the candidate changes")
+        mappings.candidate = oldRequest.input; mappings.save(); mappings.confirmTransfer()
+        precondition(vinhetas.library.padMappings[2] == nil && mappings.mappings.contains { $0.globalSetlistBlockNumber == 11 })
+        mappings.receive(endpoint: 100, status: 0x82, number: 112, value: 0)
+        mappings.receive(endpoint: 100, status: 0x92, number: 112, value: 100)
+        precondition(show.focusedBlocks.last == 12, "A transferred note selects its block on a fresh press")
+        print("SETLIST_BLOCK_VINHETAS_CC_NOTE_OMNI_CHANNEL_CANCEL_TRANSFER_PERSISTENCE_AND_STALE_CONFIRMATION_OK")
+
+        mappings.sources[100] = (123, "Test MIDI")
+        let pcTrack = UUID()
+        show.snapshot.project.songs[0].tracks.append(MappingTestTrack(id: pcTrack, name: "Program Change", kind: .programChange, midiInput: 6))
+        AudioDeviceSettings.shared.midiSlots = [0, 0, 0, 0, 0, 123]
+        precondition(mappings.scanProgramChange(pcTrack) == nil && mappings.programChangeScanTrack == pcTrack)
+        precondition(mappings.scanProgramChange(pcTrack) == nil && mappings.programChangeScanTrack == nil, "Apply without a captured command cancels Scan")
+        _ = mappings.scanProgramChange(pcTrack)
+        mappings.receive(endpoint: 100, status: 0xc2, number: 7, value: 0)
+        mappings.receive(endpoint: 100, status: 0xc3, number: 42, value: 0)
+        precondition(mappings.programChangeScanTrack == pcTrack, "Receiving a PC keeps Scan active until Apply")
+        let scanned = mappings.scanProgramChange(pcTrack)
+        precondition(scanned?.program == 42 && scanned?.channel == 4, "Apply uses the latest PC from the sixth MIDI input")
+        mappings.cancelProgramChangeScan()
+        precondition(mappings.scannedProgramChange == nil)
+        print("PROGRAM_CHANGE_SCAN_LATEST_VALUE_EXPLICIT_APPLY_CANCEL_AND_KEYBOARD_CLIPBOARD_OK")
 
     }
 }
+
+@MainActor final class DesktopProjectTabs {
+    static let shared = DesktopProjectTabs()
+    func receiveMIDI(device: Int32, status: UInt8, number: UInt8, value: UInt8) {
+        StemAudioPlayback.shared.receiveMIDI(device: device, status: status, number: number, value: value)
+    }
+}
+
+// No physical SMK is attached to this generic MIDI mapping fixture.
+@MainActor final class SMK37Link {
+ static let shared = SMK37Link()
+ func bind(_ show: ShowController) {}
+ func unbind(_ show: ShowController) {}
+ func claims(device: Int32, status: UInt8, number: UInt8) -> Bool { false }
+}
+
+public enum SMK37Navigation { public enum Panel: Equatable, Sendable { case setlist, left } }

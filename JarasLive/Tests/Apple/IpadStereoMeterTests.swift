@@ -1,31 +1,56 @@
-private let meter = IpadStereoMeterLayers()
-let wells = meter.layer.sublayers!
-let bars = wells.map { $0.sublayers!.first! }
-let masks = bars.map { $0.mask! }
-for scale: CGFloat in [1, 2, 3] {
-    for width: CGFloat in [0, 1, 8, 9.5, 10, 11, 12] {
-        for height: CGFloat in [28, 70, 140] {
-            meter.update(size: CGSize(width: width, height: height), scale: scale, levels: SIMD2(1, 0))
-            precondition(wells[0].frame.width == wells[1].frame.width)
-            precondition(wells[0].frame.maxX <= wells[1].frame.minX)
-            precondition(wells[1].frame.maxX <= width)
-            if width >= 8 { precondition(wells[1].frame.minX - wells[0].frame.maxX >= 2) }
-            precondition(masks[0].frame.height == height && masks[1].frame.height == 0)
-            meter.update(size: CGSize(width: width, height: height), scale: scale, levels: SIMD2(0, 1))
-            precondition(masks[0].frame.height == 0 && masks[1].frame.height == height)
-            meter.update(size: CGSize(width: width, height: height), scale: scale, levels: SIMD2(pow(10, -30.0 / 20), 1))
-            precondition(abs(masks[0].frame.height - height / 2) < 0.001)
-            precondition(bars.allSatisfy { $0.frame.height == height }, "gradient must not stretch with level")
-        }
-    }
+private let meter = MixerRailLayers(flipped: true)
+let gradient = meter.layer.sublayers!.first as! CAGradientLayer
+let channels = gradient.mask!.sublayers!
+let colors = gradient.colors as! [CGColor]
+precondition(MixerMeterStyle.railBackground(for: .lightDark) == MixerMeterStyle.cgColor(JarasTheme.lightDarkBackgroundHex))
+precondition(MixerMeterStyle.railBackground(for: .dark) == MixerMeterStyle.cgColor(0x0a0a0a))
+let unchanged = CGSize(width: 200, height: 14)
+meter.update(size: unchanged, levels: .zero, theme: .lightDark)
+precondition(meter.layer.backgroundColor == MixerMeterStyle.railBackground(for: .lightDark))
+meter.update(size: unchanged, levels: .zero, theme: .dark)
+precondition(meter.layer.backgroundColor == MixerMeterStyle.railBackground(for: .dark),
+    "Changing theme updates a retained idle fader without a meter sample")
+precondition(colors[0] == MixerMeterStyle.cgColor(0x239653)
+    && colors[2] == MixerMeterStyle.cgColor(0xFFDC52)
+    && meter.layer.sublayers![1].backgroundColor == MixerMeterStyle.cgColor(0xF44336))
+precondition(MixerMeterStyle.gradientAxis(in: CGRect(x: 0, y: 0, width: 6, height: 100),
+    vertical: true).start.y == 100, "Vertical rails grow from the bottom")
+
+for width: CGFloat in [0, 1, 8, 9.5, 200] {
+    let size = CGSize(width: width, height: MixerMeterStyle.railThickness)
+    let channelHeight = (size.height - 1) / 2
+    meter.update(size: size, levels: SIMD2(1, 0))
+    precondition(abs(channels[0].frame.minX) < 0.001 && channels[0].frame.minY == 0 &&
+                 abs(channels[0].frame.width - width * 60 / 72) < 0.001 && channels[0].frame.height == channelHeight)
+    precondition(channels[1].frame == CGRect(x: 0, y: channelHeight + 1, width: 0, height: channelHeight))
+    meter.update(size: size, levels: SIMD2(pow(10, -30.0 / 20), 1))
+    precondition(abs(channels[0].frame.width - width * 30 / 72) < 0.001)
+    precondition(channels[1].frame.minY - channels[0].frame.maxY == 1, "A one-point gap separates left and right")
+    precondition(abs(channels[1].frame.width - width * 60 / 72) < 0.001)
 }
-meter.update(size: CGSize(width: 10, height: 70), scale: 2, levels: SIMD2(.nan, .infinity))
-precondition(masks.allSatisfy { $0.frame.height == 0 })
+meter.update(size: CGSize(width: 200, height: 6), levels: SIMD2(.nan, .infinity))
+precondition(channels.allSatisfy { $0.frame.width == 0 })
+
+let compact = CGSize(width: 9, height: 20)
+meter.update(size: compact, levels: SIMD2(pow(10, -30.0 / 20), 1), compact: true)
+precondition(meter.layer.frame == CGRect(x: 0.5, y: 0, width: 8, height: 20) && meter.layer.cornerRadius == 4)
+precondition(gradient.startPoint.y == 1 && gradient.endPoint.y == 0)
+precondition(channels[0].frame.minX == 0 && abs(channels[0].frame.height - 20 * 30.0 / 72) < 0.001)
+precondition(channels[1].frame.minX == 4.5 && abs(channels[1].frame.height - 20 * 60.0 / 72) < 0.001)
+precondition(channels.allSatisfy { $0.frame.width == 3.5 && abs($0.frame.maxY - 20) < 0.001 })
+meter.update(size: CGSize(width: 7, height: 14), levels: .zero, compact: true)
+precondition(meter.layer.frame.size == CGSize(width: 7, height: 14) && channels.allSatisfy { $0.frame.height == 0 })
+meter.update(size: CGSize(width: 200, height: 6), levels: .zero, linked: true, fixedUpperSpan: true)
 for tick in 0..<300 {
-    meter.update(size: CGSize(width: 10, height: 70), scale: 2, levels: SIMD2(Double(tick % 2), Double((tick + 1) % 2)))
+    meter.updateLevels(SIMD2(Double(tick % 2), Double((tick + 1) % 2)))
 }
-precondition(zip(wells, meter.layer.sublayers!).allSatisfy { $0 === $1 }, "meter ticks reuse layers")
-precondition(meter.layer.backgroundColor == nil, "the stereo gutter must be transparent")
-precondition(wells.allSatisfy { $0.animationKeys()?.isEmpty != false })
-precondition(masks.allSatisfy { $0.animationKeys()?.isEmpty != false })
-print("IPAD_MASTER_TRACK_STEREO_INDEPENDENT_CHANNELS_EQUAL_PIXEL_WIDTH_GUTTER_RESIZE_AND_RETAINED_LAYERS_OK")
+precondition(channels[0].frame.width == 168 && channels[1].frame.width == 0)
+precondition(meter.layer.backgroundColor == MixerMeterStyle.linkedBackground)
+meter.updateLevels(SIMD2(1.2, 0))
+precondition(!meter.layer.sublayers![1].isHidden)
+meter.updateLevels(.zero)
+precondition(meter.layer.sublayers![1].isHidden && channels.allSatisfy { $0.frame.width == 0 })
+precondition(zip(channels, gradient.mask!.sublayers!).allSatisfy { $0 === $1 })
+precondition(gradient.startPoint.x == 0 && gradient.endPoint.x == 1)
+precondition(channels.allSatisfy { $0.animationKeys()?.isEmpty != false })
+print("IPAD_STEREO_FADER_AND_COMPACT_RAIL_OK")

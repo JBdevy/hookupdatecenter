@@ -1,0 +1,7 @@
+﻿{
+    "license":  "MIT OR Apache-2.0",
+    "source":  "registry+https://github.com/rust-lang/crates.io-index",
+    "name":  "windows-core",
+    "version":  "0.62.2",
+    "repository":  "https://github.com/microsoft/windows-rs"
+}

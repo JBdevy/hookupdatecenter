@@ -2,6 +2,26 @@ import XCTest
 @testable import JarasApplication
 
 final class ClipRepetitionTests: XCTestCase {
+    func testAudioExtensionUsesRealFileEOFAndDoesNotRepeatTheTrimmedLength() {
+        let original = AudioClip(id: UUID(), name: "Trimmed", startTime: 0, duration: 3, sourceOffset: 2,
+                                 audioFile: AudioFile(path: "Stems/source.wav"))
+        let within = original.resized(start: 0, end: 7, sourceDuration: 10)
+        XCTAssertEqual(within.loopLength, 10)
+        XCTAssertEqual(Array(ClipRepetitionBoundaries(clip: within, visible: 0...100)), [])
+        let extended = original.resized(start: 0, end: 23, sourceDuration: 10)
+        XCTAssertEqual(Array(ClipRepetitionBoundaries(clip: extended, visible: 0...100)), [8,18])
+        XCTAssertEqual(extended.sourceOffset, 2)
+        XCTAssertEqual(extended.resized(start: 0, end: 23, sourceDuration: 80).loopLength, 10, "Imported loop sections retain their own period")
+        XCTAssertNil(original.resized(start: 0, end: 23).loopLength, "Missing metadata must not guess a period from the trimmed length")
+    }
+    func testAudioRepetitionAfterTempoChangeUsesFileLengthInSourceSeconds() {
+        var song = Project.empty(name: "Source repeats").songs[0]
+        song.bpm = 120; song.timeSettings = ProjectTimeSettings(); song.timeSettings?.timebase = .relative
+        song.markers = [.init(id: UUID(), name: "Tempo", position: 0, color: 0, tempoBPM: 240, tempoTimebase: .relative, tempoReferenceBPM: 120)]
+        let original = AudioClip(id: UUID(), name: "File", startTime: 0, duration: 5, audioFile: AudioFile(path: "Stems/source.wav"))
+        let extended = original.resized(start: 0, end: 13, sourceDuration: 10)
+        XCTAssertEqual(ClipRepetitionBoundaries.positions(clip: extended, fragments: song.tempoAudioSegments(extended), visible: 0...100), [5,10])
+    }
     private func clip(start: Double = 30, duration: Double = 35, offset: Double = 0, rate: Double = 1) -> AudioClip {
         AudioClip(id: UUID(), name: "Repeated", startTime: start, duration: duration,
                   sourceOffset: offset, playbackRate: rate, loopStart: 0, loopLength: 10)

@@ -13,6 +13,7 @@ import sys
 source = Path('Apple/Shared/TimelineGridView.swift').read_text()
 start = source.index('/// Region commands are structural;')
 end = source.index('@MainActor private struct NativeTimelineBaseStyle', start)
+bands = source[source.index('private let markerLaneHeight:'):source.index('struct TimelineBandsGlyph:')]
 probes = '''
 extension NativeTimelineRegionTargetsView {
     func viewForTest(_ id: UUID) -> RegionRightClickView? { mounted[id]?.view }
@@ -21,11 +22,15 @@ extension NativeTimelineRegionTargetsView {
     var orderForTest: [UUID] { mountedOrder }
 }
 '''
-Path(sys.argv[1], 'main.swift').write_text('import AppKit\nimport SwiftUI\n' + source[start:end] + probes +
+Path(sys.argv[1], 'main.swift').write_text('import AppKit\nimport SwiftUI\n' + bands + source[start:end] + probes +
     Path('Tests/Apple/TimelineNativeRegionTests.swift').read_text() +
     Path('Tests/Apple/TimelineNativeRegionClippingTests.swift').read_text())
 # Expose geometry and count cursor invalidations only in this extracted fixture.
 editor = Path('Apple/Shared/RegionEditor.swift').read_text()
+editor = 'import SwiftUI\n' + editor[editor.index('struct RegionEditor: View'):]
+environment = Path('Apple/Shared/FXWindows.swift').read_text()
+first = environment.index('private struct WorkspaceEditorDismissKey: EnvironmentKey')
+editor += '\n' + environment[first:environment.index('extension View {', first)]
 editor = editor.replace('    private var projectedRegionRect: CGRect?',
     '    var projectionInvalidationsForTest = 0\n    private var projectedRegionRect: CGRect?', 1)
 editor = editor.replace('        if !frameChanged, cursorChanged {',
@@ -49,9 +54,9 @@ extension RegionRightClickView {
 Path(sys.argv[1], 'RegionEditor.swift').write_text(editor)
 PY
 swiftc -swift-version 5 -target "$(uname -m)-apple-macos12.0" \
-  Application/Project/OutputPatch.swift Application/Project/NativeFXSettings.swift \
+  Apple/Shared/TimelineVisibleClipIndex.swift Application/Project/OutputPatch.swift Application/Project/DrummerPadKit.swift Application/Project/NativeFXSettings.swift \
   Application/Project/TrackRouting.swift Application/Project/MultiLoop.swift \
-  Application/Project/TrackAutomation.swift Application/Controls/NativeFXParameter.swift Application/Project/ProjectModels.swift Application/Project/MIDIItem.swift \
+  Application/Project/TrackAutomation.swift Application/Controls/NativeFXParameter.swift Application/Project/ProjectModels.swift Application/Project/MIDIItem.swift Application/Project/ItemFade.swift Application/Project/ItemFadeCurve.swift \
   Application/Project/TimelineTempo.swift Apple/Shared/Theme.swift Apple/Shared/NativeTooltips.swift \
   Apple/Shared/NativeTimelineInputGate.swift Apple/Shared/RightClickRouting.swift \
   "$test_dir/RegionEditor.swift" "$test_dir/main.swift" -o "$test_dir/test"

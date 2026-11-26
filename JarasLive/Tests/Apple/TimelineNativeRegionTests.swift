@@ -33,14 +33,14 @@
     container.project(scale: 10, viewport: viewport)
     let firstView = container.viewForTest(first)!
     let specialView = container.viewForTest(special)!
-    precondition(firstView.projectedInputBounds == CGRect(x: 90, y: -4, width: 220, height: 24))
-    precondition(specialView.projectedInputBounds == CGRect(x: 120, y: 16, width: 100, height: 16))
+    precondition(firstView.projectedInputBounds == CGRect(x: 90, y: -4, width: 220, height: 32))
+    precondition(specialView.projectedInputBounds == CGRect(x: 120, y: 24, width: 100, height: 24))
     precondition(!specialView.resizable && container.viewForTest(distant) == nil,
         "unified regions retain their move-only band; cold offscreen targets are not mounted")
     let selection = container.selectionForTest(first)!
     precondition(!selection.isHidden && selection.lineWidth == 1.5)
-    precondition(selection.path!.boundingBox == CGRect(x: 10.75, y: 4.75, width: 198.5, height: 14.5),
-        "selection matches the old strokeBorder inside the padded resize hit target")
+    precondition(selection.path!.boundingBox == CGRect(x: 10.75, y: 4.75, width: 198.5, height: 22.5),
+        "selection surrounds the full region row inside the padded resize hit target")
     func event(_ type: NSEvent.EventType, in view: NSView, x: CGFloat, y: CGFloat = 12,
                flags: NSEvent.ModifierFlags = []) -> NSEvent {
         NSEvent.mouseEvent(with: type, location: view.convert(NSPoint(x: x + (view as! RegionRightClickView).projectedInputBounds.minX, y: y + (view as! RegionRightClickView).projectedInputBounds.minY), to: nil),
@@ -133,4 +133,33 @@
     }
     print("NATIVE_REGIONS_OK: retained zoom geometry/selection, culling, active drag, resize, menus, cancellation and cleanup")
 }
-MainActor.assumeIsolated { runNativeRegionTests() }
+@MainActor private func verifyContextInputUsesItsOwnWindow() {
+    let frame = NSRect(x: 0, y: 0, width: 240, height: 150)
+    let first = NSWindow(contentRect: frame, styleMask: [.titled], backing: .buffered, defer: false)
+    let second = NSWindow(contentRect: frame, styleMask: [.titled], backing: .buffered, defer: false)
+    first.isReleasedWhenClosed = false; second.isReleasedWhenClosed = false
+    var clicks = 0
+    for window in [first, second] {
+        let row = RightClickTargetView(frame: NSRect(x: 0, y: 0, width: 200, height: 25))
+        row.action = { clicks += 1 }
+        window.contentView!.addSubview(row)
+    }
+    func rightClick(in window: NSWindow) -> Bool {
+        let event = NSEvent.mouseEvent(with: .rightMouseDown, location: NSPoint(x: 20, y: 10),
+            modifierFlags: [], timestamp: 1, windowNumber: window.windowNumber, context: nil,
+            eventNumber: 1, clickCount: 1, pressure: 1)!
+        return RightClickRouter.shared.handle(event)
+    }
+    let gate = NativeTimelineInputGate.shared
+    gate.setBlocked(true, for: first)
+    precondition(!rightClick(in: first) && rightClick(in: second) && clicks == 1)
+    gate.setBlocked(false, for: first)
+    precondition(rightClick(in: first) && clicks == 2)
+    first.close(); second.close()
+    print("CONTEXT_CLICKS_FOLLOW_THEIR_OWN_WINDOW_AND_RESUME_AFTER_MODAL_OK")
+}
+
+MainActor.assumeIsolated {
+    runNativeRegionTests()
+    verifyContextInputUsesItsOwnWindow()
+}

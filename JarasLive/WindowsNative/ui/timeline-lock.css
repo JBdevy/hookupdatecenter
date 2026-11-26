@@ -1,0 +1,45 @@
+/* Same 24×21 logical size, 3 px corners and neutral fill as the Mac control. */
+.catlive-timeline-lock {
+  appearance: none;
+  box-sizing: border-box;
+  flex: 0 0 24px;
+  inline-size: 24px;
+  block-size: 21px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  border-radius: 3px;
+  color: var(--catlive-text, #fff);
+  background: rgb(255 255 255 / 12%);
+  font: inherit;
+  cursor: default;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.catlive-timeline-lock[data-locked="true"] {
+  color: #000;
+  background: var(--catlive-yellow, #ffdc52);
+}
+.catlive-timeline-lock:active:not(:disabled) { background: rgb(255 255 255 / 24%); }
+.catlive-timeline-lock[data-locked="true"]:active:not(:disabled) { background: rgb(255 220 82 / 75%); }
+.catlive-timeline-lock:focus-visible { outline: 2px solid rgb(255 255 255 / 70%); outline-offset: 2px; }
+.catlive-timeline-lock:disabled:not([aria-busy="true"]) { opacity: 0.5; }
+.catlive-timeline-lock[aria-busy="true"] { cursor: progress; }
+.catlive-timeline-lock svg {
+  display: block;
+  inline-size: 13px;
+  block-size: 13px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  pointer-events: none;
+}
+@media (forced-colors: active) {
+  .catlive-timeline-lock { border: 1px solid ButtonText; color: ButtonText; background: ButtonFace; }
+  .catlive-timeline-lock[data-locked="true"] { color: HighlightText; background: Highlight; forced-color-adjust: none; }
+}

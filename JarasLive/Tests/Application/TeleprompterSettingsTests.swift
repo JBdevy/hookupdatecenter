@@ -2,6 +2,50 @@ import XCTest
 @testable import JarasApplication
 
 final class TeleprompterSettingsTests: XCTestCase {
+    func testPreviewPreferencesRetainIndependentScalesAndColorSources() throws {
+        let legacy = TeleprompterSettings()
+        let decoded = try JSONDecoder().decode(TeleprompterSettings.self, from: JSONEncoder().encode(legacy))
+        XCTAssertEqual(decoded.previewColorMode, "region")
+        XCTAssertEqual(decoded.previewBlockNameScale, 100)
+        XCTAssertEqual(decoded.previewRegionTimeScale, 100)
+        XCTAssertEqual(decoded.previewBlockTimeScale, 100)
+        XCTAssertFalse(decoded.showsLyricsWithPreview)
+
+        var preview = decoded
+        preview.previewColorMode = "setlist"
+        XCTAssertEqual(preview.previewNameColor(region: 0x112233, setlist: 0x445566), 0x445566)
+        preview.previewColorMode = "user"
+        preview.previewUserColor = 0x778899
+        preview.previewScale = 125
+        preview.previewBlockNameScale = 110
+        preview.previewRegionTimeScale = 70
+        preview.previewBlockTimeScale = 55
+        preview.showsLyricsWithPreview = true
+        let restored = try JSONDecoder().decode(TeleprompterSettings.self, from: JSONEncoder().encode(preview))
+        XCTAssertEqual(restored, preview)
+        XCTAssertEqual(restored.previewNameColor(region: 0x112233, setlist: 0x445566), 0x778899)
+    }
+
+    func testPreviewSlotsAdvanceIndependentlyAndPersist() {
+        let (defaults, suite) = preferences()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        var slots = TeleprompterPreviewSlots.load(defaults: defaults)
+        XCTAssertEqual(slots.label(0), "1–4")
+        for expected in ["1", "2", "1–2", "2", "3", "2–3", "3", "4", "3–4", "4", "1–4"] {
+            slots.advance(0)
+            XCTAssertEqual(slots.label(0), expected)
+        }
+        XCTAssertEqual(slots.visibleBlocks, 0..<4)
+        XCTAssertEqual(slots.label(1), "5–8")
+        for expected in ["5", "6", "5–6", "6", "7", "6–7", "7", "8", "7–8", "8", "5–8"] {
+            slots.advance(1)
+            XCTAssertEqual(slots.label(1), expected)
+        }
+        XCTAssertEqual(slots.visibleBlocks, 4..<8)
+        slots.save(defaults: defaults)
+        XCTAssertEqual(TeleprompterPreviewSlots.load(defaults: defaults), slots)
+    }
+
     func testIgnorePreviewPersistsIndependentlyAndOlderSettingsDefaultToFalse() throws {
         let (defaults,suite) = preferences(); defer { defaults.removePersistentDomain(forName: suite) }
         let first = TeleprompterSettingsStore(defaults: defaults)

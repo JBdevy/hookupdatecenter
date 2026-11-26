@@ -1,7 +1,7 @@
 import Foundation
 import AVFoundation
 import Darwin
-try MainActor.assumeIsolated {
+@MainActor func runStandbyMeterTest() async throws {
     let path = ProcessInfo.processInfo.environment["JARAS_TEST_VST3"]!
     var error: NSError?
     let plugin = JarasVST3.scan(path, error: &error)[0]
@@ -19,29 +19,42 @@ try MainActor.assumeIsolated {
     track.fx = fx; track.volume = 0.5
     project.songs[0].tracks = [track]; project.masterVolume = 0.25
     let snapshot = ShowSnapshot(project: project, transport: TransportState(playing: false, songId: project.songs[0].id, position: 0, queue: QueueState(), loop: LoopState(enabled: false), subPlay: SubPlayState(playing: false, position: 0)))
-    audio.setArmedInstrumentTracks([track.id]) // Live input follows REC; item MIDI does not.
-    let meter = audio.meter(for: track.id)
     try audio.update(snapshot, revision: 1)
+    let meter = audio.meter(for: track.id)
+    // Match the UI: arm after the project graph has been opened. Opening a
+    // project resets the previous graph's instrument rendering state.
+    audio.setArmedInstrumentTracks([track.id])
     let node = audio.effects(for: track.id)!.externalNode(instance.id)!
     JarasVST3.sendMIDI(node, status: 0x90, data1: 60, data2: 100)
     let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 512)!
-    func render() throws -> Float {
-        for _ in 0..<20 { let status = try engine.renderOffline(512, to: buffer); precondition(status == .success) }
-        RunLoop.main.run(until: Date().addingTimeInterval(0.08))
+    func render() async throws -> Float {
+        // Feed the graph continuously while yielding to its independent meter
+        // clock; a burst followed by silence legitimately decays the meter.
+        for _ in 0..<20 {
+            let status = try engine.renderOffline(512, to: buffer)
+            precondition(status == .success)
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
         return buffer.floatChannelData![0][100]
     }
-    let initial = try render()
+    let initial = try await render()
     precondition(abs(initial - 0.015625) < 0.00001)
     precondition(meter.levels.x > 0.05 && meter.levels.y > 0.05, "stereo track meters update from their own post-fader VST3 audio without transport ticks")
     precondition(audio.masterMeter.level > 0.01, "master meters remain active for stopped transport instruments")
     audio.previewVolume(nil, gain: 0.01)
-    let lowered = try render()
+    let lowered = try await render()
     precondition(lowered < initial * 0.05)
     precondition(meter.level > 0.05, "track meters do not depend on the Master fader")
     audio.previewMute(track.id, muted: true)
-    let muted = try render()
+    let muted = try await render()
     precondition(abs(muted) < 0.000001)
     audio.prepareForClosing()
     precondition(!engine.isRunning)
     print("STOPPED_VST3_TRACK_MASTER_STEREO_METERS_INDEPENDENT_CLOCK_FADER_MUTE_PCM_OK")
 }
+
+Task { @MainActor in
+    do { try await runStandbyMeterTest(); exit(0) }
+    catch { print(error); exit(1) }
+}
+RunLoop.main.run()

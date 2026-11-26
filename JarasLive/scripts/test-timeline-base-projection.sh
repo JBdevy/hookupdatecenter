@@ -11,13 +11,18 @@ python3 - "$projection_test_dir/main.swift" <<'PYTHON'
 from pathlib import Path
 import re, sys
 source = Path('Apple/Shared/TimelineGridView.swift').read_text()
+fonts = Path('Apple/Shared/Theme.swift').read_text()
+fonts = fonts[fonts.index('// App-owned typography.'):]
+Path(sys.argv[1]).with_name('Fonts.swift').write_text('import SwiftUI\nimport AppKit\nimport CoreText\n' + fonts)
 tempo = Path('Application/Project/TimelineTempo.swift').read_text()
 
 def declaration(needle):
     start = source.index(needle)
     return source[start:source.index('\n}', start) + 2]
 
-parts = ['import AppKit\nimport SwiftUI\n']
+bands_start = source.index('private let markerLaneHeight')
+bands_end = source.index('\nstruct TimelineBandsGlyph', bands_start)
+parts = ['import AppKit\nimport SwiftUI\n', source[bands_start:bands_end]]
 for begin, end in [
     ('public enum ProjectTimebase:', 'public enum TempoMarkerTimebase:'),
     ('public enum TimelineTempo {', 'public struct TapTempo {'),
@@ -27,7 +32,7 @@ for begin, end in [
     parts.append(tempo[start:tempo.index(end, start)])
 ticks = tempo[tempo.index('public enum TimelineTimeRuler {'):]
 ticks = ticks.replace('public enum TimelineTimeRuler {', 'public enum TimelineTimeRuler {\n    static var fixtureTickBuilds = 0')
-ticks = ticks.replace('minimumLabelSpacing: Double? = nil) -> [Tick] {', 'minimumLabelSpacing: Double? = nil) -> [Tick] {\n        fixtureTickBuilds += 1')
+ticks = ticks.replace('musical: MusicalLabels? = nil) -> [Tick] {', 'musical: MusicalLabels? = nil) -> [Tick] {\n        fixtureTickBuilds += 1')
 parts.append(ticks)
 for begin in ['private struct TimelineNativeGridBand {', 'private struct TimelineNativeRuler:']:
     start = source.index(begin)
@@ -47,10 +52,16 @@ key = controller[key_start:key_end]
 project_start = controller.index('        let tile = TimelineCanvasCoverage.preparedRect(visibleRect: viewport,')
 project_end = controller.index('        audioBody.project(', project_start)
 projection = controller[project_start:project_end]
+selection_start = controller.index('        let selectionSize = ')
+selection_end = controller.index('            value.input.applyProjection(', selection_start)
+selection_projection = controller[selection_start:selection_end]
 fixture = Path('Tests/Apple/TimelineBaseProjectionTests.swift').read_text()
-fixture = fixture.replace('PRODUCTION_PROJECTION_STATE', key).replace('PRODUCTION_TILE_PROJECTION', projection)
+drawing_start = controller.index('        let drawingChanged = previous.map {')
+drawing_end = controller.index('        if drawingChanged', drawing_start)
+drawing = controller[drawing_start:drawing_end]
+fixture = fixture.replace('PRODUCTION_PROJECTION_STATE', key).replace('PRODUCTION_TILE_PROJECTION', projection).replace('PRODUCTION_DRAWING_INVALIDATION', drawing).replace('PRODUCTION_SELECTION_VIEWPORT', selection_projection)
 parts.append(fixture)
 Path(sys.argv[1]).write_text('\n'.join(parts))
 PYTHON
-swiftc -swift-version 5 Apple/Shared/TimelineStaticText.swift "$projection_test_dir/main.swift" -o "$projection_test_dir/test"
+swiftc -swift-version 5 Apple/Shared/TimelineGridInk.swift Apple/Shared/TimelineVisibleClipIndex.swift "$projection_test_dir/Fonts.swift" Apple/Shared/TimelineStaticText.swift "$projection_test_dir/main.swift" -o "$projection_test_dir/test"
 "$projection_test_dir/test"

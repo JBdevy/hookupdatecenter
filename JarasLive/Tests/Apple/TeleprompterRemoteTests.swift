@@ -24,22 +24,31 @@ let url = URL(string: "http://127.0.0.1:\(port)\(server.path)")!
 var payload = TeleprompterRemotePayload()
 payload.text = "Lyrics <script>alert(1)</script>"; payload.chords = "Am"; payload.song = "Song 2"
 payload.timer = "-00:00:01"; payload.expired = true
+payload.loopActive = true; payload.loopLabel = "Loop ativo"
 payload.blocks = [TeleprompterRemoteBlock(name: "Bloco 01", color: 123, duration: 10, songs: [])]
 let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
 try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
 defer { try? FileManager.default.removeItem(at: folder) }
-let file = folder.appendingPathComponent("video.mp4")
+let file = folder.appendingPathComponent("photo.jpg")
 let source = Data((0..<200000).map { UInt8($0 % 251) })
-try source.write(to: file); payload.mediaID = "video"; payload.mediaKind = "video"
-server.publish(payload, mediaURL: file)
+try source.write(to: file); payload.mediaID = "photo"; payload.mediaKind = "image"
+let notice = Data([0xff, 0xd8, 0xff, 0xd9])
+payload.notice = .init(id: "rehearsal-1", message: "REHEARSAL", imageID: "notice-one", font: "Arial", scale: 105,
+                       textColor: 0xffffff, backgroundColor: 0x111111, flashColor: 0xffdd33, elapsed: 0)
+server.publish(payload, mediaURL: file, image: notice)
 let page = request(url)
 precondition(page.1.statusCode == 200 && String(decoding: page.0, as: UTF8.self).contains("textContent"), "Missing browser page")
 let state = request(url.appendingPathComponent("state"))
 let decoded = try JSONDecoder().decode(TeleprompterRemotePayload.self, from: state.0)
 precondition(decoded.song == payload.song && decoded.text == payload.text && decoded.blocks.count == 1 && decoded.expired)
+precondition(decoded.loopActive == true && decoded.loopLabel == "Loop ativo", "Browser must receive loop status independently of progress settings")
+precondition(decoded.notice?.message == "REHEARSAL" && decoded.notice?.scale == 105)
+let noticeURL = url.appendingPathComponent("notice/notice-one")
+let noticeResponse = request(noticeURL)
+precondition(noticeResponse.0 == notice && noticeResponse.1.value(forHTTPHeaderField: "Content-Type") == "image/jpeg")
 precondition(request(url.appendingPathComponent("unknown")).1.statusCode == 404, "Unknown paths must not expose content")
 precondition(request(url.appendingPathComponent("media/../outside")).1.statusCode == 404)
-let media = url.appendingPathComponent("media/video")
+let media = url.appendingPathComponent("media/photo")
 let partial = request(media, range: "bytes=500-699")
 precondition(partial.1.statusCode == 206 && partial.0 == source.subdata(in: 500..<700))
 precondition(partial.1.value(forHTTPHeaderField: "Content-Range") == "bytes 500-699/200000")
@@ -48,9 +57,12 @@ precondition(request(media, range: "bytes=200000-").1.statusCode == 416)
 precondition(request(media).0 == source, "Chunked media content differs")
 let head = request(media, method: "HEAD")
 precondition(head.0.isEmpty && head.1.value(forHTTPHeaderField: "Content-Length") == "200000")
-payload.preview = true; payload.mediaID = nil
+payload.preview = true; payload.mediaID = nil; payload.notice = nil
+payload.loopActive = false
 server.publish(payload, mediaURL: nil)
-precondition(request(media).1.statusCode == 404, "Preview still serves video")
+let releasedLoop = try JSONDecoder().decode(TeleprompterRemotePayload.self, from: request(url.appendingPathComponent("state")).0)
+precondition(releasedLoop.loopActive == false, "Released loop must clear the browser footer")
+precondition(request(media).1.statusCode == 404 && request(noticeURL).1.statusCode == 404, "Preview still serves old imagery")
 // TP2 owns a different listener, payload and media namespace. Disabling
 // TP1 must not interrupt TP2, including a file with the same media identifier.
 let second = TeleprompterHTTPServer()
@@ -61,14 +73,14 @@ precondition(secondReady.wait(timeout: .now() + 5) == .success && secondPort != 
 let secondURL = URL(string: "http://127.0.0.1:\(secondPort)/")!
 var secondPayload = TeleprompterRemotePayload()
 secondPayload.text = "Only TP2"; secondPayload.settings.textColor = 0x123456
-secondPayload.mediaID = "video"; secondPayload.mediaKind = "video"
-let secondFile = folder.appendingPathComponent("second.mp4")
+secondPayload.mediaID = "photo"; secondPayload.mediaKind = "image"
+let secondFile = folder.appendingPathComponent("second.jpg")
 let secondBytes = Data("Different TP2 media".utf8)
 try secondBytes.write(to: secondFile)
 second.publish(secondPayload, mediaURL: secondFile)
 let secondState = try JSONDecoder().decode(TeleprompterRemotePayload.self, from: request(secondURL.appendingPathComponent("state")).0)
 precondition(secondState.text == "Only TP2" && secondState.settings.textColor == 0x123456 && !secondState.preview)
-precondition(request(secondURL.appendingPathComponent("media/video")).0 == secondBytes)
+precondition(request(secondURL.appendingPathComponent("media/photo")).0 == secondBytes)
 precondition(request(media).1.statusCode == 404, "TP1 exposed TP2 media")
 let unchangedFirst = try JSONDecoder().decode(TeleprompterRemotePayload.self, from: request(url.appendingPathComponent("state")).0)
 precondition(unchangedFirst.text == payload.text)

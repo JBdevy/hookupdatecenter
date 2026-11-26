@@ -1,0 +1,76 @@
+Windows presentation migration - isolated developer validation entry point
+
+User review on 2026-10-29 rejected the experimental layout and requested an
+immediate return to the shipping interface. Keep ordinary launch without
+--imgui-ui. Do not substitute this reduced surface for the established layout;
+any renderer migration must preserve the existing appearance and behaviour.
+
+Build option: CATLIVE_IMGUI_FRONTEND=ON
+Launch: CatLive.exe --imgui-ui
+Fixture: CatLive.exe --imgui-ui --visual-test --ui-diagnostics <absolute JSON path>
+
+The new presentation uses RegisterClassExW/CreateWindowExW/WndProc, Dear ImGui
+and DirectX 11. It does not create Workspace or JUCE Component windows.
+The surrounding application/session infrastructure and production audio device
+manager still use JUCE. The ordinary launch path remains the shipping interface.
+
+Frame pacing uses a DXGI frame-latency waitable object. A normal-priority helper
+posts one render request, then waits for UI acknowledgement. All ImGui/D3D and
+document actions remain on the UI thread. Hidden/occluded frames retain the DXGI
+grant; device recovery joins the helper before replacing its handles.
+
+The diagnostic JSON reports CPU submission intervals, not guaranteed displayed
+FPS. Actual display cadence requires ETW/PresentMon or equivalent measurement.
+The rolling cadence includes pauses for native dialogs and minimized windows;
+measure steady visible periods separately from these lifecycle transitions.
+
+Session remains the document authority through FrontendBridge. ImGui receives
+a compact display projection rather than serialized plugin state. Waveforms
+and native FX are requested separately. Save uses Session's asynchronous path.
+Native confirmations preserve the unsaved project if the renderer fails.
+
+Implemented validation surface: transport, timeline selection and horizontal
+group movement, split/delete, internal item copy/cut/paste with undo, item
+gain/pan/mute, meters, track/master mixer, setlist/parts selection, native FX
+parameters, account/home and confirmations. Pending cut shading follows the
+confirmed document state and text inputs retain their own clipboard shortcuts.
+
+Still required before replacing the shipping interface:
+  - Full toolbar, settings, import/export, browser and multi-project tab parity.
+  - Timeline trim/stretch/fades, region/marker/program-change editing, MIDI and
+    text/chord editors, external-file clipboard and remaining drag/drop parity.
+  - Plugin browser/favourites, external plugin editor embedding and all native
+    dedicated editors; recording configuration and special track controls.
+  - Setlist editing/order modes, Pads/MIDI learn, teleprompters/video, Remote,
+    licensing and recovery behaviour across the complete product flow.
+  - Native ASIO/WASAPI integration after safe audio graph publication replaces
+    dependence on the JUCE device callback lock.
+  - Hardware/DPI/multiple-monitor/device-loss, load, latency and long-session
+    regression tests against the production build.
+
+Do not distribute this entry point as a completed commercial migration.
+
+Validated locally on Windows, 2026-10-29:
+  - The Win32 window selected DirectX 11 hardware, without a JUCE Component.
+  - Minimize/restore, fullscreen/windowed restoration and native Open dialog
+    cancellation resumed presentation. Fullscreen client occupied 1440 x 900.
+  - The visual-only inspection fixture submitted about 60 frames/second in
+    steady visible periods. CPU drawing averaged about 0.9 ms; this excludes
+    session work outside drawing and is not a full-project/OBS comparison.
+  - Native frontend session/edit/projection/close tests passed in the Windows
+    executable; portable UI tests passed in Release and with ASan/UBSan.
+  - Final Windows rebuild passed the internal clipboard/history/document-scope
+    regression, the MIDI regression group and playback-head MIDI merge test.
+    The final portable UI suite includes the cached tempo grid and cross-song
+    pending-cut cancellation, with Release and ASan/UBSan passes.
+
+Explorer file drops now enter through WM_DROPFILES, with bounded UTF-16/UTF-8
+path decoding and deterministic HDROP release. The view resolves the destination
+against the last actually drawn grid geometry, including scroll/DPI and edit
+cursor/item/grid snapping. Stale geometry and superseding notices cancel the
+staged operation. Multiple files offer separate tracks, sequential placement or
+stacked placement. Session remains responsible for async import and one undo.
+Portable Release and ASan/UBSan tests cover geometry, snapping, stale scopes and
+modal supersession. Five Native frontend tests passed in the Windows executable,
+including actual Unicode media import, layout, undo and batch validation. A real
+Explorer mouse drag into this HWND still needs an interactive validation pass.

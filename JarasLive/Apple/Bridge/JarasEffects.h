@@ -1,10 +1,90 @@
 #import <AVFoundation/AVFoundation.h>
 NS_ASSUME_NONNULL_BEGIN
+/// For native processors that consume parameter changes directly from their
+/// kernels, request a reset on the next render without locking the AU event queue.
+FOUNDATION_EXPORT BOOL JarasRequestNativePlaybackReset(AVAudioUnit *node);
+FOUNDATION_EXPORT void JarasBeginAudioDiskIO(void);
+FOUNDATION_EXPORT void JarasEndAudioDiskIO(void);
+FOUNDATION_EXPORT int64_t JarasAudioDiskOccupiedNanoseconds(void);
+
+@interface JarasMIDIChord : NSObject
++ (NSString *)nameForPitchClasses:(uint16_t)classes bass:(NSInteger)bass NS_SWIFT_NAME(name(pitchClasses:bass:));
+@end
+
+/// One permanent source for all pad voices. Control calls run on the main
+/// thread; rendering never changes the engine graph or owns buffer lifetimes.
+@interface JarasPadSource : NSObject
+@property(nonatomic, readonly) AVAudioSourceNode *node;
+- (instancetype)initWithFormat:(AVAudioFormat *)format;
+- (uint64_t)playBuffer:(AVAudioPCMBuffer *)buffer gain:(float)gain;
+- (void)stopVoice:(uint64_t)token;
+- (void)releaseVoice:(uint64_t)token;
+- (void)setVoice:(uint64_t)token gain:(float)gain;
+- (BOOL)isPlaying:(uint64_t)token;
+- (void)reclaimFinishedBuffers;
+@end
+#if TARGET_OS_OSX || TARGET_OS_IOS
+/// Commits source rate/pitch edits together at the next graph render boundary.
+/// Control calls may be batched; the render callback never waits for an edit.
+@interface JarasPreparedClipTiming : NSObject
+- (instancetype)initWithEngine:(AVAudioEngine *)engine;
+- (void)beginUpdates;
+- (void)endUpdates;
+@end
+/// File-backed source with the same lookahead pitch processing as Windows.
+/// Preparation reads/decodes on the control thread; playback reads bounded PCM
+/// pages replenished by a worker, never opening a file in the render callback.
+@interface JarasPreparedClip : NSObject
++ (NSDictionary<NSString *, NSNumber *> *)memoryDiagnostics;
+/// Release idle PCM/history leases while retaining the graph and DSP storage.
+/// If a callback is still reading, defer reclamation until the next idle pass.
+- (void)suspendIdleStreaming;
+@property(nonatomic, readonly) AVAudioSourceNode *node;
+@property(nonatomic, readonly) double sourcePosition;
+@property(nonatomic, readonly) BOOL playing;
+@property(nonatomic, readonly) uint64_t underruns;
+@property(nonatomic, readonly) NSDictionary<NSString *, NSNumber *> *processingDiagnostics;
+- (instancetype)initWithFormat:(AVAudioFormat *)format;
+- (instancetype)initWithFormat:(AVAudioFormat *)format timing:(nullable JarasPreparedClipTiming *)timing;
+- (BOOL)prepareURL:(NSURL *)url sourceFrame:(double)frame endFrame:(double)end
+             rate:(double)rate pitch:(double)semitones loopStart:(double)loopStart loopEnd:(double)loopEnd
+            error:(NSError **)error;
+- (void)startAtHostTime:(uint64_t)host ramp:(BOOL)ramp;
+- (void)setRate:(double)rate pitch:(double)semitones;
+- (void)setEndFrame:(double)end;
+- (void)stop;
+@end
+#endif
 /// Validate one hardware-format snapshot and contain Core Audio exceptions at
 /// the Objective-C API boundary if a device vanishes during connection.
 @interface JarasAudioOutputConnection : NSObject
++ (BOOL)startPlayer:(AVAudioPlayerNode *)player error:(NSError **)error NS_SWIFT_NAME(start(_:));
++ (BOOL)startPlayers:(NSArray<AVAudioPlayerNode *> *)players error:(NSError **)error NS_SWIFT_NAME(start(_:));
 + (nullable AVAudioFormat *)connectEngine:(AVAudioEngine *)engine error:(NSError **)error NS_SWIFT_NAME(connect(_:));
 @end
+#if TARGET_OS_OSX
+/// Mac hardware keeps its selected device while a separate graph prepares PCM.
+/// The callback consumes bounded memory only; graph rendering owns one worker.
+@interface JarasBufferedAudioOutput : NSObject
+- (instancetype)initWithEngine:(AVAudioEngine *)engine hardwareEngine:(AVAudioEngine *)hardware;
+@property(nonatomic, readonly) AVAudioEngine *hardwareEngine;
+@property(nonatomic, readonly) double configuredHardwareSampleRate;
+@property(nonatomic, readonly) AVAudioChannelCount configuredHardwareChannels;
+/// Set while stopped, before configuring a new project's graph. Zero follows hardware.
+@property(nonatomic) double preferredProcessingSampleRate;
+@property(nonatomic, readonly, nullable) AVAudioTime *renderTime;
+- (nullable AVAudioFormat *)configureAndReturnError:(NSError **)error;
+- (BOOL)startAndReturnError:(NSError **)error;
+- (void)stop;
+- (void)discardPreparedOutput;
+- (void)beginStop;
+- (void)endStop;
+- (void)setOutputEnabled:(BOOL)enabled;
+- (void)setPlaybackSourceCount:(NSUInteger)count;
+- (void)setLiveInstrumentMonitoring:(BOOL)monitoring;
+- (NSDictionary<NSString *, id> *)diagnostics;
+@end
+#endif
 /// Native iPad hardware is deliberately separate from the AVAudioEngine graph.
 /// The driver can be stopped/recreated after a USB format change without the
 /// engine's hardware-format listener holding the old RemoteIO lock.
@@ -14,7 +94,11 @@ NS_ASSUME_NONNULL_BEGIN
 - (BOOL)startAndReturnError:(NSError **)error;
 - (void)gate;
 - (void)stop;
+@property(nonatomic, readonly, getter=isRunning) BOOL running;
+- (BOOL)hasStalled;
 @property(nonatomic, readonly, nullable) AVAudioTime *renderTime;
+// Control-thread snapshot only; never call from an audio render callback.
+- (NSDictionary<NSString *, id> *)diagnostics;
 // Also used by the PCM harness with the same timestamp/buffer path as RemoteIO.
 - (OSStatus)renderFrames:(UInt32)frames time:(const AudioTimeStamp *)time flags:(AudioUnitRenderActionFlags *)flags buffers:(AudioBufferList *)data;
 @end
@@ -22,7 +106,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property(nonatomic, readonly, nullable) AVAudioFormat *format;
 @property(nonatomic, readonly) BOOL running;
 - (BOOL)prepareWithSampleRate:(double)rate channels:(AVAudioChannelCount)channels error:(NSError **)error;
-- (void)setCapture:(nullable void (^)(AVAudioPCMBuffer *))capture;
+- (void)setCapture:(nullable void (^)(AVAudioPCMBuffer *, uint64_t))capture;
 - (void)pause;
 - (BOOL)startAndReturnError:(NSError **)error;
 - (void)stop;
@@ -37,14 +121,22 @@ NS_ASSUME_NONNULL_BEGIN
 @interface JarasEqualizer : NSObject
 + (AVAudioUnitEffect *)makeNode;
 + (void)configure:(AVAudioUnitEffect *)node coefficients:(NSArray<NSArray<NSNumber *> *> *)coefficients enabled:(BOOL)enabled;
++ (void)setEffectChannels:(AVAudioUnitEffect *)node mask:(NSUInteger)mask;
 + (void)setPolarity:(AVAudioUnitEffect *)node inverted:(BOOL)inverted;
 + (void)setInputGain:(AVAudioUnitEffect *)node gain:(double)gain;
++ (void)setItemGain:(AVAudioUnitEffect *)node gain:(double)gain;
 + (void)setInputPan:(AVAudioUnitEffect *)node pan:(double)pan;
++ (void)beginPadRelease:(AVAudioUnitEffect *)node;
++ (BOOL)isPadReleaseComplete:(AVAudioUnitEffect *)node;
 + (void)setPlaybackBoundary:(AVAudioUnitEffect *)node hostTime:(uint64_t)hostTime;
++ (NSDictionary<NSString *, NSData *> *)overlapEnvelopes:(NSArray<NSArray *> *)items;
++ (void)setOverlapEnvelope:(AVAudioUnitEffect *)node data:(nullable NSData *)data;
 + (void)setInputFade:(AVAudioUnitEffect *)node fadeIn:(double)fadeIn fadeOut:(double)fadeOut duration:(double)duration position:(double)position hostTime:(uint64_t)hostTime sampleTime:(double)sampleTime;
++ (void)setInputFade:(AVAudioUnitEffect *)node fadeIn:(double)fadeIn fadeOut:(double)fadeOut fadeInCurve:(double)inCurve fadeInSCurve:(double)inS fadeOutCurve:(double)outCurve fadeOutSCurve:(double)outS duration:(double)duration position:(double)position hostTime:(uint64_t)hostTime sampleTime:(double)sampleTime;
 + (void)setInputChannelMode:(AVAudioUnitEffect *)node mode:(int)mode;
 + (void)setOutputMeteringEnabled:(AVAudioUnitEffect *)node enabled:(BOOL)enabled;
 + (float)takeOutputPeak:(AVAudioUnitEffect *)node channel:(NSUInteger)channel;
++ (float)takeOutputRMS:(AVAudioUnitEffect *)node;
 + (void)setAnalysisEnabled:(AVAudioUnitEffect *)node enabled:(BOOL)enabled;
 + (nullable NSData *)analysisFrame:(AVAudioUnitEffect *)node input:(BOOL)input;
 @end
@@ -56,27 +148,45 @@ NS_ASSUME_NONNULL_BEGIN
 + (AVAudioUnitEffect *)makeItemEqualizerCompressor;
 + (AVAudioUnitEffect *)makeCompressor;
 + (AVAudioUnitEffect *)makeLimiter;
++ (AVAudioUnitEffect *)makeTrigger;
++ (AVAudioUnitEffect *)makeGate;
+/// Decoding happens on the graph control thread. Rendering owns the published
+/// immutable sample and never opens a file, allocates or releases its storage.
++ (double)triggerSampleDuration:(AVAudioUnitEffect *)node;
++ (BOOL)loadTriggerSample:(AVAudioUnitEffect *)node url:(nullable NSURL *)url error:(NSError **)error;
++ (void)configureTrigger:(AVAudioUnitEffect *)node enabled:(BOOL)enabled threshold:(double)threshold retrigger:(double)retrigger gain:(double)gain mix:(double)mix attack:(double)attack decay:(double)decay sustain:(double)sustain release:(double)release;
++ (void)configureGate:(AVAudioUnitEffect *)node enabled:(BOOL)enabled threshold:(double)threshold attack:(double)attack decay:(double)decay hold:(double)hold release:(double)release highPass:(double)highPass lowPass:(double)lowPass filterOutput:(BOOL)filterOutput;
 + (void)configureLimiter:(AVAudioUnitEffect *)node enabled:(BOOL)enabled gain:(double)gain ceiling:(double)ceiling release:(double)release;
 + (AVAudioUnitEffect *)makeReverb;
 + (void)configureCompressor:(AVAudioUnitEffect *)node enabled:(BOOL)enabled threshold:(double)threshold ratio:(double)ratio attack:(double)attack release:(double)release gain:(double)gain;
 + (void)configureReverb:(AVAudioUnitEffect *)node enabled:(BOOL)enabled space:(NSInteger)space mix:(double)mix decay:(double)decay lowCut:(double)lowCut highCut:(double)highCut;
++ (void)setEffectChannels:(AVAudioUnitEffect *)node mask:(NSUInteger)mask;
++ (AVAudioUnitEffect *)makeChannelDelay;
++ (void)configureChannelDelay:(AVAudioUnitEffect *)node enabled:(BOOL)enabled delay:(double)delay feedback:(double)feedback mix:(double)mix;
 + (void)setAnalysisEnabled:(AVAudioUnitEffect *)node input:(BOOL)input enabled:(BOOL)enabled;
 + (void)setCompressorMeteringEnabled:(AVAudioUnitEffect *)node enabled:(BOOL)enabled;
 + (nullable NSData *)analysisFrame:(AVAudioUnitEffect *)node input:(BOOL)input;
 + (NSArray<NSNumber *> *)analysisPeaks:(AVAudioUnitEffect *)node input:(BOOL)input;
++ (float)compressorReduction:(AVAudioUnitEffect *)node;
 + (NSArray<NSNumber *> *)takeCompressorPeaks:(AVAudioUnitEffect *)node;
 @end
 NS_ASSUME_NONNULL_END
 
 NS_ASSUME_NONNULL_BEGIN
 @interface JarasChannelRouter : NSObject
++ (void)beginStop:(AVAudioUnitEffect *)node;
++ (void)endStop:(AVAudioUnitEffect *)node;
 + (AVAudioUnitEffect *)makeNode;
 + (void)setRenderEnabled:(AVAudioUnitEffect *)node enabled:(BOOL)enabled;
 + (void)beginStopFade:(AVAudioUnitEffect *)node;
 + (void)setInputMeteringEnabled:(AVAudioUnitEffect *)node enabled:(BOOL)enabled;
 + (float)takeInputPeak:(AVAudioUnitEffect *)node channel:(NSUInteger)channel;
++ (float)takeInputRMS:(AVAudioUnitEffect *)node;
 + (void)configure:(AVAudioUnitEffect *)node first:(NSInteger)first count:(NSInteger)count;
 + (void)configurePatches:(AVAudioUnitEffect *)node firsts:(NSArray<NSNumber *> *)firsts counts:(NSArray<NSNumber *> *)counts;
+/// Use the graph's prepared format during live Patch edits; avoid querying an
+/// Audio Unit bus format while Core Audio is rendering that graph.
++ (void)configurePatches:(AVAudioUnitEffect *)node firsts:(NSArray<NSNumber *> *)firsts counts:(NSArray<NSNumber *> *)counts outputChannels:(NSUInteger)channels;
 @end
 NS_ASSUME_NONNULL_END
 
@@ -84,6 +194,7 @@ NS_ASSUME_NONNULL_BEGIN
 /// Fixed item output: gain changes never reconnect the graph. Idle sources
 /// return silence without rendering their upstream player or effect chain.
 @interface JarasVoiceGain : NSObject
++ (void)setStartHostTime:(AVAudioUnitEffect *)node hostTime:(uint64_t)hostTime;
 + (AVAudioUnitEffect *)makeNode;
 + (void)setDecibels:(AVAudioUnitEffect *)node decibels:(double)decibels;
 + (void)setRenderEnabled:(AVAudioUnitEffect *)node enabled:(BOOL)enabled;
@@ -94,5 +205,26 @@ NS_ASSUME_NONNULL_BEGIN
 /// Packs N independent stereo exports into one offline render block.
 @interface JarasExportMultiplexer : NSObject
 + (AVAudioUnitEffect *)makeNode:(NSInteger)outputs;
+@end
+NS_ASSUME_NONNULL_END
+
+NS_ASSUME_NONNULL_BEGIN
+@interface JarasPitchFormant : NSObject
++ (AVAudioUnitEffect *)makeNode;
++ (void)configure:(AVAudioUnitEffect *)node pitch:(float)pitch formant:(float)formant;
+@end
+
+@interface JarasRemoteMainAudio : NSObject
+- (void)setCapturing:(BOOL)capturing;
+- (void)captureBuffer:(AVAudioPCMBuffer *)buffer;
+- (nullable NSData *)nextPacket;
+@end
+
+@interface JarasCreativeEffects : NSObject
++ (float)gainReduction:(AVAudioUnitEffect *)node;
++ (AVAudioUnitEffect *)makeEffect:(NSInteger)kind;
++ (void)configure:(AVAudioUnitEffect *)node enabled:(BOOL)enabled parameters:(NSArray<NSNumber *> *)parameters;
++ (void)setTempoMap:(AVAudioUnitEffect *)node points:(NSArray<NSDictionary<NSString *, NSNumber *> *> *)points;
++ (void)transport:(AVAudioUnitEffect *)node position:(double)position clock:(double)clock playing:(BOOL)playing loopStart:(double)start loopEnd:(double)end tempo:(double)tempo;
 @end
 NS_ASSUME_NONNULL_END

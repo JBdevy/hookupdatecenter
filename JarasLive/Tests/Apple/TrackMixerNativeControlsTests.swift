@@ -3,13 +3,101 @@
     let own = ax.accessibilityRole() == .button ? [ax] : []
     return own + (ax.accessibilityChildren() ?? []).flatMap { axButtons($0, depth: depth + 1) }
 }
+@MainActor private func verifyAutomaticHeightLayout() {
+    let fixture = FixtureWindow(candidate: true, kinds: Array(repeating: .standard, count: 47))
+    fixture.window.orderFront(nil)
+    fixture.settle()
+    defer { fixture.window.close() }
+    for height in [120.0,66,90,67,80,66,105,67,96,66,70,128,72] {
+        fixture.state.height = height
+        fixture.host.setFrameSize(CGSize(width: 248, height: 47 * height))
+        // Only the normal run loop may present this resize. A manual layout,
+        // display or bitmap capture would conceal the delayed-refresh bug.
+        RunLoop.main.run(until: Date().addingTimeInterval(0.04))
+        let owners = descendants(fixture.host, of: TrackMixerNativeControlView.self)
+        for row in owners where !row.isHidden {
+            let frame = row.convert(row.bounds, to: fixture.host)
+            let index = (frame.minY / height).rounded()
+            expect(abs(frame.minY - index * height) <= 1 && abs(frame.height - height) <= 1,
+                   "Row geometry lags resize to \(height): \(frame)")
+            let title = descendants(row.controls, of: TrackDragTitleView.self).first!
+            let titleFrame = title.convert(title.bounds, to: row)
+            let y = height - (height >= 64 ? 16 : 21) - 1
+            expect(abs(titleFrame.minY - y) <= 1,
+                   "Native title lags resize to \(height): expected \(y), actual \(titleFrame), host \(row.controls.frame)")
+            expect(titleFrame.minY >= 0 && titleFrame.maxY <= height + 1,
+                   "Controls crossed the track boundary during resize")
+            expect(row.meter.presentation == .peakLabel, "The expanded track must retain its peak readout below the fader")
+        }
+    }
+    print("MIXER_HEIGHT_AUTOMATIC_PRESENTATION_47_ROWS_NO_MANUAL_REDRAW_OK")
+}
+@MainActor private func verifyHeightModeTransition() {
+    let fixture = FixtureWindow(candidate: true, kinds: Array(repeating: .standard, count: 47))
+    fixture.window.orderFront(nil)
+    defer { fixture.window.close() }
+    fixture.change(68)
+    let rows = descendants(fixture.host, of: TrackMixerNativeControlView.self)
+    let snapshots = rows.map { $0.snapshot }
+    var timings: [(height: Double, milliseconds: Double)] = []
+    Counts.reset()
+    for height in [66.0,66.1,72,80,110,66,66.1,72,140,66,68] {
+        let start = ProcessInfo.processInfo.systemUptime
+        fixture.change(height)
+        timings.append((height, (ProcessInfo.processInfo.systemUptime - start) * 1000))
+        for (row, snapshot) in zip(rows, snapshots) {
+            expect(row.snapshot === snapshot,
+                "Crossing fader visibility at \(height) must not replace row content")
+        }
+    }
+    expect(Counts.update == 0, "Height thresholds must only reposition retained controls")
+    print("MIXER_FADER_BOUNDARIES_47_ROWS_ZERO_ROOT_UPDATES_OK timings=\(timings) layouts=\(Counts.slotLayouts)")
+}
+@MainActor private func verifyNativePanelInteraction(_ fixture: FixtureWindow) {
+    let row = descendants(fixture.host, of: TrackMixerNativeControlView.self).first!
+    let slider = descendants(row, of: DirectVolumeSliderView.self).first { !$0.mini }!
+    let label = descendants(row, of: TrackMixerNativeGainLabel.self).first!
+    let phase = descendants(row, of: TrackMixerNativePhaseButton.self).first!
+    let mapping = descendants(row, of: MappingClickView.self).first!
+    let span = slider.convert(slider.bounds, to: row)
+    let gain = label.convert(label.bounds, to: row)
+    let polarity = phase.convert(phase.bounds, to: row)
+    expect(span.maxX <= gain.minX && gain.maxX <= polarity.minX,
+           "The gain readout must sit between the fader and polarity control")
+    slider.doubleValue = -18
+    expect(label.value == -18, "Native gain readout must follow the live slider without a row publication")
+    let beforeReset = fixture.state.calls
+    label.reset?()
+    expect(slider.doubleValue == 0 && label.value == 0 && fixture.state.calls == beforeReset + 1,
+           "Gain-label reset must publish through the same fader callbacks")
+    let point = mapping.convert(NSPoint(x: mapping.bounds.midX, y: mapping.bounds.midY), to: nil)
+    let event = NSEvent.mouseEvent(with: .rightMouseDown, location: point, modifierFlags: [], timestamp: 100,
+        windowNumber: fixture.window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1)!
+    let beforeMapping = fixture.state.calls
+    expect(RightClickRouter.shared.handle(event) && fixture.state.calls == beforeMapping + 100,
+           "Native volume must retain the real priority-based MIDI mapping route")
+    fixture.state.enabled = false; fixture.settle()
+    let disabledCalls = fixture.state.calls
+    label.reset?(); phase.performClick(nil)
+    let key = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 101, windowNumber: fixture.window.windowNumber, context: nil, characters: "", charactersIgnoringModifiers: "", isARepeat: false, keyCode: 124)!
+    slider.keyDown(with: key)
+    expect(!slider.isEnabled && !phase.isEnabled && mapping.isHidden && fixture.state.calls == disabledCalls,
+           "Disabled native controls must reject changes and remove their mapping target")
+    fixture.state.enabled = true; fixture.settle()
+    print("NATIVE_PANEL_GAIN_RESET_PHASE_DISABLED_MAPPING_OK")
+}
+
 @MainActor private func verifyBehavior() {
     verifyFooterGainReadout()
+    verifyFaderEdgesAtOneX()
     verifyFooterPanReadout()
+    verifyLiveSidebarResize()
     let fixture = FixtureWindow(candidate: true, kinds: [.standard])
     fixture.change(80)
+    verifyNativePanelInteraction(fixture)
     verifyGeometryKeepsNativeContent(fixture)
     verifyPeakResetInput(fixture)
+    verifyClippedControlsSkipWork(fixture)
     let title = descendants(fixture.host, of: TrackDragTitleView.self).first!
     let faders = descendants(fixture.host, of: DirectVolumeSliderView.self)
     let original = faders.map(ObjectIdentifier.init)
@@ -57,8 +145,12 @@
     expect(controls.hitTest(fxPoint) != nil, "FX hit area disappeared")
     let baseline = FixtureWindow(candidate: false, kinds: [.standard]); baseline.change(80)
     let oldButtons = axButtons(baseline.host), buttons = axButtons(fixture.host)
-    if oldButtons.isEmpty && buttons.isEmpty {
-        print("AX_OFFSCREEN_UNAVAILABLE_IN_BASELINE_AND_CANDIDATE; app smoke required")
+    if oldButtons.isEmpty {
+        let phase = descendants(fixture.host, of: TrackMixerNativePhaseButton.self).first!
+        let calls = fixture.state.calls
+        phase.performClick(nil)
+        expect(fixture.state.calls == calls + 7, "Native phase must use the current action after row rebinding")
+        print("SWIFTUI_AX_OFFSCREEN_UNAVAILABLE_IN_BASELINE; NATIVE_PHASE_ACTION_OK; app smoke required")
     } else {
         expect(buttons.count >= oldButtons.count, "Accessible controls were lost")
         let fx = buttons.first { $0.accessibilityLabel() == "FX" }
@@ -71,6 +163,75 @@
     baseline.window.close()
     print("NATIVE_ROW_BEHAVIOR_OK actions rebind state focus locale disabled hit-area")
     fixture.window.close()
+}
+@MainActor private func verifyLiveSidebarResize() {
+    let fixture = FixtureWindow(candidate: true, kinds: [.standard])
+    fixture.change(80)
+    let row = descendants(fixture.host, of: TrackMixerNativeControlView.self).first!
+    let original = row.snapshot
+    let hosts = descendants(row, of: TrackMixerControlHost.self)
+    let title = descendants(row, of: TrackDragTitleView.self).first!
+    let stateful = descendants(row, of: StatefulProbeView.self).first!
+    let activity = NativeSidebarResizeActivity.shared
+    activity.begin(owner: fixture.host)
+    Counts.reset()
+    for width in [260.0,280,310,248] { fixture.change(80, width: width) }
+    expect(row.snapshot === original && Counts.update == 0 && Counts.slotLayouts == 0,
+           "A lateral drag must reposition retained buttons without rebuilding their unchanged layout")
+    fixture.state.title = "Updated during sidebar drag"
+    fixture.state.locale = "pt_BR"; fixture.state.enabled = false
+    fixture.settle()
+    expect(title.title == fixture.state.title && stateful.locale == "pt_BR" && !stateful.enabled,
+           "Content and environment changes must reach controls during a sidebar drag")
+    expect(Counts.slotLayouts > 0, "Changed controls must lay out during a sidebar drag")
+    fixture.state.enabled = true; fixture.settle()
+    let value = stateful.value
+    stateful.action?()
+    fixture.change(24); fixture.change(80)
+    expect(descendants(row, of: TrackDragTitleView.self).first === title,
+           "Height mode changes during a lateral drag must retain the title")
+    row.isHidden = true; fixture.settle(); row.isHidden = false; fixture.settle()
+    expect(hosts.allSatisfy { $0.window === fixture.window },
+           "Returning controls must reattach while a divider is still active")
+    for host in hosts { host.needsLayout = true; host.layoutSubtreeIfNeeded() }
+    Counts.reset()
+    activity.end(owner: fixture.host)
+    fixture.settle()
+    expect(Counts.slotLayouts > 0 && stateful.value == value + 1,
+           "Releasing a divider must flush deferred layout and local SwiftUI state")
+    activity.begin(owner: fixture.host)
+    for host in hosts { host.needsLayout = true; host.layoutSubtreeIfNeeded() }
+    Counts.reset()
+    NotificationCenter.default.post(name: NSWindow.didResignKeyNotification, object: fixture.window)
+    fixture.settle()
+    expect(Counts.slotLayouts > 0, "Losing the active window must finish pending divider layout")
+    fixture.window.close()
+    print("SIDEBAR_DRAG_RETAINS_BUTTON_LAYOUT_UPDATES_CONTENT_ENVIRONMENT_AND_FLUSHES_ON_RELEASE_OK")
+}
+@MainActor private func verifyClippedControlsSkipWork(_ fixture: FixtureWindow) {
+    let row = descendants(fixture.host, of: TrackMixerNativeControlView.self).first!
+    let controls = row.controls
+    let title = descendants(controls, of: TrackDragTitleView.self).first!
+    let snapshot = row.snapshot
+    let outside = NSPoint(x: controls.frame.maxX + 10, y: controls.frame.midY)
+    controls.needsLayout = true
+    Counts.reset()
+    expect(controls.hitTest(outside) == nil && Counts.slotLayouts == 0,
+           "Input outside a control host must not enter SwiftUI layout")
+    row.isHidden = true
+    controls.layout()
+    expect(Counts.slotLayouts == 0, "Hidden row controls must defer SwiftUI layout")
+    expect(controls.hitTest(NSPoint(x: controls.frame.midX, y: controls.frame.midY)) == nil,
+           "Hidden controls must not claim input")
+    row.isHidden = false
+    fixture.settle()
+    expect(Counts.slotLayouts > 0 && row.snapshot === snapshot,
+           "Returning rows must lay out their retained controls")
+    expect(descendants(controls, of: TrackDragTitleView.self).contains { $0 === title },
+           "Returning rows must preserve control identity")
+    expect(controls.hitTest(controls.convert(NSPoint(x: 113, y: 13), to: controls.superview)) != nil,
+           "Returning rows must expose their controls without an extra scroll")
+    print("NATIVE_ROW_CLIPPED_INPUT_AND_HIDDEN_LAYOUT_SKIPPED_VISIBLE_CONTROLS_RESTORED_OK")
 }
 @MainActor private func verifyGeometryKeepsNativeContent(_ fixture: FixtureWindow) {
     let row = descendants(fixture.host, of: TrackMixerNativeControlView.self).first!
@@ -123,6 +284,37 @@
         "The gain readout fits above the fader in the pan column and lets empty-space track dragging pass through")
     print("FOOTER_FADER_DB_BELOW_PAN_LIVE_GROUP_PAN_RESET_REBIND_AND_COMPACT_GEOMETRY_OK")
 }
+@MainActor private func verifyFaderEdgesAtOneX() {
+    func render(width: Int, height: Int, vertical: Bool, value: Double) -> NSBitmapImageRep {
+        let fader = DirectVolumeSliderView(frame: CGRect(x: 0, y: 0, width: width, height: height))
+        fader.vertical = vertical
+        fader.doubleValue = value
+        let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        context.translateBy(x: 0, y: CGFloat(height))
+        context.scaleBy(x: 1, y: -1)
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: true)
+        fader.draw(fader.bounds)
+        NSGraphicsContext.restoreGraphicsState()
+        return NSBitmapImageRep(cgImage: context.makeImage()!)
+    }
+    let horizontal = render(width: 200, height: 27, vertical: false, value: -24)
+    func hasSoftEdge(x: Range<Int>, y: Range<Int>) -> Bool {
+        x.contains { column in y.contains { row in
+            let alpha = horizontal.colorAt(x: column, y: row)!.alphaComponent
+            return alpha > 0.05 && alpha < 0.95
+        } }
+    }
+    expect(hasSoftEdge(x: 8..<15, y: 5..<12), "The rounded rail has partial pixel coverage at 1×")
+    expect(hasSoftEdge(x: 95..<100, y: 3..<6), "The fader cap has partial pixel coverage at 1×")
+    let vertical = render(width: 27, height: 100, vertical: true, value: 0)
+    func brightness(_ row: Int) -> CGFloat {
+        vertical.colorAt(x: 13, y: row)!.usingColorSpace(.sRGB)!.redComponent
+    }
+    expect(brightness(22) > 0.35 && abs(brightness(77) - 36.0 / 255) < 0.1, "The 1× fader draws a graphite rail and the cap at the correct end")
+    print("FADER_ONE_X_SMOOTH_RAIL_AND_CAP_WITH_CORRECT_VERTICAL_POSITION_OK")
+}
 @MainActor private func verifyFooterPanReadout() {
     let project = UUID(), track = UUID(), partner = UUID(), selected = UUID()
     let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 200, height: 60), styleMask: [], backing: .buffered, defer: false)
@@ -140,19 +332,19 @@
     defer { window.close() }
     expect(labels.allSatisfy { $0.stringValue == "Center" }, "Centered knobs display Center")
     knob.doubleValue = -0.25; VolumeDoubleClickRouter.shared.mirror(knob)
-    expect(labels[0].stringValue == "L-25%" && labels[1].stringValue == "R-25%", "Linked pan labels must show opposite directions during the drag")
+    expect(labels[0].stringValue == "25%L" && labels[1].stringValue == "25%R", "Linked pan labels must show opposite directions during the drag")
     knob.groupValues = { [track: 0.5, partner: -0.5, selected: 1] }
     knob.doubleValue = 0.5; VolumeDoubleClickRouter.shared.mirror(knob)
-    expect(labels.map(\.stringValue) == ["R-50%", "L-50%", "R-100%"], "Each selected track shows its actual pan, preserving offsets and clamps")
+    expect(labels.map(\.stringValue) == ["50%R", "50%L", "100%R"], "Each selected track shows its actual pan, preserving offsets and clamps")
     labels[0].bind(identity: TrackControlIdentity(project: project, track: track), pan: 0)
-    expect(labels[0].stringValue == "R-50%", "An unchanged model cannot overwrite the live gesture value")
+    expect(labels[0].stringValue == "50%R", "An unchanged model cannot overwrite the live gesture value")
     knob.mini = false; knob.doubleValue = -12; VolumeDoubleClickRouter.shared.mirror(knob)
-    expect(labels[0].stringValue == "R-50%", "Volume updates must not overwrite pan labels")
+    expect(labels[0].stringValue == "50%R", "Volume updates must not overwrite pan labels")
     knob.mini = true; knob.groupValues = nil; knob.resetToUnity()
     expect(labels[0].stringValue == "Center" && labels[1].stringValue == "Center", "Double-click pan reset updates both linked labels immediately")
     labels[0].bind(identity: TrackControlIdentity(project: UUID(), track: track), pan: -1)
     knob.doubleValue = 0.75; VolumeDoubleClickRouter.shared.mirror(knob)
-    expect(labels[0].stringValue == "L-100%", "Recycled labels reject gestures from the old project")
+    expect(labels[0].stringValue == "100%L", "Recycled labels reject gestures from the old project")
     expect(labels[0].frame.size == NSSize(width: 50, height: 10) && labels[0].hitTest(.zero) == nil,
            "Pan text keeps the knob layout and lets selection/dragging pass through")
     print("FOOTER_PAN_VALUE_LIVE_LINKED_GROUP_GAIN_ISOLATION_RESET_REBIND_OK")
@@ -169,13 +361,21 @@
     expect(row.hitTestTimelineControl(atWindowPoint: peakPoint) === meter, "Timeline control shortcut must route the peak number to its native meter")
     expect(row.hitTest(row.superview!.convert(peakPoint, from: nil)) === meter,
         "The ordinary native route must reach the peak even underneath the full-width controls host")
-    expect(peak.frame.minX == 21 && peak.backgroundColor == nil,
-        "The peak reset target is transparent and sits after the MIDI bar")
+    expect(peak.frame.minX >= 21 && peak.backgroundColor == NSColor.black.cgColor,
+        "Clipping peak must sit after the MIDI bar on a tight black background")
+    let text = (peak as! CATextLayer).string as! NSAttributedString
+    expect(peak.frame.width <= ceil(text.size().width) + 4,
+           "Clipping background must fit only the peak number")
+    expect((text.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor) == NSColor.red,
+           "Clipping number must be red")
     let bar = meter.layer!.sublayers!.first { $0.name == "meter-background-0" }!
     let barPoint = meter.convert(NSPoint(x: 2, y: bar.frame.midY), to: nil)
-    // The peak now occupies the lower-right corner; probe the unused space
-    // above it instead of the number's intentional reset target.
-    let scalePoint = meter.convert(NSPoint(x: meter.bounds.maxX - 2, y: meter.bounds.midY), to: nil)
+    // The peak follows the fader height and can cross the meter's midpoint.
+    // Probe the actual empty area above its current frame, not a fixed y that
+    // becomes the intentional reset target when the row height changes.
+    let blankScalePoint = NSPoint(x: meter.bounds.maxX - 2, y: (peak.frame.maxY + meter.bounds.maxY) / 2)
+    expect(!peak.frame.contains(blankScalePoint), "Blank-space probe must avoid the current peak label")
+    let scalePoint = meter.convert(blankScalePoint, to: nil)
     for point in [barPoint, scalePoint] {
         expect(row.hitTestTimelineControl(atWindowPoint: point) == nil, "The meter bars and scale must remain available for selecting and dragging the track")
         expect(row.meter.hitTest(row.convert(point, from: nil)) == nil, "The meter hosting view cannot intercept blank meter space")
@@ -185,7 +385,10 @@
         windowNumber: fixture.window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1)!
     row.hitTestTimelineControl(atWindowPoint: peakPoint)!.mouseDown(with: event)
     expect(fixture.state.meter.peakHold.decibels == nil, "Clicking the held peak must reset the actual meter model")
-    expect(row.hitTestTimelineControl(atWindowPoint: peakPoint) === meter, "Clearing a peak keeps the same rectangle available for the next peak")
+    expect(row.hitTestTimelineControl(atWindowPoint: peakPoint) == nil, "An empty peak readout releases its rectangle for track selection")
+    fixture.state.meter.update(peak: 1.25, elapsed: 0.05)
+    fixture.settle(); meter.refreshVisibleDrawing()
+    expect(row.hitTestTimelineControl(atWindowPoint: peakPoint) === meter, "The next peak restores its reset target in the retained meter")
     fixture.change(36)
     expect(row.hitTestTimelineControl(atWindowPoint: peakPoint) == nil, "Collapsed rows cannot retain a hidden peak hit target")
     fixture.change(80)
@@ -249,20 +452,23 @@ private struct FixtureRow: View, Equatable {
     let actionStep: Int
     let project: UUID
     let track: UUID
-    static func == (lhs: Self, rhs: Self) -> Bool { lhs.candidate == rhs.candidate && lhs.kind == rhs.kind && lhs.state === rhs.state && lhs.title == rhs.title && lhs.value == rhs.value && lhs.actionStep == rhs.actionStep && lhs.project == rhs.project && lhs.track == rhs.track }
+    let compactHeight: Bool
+    let minimalHeight: Bool
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        productionHeightModesEqual(.init(compactHeight: lhs.compactHeight, minimalHeight: lhs.minimalHeight),
+                                   .init(compactHeight: rhs.compactHeight, minimalHeight: rhs.minimalHeight)) &&
+        lhs.candidate == rhs.candidate && lhs.kind == rhs.kind && lhs.state === rhs.state && lhs.title == rhs.title && lhs.value == rhs.value && lhs.actionStep == rhs.actionStep && lhs.project == rhs.project && lhs.track == rhs.track
+    }
     private var lowerTitle: Bool { kind != .teleprompter }
     private var meter: some View { VerticalTrackMeter(meter: state.meter, showScale: true, peakOnly: true).clipped() }
-    private var midi: some View { Color.green.frame(width: 4).allowsHitTesting(false) }
-    @ViewBuilder private func controls(split: Bool) -> some View {
-        TrackMixerContinuousContainer(meterWidth: 52, standard: kind == .standard, lowerTitle: lowerTitle) {
-            Group { if split { Color.clear } else { meter } }.jarasPlaced(at: 0)
-            Group { if split { Color.clear } else { midi } }.jarasPlaced(at: 1)
-            TrackDragTitle(title: title, foreground: 0xffffff, project: project, track: track, state: state.drag, select: { state.calls += actionStep }).jarasPlaced(at: 2)
+    private var buttons: some View {
             TrackMixerButtonsContainer(standard: kind == .standard, showsFader: true) {
                 if kind == .standard {
-                    Button("FX") { state.calls += 1 }.frame(width: 22).jarasPlaced(at: 0)
-                    Button("REC") { state.calls += 1 }.contextMenu { Button("Mono") {} ; Button("Stereo") {} ; Button("MIDI") {} }.jarasPlaced(at: 1)
-                    DirectVolumeSlider(identity: .init(project: project, track: track), value: 0, minimum: -1, maximum: 1, mini: true, changed: { _ in state.calls += 1 }, editingChanged: { _,_ in }).frame(width: 42, height: 24).clipped().jarasPlaced(at: 2)
+                    Button("Patch") { state.calls += 1 }.frame(width: 34).jarasPlaced(at: 0)
+                    Button("Env") { state.calls += 1 }.frame(width: 28).jarasPlaced(at: 1)
+                    Button("FX") { state.calls += 1 }.frame(width: 22).jarasPlaced(at: 2)
+                    Button("REC") { state.calls += 1 }.contextMenu { Button("Mono") {} ; Button("Stereo") {} ; Button("MIDI") {} }.jarasPlaced(at: 3)
+                    DirectVolumeSlider(identity: .init(project: project, track: track), value: 0, minimum: -1, maximum: 1, mini: true, changed: { _ in state.calls += 1 }, editingChanged: { _,_ in }).frame(width: 42, height: 24).clipped().jarasPlaced(at: 4)
                 } else if kind == .click {
                     Button("Insert") { state.calls += 1 }.buttonStyle(CompactTrackButtonStyle(width: 47)).fixedSize(horizontal: true, vertical: false)
                 } else {
@@ -271,17 +477,40 @@ private struct FixtureRow: View, Equatable {
                         else { Button(kind == .video ? "Add media" : "Add text") { state.calls += 1 } }
                     }.buttonStyle(TrackControlButtonStyle()).fixedSize()
                 }
-                Button("M") { state.calls += 1 }.frame(width: 22).jarasPlaced(at: 3)
-                Button("S") { state.calls += 1 }.frame(width: 22).jarasPlaced(at: 4)
-            }.buttonStyle(CompactTrackButtonStyle()).background { if CommandLine.arguments.contains("--behavior") { StatefulControl() } }.clipped().modifier(LegacyControlsWidth()).jarasPlaced(at: 3)
-            Group { if lowerTitle { DirectVolumeSlider(identity: .init(project: project, track: track), value: value, changed: { _ in state.calls += 1 }, editingChanged: { _,_ in }) } else { Color.clear } }.clipped().jarasPlaced(at: 4)
+                Button("M") { state.calls += 1 }.frame(width: 22).jarasPlaced(at: 5)
+                Button("S") { state.calls += 1 }.frame(width: 22).jarasPlaced(at: 6)
+            }.buttonStyle(CompactTrackButtonStyle()).background { if CommandLine.arguments.contains("--behavior") { StatefulControl() } }.clipped().modifier(LegacyControlsWidth())
+    }
+    private var volumeSlider: DirectVolumeSlider { DirectVolumeSlider(identity: .init(project: project, track: track), value: value, changed: { _ in state.calls += 1 }, editingChanged: { _,_ in }) }
+    private var phase: some View { Button("Ø") { state.calls += 1 }.frame(width:20,height:20) }
+    private var volume: some View {
+        HStack(spacing:3) {
+            Text("+0.0").font(.system(size:9)).frame(width:34,alignment:.leading)
+            volumeSlider.frame(height:20).frame(maxWidth:.infinity)
+            phase
+        }.frame(height:20).padding(.horizontal,4)
+    }
+    private var nativePanel: TrackMixerNativePanelContent {
+        TrackMixerNativePanelContent(
+            title: TrackDragTitle(title:title,foreground:0xffffff,project:project,track:track,state:state.drag,select:{state.calls += actionStep}),
+            slider:volumeSlider,buttons:AnyView(buttons),compactButtons:AnyView(buttons),
+            compactButtonsWidth:100,allowsCompactHeight:true,phase:TrackMixerNativePhase(inverted:false,action:{state.calls += actionStep}),
+            showsVolume:true,expandedButtonsWidth:210,mapVolume:{state.calls += 100})
+    }
+    @ViewBuilder private func controls(split: Bool) -> some View {
+        TrackMixerContinuousContainer(meterWidth: 52, standard: kind == .standard, lowerTitle: lowerTitle) {
+            Group { if split { Color.clear } else { meter } }.jarasPlaced(at: 0)
+            Color.clear.jarasPlaced(at: 1)
+            TrackDragTitle(title: title, foreground: 0xffffff, project: project, track: track, state: state.drag, select: { state.calls += actionStep }).jarasPlaced(at: 2)
+            buttons.jarasPlaced(at: 3)
+            Group { if lowerTitle { volume } else { Color.clear } }.clipped().jarasPlaced(at: 4)
             Image(systemName: "folder.fill").font(.system(size: 11)).foregroundStyle(Color.green).allowsHitTesting(false).jarasPlaced(at: 5)
             Group { if kind == .teleprompter { Button("Add media") { state.calls += 1 }.buttonStyle(TrackControlButtonStyle()) } else { Color.clear } }.clipped().jarasPlaced(at: 6)
         }
     }
     var body: some View {
         Group {
-            if candidate { NativeTrackMixerControls(track: track, meterWidth: 52, standard: kind == .standard, meter: { meter }, activity: { midi }, controls: { controls(split: true) }) }
+            if candidate { NativeTrackMixerControls(track: track, meterWidth: 52, standard: kind == .standard, meter: state.meter, hasFaderRail: true, hasAudioMeter: true, controls: { controls(split: true) }, nativePanel: kind == .standard && !CommandLine.arguments.contains("--retained") ? nativePanel : nil) }
             else { controls(split: false) }
         }.frame(maxHeight: .infinity).clipped()
          .background { HStack(spacing: 0) { Color(red: 0.12, green: 0.2, blue: 0.16).opacity(0.5) }.allowsHitTesting(false) }
@@ -297,7 +526,7 @@ private struct Fixture: View {
     var body: some View {
         TimelineTrackRowsContainer(width: state.width, height: max(795, CGFloat(kinds.count) * state.height), top: 0, offsets: kinds.indices.map { CGFloat($0) * state.height }, rowHeights: kinds.map { _ in state.height }) {
             ForEach(kinds.indices, id: \.self) { index in
-                FixtureRow(candidate: candidate, kind: kinds[index], state: state, title: state.title, value: state.value, actionStep: state.actionStep, project: state.project, track: state.track).equatable().frame(height: state.height).clipped().jarasPlaced(at: index)
+                FixtureRow(candidate: candidate, kind: kinds[index], state: state, title: state.title, value: state.value, actionStep: state.actionStep, project: state.project, track: state.track, compactHeight: state.height < 64, minimalHeight: state.height < 56).equatable().frame(height: state.height).clipped().jarasPlaced(at: index)
             }
         }.frame(width: state.width, height: max(795, CGFloat(kinds.count) * state.height), alignment: .topLeading)
          .environment(\.locale, Locale(identifier: state.locale))
@@ -343,7 +572,9 @@ private func descendants<T: NSView>(_ view: NSView, of type: T.Type) -> [T] { (v
 }
 @MainActor private func run() {
 _ = NSApplication.shared
-if CommandLine.arguments.contains("--behavior") { verifyBehavior() } else if CommandLine.arguments.contains("--geometry") {
+if CommandLine.arguments.contains("--fader-one-x") {
+    verifyFaderEdgesAtOneX()
+} else if CommandLine.arguments.contains("--automatic-height") { verifyAutomaticHeightLayout() } else if CommandLine.arguments.contains("--mode-transition") { verifyHeightModeTransition() } else if CommandLine.arguments.contains("--behavior") { verifyBehavior() } else if CommandLine.arguments.contains("--geometry") {
     for kind in Kind.allCases {
         let baseline = FixtureWindow(candidate: false, kinds: [kind])
         let candidate = FixtureWindow(candidate: true, kinds: [kind])
@@ -352,7 +583,7 @@ if CommandLine.arguments.contains("--behavior") { verifyBehavior() } else if Com
             baseline.change(height, width: width); candidate.change(height, width: width)
             let a = frames(baseline), b = frames(candidate)
             for key in ["title", "slider", "meter"] {
-                expect(a[key]!.count == b[key]!.count, "View identities mismatch \(kind) \(key)")
+                expect(a[key]!.count == b[key]!.count, "View identities mismatch \(kind) h\(height) w\(width) \(key): \(a[key]!.count) vs \(b[key]!.count)")
                 for (old,new) in zip(a[key]!,b[key]!) {
                     // Hidden zero-sized controls stay outside the clipped row.
                     if old.minX > width || old.width <= 0 || old.height <= 0 { continue }
@@ -370,8 +601,13 @@ if CommandLine.arguments.contains("--behavior") { verifyBehavior() } else if Com
     for height in [64.0,72,64] { fixture.change(height) }
     Counts.reset()
     let started = ProcessInfo.processInfo.systemUptime
-    let heights = Array(stride(from: 64.0, through: 112, by: 2)) + Array(stride(from: 110.0, through: 64, by: -2))
-    for height in heights { fixture.change(height) }
+    let widths = CommandLine.arguments.contains("--width")
+    let heights = widths ? Array(stride(from: 248.0, through: 416, by: 6)) + Array(stride(from: 410.0, through: 248, by: -6))
+        : Array(stride(from: 64.0, through: 112, by: 2)) + Array(stride(from: 110.0, through: 64, by: -2))
+    if CommandLine.arguments.contains("--live-resize") { NativeSidebarResizeActivity.shared.begin(owner: fixture.host) }
+    for value in heights { if widths { fixture.change(64, width: value) } else { fixture.change(value) } }
+    NativeSidebarResizeActivity.shared.end(owner: fixture.host)
+    fixture.settle()
     let elapsed = (ProcessInfo.processInfo.systemUptime-started)*1000
     let result: [String:Any] = ["candidate":variant,"steps":heights.count,"origin":Counts.origin,"size":Counts.size,"slotLayouts":Counts.slotLayouts,"rootUpdates":Counts.update,"nativeSliders":descendants(fixture.host,of:DirectVolumeSliderView.self).count,"elapsedMS":elapsed]
     print(String(data: try! JSONSerialization.data(withJSONObject: result,options:.sortedKeys),encoding:.utf8)!)

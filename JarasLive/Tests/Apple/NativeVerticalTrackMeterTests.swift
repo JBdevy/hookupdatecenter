@@ -6,6 +6,8 @@ import Foundation
     let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 80, height: 100))
     let document = NSView(frame: NSRect(x: 0, y: 0, width: 80, height: 10_000))
     scroll.documentView = document; window.contentView = scroll
+    precondition(abs(20 * log10(TrackMeterLevel.PeakHold.muteThreshold) - 30) < 1e-9,
+                 "Automatic peak protection starts at +30 dB")
     let held = TrackMeterLevel()
     var peakPublications = 0
     let peakSubscription = held.peakHold.$decibels.dropFirst().sink { _ in peakPublications += 1 }
@@ -28,23 +30,42 @@ import Foundation
                  "after an explicit reset a lower peak starts a new maximum")
     withExtendedLifetime(peakSubscription) {}
     print("PEAK_HOLD_MINUS24_THRESHOLD_HIGHER_ONLY_NO_TIMED_RESET_OK")
-    let decayMeter = TrackMeterLevel()
-    decayMeter.update(left: 1, right: 0.1, elapsed: 0)
-    for _ in 0..<15 { decayMeter.update(left: 0, right: 0, elapsed: 1.0 / 30) }
-    precondition(abs(20 * log10(decayMeter.levels.x) + 24) < 0.001,
-                 "a transient falls 24 dB within half a second without altering its peak")
-    precondition(abs(decayMeter.levels.x / decayMeter.levels.y - 10) < 0.001,
-                 "release preserves independent channel amplitudes")
-    for _ in 0..<30 { decayMeter.update(left: 0, right: 0, elapsed: 1.0 / 30) }
-    precondition(decayMeter.levels == .zero, "silence clears a full-scale transient within 1.5 seconds")
-    decayMeter.update(left: 0.8, right: 0.3, elapsed: 1.0 / 30)
-    precondition(decayMeter.levels == SIMD2(0.8, 0.3), "new peaks still attack immediately")
-    print("METER_FAST_RELEASE_STEREO_SILENCE_AND_INSTANT_ATTACK_OK")
+    let measuredMeter = TrackMeterLevel()
+    for frequency in [30.0, 60.0, 120.0] {
+        measuredMeter.reset()
+        measuredMeter.update(left: 1, right: 0.1, elapsed: 0)
+        precondition(measuredMeter.levels == SIMD2(1, 0.1), "Attack must remain immediate")
+        for _ in 0..<Int(frequency / 10) { measuredMeter.update(left: 0, right: 0, elapsed: 1 / frequency) }
+        precondition(abs(20 * log10(measuredMeter.levels.x) + 4) < 0.001, "Fall starts immediately and reaches -4 dB after 100 ms")
+        precondition(abs(measuredMeter.levels.x / measuredMeter.levels.y - 10) < 0.001, "Stereo channels fall independently")
+        for _ in 0..<Int(frequency * 1.3) { measuredMeter.update(left: 0, right: 0, elapsed: 1 / frequency) }
+        precondition(measuredMeter.levels.x > 0, "The meter should still be falling after 1.4 s")
+        for _ in 0..<Int(frequency * 0.2) { measuredMeter.update(left: 0, right: 0, elapsed: 1 / frequency) }
+        precondition(measuredMeter.levels == .zero, "The meter clears by 1.6 s")
+        measuredMeter.update(left: 0.8, right: 0.2, elapsed: 1 / frequency)
+        precondition(measuredMeter.levels == SIMD2(0.8, 0.2))
+    }
+    print("METER_SLOW_SMOOTH_RELEASE_NO_HOLD_AND_INSTANT_STEREO_ATTACK_OK")
     let level = TrackMeterLevel(), meter = NativeVerticalTrackMeterView(frame: NSRect(x: 5, y: 0, width: 40, height: 80))
     meter.bind(level, showScale: true); document.addSubview(meter)
     window.orderFront(nil)
     scroll.contentView.scroll(to: .zero); scroll.reflectScrolledClipView(scroll.contentView)
     precondition(meter.visibleRect.height == 80, "meter fixture must intersect the native viewport")
+    let dotLevel = TrackMeterLevel()
+    let dot = NativeVerticalTrackMeterView(frame: NSRect(x: 50, y: 0, width: 10, height: 10))
+    let dotLayer = dot.layer!.sublayers!.last!
+    dot.presentation = .dot
+    dot.bind(dotLevel, showScale: false)
+    document.addSubview(dot)
+    dot.layoutSubtreeIfNeeded()
+    precondition(dotLayer.superlayer === dot.layer && !dotLayer.isHidden &&
+                 dotLayer.cornerRadius == 5 && dotLayer.backgroundColor != nil,
+                 "a compact track paints its signal dot as soon as it is mounted")
+    dotLayer.removeFromSuperlayer()
+    dot.refreshVisibleDrawing()
+    precondition(dotLayer.superlayer === dot.layer, "a detached signal layer must recover without scrolling")
+    dot.removeFromSuperview()
+    print("NATIVE_MINIMUM_HEIGHT_SIGNAL_DOT_DRAWS_WITHOUT_SCROLL_OK")
     func meterLayer(_ name: String) -> CALayer { meter.layer!.sublayers!.first { $0.name == name }! }
     let emptyPeakFrame = meterLayer("meter-peak").frame
     precondition(!meterLayer("meter-peak").isHidden && emptyPeakFrame.width > 0 && meterLayer("meter-peak").borderWidth == 0
@@ -94,7 +115,10 @@ import Foundation
     let leftClip = meterLayer("meter-level-0"), rightClip = meterLayer("meter-level-1")
     let leftGradient = leftClip.sublayers!.first as! CAGradientLayer
     precondition(abs(leftClip.frame.height - 40) < 0.001 && rightClip.frame.height == 80)
-    precondition(leftGradient.frame.height == 80 && leftGradient.locations == [0, 0.5, 1])
+    precondition(leftGradient.frame.height == 80 && leftGradient.locations == MixerMeterStyle.gradientStops.map { NSNumber(value: Double($0)) })
+    precondition(rightClip.sublayers!.last!.isHidden, "A zero dB signal must stay yellow")
+    level.update(left: pow(10, -30.0 / 20), right: pow(10, 0.1 / 20), elapsed: 1)
+    precondition(!rightClip.sublayers!.last!.isHidden, "The red tip must appear above zero dB")
     let quietBitmap = bitmap(), backingScale = window.backingScaleFactor
     var matchedGradientPixels = 0
     for y in 0..<quietBitmap.pixelsHigh {
@@ -122,10 +146,11 @@ import Foundation
     level.peakHold.record(pow(10, 3.0 / 20))
     let peakText = (meterLayer("meter-peak") as! CATextLayer).string as! NSAttributedString
     precondition(peakText.string == "+3.00" && !meterLayer("meter-peak").isHidden)
-    precondition(peakText.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor == NSColor.white)
-    precondition(meterLayer("meter-peak").frame.minX == 13 && meterLayer("meter-peak").frame.minY > meterLayer("meter-scale-1").frame.minY)
-    precondition(meterLayer("meter-peak").frame == emptyPeakFrame,
-                 "a peak never changes the rectangle geometry or surrounding meter layout")
+    precondition(peakText.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor == NSColor.red)
+    precondition(meterLayer("meter-peak").frame.minX >= 13 && meterLayer("meter-peak").frame.minY > meterLayer("meter-scale-1").frame.minY)
+    precondition(emptyPeakFrame.contains(meterLayer("meter-peak").frame)
+                 && meterLayer("meter-peak").backgroundColor == NSColor.black.cgColor,
+                 "Clipping adds a tight black field inside the reserved readout without changing meter layout")
     let peakPoint = NSPoint(x: emptyPeakFrame.midX, y: emptyPeakFrame.midY)
     precondition(meter.hitTest(meter.convert(peakPoint, to: meter.superview)) === meter,
                  "only the peak-number rectangle receives the reset click")
@@ -160,8 +185,8 @@ import Foundation
     }
     for kind in TrackKind.allCases.map(Optional.some) + [nil] {
         let showsNumbers = trackShowsMeterReadouts(kind)
-        let expected = kind == nil || kind == .standard || kind == .video || kind == .click
-        precondition(showsNumbers == expected, "Only TP1/TP2, chords and timecode omit numeric meter readouts")
+        let expected = kind != .chords && kind != .timecode
+        precondition(showsNumbers == expected, "Chords and timecode omit numeric meter readouts")
         meter.bind(level, showScale: showsNumbers, foreground: .black)
         precondition(meterLayer("meter-peak").isHidden == !expected)
         precondition((0..<3).allSatisfy { meterLayer("meter-scale-\($0)").isHidden == !expected })
@@ -190,13 +215,26 @@ import Foundation
     precondition((0..<3).allSatisfy { meterLayer("meter-scale-\($0)").isHidden } && !meterLayer("meter-peak").isHidden,
         "The Track Mixer column shows only the held peak, never fixed 0, −24 or −∞ labels")
     precondition(numberColor("meter-peak") == .black, "Peak uses the configured track-name color")
+    meter.presentation = .compact
+    level.reset()
+    level.update(left: 0.4, right: 0, elapsed: 1)
+    precondition(meterLayer("meter-level-0").isHidden && meterLayer("meter-peak").isHidden)
+    let compact = meterLayer("meter-compact")
+    let gradient = compact.sublayers!.first as! CAGradientLayer
+    let channels = gradient.mask!.sublayers!
+    precondition(!compact.isHidden && compact.bounds.size == MixerMeterStyle.compactSize && compact.cornerRadius == 4)
+    precondition(gradient.startPoint.y == 0 && gradient.endPoint.y == 1)
+    precondition(channels[0].frame.minY == 0 && channels[0].frame.height > 0 && channels[1].frame.height == 0)
+    meter.presentation = .peak
+    precondition(compact.isHidden && meterLayer("meter-level-1").isHidden && !meterLayer("meter-peak").isHidden)
+    meter.presentation = .bars
     let bottomPeakFrame = meterLayer("meter-peak").frame
     let bottomPeakPoint = NSPoint(x: bottomPeakFrame.midX, y: bottomPeakFrame.midY)
     let bottomPeakClick = NSEvent.mouseEvent(with: .leftMouseDown, location: meter.convert(bottomPeakPoint, to: nil), modifierFlags: [],
         timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
         context: nil, eventNumber: 3, clickCount: 1, pressure: 1)!
-    precondition(bottomPeakFrame.minX == 21 && bottomPeakFrame.minY == meter.bounds.minY && bottomPeakFrame.width == 31,
-        "Peak stays to the right of MIDI at the bottom of the track")
+    precondition(bottomPeakFrame.minX == 21 && bottomPeakFrame.midY == meter.bounds.height - 33 && bottomPeakFrame.width == 31,
+        "Peak stays to the right of MIDI, centered on the volume fader")
     precondition(meterLayer("meter-background-0").frame.height == 80,
         "Audio bars keep the full height without a peak header")
     precondition(meterLayer("meter-peak").backgroundColor == nil)
@@ -209,11 +247,13 @@ import Foundation
     precondition(meterLayer("meter-background-0").backgroundColor == NSColor.black.withAlphaComponent(0.55).cgColor
         && meterLayer("meter-background-1").backgroundColor == NSColor.black.withAlphaComponent(0.55).cgColor,
         "The preexisting narrow stereo bar backgrounds are preserved")
-    for decibels in [-0.01, 0.0, 3.0] {
+    for decibels in [-0.01, 0.0, 0.1, 3.0] {
         level.peakHold.clear(); level.peakHold.record(pow(10, decibels / 20))
-        precondition(numberColor("meter-peak") == .systemGreen,
-            "Peak color follows the name below, at and above zero dB")
+        precondition(numberColor("meter-peak") == (decibels > 0 ? .red : .systemGreen),
+            "Peak is red above zero dB and follows the name at or below zero")
+        precondition(meterLayer("meter-peak").backgroundColor == (decibels > 0 ? NSColor.black.cgColor : nil))
     }
+    level.peakHold.clear(); level.peakHold.record(pow(10, -24.0 / 20))
     meter.layer = CALayer()
     precondition(meter.layer?.backgroundColor == nil && (0..<3).allSatisfy { meterLayer("meter-scale-\($0)").isHidden } && numberColor("meter-peak") == .systemGreen,
         "Replacing the backing layer preserves the transparent column with only the measured peak visible")
@@ -223,6 +263,8 @@ import Foundation
     precondition(meter.hitTest(meter.convert(NSPoint(x: 2, y: 30), to: meter.superview)) == nil,
         "The bars still pass through selection and dragging after moving the reset target to the bottom")
     meter.mouseDown(with: bottomPeakClick)
+    precondition(meter.hitTest(meter.convert(bottomPeakPoint, to: meter.superview)) == nil,
+        "Clearing a peak releases its invisible rectangle for track selection")
     precondition(level.peakHold.decibels == nil && meter.layer?.backgroundColor == nil
         && meterLayer("meter-peak").backgroundColor == nil,
         "Resetting the held peak keeps the area transparent")
@@ -236,7 +278,7 @@ import Foundation
     precondition((compactPeak.attribute(.font, at: 0, effectiveRange: nil) as? NSFont)?.pointSize == 8,
         "The recorded peak uses the larger desktop readout font")
     precondition(compactPeak.size().width <= 31 && compactPeak.size().height <= 12
-        && meterLayer("meter-peak").frame == CGRect(x: 21, y: 0, width: 31, height: 12),
+        && meterLayer("meter-peak").frame == CGRect(x: 21, y: meter.bounds.height - 39, width: 31, height: 12),
         "The full negative peak fits beside MIDI without clipping")
     meter.setFrameSize(NSSize(width: 40, height: 80)); meter.layoutSubtreeIfNeeded()
     meter.bind(level, showScale: false, peakOnly: true)

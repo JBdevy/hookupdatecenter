@@ -1,0 +1,74 @@
+#pragma once
+#include "Localization.h"
+#include "Session.h"
+#include "MeterDisplay.h"
+namespace catlive {
+class SpecialTrackControls final : public Component, private Timer {
+    bool mixerMetronomeInsertOnly = false;
+    uint64 displayedProgramChange=0;
+    Session &session;ID id;std::function<void(ID,String)> action;
+    TextButton insert{"Insert"},media{localization::translate(String::fromUTF8("Adicionar mídia"))},addText{localization::translate(String::fromUTF8("Adicionar texto"))},settings,patch{"Patch"},copy{"Copy"},scan{"Scan"},mtc{"MTC"},ltc{"LTC"};
+    TextButton fullLyrics{localization::translate("Full lyrics")};
+    const jaras::Track *track() const {if(auto *s=session.song())for(const auto &t:s->tracks)if(t.id==id)return &t;return nullptr;}
+  public:
+    SpecialTrackControls(Session &s,ID target,std::function<void(ID,String)> callback):session(s),id(std::move(target)),action(std::move(callback)) {
+        setComponentID("specialTrackControls");
+        for(auto *b:{&insert,&media,&addText,&settings,&patch,&copy,&scan,&mtc,&ltc}){addChildComponent(*b);b->setWantsKeyboardFocus(false);b->getProperties().set("fontSize",b==&insert?10:12);b->getProperties().set("cornerRadius",b==&insert?3.f:5.f);b->getProperties().set("borderAlpha",.18f);b->getProperties().set("flat",b==&insert);b->setColour(TextButton::buttonColourId,Colours::white.withAlpha(.12f));}
+        insert.setComponentID("insertClick");media.setComponentID("insertMedia");addText.setComponentID("insertText");settings.getProperties().set("icon","settings");
+        addChildComponent(fullLyrics); fullLyrics.setComponentID("fullLyrics"); fullLyrics.setWantsKeyboardFocus(false);
+        fullLyrics.getProperties().set("fontSize",12); fullLyrics.getProperties().set("cornerRadius",5.f);
+        fullLyrics.setColour(TextButton::buttonColourId,Colours::white.withAlpha(.12f));
+        fullLyrics.onClick=[this]{action(id,"fullLyrics");};
+        insert.onClick=[this]{action(id,"click");};media.onClick=[this]{action(id,"media");};addText.onClick=[this]{action(id,"text");};settings.onClick=[this]{action(id,"settings");};
+        copy.onClick=[this]{action(id,"pcCopyPaste");};
+        patch.setComponentID("specialPatch");
+        patch.onClick=[this]{const auto *t=track();action(id,t&&t->role.id=="programChange"?"pcPatch":"patch");};scan.onClick=[this]{action(id,"pcScan");};
+        mtc.onClick=[this]{action(id,"mtc");};ltc.onClick=[this]{action(id,"ltc");};refresh();
+    }
+    void timerCallback() override {
+        if (!meterDisplay::visibleInViewport(*this)) return;
+        const auto *t=track();if(!t || t->role.id!="programChange")return;
+        const bool active=session.scanningProgramChange(id);
+        const auto packet=session.scannedProgramChangePacket(id);
+        if(packet!=displayedProgramChange) {
+            displayedProgramChange=packet;
+            if(auto *parent=getParentComponent())parent->repaint();
+        }
+        const bool ready=session.programChangePasteReady || session.selectedProgramMarker()!=nullptr;
+        copy.setButtonText(localization::translate(session.programChangePasteReady?"Paste":"Copy"));
+        copy.setEnabled(ready);copy.setColour(TextButton::buttonColourId,ready?theme::green:Colours::white.withAlpha(.12f));
+        copy.setColour(TextButton::textColourOffId,ready?Colours::black:Colours::white);
+        scan.setButtonText(active?localization::translate("Apply"):"Scan");
+        scan.setColour(TextButton::buttonColourId,active && (Time::getMillisecondCounter()/450)%2 ? theme::green : Colours::white.withAlpha(.12f));
+    }
+    void refresh(){const auto *t=track();
+        // Only Program Change has live scanner state. Ordinary audio rows must
+        // not each search the entire song eight times a second while idle.
+        if(t && t->role.id=="programChange") { if(!isTimerRunning())startTimerHz(8); }
+        else stopTimer();
+        if(!t)return;const auto mode=t->timecode.value_or(jaras::TimecodeSettings{}).mode;
+        for(auto pair:{std::pair<TextButton*,bool>{&mtc,mode=="mtc"},{&ltc,mode=="ltc"}}){pair.first->setColour(TextButton::buttonColourId,pair.second?theme::green:Colours::white.withAlpha(.12f));pair.first->setColour(TextButton::textColourOffId,pair.second?Colours::black:Colours::white);}resized();}
+    void setMixerMetronomeInsertOnly(bool enabled) { mixerMetronomeInsertOnly = enabled; }
+    void resized() override {
+        fullLyrics.setVisible(false);
+        for(auto *b:{&insert,&media,&addText,&settings,&patch,&copy,&scan,&mtc,&ltc})b->setVisible(false);
+        const auto *t=track();if(!t)return;const auto &role=t->role.id;
+        if (jaras::isTeleprompterRole(t->role)) {
+            const int width = std::max(0, getWidth() - 6);
+            const int patchWidth = std::min(40, width);
+            const int textWidth = (width - patchWidth) / 2;
+            const int height = std::min(24, getHeight());
+            patch.setBounds(0, 0, patchWidth, height);
+            addText.setBounds(patchWidth + 3, 0, textWidth, height);
+            fullLyrics.setBounds(patchWidth + textWidth + 6, 0, width - patchWidth - textWidth, height);
+            patch.setVisible(true); addText.setVisible(true); fullLyrics.setVisible(true);
+            return;
+        }
+        std::vector<TextButton*> buttons;
+        if(role=="programChange")buttons={&patch,&copy,&scan};else if(role=="generatedClick")buttons=mixerMetronomeInsertOnly?std::vector<TextButton*>{&insert}:std::vector<TextButton*>{&patch,&insert};else if(role=="timecode")buttons={&settings,&mtc,&ltc};else if(role=="video")buttons={&media};
+        else if(role=="chords")buttons={&addText};
+        if(getWidth()<100){int y=0;for(auto *b:buttons){b->setBounds(0,y,getWidth(),21);b->setVisible(true);y+=24;}}
+        else{int x=0;for(auto *b:buttons){int width=(b==&patch||b==&copy||b==&scan)?50:b==&settings?30:(b==&mtc||b==&ltc?38:role=="generatedClick"?47:102);b->setBounds(x,0,width,std::min(24,getHeight()));b->setVisible(true);x+=width+3;}}
+    }
+};
+}

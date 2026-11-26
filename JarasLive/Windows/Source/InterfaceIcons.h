@@ -1,14 +1,87 @@
 #pragma once
 #include "Common.h"
+#include <map>
 namespace catlive {
 // Small line icons drawn at logical resolution; no platform symbol-font dependency.
 inline bool drawInterfaceIcon(Graphics &g, const String &name, juce::Rectangle<float> bounds) {
+    // Reuse each icon's unit geometry across tracks and controls. Keep native
+    // stroking at the current size/DPI so caching cannot change its appearance.
+    static thread_local std::map<String, std::pair<Path, bool>> ink;
+    const auto draw = [&](Path path, bool fill) {
+        const float side = std::min(bounds.getWidth(), bounds.getHeight());
+        path.applyTransform(AffineTransform::scale(side / 24).translated(bounds.getCentreX() - side / 2,
+                                                                       bounds.getCentreY() - side / 2));
+        if (fill) g.fillPath(path);
+        else g.strokePath(path, PathStrokeType(1.35f, PathStrokeType::curved, PathStrokeType::rounded));
+    };
+    if (const auto found = ink.find(name); found != ink.end()) {
+        draw(found->second.first, found->second.second); return true;
+    }
     Path p;
     bool fill = false;
     auto line = [&](float x1, float y1, float x2, float y2) {
         p.startNewSubPath(x1, y1);
         p.lineTo(x2, y2);
     };
+    if (name == "chevron.left" || name == "chevron.right") {
+        const float a = name == "chevron.left" ? 15.f : 9.f;
+        const float b = 24.f - a;
+        p.startNewSubPath(a, 5); p.lineTo(b, 12); p.lineTo(a, 19);
+        p.applyTransform(AffineTransform::fromTargetPoints(0, 0, bounds.getX(), bounds.getY(), 24, 0, bounds.getRight(), bounds.getY(), 0, 24, bounds.getX(), bounds.getBottom()));
+        g.strokePath(p, PathStrokeType(1.8f, PathStrokeType::curved, PathStrokeType::rounded));
+        return true;
+    }
+    if (name == "record.circle") {
+        // Match the compact macOS SF Symbol: outer ring and solid centre.
+        const auto ring = bounds.withSizeKeepingCentre(11.f, 11.f);
+        g.drawEllipse(ring, 1.15f);
+        g.fillEllipse(bounds.withSizeKeepingCentre(5.f, 5.f));
+        return true;
+    }
+    if (name == "vuMeter") {
+        const auto area=bounds.withSizeKeepingCentre(std::min(bounds.getWidth(), 15.f), std::min(bounds.getHeight(), 14.f));
+        g.drawRoundedRectangle(area.withHeight(area.getHeight()*.7f),2,1);
+        g.drawLine(area.getCentreX(),area.getY()+area.getHeight()*.56f,
+                   area.getX()+area.getWidth()*.72f,area.getY()+area.getHeight()*.20f,1.2f);
+        g.setFont(theme::semiboldFont(5));
+        g.drawText("VU",area,Justification::centredBottom,false);
+        return true;
+    }
+    if (name == "toolSelect" || name == "toolCut" || name == "toolMute" || name == "toolSolo" || name == "toolExclusiveSolo") {
+        const auto b=bounds.withSizeKeepingCentre(15.f,15.f);
+        const auto at=[&](float x,float y){return Point<float>(b.getX()+x,b.getY()+y);};
+        if (name == "toolSelect") {
+            p.startNewSubPath(at(4,1));p.lineTo(at(13,10));p.lineTo(at(8,10));
+            p.lineTo(at(10,14));p.lineTo(at(8,15));p.lineTo(at(6,11));p.lineTo(at(4,14));
+            p.closeSubPath();g.fillPath(p);
+        } else if (name == "toolCut") {
+            g.drawEllipse(b.getX()+1,b.getY()+8,5,5,1.2f);
+            g.drawEllipse(b.getX()+9,b.getY()+8,5,5,1.2f);
+            g.drawLine(Line<float>(at(5,9),at(13,1)),1.2f);
+            g.drawLine(Line<float>(at(10,9),at(2,1)),1.2f);
+        } else if (name == "toolExclusiveSolo") {
+            g.drawEllipse(b.reduced(1.f), 1.2f);
+            g.setFont(theme::semiboldFont(10));
+            g.drawText("1", b, Justification::centred, false);
+        } else {
+            g.setFont(theme::semiboldFont(12));
+            g.drawText(name=="toolMute"?"M":"S",b,Justification::centred,false);
+        }
+        return true;
+    }
+    if (name == "mono") {
+        const auto cx = bounds.getCentreX(), cy = bounds.getCentreY();
+        g.drawEllipse(cx - 9, cy - 5.5f, 11, 11, 1.3f);
+        g.drawEllipse(cx - 2, cy - 5.5f, 11, 11, 1.3f);
+        return true;
+    }
+    if(name=="folderFilled"||name=="folderNested") {
+        auto folder=[&](float x,float y,float width,float height){Path shape;shape.startNewSubPath(x,y);shape.lineTo(x+width*.4f,y);shape.lineTo(x+width*.55f,y+height*.2f);shape.lineTo(x+width,y+height*.2f);shape.lineTo(x+width,y+height);shape.lineTo(x,y+height);shape.closeSubPath();g.fillPath(shape);};
+        const auto cx=bounds.getCentreX(),cy=bounds.getCentreY();
+        if(name=="folderNested") {folder(cx-12,cy-3,8,6);folder(cx-2,cy-5,12,10);g.setColour(Colours::black);g.fillRect(cx+1,cy,6.f,1.2f);}
+        else folder(cx-6,cy-5,12,10);
+        return true;
+    }
     if (name == "folder" || name == "folderOpen") {
         p.startNewSubPath(2, 7);
         p.lineTo(2, 4);
@@ -21,6 +94,33 @@ inline bool drawInterfaceIcon(Graphics &g, const String &name, juce::Rectangle<f
         if (name == "folderOpen") {
             line(3, 10, 21, 10);
         }
+    } else if (name == "lock" || name == "unlock") {
+        p.addRoundedRectangle(5, 11, 14, 11, 2);
+        p.startNewSubPath(8, 11); p.lineTo(8, 7);
+        if (name == "lock") { p.cubicTo(8, 1, 16, 1, 16, 7); p.lineTo(16, 11); }
+        else { p.cubicTo(8, 1, 17, 1, 17, 7); }
+        line(12, 15, 12, 18);
+    } else if (name == "timelineLanes") {
+        p.addRoundedRectangle(3, 5, 18, 14, 2.5f);
+        p.startNewSubPath(8.5f, 12); p.lineTo(12, 8.5f); p.lineTo(15.5f, 12);
+        line(12, 8.5f, 12, 15.5f);
+    } else if (name == "itemTimebase") {
+        // Mac: arrow.left.and.right, 13 pt semibold. Keep the compact
+        // two-headed arrow without the item-boundary bars of the old icon.
+        line(4, 12, 20, 12);
+        line(4, 12, 9, 7); line(4, 12, 9, 17);
+        line(20, 12, 15, 7); line(20, 12, 15, 17);
+    } else if (name == "magnet") {
+        p.startNewSubPath(4,3); p.lineTo(4,13); p.cubicTo(4,25,20,25,20,13);
+        p.lineTo(20,3); p.lineTo(15,3); p.lineTo(15,13); p.cubicTo(15,18,9,18,9,13);
+        p.lineTo(9,3); p.closeSubPath(); line(4,8,9,8); line(15,8,20,8);
+    } else if (name == "trackComponents") {
+        line(3,6,9,6);line(13,6,21,6);p.addEllipse(9,4,4,4);
+        line(3,12,14,12);line(18,12,21,12);p.addEllipse(14,10,4,4);
+        line(3,18,5,18);line(9,18,21,18);p.addEllipse(5,16,4,4);
+    } else if (name == "visibility") {
+        p.startNewSubPath(2,12);p.cubicTo(7,3,17,3,22,12);p.cubicTo(17,21,7,21,2,12);p.closeSubPath();
+        p.addEllipse(8.5f,8.5f,7,7);
     } else if (name == "menu") {
         for (int y : {6, 12, 18})
             line(3, (float)y, 21, (float)y);
@@ -33,6 +133,9 @@ inline bool drawInterfaceIcon(Graphics &g, const String &name, juce::Rectangle<f
         }
         if (name == "railMixer")
             p.applyTransform(AffineTransform::rotation(MathConstants<float>::halfPi, 12, 12));
+    } else if (name == "matrixPatch") {
+        for (int row = 0; row < 3; ++row) for (int col = 0; col < 3; ++col)
+            p.addRoundedRectangle(3.f + col * 7, 3.f + row * 7, 4, 4, 1);
     } else if (name == "undo" || name == "redo") {
         p.startNewSubPath(5, 9);
         p.lineTo(14, 9);
@@ -41,6 +144,9 @@ inline bool drawInterfaceIcon(Graphics &g, const String &name, juce::Rectangle<f
         line(5, 9, 10, 14);
         if (name == "redo")
             p.applyTransform(AffineTransform::scale(-1, 1).translated(24, 0));
+    } else if (name == "railVinhetas") {
+        for(int row=0;row<3;row++)for(int col=0;col<4;col++)p.addRoundedRectangle(2.f+col*5.5f,4.f+row*5.5f,4,4,1);
+        fill=true;
     } else if (name == "keyboard") {
         p.addRoundedRectangle(1, 5, 22, 14, 2);
         for (int row = 0; row < 2; ++row)
@@ -48,19 +154,24 @@ inline bool drawInterfaceIcon(Graphics &g, const String &name, juce::Rectangle<f
                 p.addRectangle(4.f + column * 3, 8.f + row * 3, 1, 1);
         line(6, 16, 18, 16);
     } else if (name == "railKeyboard" || name == "piano") {
-        p.addRoundedRectangle(2, 4, 20, 16, 2);
-        for (int x : {7, 12, 17})
-            line((float)x, 4, (float)x, 20);
-        p.addRectangle(5, 4, 4, 9);
-        p.addRectangle(10, 4, 4, 9);
-        p.addRectangle(15, 4, 4, 9);
-    } else if (name == "railSections") {
-        p.addRoundedRectangle(2, 12, 8, 9, 1);
-        p.addRoundedRectangle(14, 12, 8, 9, 1);
-        line(2, 5, 10, 5);
-        line(14, 5, 22, 5);
-        line(2, 8, 10, 8);
-        line(14, 8, 22, 8);
+        // Filled piano keys with transparent black-key slots, matching
+        // the compact pianokeys symbol used by the Mac sidebar.
+        p.setUsingNonZeroWinding(false);
+        p.addRoundedRectangle(1, 1, 22, 22, 2.6f);
+        for (float x : {6.5f, 12.f, 17.5f}) {
+            p.startNewSubPath(x - 1.55f, 1); p.lineTo(x + 1.55f, 1);
+            p.lineTo(x + 1.55f, 12.9f);
+            p.quadraticTo(x + 1.55f, 14.1f, x + .45f, 14.1f);
+            p.lineTo(x + .45f, 23); p.lineTo(x - .45f, 23);
+            p.lineTo(x - .45f, 14.1f);
+            p.quadraticTo(x - 1.55f, 14.1f, x - 1.55f, 12.9f);
+            p.closeSubPath();
+        }
+        fill = true;
+    } else if (name == "railParts") {
+        line(3,6,21,6);
+        line(3,12,16,12);
+        line(3,18,11,18);
     } else if (name == "settings" || name == "railSettings") {
         for (int i = 0; i < 16; ++i) {
             const float a = (float)i * MathConstants<float>::twoPi / 16;
@@ -132,11 +243,18 @@ inline bool drawInterfaceIcon(Graphics &g, const String &name, juce::Rectangle<f
         p.lineTo(2, 23);
         p.closeSubPath();
     } else if (name == "notice") {
-        p.addRoundedRectangle(2, 3, 20, 14, 3);
-        line(6, 17, 5, 22);
-        line(5, 22, 11, 17);
+        p.addRoundedRectangle(2, 2, 20, 16, 4);
+        line(6, 18, 6, 24);
+        line(6, 24, 12, 18);
         line(6, 8, 18, 8);
-        line(6, 12, 14, 12);
+        line(6, 12, 16, 12);
+    } else if (name == "stopwatch") {
+        p.addEllipse(3, 6, 18, 17);
+        line(12, 7, 12, 14);
+        line(12, 14, 16, 11);
+        line(12, 1, 12, 6);
+        line(9, 1, 15, 1);
+        line(19, 7, 21, 5);
     } else if (name == "clock") {
         p.addEllipse(2, 2, 20, 20);
         line(12, 5, 12, 12);
@@ -147,6 +265,51 @@ inline bool drawInterfaceIcon(Graphics &g, const String &name, juce::Rectangle<f
     } else if (name == "close") {
         line(5, 5, 19, 19);
         line(19, 5, 5, 19);
+    } else if (name == "fitTracks" || name == "fitTime") {
+        line(4, 2, 20, 2); line(4, 22, 20, 22);
+        line(12, 5, 12, 19);
+        line(8, 9, 12, 5); line(12, 5, 16, 9);
+        line(8, 15, 12, 19); line(12, 19, 16, 15);
+        if (name == "fitTime") p.applyTransform(AffineTransform::rotation(MathConstants<float>::halfPi, 12, 12));
+    } else if (name == "projectStart" || name == "previousTimelinePoint" || name == "nextTimelinePoint" || name == "projectEnd") {
+        const bool boundary = name == "projectStart" || name == "projectEnd";
+        if (boundary) {
+            p.addRectangle(2, 4, 3, 16);
+            p.addTriangle(7, 12, 20, 4, 20, 20);
+        } else {
+            p.addTriangle(1, 12, 11, 4, 11, 20);
+            p.addTriangle(12, 12, 22, 4, 22, 20);
+        }
+        if (name == "nextTimelinePoint" || name == "projectEnd")
+            p.applyTransform(AffineTransform(-1, 0, 24, 0, 1, 0));
+        fill = true;
+    } else if (name == "play") {
+        p.addTriangle(6, 3, 21, 12, 6, 21);
+        fill = true;
+    } else if (name == "teleprompter") {
+        p.addRoundedRectangle(2, 2, 20, 18, 2);
+        line(6, 8, 18, 8); line(6, 12, 16, 12);
+        line(8, 24, 16, 24); line(12, 20, 12, 24);
+    } else if (name == "remote") {
+        p.addEllipse(2, 2, 20, 20);
+        p.addEllipse(7, 2, 10, 20);
+        line(2, 12, 22, 12);
+        line(4, 6, 20, 6);
+        line(4, 18, 20, 18);
+    } else if (name == "note.pencil") {
+        p.startNewSubPath(4, 20); p.lineTo(5.5f, 14.5f); p.lineTo(17, 3);
+        p.lineTo(21, 7); p.lineTo(9.5f, 18.5f); p.closeSubPath();
+        line(14.5f, 5.5f, 18.5f, 9.5f);
+    } else if (name == "check") {
+        line(4, 12, 10, 18);
+        line(10, 18, 20, 5);
+    } else if (name == "save") {
+        line(3, 10, 3, 21);
+        line(3, 21, 21, 21);
+        line(21, 21, 21, 10);
+        line(12, 2, 12, 15);
+        line(7, 10, 12, 15);
+        line(12, 15, 17, 10);
     } else if (name == "pause") {
         p.addRectangle(6, 5, 4, 14);
         p.addRectangle(14, 5, 4, 14);
@@ -155,14 +318,9 @@ inline bool drawInterfaceIcon(Graphics &g, const String &name, juce::Rectangle<f
         p.addRoundedRectangle(5, 5, 14, 14, 1);
         fill = true;
     } else if (name == "loop") {
-        line(6, 6, 20, 6);
-        line(17, 3, 20, 6);
-        line(20, 6, 17, 9);
-        line(20, 6, 20, 13);
-        line(18, 18, 4, 18);
-        line(7, 15, 4, 18);
-        line(4, 18, 7, 21);
-        line(4, 18, 4, 11);
+        p.startNewSubPath(2,14);p.lineTo(2,10);p.cubicTo(2,6,4,5,8,5);p.lineTo(20,5);
+        p.startNewSubPath(22,10);p.lineTo(22,14);p.cubicTo(22,18,20,19,16,19);p.lineTo(4,19);
+        line(16,1,20,5);line(16,9,20,5);line(8,15,4,19);line(8,23,4,19);
     } else if (name == "video") {
         p.addRoundedRectangle(2, 5, 14, 14, 2);
         p.startNewSubPath(16, 9);
@@ -171,13 +329,9 @@ inline bool drawInterfaceIcon(Graphics &g, const String &name, juce::Rectangle<f
         p.lineTo(16, 15);
     } else
         return false;
-    const float side = std::min(bounds.getWidth(), bounds.getHeight());
-    p.applyTransform(AffineTransform::scale(side / 24).translated(bounds.getCentreX() - side / 2,
-                                                                  bounds.getCentreY() - side / 2));
-    if (fill)
-        g.fillPath(p);
-    else
-        g.strokePath(p, PathStrokeType(1.35f, PathStrokeType::curved, PathStrokeType::rounded));
+    if (ink.size() >= 256) ink.clear();
+    const auto saved = ink.emplace(name, std::make_pair(std::move(p), fill)).first;
+    draw(saved->second.first, saved->second.second);
     return true;
 }
 } // namespace catlive

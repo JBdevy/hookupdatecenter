@@ -1,196 +1,67 @@
 import SwiftUI
 
-struct FXInsertEditor: View {
-    let show: ShowController
-    let track: UUID?
-    let targets: [UUID?]
-    var clip: UUID? = nil
-    var inserted: ((String) -> Void)? = nil
-    var resize: (CGFloat) -> Void = { _ in }
-    let dismiss: () -> Void
-    private let project: UUID
-    private let isActive: () -> Bool
-    init(show: ShowController, track: UUID?, targets: [UUID?], clip: UUID? = nil,
-         inserted: ((String) -> Void)? = nil, isActive: @escaping () -> Bool = { true },
-         resize: @escaping (CGFloat) -> Void = { _ in },
-         dismiss: @escaping () -> Void) {
-        self.show = show; self.track = track; self.targets = targets; self.clip = clip
-        self.inserted = inserted; self.isActive = isActive; self.resize = resize; self.dismiss = dismiss
-        project = show.snapshot.project.id
-    }
-    private var targetIsCurrent: Bool {
-        guard isActive(), show.snapshot.project.id == project else { return false }
-        if let clip { return FXModelLookup.clip(clip, in: show.snapshot.project) != nil }
-        return targets.allSatisfy { target in
-            target == nil || target.flatMap { FXModelLookup.track($0, in: show.snapshot.project) } != nil
-        }
-    }
-    @Environment(\.openFX) private var open
-    @State private var effect = "EQ"
-    @State private var instrument: String?
-    @ObservedObject private var library = InstrumentLibrary.shared
-    #if os(macOS)
-    @ObservedObject private var plugins = PluginCatalog.shared
-    @State private var external: String?
-    @State private var externalError = ""
-    @State private var browsingExternal = false
-    #endif
-    private var availableEffects: [String] {
-        var result = NativeFXSettings.order.filter { $0 != "Instruments" || (clip == nil && track != nil && targets.count == 1) }
-        #if os(iOS)
-        result.removeAll { $0 == "Instruments" }
-        #endif
-        if targets.count == 1 { result.append(NativeFXSettings.stemSeparator) }
-        #if os(macOS)
-        result.append("External")
-        #endif
-        return result
-    }
-    private var cannotApply: Bool {
-        if effect == "Instruments" { return !library.downloaded.contains(instrument ?? "") }
-        #if os(macOS)
-        if effect == "External" { return external == nil || plugins.scanning }
-        #endif
-        return false
-    }
-    private func finishInsertion(_ key: String, track target: UUID?) {
-        guard targetIsCurrent else { dismiss(); return }
-        dismiss()
-        if let inserted { inserted(key) }
-        else if clip == nil { open(target, key) }
-    }
-    var body: some View {
-                VStack(alignment: .leading, spacing: 16) {
-                    Text("Insert effect").font(.headline)
-                    Picker("Effect", selection: $effect) {
-                        ForEach(availableEffects, id: \.self) { Text(LocalizedStringKey($0 == "Limiter" ? "CatLive Limiter" : $0)).tag($0) }
-                    }.pickerStyle(.menu)
-                    #if os(iOS)
-                    .padding(12).frame(maxWidth: .infinity)
-                    .background(Color.black.opacity(0.4), in: RoundedRectangle(cornerRadius: 7))
-                    .overlay(RoundedRectangle(cornerRadius: 7).stroke(Color.white.opacity(0.25)))
-                    .tint(JarasTheme.green)
-                    #endif
-                    if effect == "Instruments" { InstrumentBrowser(selected: $instrument).frame(height: 330) }
-                    #if os(macOS)
-                    if effect == "External" {
-                        Button { browsingExternal = true } label: {
-                            HStack {
-                                Image(systemName: "magnifyingglass")
-                                Text(external.flatMap { id in plugins.plugins.first { $0.id == id }?.name } ?? JarasLocalization.string("Choose a plugin"))
-                                    .lineLimit(1)
-                                Spacer()
-                                Image(systemName: "square.grid.2x2")
-                            }.frame(maxWidth: .infinity).padding(8)
-                        }.buttonStyle(.bordered)
-                        HStack { Button("Scan plugins") { plugins.scan() }.disabled(plugins.scanning); if plugins.scanning { ProgressView().controlSize(.small) } }
-                        if !externalError.isEmpty { Text(verbatim: externalError).font(.caption).foregroundStyle(.red) }
-                    }
-                    #endif
-                    HStack {
-                        Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
-                        Spacer()
-                        Button("Apply") {
-                            guard targetIsCurrent else { dismiss(); return }
-                            guard availableEffects.contains(effect) else { return }
-                            #if os(macOS)
-                            if effect == "External" {
-                                guard let chosen = plugins.plugins.first(where: { $0.id == external }) else { return }
-                                if let clip {
-                                    // A MIDI take has no audio instance before its first
-                                    // instrument. Validate the chosen plugin separately,
-                                    // then let the normal item update build its live voice.
-                                    let preparation = NativeEffectsChain()
-                                    defer { preparation.releaseExternal() }
-                                    do {
-                                        var settings = show.clipFXSettings(clip)
-                                        var instance = chosen.instance
-                                        settings.externalPlugins = (settings.externalPlugins ?? []) + [instance]
-                                        settings.inserted.append(instance.effectKey)
-                                        try settings.validateForClip()
-                                        let node = try preparation.prepareExternal(instance)
-                                        if let state = JarasVST3.state(node, identifier: instance.id) {
-                                            instance.componentState = state["componentState"] as? String
-                                            instance.controllerState = state["controllerState"] as? String
-                                            if let index = settings.externalPlugins?.firstIndex(where: { $0.id == instance.id }) {
-                                                settings.externalPlugins?[index] = instance
-                                            }
-                                        }
-                                        show.previewClipFX(clip, settings: settings); show.commitFX()
-                                        guard show.clipFXSettings(clip).inserted.contains(instance.effectKey) else {
-                                            externalError = show.message
-                                            return
-                                        }
-                                        finishInsertion(instance.effectKey, track: nil)
-                                    } catch { externalError = error.localizedDescription }
-                                    return
-                                }
-                                var prepared: [(UUID?, NativeFXSettings, String)] = []
-                                do {
-                                    for target in targets {
-                                        guard let chain = StemAudioPlayback.shared.effects(for: target) else { continue }
-                                        var settings = show.fxSettings(target)
-                                        var instance = chosen.instance
-                                        settings.externalPlugins = (settings.externalPlugins ?? []) + [instance]
-                                        settings.inserted.append(instance.effectKey)
-                                        try settings.validate()
-                                        let node = try chain.prepareExternal(instance)
-                                        if let state = JarasVST3.state(node, identifier: instance.id) {
-                                            instance.componentState = state["componentState"] as? String; instance.controllerState = state["controllerState"] as? String
-                                            let index = settings.externalPlugins!.count - 1
-                                            settings.externalPlugins?[index] = instance
-                                        }
-                                        prepared.append((target, settings, instance.effectKey))
-                                    }
-                                    for (target, settings, _) in prepared { show.previewFX(target, settings: settings) }
-                                    show.commitFX()
-                                    if let first = prepared.first { finishInsertion(first.2, track: first.0) }
-                                } catch {
-                                    for target in targets {
-                                        StemAudioPlayback.shared.effects(for: target)?.apply(show.fxSettings(target))
-                                    }
-                                    externalError = error.localizedDescription
-                                }
-                                return
-                            }
-                            #endif
-                            var insertedKey: String?
-                            if let clip {
-                                insertedKey = show.insertClipFX(clip, effect: effect)
-                            } else if effect == "Instruments" {
-                                guard targets.count == 1, let instrument, library.downloaded.contains(instrument) else { return }
-                                var settings = show.fxSettings(track)
-                                insertedKey = settings.appendNative(effect, instrument: instrument, parameters: InstrumentLibrary.parameters(instrument))
-                                show.previewFX(track, settings: settings); show.commitFX()
-                            } else {
-                                insertedKey = show.insertFX(targets, effect: effect)[track]
-                            }
-                            let settings = clip.map(show.clipFXSettings) ?? show.fxSettings(track)
-                            guard let insertedKey, settings.inserted.contains(insertedKey) else { return }
-                            finishInsertion(insertedKey, track: track)
-                        }.keyboardShortcut(.defaultAction).disabled(cannotApply)
-                    }
-                    #if os(iOS)
-                    .buttonStyle(StageButtonStyle(color: JarasTheme.green))
-                    #endif
-                }.padding(20).frame(width: effect == "Instruments" ? 440 : 360).foregroundStyle(JarasTheme.text)
-        .onAppear { instrument = (clip.map(show.clipFXSettings) ?? show.fxSettings(track)).instrumentID; resize(210) }
-        .onChange(of: effect) { value in resize(value == "Instruments" ? 500 : value == "External" ? 310 : 210) }
-        #if os(macOS)
-        .onChange(of: effect) { value in if value == "External" { browsingExternal = true } }
-        .background(ExternalPluginBrowserPresenter(isPresented: $browsingExternal, selected: $external,
-                                                  allowsInstruments: clip.map { FXModelLookup.clip($0, in: show.snapshot.project)?.midi != nil } ?? (targets.count == 1 && track != nil)))
-        #endif
-    }
-}
 #if os(macOS)
 import AppKit
 import Combine
 
+@MainActor private final class MatrixPatchWindow: NSPanel {
+    private var consumedTitlebarClick = false
+    override var canBecomeMain: Bool { true }
+    override func sendEvent(_ event: NSEvent) {
+        if event.type == .leftMouseUp && consumedTitlebarClick {
+            consumedTitlebarClick = false
+            return
+        }
+        if event.type == .leftMouseDown, event.clickCount == 2,
+           !styleMask.contains(.fullScreen), event.locationInWindow.y >= contentLayoutRect.maxY {
+            let onWindowButton = [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton].contains { type in
+                guard let button = standardWindowButton(type) else { return false }
+                return button.convert(button.bounds, to: nil).contains(event.locationInWindow)
+            }
+            if !onWindowButton {
+                consumedTitlebarClick = true
+                performZoom(nil)
+                return
+            }
+        }
+        super.sendEvent(event)
+    }
+}
+
+/// Never let focus rings or a transient control's ideal size resize its NSWindow.
+/// The presenter owns the content rectangle, including on macOS 12.
+final class WorkspaceEditorHostingView<Content: View>: NSHostingView<Content> {
+    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric) }
+    override var fittingSize: NSSize { frame.size }
+}
+
+let workspacePanelStyle: NSWindow.StyleMask = [.titled, .closable, .resizable]
+
+@MainActor func makeWorkspacePanel(title: String, size: NSSize, minimum: NSSize, matrixPatch: Bool = false) -> NSPanel {
+    let rect = NSRect(origin: .zero, size: size)
+    let panel = matrixPatch
+        ? MatrixPatchWindow(contentRect: rect, styleMask: workspacePanelStyle, backing: .buffered, defer: false)
+        : NSPanel(contentRect: rect, styleMask: workspacePanelStyle, backing: .buffered, defer: false)
+    panel.title = title
+    panel.appearance = NSAppearance(named: .darkAqua)
+    panel.contentMinSize = minimum
+    panel.isReleasedWhenClosed = false
+    panel.isFloatingPanel = false
+    panel.hidesOnDeactivate = false
+    panel.level = .normal
+    return panel
+}
+
+@MainActor private func attachWorkspacePanel(_ panel: NSPanel) {
+    // Keep the same workspace/tool ordering without linking window movement
+    // or monitor placement to the main interface.
+    ProjectionWindow.followWorkspaceWindow(panel)
+}
+
 @MainActor final class FXWindows: NSObject, NSWindowDelegate {
     static let shared = FXWindows()
     private enum Target: Hashable {
-        case track(UUID?)
+        case plugin(UUID?, String)
         case clip(UUID)
     }
     private struct WindowKey: Hashable {
@@ -201,77 +72,90 @@ import Combine
     private var projectObservation: AnyCancellable?
     private weak var show: ShowController?
     func open(show: ShowController, track: UUID?, effect: String, language: String) {
-        open(show: show, target: WindowKey(project: show.snapshot.project.id, target: .track(track)), preferredEffect: effect)
+        open(show: show, target: WindowKey(project: show.snapshot.project.id, target: .plugin(track, effect)))
     }
-    func openClipChain(show: ShowController, clip: UUID) {
-        open(show: show, target: WindowKey(project: show.snapshot.project.id, target: .clip(clip)))
+    func openClipChain(show: ShowController, clip: UUID, openLibrary: @escaping () -> Void) {
+        open(show: show, target: WindowKey(project: show.snapshot.project.id, target: .clip(clip)), openLibrary: openLibrary)
     }
     private func targetExists(_ key: WindowKey, in show: ShowController) -> Bool {
         guard key.project == show.snapshot.project.id else { return false }
         switch key.target {
         case .clip(let clip): return FXModelLookup.clip(clip, in: show.snapshot.project) != nil
-        case .track(let track):
-            return track == nil || track.map { FXModelLookup.track($0, in: show.snapshot.project)?.kind == .standard } == true
+        case .plugin(let track, let effect):
+            return show.fxSettings(track).effectKeys.contains(effect) &&
+                (track == nil || track.map { FXModelLookup.track($0, in: show.snapshot.project)?.kind == .standard } == true)
         }
     }
     private func title(_ key: WindowKey, in show: ShowController) -> String {
         switch key.target {
         case .clip(let clip): return JarasLocalization.string("FX Manager") + " - " + (FXModelLookup.clip(clip, in: show.snapshot.project)?.name ?? "—")
-        case .track(let track):
-            let name = track.flatMap { id in FXModelLookup.track(id, in: show.snapshot.project)?.name } ?? "Master"
-            return JarasLocalization.string("FX Manager") + " - " + name
+        case .plugin(let track, let effect):
+            let name = track.flatMap { id in FXModelLookup.track(id, in: show.snapshot.project)?.name } ?? "Main"
+            let settings = show.fxSettings(track)
+            let plugin = settings.externalPlugins?.first(where: { $0.effectKey == effect })?.name ??
+                JarasLocalization.string(settings.kind(of: effect))
+            return plugin + " - " + name
         }
     }
-    private func content(_ key: WindowKey, show: ShowController, panel: NSPanel, preferredEffect: String?) -> NSView {
+    private func content(_ key: WindowKey, show: ShowController, panel: NSPanel, openLibrary: @escaping () -> Void) -> NSView {
         switch key.target {
         case .clip(let clip):
-            let view = TrackFXChainView(show: show, track: nil, clip: clip, effect: preferredEffect ?? show.clipFXSettings(clip).clipEffectKeys.first ?? "", panel: panel)
+            let view = TrackFXChainView(show: show, track: nil, clip: clip, effect: show.clipFXSettings(clip).clipEffectKeys.first ?? "",
+                                        panel: panel, openLibrary: openLibrary)
             panel.setContentSize(view.preferredContentSize)
             return view
-        case .track(let track):
-            let view = TrackFXChainView(show: show, track: track, effect: preferredEffect ?? show.fxSettings(track).effectKeys.first ?? "EQ", panel: panel)
+        case .plugin(let track, let effect):
+            let view = TrackFXChainView(show: show, track: track, effect: effect, panel: panel, singlePlugin: true)
             panel.setContentSize(view.preferredContentSize)
             return view
         }
     }
-    private func open(show: ShowController, target key: WindowKey, preferredEffect: String? = nil) {
+    private func open(show: ShowController, target key: WindowKey, openLibrary: @escaping () -> Void = {}) {
+        guard !ProjectSyncControl.following else { return }
         guard targetExists(key, in: show) else { return }
         if self.show !== show {
             closeAll(); self.show = show
             projectObservation = show.$snapshot.map { $0.project.id }.removeDuplicates().dropFirst().sink { [weak self] _ in self?.closeAll() }
         }
         if let panel = windows[key] {
-            if let preferredEffect { (panel.contentView as? TrackFXChainView)?.select(preferredEffect) }
-            panel.makeKeyAndOrderFront(nil); return
+            ProjectionWindow.presentWorkspaceWindow(panel); return
         }
         // The normal titlebar provides full-size native window controls for
         // both track chains and item FX, including third-party editors.
-        let panel = NSPanel(contentRect: NSRect(x: 0,y: 0,width: 740,height: 560), styleMask: [.titled,.closable,.resizable], backing: .buffered, defer: false)
-        panel.title = title(key, in: show)
-        panel.appearance = NSAppearance(named: .darkAqua)
-        panel.contentMinSize = NSSize(width: 640,height: 540)
-        panel.isReleasedWhenClosed = false; panel.isFloatingPanel = false; panel.hidesOnDeactivate = true
-        panel.level = .normal; panel.delegate = self
-        panel.contentView = content(key, show: show, panel: panel, preferredEffect: preferredEffect)
+        let panel = makeWorkspacePanel(title: title(key, in: show),
+                                       size: NSSize(width: 740, height: 560),
+                                       minimum: NSSize(width: 640, height: 540))
+        panel.delegate = self
+        panel.contentView = content(key, show: show, panel: panel, openLibrary: openLibrary)
+        InterfaceScaling.shared.register(panel)
         panel.center()
         let stagger = CGFloat(windows.count % 5) * 26
         panel.setFrameOrigin(NSPoint(x: panel.frame.minX + stagger,y: panel.frame.minY - stagger))
         windows[key] = panel
-        // A normal-level child stays above the DAW when the timeline is clicked,
-        // while application deactivation and attached editing sheets retain priority.
-        if let parent = NSApp.mainWindow ?? NSApp.windows.first(where: { !($0 is NSPanel) && $0.isVisible && $0.canBecomeMain }) {
-            parent.addChildWindow(panel, ordered: .above)
+        attachWorkspacePanel(panel)
+        ProjectionWindow.presentWorkspaceWindow(panel)
+    }
+    private func capturePluginState(for panel: NSPanel) {
+        guard let show, let key = windows.first(where: { $0.value === panel })?.key,
+              case .plugin(let track, let effect) = key.target else { return }
+        for plugin in show.fxSettings(track).externalPlugins ?? [] where plugin.effectKey == effect {
+            ExternalPluginState.capture(show: show, track: track, identifier: plugin.id)
         }
-        panel.makeKeyAndOrderFront(nil)
+    }
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        guard let panel = sender as? NSPanel, let show,
+              let key = windows.first(where: { $0.value === panel })?.key,
+              targetExists(key, in: show),
+              (panel.contentView as? TrackFXChainView)?.hasHostedExternalEditor == true else { return true }
+        // Some plug-ins issue their Cocoa editor only once per processor.
+        // Keep it attached to the panel, then bring the same panel back.
+        capturePluginState(for: panel)
+        panel.orderOut(nil)
+        return false
     }
     func windowWillClose(_ notification: Notification) {
         guard let panel = notification.object as? NSPanel else { return }
-        if let show, let key = windows.first(where: { $0.value === panel })?.key,
-           case .track(let track) = key.target {
-            for plugin in show.fxSettings(track).externalPlugins ?? [] {
-                ExternalPluginState.capture(show: show, track: track, identifier: plugin.id)
-            }
-        }
+        capturePluginState(for: panel)
         (panel.contentView as? TrackFXChainView)?.closeEditors()
         panel.parent?.removeChildWindow(panel)
         windows = windows.filter { $0.value !== panel }
@@ -296,6 +180,385 @@ import Combine
     func closeAll() { for panel in Array(windows.values) { panel.close() }; windows.removeAll() }
 }
 
+extension Notification.Name {
+    static let catLiveOpenPluginSettings = Notification.Name("catlive.openPluginSettings")
+}
+
+@MainActor private final class WorkspaceSettingsSelection: ObservableObject {
+    @Published var section: SettingsView.Section
+    init(_ section: SettingsView.Section) { self.section = section }
+}
+
+private struct WorkspaceSettingsContent: View {
+    let auth: AuthService
+    let show: ShowController
+    let backend: any BackendClient
+    @ObservedObject var selection: WorkspaceSettingsSelection
+    var body: some View {
+        SettingsView(auth: auth, show: show, backend: backend, selection: $selection.section)
+    }
+}
+
+@MainActor private final class WorkspaceToolPresentation: ObservableObject {
+    @Published var generation = 0
+}
+private struct WorkspaceAdvancedContent: View {
+    let show: ShowController
+    let documents: ProjectDocuments?
+    let close: () -> Void
+    @ObservedObject var presentation: WorkspaceToolPresentation
+    var body: some View {
+        AdvancedView(show: show, documents: documents, close: close, presentationID: presentation.generation)
+    }
+}
+
+private struct WorkspaceToolContent<Content: View>: View {
+    @AppStorage(JarasInterfaceTheme.preferenceKey) private var interfaceTheme = JarasInterfaceTheme.defaultTheme
+    @AppStorage("jaras.language") private var language = "en"
+    let content: Content
+    var fillsViewport = false
+    let updateTitle: () -> Void
+    var body: some View {
+        content
+            .frame(maxWidth: fillsViewport ? .infinity : nil, maxHeight: fillsViewport ? .infinity : nil, alignment: .top)
+            .background(interfaceTheme.background).foregroundStyle(JarasTheme.text)
+            .environment(\.locale, Locale(identifier: language)).preferredColorScheme(.dark)
+            .onChange(of: language) { _ in updateTitle() }
+    }
+}
+
+/// The workspace owns these panels, just as it owns its detached mixer.
+/// Refocusing a tool keeps its hosting view, selection and unfinished text edits.
+@MainActor final class WorkspaceToolWindows: NSObject, ObservableObject, NSWindowDelegate {
+    private enum Tool: String { case advanced, settings, textItem, fullLyrics, matrixPatch, patch, grandMA2, resolume }
+    private static let patchPresenter = WorkspaceToolWindows()
+    @Published private(set) var settingsOpen = false
+    @Published private(set) var advancedOpen = false
+    @Published private(set) var matrixPatchOpen = false
+    @Published private(set) var grandMA2Open = false
+    @Published private(set) var resolumeOpen = false
+    private var windows: [Tool: NSPanel] = [:]
+    private var settingsSelection: WorkspaceSettingsSelection?
+    private let advancedPresentation = WorkspaceToolPresentation()
+    private var discardingWindows = false
+    private weak var show: ShowController?
+    private var projectObservation: AnyCancellable?
+    private weak var itemActionShow: ShowController?
+    private var libraryVisibility: Binding<Bool>?
+    private var patchTarget: (track: UUID?, targets: [UUID?])?
+
+    static func openPatch(show: ShowController, track: UUID?, targets: [UUID?]) {
+        let presenter = patchPresenter
+        presenter.bind(show)
+        if let panel = presenter.windows[.patch], presenter.patchTarget?.track == track,
+           presenter.patchTarget?.targets == targets {
+            presenter.reveal(panel, activates: false)
+            return
+        }
+        if let previous = presenter.windows.removeValue(forKey: .patch) {
+            previous.close()
+            DispatchQueue.main.async { previous.contentView = nil }
+        }
+        presenter.patchTarget = (track, targets)
+        presenter.present(.patch, title: "Patch", size: PatchEditor.windowSize) { panel in
+            PatchEditor(show: show, track: track, targets: targets)
+                .onExitCommand { [weak panel] in panel?.performClose(nil) }
+        }
+    }
+
+    static func closePatch(for show: ShowController) {
+        if patchPresenter.show === show { patchPresenter.windows[.patch]?.close() }
+    }
+
+    // These handlers travel through every hosted timeline row. Give them
+    // window lifetime, even when transport state changes the workspace view.
+    func updateItemActions(show: ShowController, library: Binding<Bool>) {
+        itemActionShow = show
+        libraryVisibility = library
+    }
+    private(set) lazy var editTextAction: (UUID) -> Void = { [weak self] id in
+        guard let self, let show = self.itemActionShow else { return }
+        self.openTextItem(show: show, id: id)
+    }
+    private(set) lazy var clipFXAction: (UUID) -> Void = { [weak self] id in
+        guard let self, let show = self.itemActionShow else { return }
+        FXWindows.shared.openClipChain(show: show, clip: id, openLibrary: { [weak self] in self?.libraryVisibility?.wrappedValue = true })
+    }
+    private(set) lazy var fullLyricsAction: (UUID) -> Void = { [weak self] id in
+        guard let self, let show = self.itemActionShow else { return }
+        self.openFullLyrics(show: show, track: id)
+    }
+
+    private func bind(_ show: ShowController) {
+        guard self.show !== show else { return }
+        closeAll()
+        self.show = show
+        projectObservation = show.$snapshot.map { $0.project.id }.removeDuplicates().dropFirst()
+            .sink { [weak self] _ in self?.closeAll() }
+    }
+    func openTextItem(show: ShowController, id: UUID) {
+        bind(show)
+        guard let track = show.current?.tracks.first(where: { $0.kind.isText && $0.clips.contains { $0.id == id } }),
+              let item = track.clips.first(where: { $0.id == id }) else { return }
+        // Keep the draft in one independent tool window, above the projection
+        // without bringing the whole workspace in front of that projection.
+        present(.textItem, title: "Text Editor", size: NSSize(width: 700, height: 360)) { panel in
+            TextItemEditor(text: item.text ?? "", showHeader: false,
+                           apply: { show.updateTextItem(id, text: $0) },
+                           close: { [weak panel] in panel?.close() })
+        }
+    }
+    func openFullLyrics(show: ShowController, track: UUID) {
+        bind(show)
+        do {
+            let target = try FullLyricsTarget(show: show, track: track)
+            present(.fullLyrics, title: "Full lyrics", size: NSSize(width: 620, height: 460)) { panel in
+                FullLyricsEditor(show: show, target: target, close: { [weak panel] in panel?.close() })
+            }
+        } catch { show.message = error.localizedDescription }
+    }
+    func openAdvanced(show: ShowController, documents: ProjectDocuments?) {
+        bind(show)
+        if windows[.advanced]?.isVisible != true { advancedPresentation.generation &+= 1 }
+        present(.advanced, title: "Advanced", size: AdvancedView.desktopSize) { panel in
+            WorkspaceAdvancedContent(show: show, documents: documents,
+                close: { [weak panel] in panel?.close() }, presentation: advancedPresentation)
+        }
+        advancedOpen = true
+    }
+    func openGrandMA2(show: ShowController) {
+        bind(show)
+        present(.grandMA2, title: "grandMA2", size: NSSize(width: 720, height: 650)) { _ in
+            GrandMA2SettingsView(show: show)
+        }
+        if !grandMA2Open { grandMA2Open = true }
+    }
+    func openResolume(show: ShowController) {
+        bind(show)
+        let height: CGFloat = show.snapshot.project.resolume?.usesIntegration == true ? 660 : 560
+        present(.resolume, title: "Resolume", size: NSSize(width: 680, height: height)) { panel in
+            ResolumeSettingsView(show: show)
+                .environment(\.workspaceEditorDismiss, { [weak panel] in panel?.performClose(nil) })
+        }
+        if !resolumeOpen { resolumeOpen = true }
+    }
+    func openMatrixPatch(show: ShowController) {
+        bind(show)
+        present(.matrixPatch, title: "Matrix Patch", size: NSSize(width: 1000, height: 650)) { _ in
+            MatrixPatchView(show: show)
+        }
+        matrixPatchOpen = true
+    }
+    func openSettings(auth: AuthService, show: ShowController, backend: any BackendClient,
+                      section: SettingsView.Section? = nil) {
+        bind(show)
+        if windows[.settings]?.isVisible != true { settingsSelection?.section = section ?? .general }
+        else if let section { settingsSelection?.section = section }
+        let selection = settingsSelection ?? WorkspaceSettingsSelection(section ?? .general)
+        settingsSelection = selection
+        present(.settings, title: "Configurações", size: NSSize(width: 940, height: 540)) { _ in
+            WorkspaceSettingsContent(auth: auth, show: show, backend: backend, selection: selection)
+        }
+        settingsOpen = true
+    }
+    private func reveal(_ panel: NSPanel, activates: Bool) {
+        if !panel.isVisible {
+            panel.contentView?.isHidden = false
+        }
+        ProjectionWindow.presentWorkspaceWindow(panel, activates: activates)
+    }
+    private func present<Content: View>(_ tool: Tool, title: String, size: NSSize,
+                                       @ViewBuilder content: (NSPanel) -> Content) {
+        let integration = tool == .grandMA2 || tool == .resolume
+        let needsFocus = tool == .textItem || tool == .fullLyrics
+        if let panel = windows[tool] {
+            reveal(panel, activates: needsFocus)
+            return
+        }
+        let expandable = tool == .matrixPatch
+        let panel = makeWorkspacePanel(title: JarasLocalization.string(title), size: size, minimum: size, matrixPatch: expandable)
+        if expandable { panel.collectionBehavior.insert(.fullScreenPrimary) }
+        else { panel.styleMask.remove(.resizable) }
+        panel.identifier = NSUserInterfaceItemIdentifier("catlive.tool." + tool.rawValue)
+        if tool == .textItem {
+            // Keep the draft visible while the user focuses the projection.
+            // It remains an independent window, without a modal session.
+            panel.level = .normal
+            panel.hidesOnDeactivate = false
+            panel.collectionBehavior.insert(.fullScreenAuxiliary)
+        }
+        panel.delegate = self
+        let editor = WorkspaceToolContent(content: content(panel), fillsViewport: tool == .patch, updateTitle: { [weak panel] in
+            panel?.title = JarasLocalization.string(title)
+        })
+        // Settings and the text editor own their scrolling and fill the window.
+        // Advanced has a fixed minimum canvas; scroll that canvas only if the
+        // available screen cannot fit it, without asking it for an ideal size.
+        let host = WorkspaceEditorHostingView(rootView: WorkspaceEditorViewport(content: editor, scrolls: tool == .advanced || integration, layoutSize: tool == .advanced ? size : nil).interfaceScaled())
+        if #available(macOS 13, *) { host.sizingOptions = [] }
+        if #available(macOS 13.3, *) { host.safeAreaRegions = [] }
+        panel.contentView = host
+        let available = panel.screen?.visibleFrame.size ?? NSScreen.main?.visibleFrame.size ?? size
+        panel.contentMinSize = expandable
+            ? NSSize(width: min(640, available.width), height: min(420, max(240, available.height - 32)))
+            : .zero
+        panel.setContentSize(NSSize(width: min(size.width, available.width), height: min(size.height, max(240, available.height - 32))))
+        InterfaceScaling.shared.register(panel)
+        panel.center()
+        windows[tool] = panel
+        attachWorkspacePanel(panel)
+        ProjectionWindow.presentWorkspaceWindow(panel, activates: needsFocus)
+    }
+    func windowWillUseStandardFrame(_ window: NSWindow, defaultFrame newFrame: NSRect) -> NSRect {
+        if window === windows[.matrixPatch] { return window.screen?.visibleFrame ?? newFrame }
+        return newFrame
+    }
+    func windowWillClose(_ notification: Notification) {
+        guard let panel = notification.object as? NSPanel,
+              let tool = windows.first(where: { $0.value === panel })?.key else { return }
+        panel.parent?.removeChildWindow(panel)
+        if tool == .settings { settingsOpen = false; ControlMappings.shared.endEditing() }
+        if tool == .matrixPatch { matrixPatchOpen = false }
+        if tool == .advanced { advancedOpen = false }
+        if tool == .grandMA2 { grandMA2Open = false }
+        if tool == .resolume { resolumeOpen = false }
+        if !discardingWindows && [.settings, .matrixPatch, .advanced, .patch].contains(tool) {
+            // Keep the hosting tree and native window; hide it from layout,
+            // hit testing and accessibility until the next presentation.
+            DispatchQueue.main.async { [weak panel] in
+                if let panel, !panel.isVisible { panel.contentView?.isHidden = true }
+            }
+            return
+        }
+        windows.removeValue(forKey: tool)
+        DispatchQueue.main.async { panel.contentView = nil }
+    }
+    func closeAll() {
+        discardingWindows = true
+        for panel in Array(windows.values) { panel.close(); panel.contentView = nil }
+        windows.removeAll()
+        discardingWindows = false
+        patchTarget = nil
+        settingsOpen = false
+        matrixPatchOpen = false
+        advancedOpen = false
+        settingsSelection = nil
+    }
+}
+
+
+/// Measure before InterfaceScaleLayout: its GeometryReader intentionally has a
+/// 10-point ideal size, which is not the editor's required content size.
+private func workspaceEditorContentSize<Content: View>(_ content: Content) -> NSSize {
+    let fitted = NSHostingView(rootView: content).fittingSize
+    guard fitted.width.isFinite, fitted.height.isFinite else { return NSSize(width: 380, height: 500) }
+    return NSSize(width: min(940, max(340, fitted.width)), height: min(700, max(280, fitted.height)))
+}
+
+private struct WorkspaceEditorViewport<Content: View>: View {
+    let content: Content
+    var scrolls = true
+    /// Layout-driven tools need a finite proposal; an intrinsic-size request
+    /// collapses GeometryReader to its ten-point ideal size.
+    var layoutSize: NSSize? = nil
+    var body: some View {
+        if scrolls {
+            ScrollView([.horizontal, .vertical], showsIndicators: true) {
+                if let layoutSize {
+                    content.frame(width: layoutSize.width, height: layoutSize.height, alignment: .topLeading)
+                } else {
+                    content.fixedSize(horizontal: true, vertical: true)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                }
+            }
+        } else { content }
+    }
+}
+
+/// Editors remain independent windows so mixer, timeline and transport stay interactive.
+private struct WorkspaceEditorPresenter<Content: View>: NSViewRepresentable {
+    @Binding var presented: Bool
+    let title: String
+    var scrolls = true
+    var size: CGSize? = nil
+    var minimumSize: CGSize? = nil
+    var canClose: () -> Bool = { true }
+    var activates = true
+    @ViewBuilder let content: () -> Content
+    func makeCoordinator() -> Coordinator { Coordinator() }
+    func makeNSView(context: Context) -> NSView { NSView(frame: .zero) }
+    func updateNSView(_ view: NSView, context: Context) {
+        let coordinator = context.coordinator
+        coordinator.presented = $presented
+        coordinator.canClose = canClose
+        guard presented else { coordinator.close(notify: false); return }
+        if coordinator.panel != nil { return }
+        guard !coordinator.opening else { return }
+        coordinator.opening = true
+        let title = title, content = content, scrolls = scrolls, size = size
+        DispatchQueue.main.async { [weak coordinator] in
+            guard let coordinator else { return }
+            coordinator.opening = false
+            guard coordinator.presented?.wrappedValue == true else { return }
+            let panel = makeWorkspacePanel(title: JarasLocalization.string(title),
+                size: NSSize(width: 380, height: 500), minimum: NSSize(width: 320, height: 240))
+            panel.identifier = NSUserInterfaceItemIdentifier("catlive.editor." + title)
+            panel.delegate = coordinator
+            let editor = WorkspaceToolContent(content: content().environment(\.workspaceEditorDismiss, { [weak coordinator] in coordinator?.close(notify: true) }), updateTitle: { [weak panel] in
+                panel?.title = JarasLocalization.string(title)
+            })
+            // Fixed-canvas editors already know their dimensions. Measuring a
+            // second hosting tree repeats construction and onAppear work before
+            // their real window can become visible.
+            let initialSize = size ?? workspaceEditorContentSize(editor)
+            let host = WorkspaceEditorHostingView(rootView: WorkspaceEditorViewport(content: editor, scrolls: scrolls).interfaceScaled())
+            if #available(macOS 13, *) { host.sizingOptions = [] }
+            if #available(macOS 13.3, *) { host.safeAreaRegions = [] }
+            panel.contentView = host
+            let available = panel.screen?.visibleFrame.size ?? NSScreen.main?.visibleFrame.size ?? initialSize
+            if let minimumSize {
+                panel.contentMinSize = minimumSize
+            } else {
+                panel.styleMask.remove(.resizable)
+                panel.contentMinSize = .zero
+            }
+            panel.setContentSize(NSSize(width: min(initialSize.width, available.width), height: min(initialSize.height, max(240, available.height - 32))))
+            InterfaceScaling.shared.register(panel)
+            coordinator.panel = panel
+            panel.center(); attachWorkspacePanel(panel); ProjectionWindow.presentWorkspaceWindow(panel, activates: activates)
+        }
+    }
+    static func dismantleNSView(_ view: NSView, coordinator: Coordinator) { coordinator.close(notify: false) }
+    final class Coordinator: NSObject, NSWindowDelegate {
+        var presented: Binding<Bool>?
+        var panel: NSPanel?
+        var opening = false
+        var canClose: () -> Bool = { true }
+        func windowShouldClose(_ sender: NSWindow) -> Bool { canClose() }
+        func close(notify: Bool) {
+            guard let panel else { return }
+            detach(panel)
+            // close() already orders out the panel and hands focus back.
+            // Doing both makes AppKit process the workspace's focus twice.
+            panel.close()
+            if notify { presented?.wrappedValue = false }
+        }
+        func windowWillClose(_ notification: Notification) {
+            guard let closing = notification.object as? NSPanel, closing === panel else { return }
+            detach(closing)
+            presented?.wrappedValue = false
+        }
+        private func detach(_ closing: NSPanel) {
+            panel = nil
+            closing.delegate = nil
+            closing.parent?.removeChildWindow(closing)
+            // Let the window leave the screen before tearing down SwiftUI.
+            DispatchQueue.main.async { closing.contentView = nil }
+        }
+
+    }
+}
+
 #else
 struct MovableFXPanel<Content: View>: View {
     @ViewBuilder let content: () -> Content
@@ -310,3 +573,38 @@ struct MovableFXPanel<Content: View>: View {
     }
 }
 #endif
+
+
+private struct WorkspaceEditorDismissKey: EnvironmentKey {
+    static let defaultValue: (() -> Void)? = nil
+}
+extension EnvironmentValues {
+    var workspaceEditorDismiss: (() -> Void)? {
+        get { self[WorkspaceEditorDismissKey.self] }
+        set { self[WorkspaceEditorDismissKey.self] = newValue }
+    }
+}
+
+extension View {
+    @ViewBuilder func workspaceEditor<Content: View>(_ title: String, isPresented: Binding<Bool>, scrolls: Bool = true,
+        size: CGSize? = nil, minimumSize: CGSize? = nil, activates: Bool = true,
+        @ViewBuilder content: @escaping () -> Content) -> some View {
+        #if os(macOS)
+        background(WorkspaceEditorPresenter(presented: isPresented, title: title, scrolls: scrolls, size: size,
+            minimumSize: minimumSize, activates: activates, content: content).frame(width: 0, height: 0))
+        #else
+        sheet(isPresented: isPresented, content: content)
+        #endif
+    }
+    @ViewBuilder func workspaceEditor<Item: Identifiable, Content: View>(_ title: String, item: Binding<Item?>, scrolls: Bool = true,
+        size: CGSize? = nil, canClose: @escaping () -> Bool = { true }, activates: Bool = true,
+        @ViewBuilder content: @escaping (Item) -> Content) -> some View {
+        #if os(macOS)
+        background(WorkspaceEditorPresenter(presented: Binding(get: { item.wrappedValue != nil }, set: { if !$0 { item.wrappedValue = nil } }), title: title, scrolls: scrolls, size: size, canClose: canClose, activates: activates) {
+            if let value = item.wrappedValue { content(value) }
+        }.frame(width: 0, height: 0))
+        #else
+        sheet(item: item, content: content)
+        #endif
+    }
+}

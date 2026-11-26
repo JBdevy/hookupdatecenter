@@ -1,15 +1,41 @@
 #pragma once
 #include "../Project/Models.hpp"
+#include "../ProjectSync/ProjectSync.hpp"
+#include "PlaybackCapacity.hpp"
+#include <map>
+#include <utility>
 namespace jaras {
-enum class CommandKind { toggleMultiLoopBypass, queueSection, cancelSection, clipFadeIn, clipFadeOut, loopStart, loopEnd, escape, phase, masterMono, ignoreNext, tempo, beatsPerBar, beatUnit, play, stop, next, previous, queue, select, toggleLoop, seek, editSeek, subPlay, subStop, subSeek, stopAll, volume, pan, mute, solo, selectRegion, queueRegion, pause, clipMute, clipGain, clipPhase, clipPan, clipChannelMode, clipNormalization, clipPitch };
+enum class CommandKind { toggleMultiLoopBypass, queueSection, cancelSection, clipFadeIn, clipFadeOut, loopStart, loopEnd, escape, phase, masterMono, ignoreNext, tempo, beatsPerBar, beatUnit, play, stop, next, previous, queue, select, toggleLoop, seek, editSeek, subPlay, subStop, subSeek, stopAll, volume, pan, mute, solo, selectRegion, queueRegion, pause, clipMute, clipGain, clipPhase, clipPan, clipChannelMode, clipNormalization, clipPitch, clipFadeInCurve, clipFadeInSCurve, clipFadeOutCurve, clipFadeOutSCurve, queueBeatSeek, cancelBeatSeek, queueBarSeek, queueMarkerSeek, queuePartSeek };
+inline bool queuesTimelineSeek(CommandKind kind) {
+    return kind == CommandKind::queueBeatSeek || kind == CommandKind::queueBarSeek ||
+           kind == CommandKind::queueMarkerSeek || kind == CommandKind::queuePartSeek;
+}
 struct Command { CommandKind kind = CommandKind::stop; ID target; double value = 0; };
 class Engine {
 public:
     void loadProject(Project project);
+    void setProjectSyncID(ID id) { if (!project_.projectSyncID) project_.projectSyncID = std::move(id); }
+    projectSync::Frame projectSyncFrame() const {
+        projectSync::Frame frame{project_.projectSyncID.value_or(""), transport_, project_.regionSetlist, syncRevision_,
+            resumeSub_,manualSubCursor_,autoRegionQueue_,automaticSubplayActive_,playStart_,subPlayStart_,automaticSubplayQueue_};
+        frame.mixer={project_.masterVolume,project_.masterPan,project_.masterMute,project_.masterSolo,{}};
+        for(const auto &song:project_.songs) for(const auto &track:song.tracks)
+            frame.mixer.tracks.push_back({track.id,track.volume,track.pan,track.mute,track.solo});
+        return frame;
+    }
+    bool applyProjectSync(projectSync::Frame frame, double elapsed, bool first, bool *mixerChanged=nullptr);
     void applyProjectEdit(Project project);
+    // Control-thread timing history excludes immutable decoded peak arrays.
+    Project timingSnapshot();
+    void restoreTimingSnapshot(Project project);
+    void setRegionPitchState(const ID&, std::optional<int>, std::optional<std::vector<ID>>, std::optional<std::vector<ID>>);
     const Project& project() const noexcept { return project_; }
     const TransportState& transport() const noexcept { return transport_; }
     const Song* currentSong() const noexcept;
+    std::size_t activeAudioFileCount() const { const auto* song = currentSong(); return song ? playbackCapacity::active(*song, transport_, project_.regionSetlist && project_.regionSetlist->subplayExclusiveTrackIDs ? *project_.regionSetlist->subplayExclusiveTrackIDs : std::vector<ID>{}) : 0; }
+    bool liveCapacityExceeded() const { const auto* song = currentSong(); return song && playbackCapacity::exceeded(*song, transport_, project_.regionSetlist && project_.regionSetlist->subplayExclusiveTrackIDs ? *project_.regionSetlist->subplayExclusiveTrackIDs : std::vector<ID>{}); }
+    bool liveCapacityExceededDuring(double elapsed, double secondaryAdvance = 0) const { const auto* song = currentSong(); if (!song) return false; auto before = transport_; if (before.subPlay.playing) before.subPlay.position -= secondaryAdvance; return playbackCapacity::exceededDuring(*song, before, elapsed, project_.regionSetlist && project_.regionSetlist->subplayExclusiveTrackIDs ? *project_.regionSetlist->subplayExclusiveTrackIDs : std::vector<ID>{}); }
+    double subplayPreparationPosition() const;
     std::optional<ID> nextSongId() const;
     void execute(const Command& command);
     void configureRegionSetlist(RegionSetlist state);
@@ -24,6 +50,8 @@ public:
     void setFX(const ID& track, std::string json);
     void setClipFX(const ID& clip, std::string json);
     void setClipFXBypass(const ID& clip, bool bypassed);
+    void setClipPitchState(const ID& clip, std::optional<double> semitones);
+    void setClipName(const ID& clip, std::string name);
     void setClipText(const ID& clip, std::string text);
     void setMIDIInput(const ID& track, int slot);
     void setMIDIChannel(const ID& track, int channel);
@@ -34,12 +62,15 @@ public:
     void insertAudioTracks(const ID& song, std::vector<Track> tracks);
     void addRecordedClip(const ID& track, AudioClip clip, bool replacing = false);
     void setTimecode(const ID& track, TimecodeSettings settings);
-    void editTrack(const ID& id, std::string name, unsigned color);
+    void editTrack(const ID& id, std::string name, std::optional<unsigned> color);
+    bool soloTrackExclusively(const ID& id);
     void editMasterColor(unsigned color);
+    std::map<ID, int> setTrackMixerComponents(const ID& song, const std::map<ID, int>& masks);
     void setMarkers(const std::vector<TimelineMarker>& markers, const std::vector<ID>& removing = {}, bool retime = false);
     void setMarker(ID id, std::string name, double position, unsigned color, std::optional<double> bpm = {}, std::optional<int> beats = {}, std::optional<int> unit = {}, std::optional<std::string> timebase = {}, std::optional<bool> section = {}, std::optional<bool> loopSection = {});
     void setProjectTiming(double bpm, int beats, int unit, std::optional<ProjectTimeSettings> settings);
     void deleteManualMarker(const ID& id);
+    void setRegionInit(const ID& id, int count, bool bars);
     void setRegionPitch(const ID& id, int semitones, std::vector<ID> tracks, std::vector<ID> groups);
     void editRegion(const ID& id, std::string name, unsigned color, bool uppercaseName = true);
     void moveClip(const ID& clipId, double start, const ID& destination = {});
@@ -48,19 +79,35 @@ public:
     void advance(double elapsed);
     // Licensing only requests a safe boundary; it never stops an active callback.
     void finishCurrentSong(bool enabled) noexcept { finishCurrent_ = enabled; }
-private:
-    void advanceContinuous(double elapsed, const TimelineMarker* sectionDestination = nullptr);
-    const Part* sectionRegion(double position) const;
+    // The Parts display uses the same owner and boundary as the audio jump.
     const Part* sectionPlaybackRegion() const;
     std::optional<double> nextSectionTrigger() const;
+private:
+    void commitProjectEdit(Project project);
+    void advanceWithoutLiveTracking(double elapsed);
+    std::vector<ID> automaticSectionHandled_;
+    struct AutomaticSectionRun { ID trigger; int count = 0; bool cancelled = false; };
+    std::vector<AutomaticSectionRun> automaticSectionRuns_;
+    const AutomaticSectionRun* automaticSectionRun(const ID&) const;
+    AutomaticSectionRun& editAutomaticSectionRun(const ID&);
+    double automaticSectionNoticeRemaining_ = 0;
+    double automaticSectionLastPosition_ = -1;
+    std::optional<ID> automaticSectionSong_;
+    void recordLivePlayback(const TransportState& before, double elapsed);
+    void normalizeLiveMarks();
+    std::vector<std::pair<ID, double>> liveElapsedByRegion_;
+    void advanceContinuous(double elapsed, const TimelineMarker* sectionDestination = nullptr);
+    const Part* sectionRegion(double position) const;
     std::optional<TimelineMarker> sectionDestination(const ID& id) const;
     void resetMultiLoop();
     void refreshMultiLoop();
-    bool advanceMultiLoop(double elapsed);
+    bool advanceMultiLoop(double elapsed, double secondaryAdvance);
+    std::uint64_t syncRevision_ = 0, receivedSyncRevision_ = 0;
     Project project_;
     TransportState transport_;
     bool finishCurrent_ = false;
     bool resumeSub_ = false;
+    bool manualSubCursor_ = false;
     std::optional<double> playStart_, subPlayStart_;
     std::vector<ID> order() const;
     void select(const ID& id);
@@ -69,8 +116,17 @@ private:
     const Part* playbackBounds(const Part* part) const;
     void syncRegion();
     void promoteSubPlay(std::optional<ID> preferredRegion = {});
-    std::optional<ID> automaticRegionQueueTarget() const;
+    const RegionPlaylist* selectedRegionPlaylist() const;
+    std::optional<ID> entryForRegion(const std::optional<ID>& regionID, const std::optional<ID>& preferred = {}) const;
+    void syncPlaylistEntries();
+    // Returns an occurrence ID; queue transport still stores physical regions.
+    std::optional<ID> automaticRegionQueueTarget(bool ignoreBlockBoundary = false) const;
+    std::optional<ID> nextBlockPreparationTarget() const;
     void refreshAutomaticRegionQueue();
+    void stopQueuedSubplay();
+    void clearWaitingQueue();
+    double startAutomaticSubplay(double elapsed);
+    void refreshSubplayExclusivity();
     void autoQueueRegion();
     void clearIgnoreNext();
     void toggleIgnoreNext();

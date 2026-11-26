@@ -21,7 +21,10 @@ def declaration(source, needle):
     end = source.index('\n}', start) + 2
     return source[start:end] + '\n'
 
-parts = ['import AppKit\nimport SwiftUI\nimport Combine\n']
+parts = ['import AppKit\nimport SwiftUI\nimport Combine\nimport UniformTypeIdentifiers\n']
+parts.append('private final class MixerDividerView: NSView {}\n')
+parts.extend(declaration(scroll, name) for name in ['struct GridRowReveal:', 'enum TimelineVerticalBar {', 'private protocol TimelineSetlistResizeHost:'])
+parts.append(declaration(Path('Apple/Shared/VinhetasPanel.swift').read_text(), 'enum LibrarySamplerTransfer {'))
 parts.append('private enum TimelineViewportPreferences { static let zoom = 1.0 }\n')
 parts.extend(declaration(grid, needle) for needle in [
     'private final class TimelineCoordinatePlane:',
@@ -35,11 +38,13 @@ parts.extend(declaration(grid, needle) for needle in [
 ])
 parts.append(declaration(metal, 'enum TimelineWaveformCoverage {'))
 parts.append(declaration(scroll, 'enum TimelineLayoutDiagnostics {'))
+parts.append(declaration(scroll, 'private enum TimelineViewTreeDiagnostics {'))
 native_start = scroll.index('private final class GridDocumentView:')
 parts.append(scroll[native_start:scroll.index('\n#endif', native_start)])
 parts.append(declaration(scroll, 'private final class TimelineClipView:'))
 parts.append(Path('Tests/Apple/TimelineHostedItemsGateTests.swift').read_text())
 Path(sys.argv[1]).write_text('\n'.join(parts))
 PYTHON
-swiftc -swift-version 5 Apple/Shared/NativeTimelineInputGate.swift "$gate_test_dir/main.swift" -o "$gate_test_dir/test"
+python3 scripts/track-height-test-geometry.py "$gate_test_dir/TrackHeightGeometry.swift"
+swiftc "$gate_test_dir/TrackHeightGeometry.swift" -swift-version 5 Apple/Shared/NativeTimelineInputGate.swift "$gate_test_dir/main.swift" -o "$gate_test_dir/test"
 CATLIVE_PROFILE_LAYOUT=0 "$gate_test_dir/test"

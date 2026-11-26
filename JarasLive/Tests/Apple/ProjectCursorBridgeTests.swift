@@ -5,6 +5,29 @@ import Foundation
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
+        // The native grid scrolls past the five-minute empty-project extent.
+        // Its editing cursor must remain usable there, including after saving.
+        let freeDirectory = directory.appendingPathComponent("FreeCursor", isDirectory: true)
+        try FileManager.default.createDirectory(at: freeDirectory, withIntermediateDirectories: true)
+        let freeStore = ProjectStore(url: freeDirectory.appendingPathComponent("FreeCursor.jl"))
+        let free = try ShowController(executor: LocalCommandExecutor(), persistence: freeStore,
+                                     initialProject: .empty(name: "Free grid"))
+        precondition(free.current!.duration == 300)
+        free.send(.editSeek, value: 610.25)
+        precondition(free.snapshot.transport.editPosition == 610.25 && free.snapshot.transport.position == 610.25)
+        precondition(free.current!.duration == 300, "Moving the cursor does not extend project content")
+        try await free.flushProject()
+        let freeDocument = try await freeStore.load()!
+        let freeReopened = try ShowController(executor: LocalCommandExecutor(), persistence: freeStore, initialProject: freeDocument)
+        precondition(freeReopened.snapshot.transport.editPosition == 610.25 && !freeReopened.needsSave)
+        freeReopened.send(.editSeek, value: 10)
+        freeReopened.send(.play)
+        freeReopened.send(.editSeek, value: 720)
+        precondition(freeReopened.snapshot.transport.editPosition == 720)
+        precondition(freeReopened.isPlaying && freeReopened.snapshot.transport.position < 300,
+                     "Moving the green cursor never seeks running playback")
+        freeReopened.send(.stopAll)
+        print("FREE_EDIT_CURSOR_PAST_FIVE_MINUTES_AND_NATIVE_REOPEN_OK")
         let store = ProjectStore(url: directory.appendingPathComponent("Cursor.jl"))
         let show = try ShowController(executor: LocalCommandExecutor(), persistence: store,
             initialProject: .demo())

@@ -60,7 +60,7 @@ private final class RetentionInputHost: NSView, NativeTimelineBodyInputHost {
     scroll.setFrameSize(CGSize(width: 248, height: 4096)); fixture.settle()
     let owners = descendants(fixture.host, of: TrackMixerNativeControlView.self)
     let row = owners[30]
-    let hosts = [row.meter, row.activity, row.controls]
+    let hosts = [row.meter, row.controls]
     let identities = hosts.map(ObjectIdentifier.init)
     let sliders = descendants(row.controls, of: DirectVolumeSliderView.self)
     let sliderIDs = sliders.map(ObjectIdentifier.init)
@@ -148,8 +148,10 @@ private final class RetentionInputHost: NSView, NativeTimelineBodyInputHost {
     expect(hosts.allSatisfy { $0.window === fixture.window }, "An active drag or menu pins the retained hosts")
     TrackSelectionRouter.shared.pinnedTracks.removeAll()
     row.refreshViewportVisibility()
+    expect(row.isHidden != accessibility, "Ending focus/drag immediately hides inactive offscreen controls")
+    RunLoop.main.run(until: Date().addingTimeInterval(0.22))
     expect(hosts.allSatisfy { accessibility ? $0.window === fixture.window : $0.window == nil },
-        "Ending focus/drag permits detachment on the next viewport refresh")
+        "Ending focus/drag permits detachment once the recent scroll settles")
     fixture.window.close()
     print("TRACK_MIXER_DETACHED_STATE_MODEL_ACTION_ENVIRONMENT_METERS_HIT_TEST_FOCUS_AND_PIN_RETENTION_OK")
 }

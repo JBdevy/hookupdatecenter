@@ -9,6 +9,7 @@ import sys
 source = Path('Apple/Shared/DAWRemoteView.swift').read_text()
 shared = source[source.index('// MARK: - Remote notice presentation'):source.index('// MARK: - Local Remote timer')]
 stubs = '''import SwiftUI
+extension Font { static func jarasSystem(size: CGFloat, weight: Font.Weight = .regular) -> Font { .system(size: size, weight: weight) } }
 enum JarasTheme { static let green = Color.green, yellow = Color.yellow, panel = Color.gray, text = Color.white, secondary = Color.gray }
 enum JarasLocalization { static func string(_ key: String) -> String { key } }
 '''

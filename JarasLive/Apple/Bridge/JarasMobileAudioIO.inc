@@ -5,15 +5,21 @@
 @implementation JarasMobileAudioOutput {
     AVAudioEngine *_engine;
     AVAudioEngineManualRenderingBlock _render;
+    AVAudioPCMBuffer *_fallbackOutput; // RemoteIO may ask the callback to supply its own buffers.
+    unsigned _configuredChannels, _maximumFrames;
     AudioUnit _unit;
     std::atomic<bool> _enabled;
     std::atomic<uint64_t> _sequence, _host;
     std::atomic<int64_t> _sample;
+    std::atomic<uint64_t> _callbackCount, _failureCount, _lastCallbackHostTime, _lastSuccessfulRender;
+    std::atomic<int32_t> _lastRenderStatus, _lastRenderError;
     double _rate, _ticksPerSecond;
 }
 - (instancetype)initWithEngine:(AVAudioEngine *)engine {
     if ((self = [super init])) {
         _engine = engine;
+        _callbackCount.store(0); _failureCount.store(0); _lastCallbackHostTime.store(0);
+        _lastRenderStatus.store(-999); _lastRenderError.store(noErr); _lastSuccessfulRender.store(0);
         mach_timebase_info_data_t base; mach_timebase_info(&base);
         _ticksPerSecond = 1e9 * base.denom / base.numer;
     }
@@ -31,36 +37,107 @@
     }
     return nil;
 }
+- (BOOL)isRunning {
+#if TARGET_OS_IOS
+    UInt32 value = 0, bytes = sizeof(value);
+    return _unit && AudioUnitGetProperty(_unit, kAudioOutputUnitProperty_IsRunning,
+                                         kAudioUnitScope_Global, 0, &value, &bytes) == noErr && value != 0;
+#else
+    return _engine.isRunning;
+#endif
+}
+- (BOOL)hasStalled {
+    if (!_enabled.load(std::memory_order_acquire)) return NO;
+    const auto last = _lastSuccessfulRender.load(std::memory_order_relaxed);
+    const auto now = mach_absolute_time();
+    return last && now > last && double(now - last) > 1.5 * _ticksPerSecond;
+}
+- (NSDictionary<NSString *, id> *)diagnostics {
+    // Only atomics are written by renderFrames. Querying the hardware and
+    // allocating this dictionary happens exclusively on the control thread.
+    UInt32 running = 0, bytes = sizeof(running);
+    const OSStatus runningStatus = _unit
+        ? AudioUnitGetProperty(_unit, kAudioOutputUnitProperty_IsRunning,
+                               kAudioUnitScope_Global, 0, &running, &bytes)
+        : kAudio_ParamError;
+    return @{
+        @"callbackCount": @(_callbackCount.load(std::memory_order_relaxed)),
+        @"failureCount": @(_failureCount.load(std::memory_order_relaxed)),
+        @"lastStatus": @(_lastRenderStatus.load(std::memory_order_relaxed)),
+        @"lastError": @(_lastRenderError.load(std::memory_order_relaxed)),
+        @"lastCallbackHostTime": @(_lastCallbackHostTime.load(std::memory_order_relaxed)),
+        @"gated": @(!_enabled.load(std::memory_order_acquire)),
+        @"engineRunning": @(_engine.isRunning),
+        @"manualRendering": @(_engine.isInManualRenderingMode),
+        @"manualSampleTime": @(_engine.isInManualRenderingMode ? _engine.manualRenderingSampleTime : 0),
+        @"outputUnitPresent": @(_unit != NULL),
+        @"outputUnitRunning": @(runningStatus == noErr && running != 0),
+        @"outputUnitRunningStatus": @(runningStatus)
+    };
+}
 - (AVAudioFormat *)configureWithSampleRate:(double)rate channels:(AVAudioChannelCount)channels error:(NSError **)error {
     if (!std::isfinite(rate) || rate <= 0 || !channels || channels > 1024) {
         if (error) *error = [NSError errorWithDomain:@"CatLive.MobileAudio" code:-50
             userInfo:@{NSLocalizedDescriptionKey:@"Audio output is unavailable"}];
         return nil;
     }
-    if (_engine.isInManualRenderingMode && _engine.manualRenderingFormat.sampleRate == rate &&
-        _engine.manualRenderingFormat.channelCount == channels) return _engine.manualRenderingFormat;
+    const AVAudioFrameCount maximumSlice = 4096;
+    AVAudioFormat *existing = _engine.manualRenderingFormat;
+    const bool formatMatches = _engine.isInManualRenderingMode &&
+        _engine.manualRenderingMode == AVAudioEngineManualRenderingModeRealtime &&
+        existing.sampleRate == rate && existing.channelCount == channels &&
+        existing.commonFormat == AVAudioPCMFormatFloat32 && !existing.isInterleaved &&
+        _engine.manualRenderingMaximumFrameCount >= maximumSlice;
+    if (formatMatches && _render && _configuredChannels == channels && _rate == rate)
+        return _engine.manualRenderingFormat;
     if (_unit) {
         if (error) *error = [NSError errorWithDomain:@"CatLive.MobileAudio" code:-50
             userInfo:@{NSLocalizedDescriptionKey:@"Stop the transport before changing the audio device."}];
         return nil;
     }
+    _render = nil;
+    _configuredChannels = 0; _maximumFrames = 0;
     auto layout = [[AVAudioChannelLayout alloc] initWithLayoutTag:kAudioChannelLayoutTag_DiscreteInOrder | channels];
     AVAudioFormat *format = channels > 2
         ? [[AVAudioFormat alloc] initStandardFormatWithSampleRate:rate channelLayout:layout]
         : [[AVAudioFormat alloc] initStandardFormatWithSampleRate:rate channels:channels];
-    if (_engine.isInManualRenderingMode) [_engine disableManualRenderingMode];
-    if (![_engine enableManualRenderingMode:AVAudioEngineManualRenderingModeRealtime format:format maximumFrameCount:4096 error:error]) return nil;
+    if (!formatMatches) {
+        if (_engine.isInManualRenderingMode) [_engine disableManualRenderingMode];
+        if (![_engine enableManualRenderingMode:AVAudioEngineManualRenderingModeRealtime format:format maximumFrameCount:maximumSlice error:error]) return nil;
+    }
+    _fallbackOutput = [[AVAudioPCMBuffer alloc] initWithPCMFormat:format frameCapacity:_engine.manualRenderingMaximumFrameCount];
+    if (!_fallbackOutput) {
+        if (error) *error = [NSError errorWithDomain:@"CatLive.MobileAudio" code:kAudio_MemFullError
+            userInfo:@{NSLocalizedDescriptionKey:@"Could not allocate audio output buffers"}];
+        return nil;
+    }
+    _configuredChannels = channels; _maximumFrames = _fallbackOutput.frameCapacity;
     _rate = rate;
     _host.store(0); _sample.store(0);
     _render = _engine.manualRenderingBlock;
     return format;
 }
 - (OSStatus)renderFrames:(UInt32)frames time:(const AudioTimeStamp *)time flags:(AudioUnitRenderActionFlags *)flags buffers:(AudioBufferList *)data {
+    _callbackCount.fetch_add(1, std::memory_order_relaxed);
+    _lastCallbackHostTime.store(mach_absolute_time(), std::memory_order_relaxed);
     if (!_enabled.load(std::memory_order_acquire)) {
         for (unsigned n = 0; n < data->mNumberBuffers; ++n)
             if (data->mBuffers[n].mData) memset(data->mBuffers[n].mData, 0, data->mBuffers[n].mDataByteSize);
         *flags |= kAudioUnitRenderAction_OutputIsSilence;
         return noErr;
+    }
+    const auto requestedBytes = frames * sizeof(float); // The configured hardware format is planar float.
+    if (frames > _maximumFrames || data->mNumberBuffers != _configuredChannels) {
+        *flags |= kAudioUnitRenderAction_OutputIsSilence; return kAudio_ParamError;
+    }
+    for (unsigned n = 0; n < data->mNumberBuffers; ++n) {
+        auto &channel = data->mBuffers[n];
+        if (!channel.mData) {
+            channel.mData = _fallbackOutput.floatChannelData[n];
+            channel.mDataByteSize = UInt32(requestedBytes);
+        } else if (channel.mDataByteSize < requestedBytes) {
+            *flags |= kAudioUnitRenderAction_OutputIsSilence; return kAudio_ParamError;
+        }
     }
     const auto first = _engine.manualRenderingSampleTime;
     const auto host = (time->mFlags & kAudioTimeStampHostTimeValid) ? time->mHostTime : mach_absolute_time();
@@ -68,15 +145,32 @@
     jaras::realtimeClock = {host, double(first), _rate, _ticksPerSecond};
     OSStatus failure = noErr;
     const auto status = _render(frames, data, &failure);
+    _lastRenderStatus.store(int32_t(status), std::memory_order_relaxed);
+    _lastRenderError.store(failure, std::memory_order_relaxed);
     jaras::realtimeClock = previous;
     _sequence.fetch_add(1, std::memory_order_acq_rel);
     _sample.store(_engine.manualRenderingSampleTime, std::memory_order_relaxed);
     _host.store(host + uint64_t(frames / _rate * _ticksPerSecond), std::memory_order_relaxed);
     _sequence.fetch_add(1, std::memory_order_release);
-    if (status != AVAudioEngineManualRenderingStatusSuccess) {
-        for (unsigned n = 0; n < data->mNumberBuffers; ++n)
-            if (data->mBuffers[n].mData) memset(data->mBuffers[n].mData, 0, data->mBuffers[n].mDataByteSize);
-        *flags |= kAudioUnitRenderAction_OutputIsSilence;
+    if (status == AVAudioEngineManualRenderingStatusSuccess && failure == noErr) {
+        _lastSuccessfulRender.store(mach_absolute_time(), std::memory_order_relaxed);
+    } else {
+        _failureCount.fetch_add(1, std::memory_order_relaxed);
+        // A short input can leave valid output from the other tracks. Keep that
+        // prefix and give RemoteIO a full slice with the missing tail zeroed.
+        const bool partial = status == AVAudioEngineManualRenderingStatusInsufficientDataFromInputNode && failure == noErr;
+        bool anyPCM = false;
+        for (unsigned n = 0; n < data->mNumberBuffers; ++n) {
+            auto &channel = data->mBuffers[n];
+            const size_t valid = partial && channel.mData ? std::min<size_t>(requestedBytes, channel.mDataByteSize) : 0;
+            if (!channel.mData) channel.mData = _fallbackOutput.floatChannelData[n];
+            auto *bytes = static_cast<uint8_t *>(channel.mData);
+            std::memset(bytes + valid, 0, requestedBytes - valid);
+            channel.mDataByteSize = UInt32(requestedBytes);
+            anyPCM |= valid != 0;
+        }
+        if (anyPCM) _lastSuccessfulRender.store(mach_absolute_time(), std::memory_order_relaxed);
+        else *flags |= kAudioUnitRenderAction_OutputIsSilence;
     }
     return noErr;
 }
@@ -85,8 +179,14 @@ static OSStatus mobileOutputRender(void *context, AudioUnitRenderActionFlags *fl
     return [(__bridge JarasMobileAudioOutput *)context renderFrames:frames time:time flags:flags buffers:data];
 }
 - (BOOL)startAndReturnError:(NSError **)error {
+    if (!_render) {
+        if (error) *error = [NSError errorWithDomain:@"CatLive.MobileAudio" code:kAudioUnitErr_Uninitialized
+            userInfo:@{NSLocalizedDescriptionKey:@"Audio graph is unavailable"}];
+        return NO;
+    }
 #if TARGET_OS_IOS
-    if (_unit) return YES;
+    if (_unit && self.running && _enabled.load(std::memory_order_acquire)) return YES;
+    if (_unit) [self stop];
     AudioComponentDescription description = {kAudioUnitType_Output, kAudioUnitSubType_RemoteIO, kAudioUnitManufacturer_Apple, 0, 0};
     OSStatus status = AudioComponentInstanceNew(AudioComponentFindNext(NULL, &description), &_unit);
     if (status == noErr) {
@@ -105,6 +205,7 @@ static OSStatus mobileOutputRender(void *context, AudioUnitRenderActionFlags *fl
     }
     if (status == noErr) status = AudioUnitInitialize(_unit);
     if (status == noErr) {
+        _lastSuccessfulRender.store(mach_absolute_time(), std::memory_order_relaxed);
         _enabled.store(true, std::memory_order_release);
         status = AudioOutputUnitStart(_unit);
     }
@@ -127,6 +228,7 @@ static OSStatus mobileOutputRender(void *context, AudioUnitRenderActionFlags *fl
         AudioComponentInstanceDispose(_unit);
         _unit = NULL;
     }
+    _lastSuccessfulRender.store(0, std::memory_order_relaxed);
     _sequence.fetch_add(1, std::memory_order_acq_rel);
     _host.store(0, std::memory_order_relaxed);
     _sample.store(0, std::memory_order_relaxed);
@@ -138,12 +240,12 @@ static OSStatus mobileOutputRender(void *context, AudioUnitRenderActionFlags *fl
 @implementation JarasMobileAudioInput {
     AudioUnit _unit;
     AVAudioPCMBuffer *_buffer;
-    void (^_capture)(AVAudioPCMBuffer *);
+    void (^_capture)(AVAudioPCMBuffer *, uint64_t);
     BOOL _running;
 }
 - (AVAudioFormat *)format { return _buffer.format; }
 - (BOOL)running { return _running; }
-- (void)setCapture:(void (^)(AVAudioPCMBuffer *))capture {
+- (void)setCapture:(void (^)(AVAudioPCMBuffer *, uint64_t))capture {
     // Caller stops the unit first: the realtime callback never loads a block
     // whose ownership is being changed by the control thread.
     _capture = [capture copy];
@@ -156,7 +258,7 @@ static OSStatus mobileOutputRender(void *context, AudioUnitRenderActionFlags *fl
     if (frames > _buffer.frameCapacity) return kAudioUnitErr_TooManyFramesToProcess;
     _buffer.frameLength = frames;
     const auto status = AudioUnitRender(_unit, flags, time, 1, frames, _buffer.mutableAudioBufferList);
-    if (status == noErr && _capture) _capture(_buffer);
+    if (status == noErr && _capture) _capture(_buffer, time->mFlags & kAudioTimeStampHostTimeValid ? time->mHostTime : 0);
     return status;
 }
 static OSStatus mobileInputRender(void *context, AudioUnitRenderActionFlags *flags, const AudioTimeStamp *time,

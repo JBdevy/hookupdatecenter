@@ -2,19 +2,23 @@ import AppKit
 import SwiftUI
 _ = NSApplication.shared
 let canvas = MIDIPianoCanvas()
-let scroll = NSScrollView(frame:CGRect(x:0,y:0,width:900,height:480));scroll.documentView=canvas
-let window=NSWindow(contentRect:scroll.frame,styleMask:[.titled],backing:.buffered,defer:false);window.isReleasedWhenClosed=false;window.contentView=scroll
+let scroll = MIDIPianoScrollView(frame:CGRect(x:0,y:0,width:900,height:480));scroll.documentView=canvas
+final class MIDIEditorTestWindow: NSWindow { override var isKeyWindow: Bool { true } }
+let window=MIDIEditorTestWindow(contentRect:scroll.frame,styleMask:[.titled],backing:.buffered,defer:false);window.isReleasedWhenClosed=false;window.contentView=scroll
 var clip=AudioClip(id:UUID(),name:"MIDI",startTime:0,duration:8,midi:MIDIItem())
 var selected=Set<UUID>(), commits=0
 canvas.commit={clip.midi!.notes=$0;commits+=1};canvas.selectionChanged={selected=$0}
 func update() {canvas.update(clip:clip,selected:selected,scale:100,cursor:0,width:900);scroll.contentView.scroll(to:CGPoint(x:0,y:1100));window.contentView?.layoutSubtreeIfNeeded()}
-func event(_ type:NSEvent.EventType,_ beat:Double,_ pitch:Int,flags:NSEvent.ModifierFlags=[])->NSEvent {
+func event(_ type:NSEvent.EventType,_ beat:Double,_ pitch:Int,flags:NSEvent.ModifierFlags=[], clicks:Int=1)->NSEvent {
  let p=CGPoint(x:64+beat*100,y:24+CGFloat(127-pitch)*18+9)
- return NSEvent.mouseEvent(with:type,location:canvas.convert(p,to:nil),modifierFlags:flags,timestamp:0,windowNumber:window.windowNumber,context:nil,eventNumber:1,clickCount:1,pressure:1)!
+ return NSEvent.mouseEvent(with:type,location:canvas.convert(p,to:nil),modifierFlags:flags,timestamp:0,windowNumber:window.windowNumber,context:nil,eventNumber:1,clickCount:clicks,pressure:1)!
 }
 update()
-canvas.mouseDown(with:event(.leftMouseDown,0.11,60));canvas.mouseDragged(with:event(.leftMouseDragged,1.12,60));canvas.mouseUp(with:event(.leftMouseUp,1.12,60))
+canvas.mouseDown(with:event(.leftMouseDown,0.11,60));canvas.mouseUp(with:event(.leftMouseUp,0.11,60))
+precondition(commits == 0 && clip.midi!.notes.isEmpty)
+canvas.mouseDown(with:event(.leftMouseDown,0.11,60,clicks:2));canvas.mouseDragged(with:event(.leftMouseDragged,1.12,60));canvas.mouseUp(with:event(.leftMouseUp,1.12,60))
 precondition(commits==1&&clip.midi!.notes.count==1&&clip.midi!.notes[0].start==0&&clip.midi!.notes[0].length==1)
+precondition(clip.midi!.notes[0].velocity == 100, "A new note starts at velocity 100")
 update()
 canvas.mouseDown(with:event(.leftMouseDown,0.99,60));canvas.mouseDragged(with:event(.leftMouseDragged,1.365,60,flags:.shift));canvas.mouseUp(with:event(.leftMouseUp,1.365,60,flags:.shift))
 precondition(abs(clip.midi!.notes[0].length-1.375)<1e-9,"Shift resizes freely using the original press offset")
@@ -46,7 +50,7 @@ canvas.rightMouseDragged(with:event(.rightMouseDragged,3.5,58))
 canvas.rightMouseUp(with:event(.rightMouseUp,3.5,58))
 precondition(selected == [channelTwo.id],"marquee selection excludes hidden channels")
 canvas.channelFilter=16;selected=[];update()
-canvas.mouseDown(with:event(.leftMouseDown,4,62));canvas.mouseUp(with:event(.leftMouseUp,4,62))
+canvas.mouseDown(with:event(.leftMouseDown,4,62,clicks:2));canvas.mouseUp(with:event(.leftMouseUp,4,62))
 precondition(clip.midi!.notes.last?.channel == 16,"new notes use the selected channel")
 precondition(clip.midi!.notes.contains(channelTwo),"creating notes does not replace another channel")
 canvas.channelFilter=0;update()
@@ -112,4 +116,77 @@ rulerClick(8)
 precondition(seeks.last == 3,"source beat8 maps to3s across the tempo change instead of4s")
 precondition(commits == beforeRulerCommits,"tempo-aware ruler seeking never commits MIDI edits")
 print("MIDI_PIANO_RULER_SEEK_SOURCE_OFFSET_RATE_TEMPO_SEGMENTS_SNAP_SHIFT_SCROLL_AND_CANCEL_OK")
+func wheel(_ dx: Int32, _ dy: Int32, flags: CGEventFlags = []) {
+    let event = CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 2,
+                        wheel1: dy, wheel2: dx, wheel3: 0)!
+    event.flags = flags
+    scroll.scrollWheel(with: NSEvent(cgEvent: event)!)
+}
+let zoomBeforeWheel = canvas.scale
+wheel(0,1)
+precondition(canvas.scale > zoomBeforeWheel, "Vertical wheel must zoom the piano roll")
+let zoomAfterWheel = canvas.scale
+scroll.contentView.scroll(to: CGPoint(x: 250,y: 500))
+let beforeOption = scroll.contentView.bounds.origin
+wheel(0,-1,flags:.maskAlternate)
+precondition(scroll.contentView.bounds.minY != beforeOption.y && canvas.scale == zoomAfterWheel)
+let beforeHorizontal = scroll.contentView.bounds.minX
+wheel(-1,0)
+precondition(scroll.contentView.bounds.minX != beforeHorizontal && canvas.scale == zoomAfterWheel)
+let heightBeforeWheel = canvas.keyHeight
+wheel(0, 1, flags: .maskCommand)
+precondition(canvas.keyHeight > heightBeforeWheel && canvas.scale == zoomAfterWheel)
+precondition(MIDINote.label(pitch: 63, velocity: 96) == "D#4 - 96")
+print("MIDI_PIANO_WHEEL_ZOOM_HORIZONTAL_SCROLL_AND_OPTION_VERTICAL_OK")
+
+clip = AudioClip(id: UUID(), name: "Note height", startTime: 0, duration: 8, midi: MIDIItem())
+selected = []
+canvas.update(clip: clip, selected: selected, scale: 100, keyHeight: 26, cursor: 0, width: 900)
+scroll.contentView.scroll(to: CGPoint(x: 0, y: 1500))
+window.contentView?.layoutSubtreeIfNeeded()
+canvas.creationVelocity = 73
+let notePoint = CGPoint(x: 64 + 1.2 * 100, y: 24 + CGFloat(127 - 61) * 26 + 13)
+func noteEvent(_ type: NSEvent.EventType, clicks: Int = 2) -> NSEvent {
+    NSEvent.mouseEvent(with: type, location: canvas.convert(notePoint, to: nil), modifierFlags: [],
+        timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 1,
+        clickCount: clicks, pressure: 1)!
+}
+canvas.mouseDown(with: noteEvent(.leftMouseDown)); canvas.mouseUp(with: noteEvent(.leftMouseUp))
+precondition(clip.midi!.notes.count == 1 && clip.midi!.notes[0].pitch == 61 && clip.midi!.notes[0].velocity == 73)
+let origin = canvas.rescaledOrigin(CGPoint(x: 100, y: 900), viewportHeight: 416, previousScale: 200, previousHeight: 18)
+precondition(abs(origin.x - 50) < 1e-9 && abs((origin.y + 196) / 26 - (900 + 196) / 18) < 1e-9,
+             "Changing zoom and note height preserves the time at the left edge and the pitch at the center")
+print("MIDI_PIANO_CREATION_VELOCITY_AND_VERTICAL_SCALE_OK")
+
+let viewport = canvas.visibleRect
+let cursorPoint = CGPoint(x: viewport.minX + 350, y: viewport.minY + 70)
+let hover = NSEvent.mouseEvent(with: .mouseMoved, location: canvas.convert(cursorPoint, to: nil),
+    modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil,
+    eventNumber: 1, clickCount: 0, pressure: 0)!
+precondition(canvas.pointerCursor(at: cursorPoint) === NSCursor.crosshair)
+precondition(canvas.pointerCursor(at: CGPoint(x: viewport.minX + 4, y: cursorPoint.y)) === NSCursor.arrow)
+canvas.updateTrackingAreas()
+let tracking = canvas.trackingAreas.last!
+canvas.updateTrackingAreas()
+precondition(canvas.trackingAreas.contains { $0 === tracking }, "Layout updates must preserve the mouse exit tracking area")
+canvas.mouseMoved(with: hover)
+precondition(NSCursor.current === NSCursor.crosshair)
+canvas.mouseExited(with: hover)
+precondition(NSCursor.current === NSCursor.arrow, "Leaving the grid restores the arrow while the editor stays open")
+canvas.mouseMoved(with: hover)
+NotificationCenter.default.post(name: NSWindow.didResignKeyNotification, object: window)
+precondition(NSCursor.current === NSCursor.arrow, "Changing the active window releases the grid cursor")
+canvas.isEditable = false
+precondition(canvas.pointerCursor(at: cursorPoint) === NSCursor.arrow)
+print("MIDI_PIANO_CURSOR_TRACKING_EXIT_WINDOW_FOCUS_AND_READ_ONLY_OK")
+
+
+let melodic = InstrumentParameters()
+let drums = InstrumentParameters(drums: true)
+precondition(melodic.release == 0.16 && drums.release == 20)
+var custom = InstrumentParameters()
+custom.release = 0.72
+let reopened = try JSONDecoder().decode(InstrumentParameters.self, from: JSONEncoder().encode(custom))
+precondition(reopened.release == 0.72)
+print("NATIVE_INSTRUMENT_DEFAULT_160MS_RELEASE_AND_DRUMS_AND_SAVED_VALUES_OK")
 window.close()

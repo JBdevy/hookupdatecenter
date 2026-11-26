@@ -25,9 +25,11 @@ final class ProjectTimebaseTests: XCTestCase {
     func testDivisionsAndNoneMatchSnappingWithoutChangingTiming() {
         let quarter = TimelineTempo.gridStep(bar: 2, beats: 4, pixelsPerSecond: 100, divisions: 4)
         XCTAssertEqual(quarter, 0.5)
-        XCTAssertEqual(TimelineTempo.gridStep(bar: 2, beats: 4, pixelsPerSecond: 100, divisions: 2), 1)
+        // Visible beat lines are snap targets even when the requested division
+        // is coarser than a beat. Finer divisions still appear as space allows.
+        XCTAssertEqual(TimelineTempo.gridStep(bar: 2, beats: 4, pixelsPerSecond: 100, divisions: 2), 0.5)
         XCTAssertEqual(TimelineTempo.gridStep(bar: 2, beats: 4, pixelsPerSecond: 100, divisions: 8), 0.25)
-        XCTAssertEqual(TimelineTempo.gridStep(bar: 1.5, beats: 3, pixelsPerSecond: 100, divisions: 4, unit: 8), 1)
+        XCTAssertEqual(TimelineTempo.gridStep(bar: 1.5, beats: 3, pixelsPerSecond: 100, divisions: 4, unit: 8), 0.5)
         XCTAssertEqual(TimelineTempo.snap(1.13, bar: 2, beats: 4, pixelsPerSecond: 100, divisions: 8), 1.25)
         XCTAssertEqual(TimelineTempo.snap(1.13, bar: 2, beats: 4, pixelsPerSecond: 100, divisions: 0), 1.13)
         XCTAssertEqual(TimelineTempo.snap(1.13, bar: 2, beats: 4, pixelsPerSecond: 100, anchors: [1.1], divisions: 0), 1.1)

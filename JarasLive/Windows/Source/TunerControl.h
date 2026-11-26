@@ -1,5 +1,7 @@
 #pragma once
+#include "Localization.h"
 #include "Session.h"
+#include "RegionPitch.h"
 namespace catlive {
 class TunerControl final : public Component, private Timer {
   public:
@@ -9,62 +11,55 @@ class TunerControl final : public Component, private Timer {
             addAndMakeVisible(button);
             button->setWantsKeyboardFocus(false);
             button->getProperties().set("plain", true);
+            button->getProperties().set("fontSize", 15);
             button->setColour(TextButton::textColourOffId, theme::green);
         }
         down.onClick = [step] { step(-1); };
         up.onClick = [step] { step(1); };
-        down.setTooltip("Abaixar tom da música");
-        up.setTooltip("Subir tom da música");
+        down.setTooltip(String::fromUTF8("Abaixar tom da música"));
+        up.setTooltip(String::fromUTF8("Subir tom da música"));
         startTimerHz(8);
     }
     void resized() override {
-        down.setBounds(35, 0, 20, getHeight());
-        up.setBounds(getWidth() - 24, 0, 20, getHeight());
+        constexpr int stepWidth = 28, stepHeight = 28;
+        const int y = (getHeight() - stepHeight) / 2;
+        down.setBounds(38, y, stepWidth, stepHeight);
+        up.setBounds(getWidth() - stepWidth - 3, y, stepWidth, stepHeight);
     }
     const jaras::Part *region() const {
         const auto *song = session.song();
-        if (!song)
-            return nullptr;
-        if (session.transport().playing)
-            return regionPitch::at(*song, session.transport().position);
-        for (const auto &part : song->parts)
-            if (session.transport().regionId == part.id)
-                return &part;
-        return regionPitch::at(*song, session.transport().editPosition);
+        return song ? regionPitch::target(*song, session.transport()) : nullptr;
     }
     void paint(Graphics &g) override {
-        auto bounds = getLocalBounds().toFloat().reduced(.5f);
-        g.setColour(theme::display);
-        g.fillRoundedRectangle(bounds, 4);
-        g.setColour(theme::line);
-        g.drawRoundedRectangle(bounds, 4, 1);
         g.setColour(Colours::white);
         g.setFont(theme::semiboldFont(9));
-        g.drawText("Tuner", 5, 0, 30, getHeight(), Justification::centredLeft);
+        g.drawText("Tuner", 5, 0, down.getX() - 5, getHeight(), Justification::centredLeft);
         g.setColour(theme::green);
         g.setFont(theme::semiboldFont(11));
         auto *part = region();
-        g.drawText(String(part ? part->pitchSemitones.value_or(0) : 0) + "st", 55, 0,
-                   getWidth() - 79, getHeight(), Justification::centred);
+        g.drawText(String(part ? part->pitchSemitones.value_or(0) : 0) + "st", down.getRight(), 0,
+                   up.getX() - down.getRight(), getHeight(), Justification::centred);
     }
     void mouseDown(const MouseEvent &e) override {
-        if (e.mods.isPopupMenu() && region())
+        if (e.mods.isPopupMenu() && e.x >= down.getRight() && e.x < up.getX() && region())
             configure();
     }
 
   private:
     Session &session;
     std::function<void()> configure;
-    TextButton down{String::fromUTF8("−")}, up{"+"};
+    QuietButton down{String::fromUTF8("−")}, up{"+"};
+    std::optional<int> shownPitch;
     void timerCallback() override {
         if (!isShowing())
             return;
         auto *part = region();
         const bool allowed =
-            part && !session.transport().playing && !session.audio.isRecording() && !session.busy;
+            part && !session.busy;
         down.setEnabled(allowed && part->pitchSemitones.value_or(0) > -12);
         up.setEnabled(allowed && part->pitchSemitones.value_or(0) < 12);
-        repaint();
+        const int pitch = part ? part->pitchSemitones.value_or(0) : 0;
+        if (!shownPitch || *shownPitch != pitch) { shownPitch = pitch; repaint(); }
     }
 };
 class PitchTargetsPanel final : public Component {
@@ -73,18 +68,22 @@ class PitchTargetsPanel final : public Component {
                       std::function<void(String)> failure)
         : session(owner), region(std::move(target)), close(std::move(finish)),
           error(std::move(failure)) {
-        if (auto *song = session.song()) {
-            tracks = asSet(regionPitch::defaults(*song, false));
-            groups = asSet(regionPitch::defaults(*song, true));
-            for (const auto &part : song->parts)
-                if (part.id == region) {
-                    if (part.pitchTrackIDs)
-                        tracks = asSet(*part.pitchTrackIDs);
-                    if (part.pitchGroupIDs)
-                        groups = asSet(*part.pitchGroupIDs);
+        if (const auto *song = session.song()) {
+            const auto part = std::find_if(song->parts.begin(), song->parts.end(), [&](const auto &p) { return p.id == region; });
+            for (const auto &track : song->tracks) {
+                if (!jaras::fixedTrackName(track.role).empty() || regionPitch::folder(*song, track.id)) continue;
+                if (part != song->parts.end() && regionPitch::selected(*song, track, *part)) tracks.insert(track.id);
+                auto parent = track.parentTrackID;
+                for (size_t depth = 0; parent && depth < song->tracks.size(); ++depth) {
+                    groupTracks[*parent].insert(track.id);
+                    const auto found = std::find_if(song->tracks.begin(), song->tracks.end(),
+                        [&](const auto &candidate) { return candidate.id == *parent; });
+                    if (found == song->tracks.end()) break;
+                    parent = found->parentTrackID;
                 }
+            }
         }
-        for (auto *button : {&tracksTab, &groupsTab, &all, &cancel, &apply}) {
+        for (auto *button : {&tracksTab, &groupsTab, &all, &apply}) {
             addAndMakeVisible(button);
             button->setWantsKeyboardFocus(false);
         }
@@ -96,7 +95,6 @@ class PitchTargetsPanel final : public Component {
             tab = 1;
             refresh();
         };
-        cancel.onClick = close;
         apply.onClick = [this] { commit(); };
         all.onClick = [this] {
             bool selected = false;
@@ -126,7 +124,6 @@ class PitchTargetsPanel final : public Component {
         content.setSize(view.getWidth() - 8, std::max(view.getHeight(), checks.size() * 31));
         for (int i = 0; i < checks.size(); ++i)
             checks[i]->setBounds(4, i * 31, content.getWidth() - 8, 28);
-        cancel.setBounds(getWidth() - 184, getHeight() - 43, 78, 28);
         apply.setBounds(getWidth() - 98, getHeight() - 43, 78, 28);
     }
     bool keyPressed(const KeyPress &key) override {
@@ -143,69 +140,26 @@ class PitchTargetsPanel final : public Component {
     std::function<void()> close;
     std::function<void(String)> error;
     int tab = 0;
-    std::set<ID> tracks, groups;
+    std::set<ID> tracks;
+    std::map<ID, std::set<ID>> groupTracks;
     std::vector<ID> visible;
     Viewport view;
     Component content;
     OwnedArray<ToggleButton> checks;
-    TextButton tracksTab{"Pistas"}, groupsTab{"Grupos"}, all{"Selecionar todas"},
-        cancel{"Cancelar"}, apply{"Aplicar"};
+    TextButton tracksTab{localization::translate("Pistas")}, groupsTab{localization::translate("Grupos")}, all{"Selecionar todas"},
+        apply{"Aplicar"};
     static std::set<ID> asSet(const std::vector<ID> &values) {
         return {values.begin(), values.end()};
     }
-    bool selected(const jaras::Track &track) const {
-        if (!tab) {
-            if (tracks.count(track.id))
-                return true;
-            auto parent = track.parentTrackID;
-            const auto *song = session.song();
-            for (size_t depth = 0; parent && song && depth < song->tracks.size(); ++depth) {
-                if (groups.count(*parent))
-                    return true;
-                auto found = std::find_if(song->tracks.begin(), song->tracks.end(),
-                                          [&](const auto &t) { return t.id == *parent; });
-                if (found == song->tracks.end())
-                    break;
-                parent = found->parentTrackID;
-            }
-            return false;
-        }
-        if (groups.count(track.id))
-            return true;
-        bool any = false;
-        for (const auto &child : session.song()->tracks)
-            if (child.parentTrackID == track.id) {
-                any = true;
-                if (!tracks.count(child.id))
-                    return false;
-            }
-        return any;
+    std::set<ID> targetIDs(const ID &id) const {
+        if (tab == 0) return {id};
+        const auto group = groupTracks.find(id);
+        return group == groupTracks.end() ? std::set<ID>{} : group->second;
     }
     void select(const ID &id, bool value) {
-        const auto *song = session.song();
-        if (!song)
-            return;
-        if (tab) {
-            for (const auto &track : song->tracks)
-                if (track.id == id || track.parentTrackID == id)
-                    tracks.erase(track.id);
-            if (value)
-                groups.insert(id);
-            else
-                groups.erase(id);
-        } else {
-            if (!value) { // Expand selected ancestor groups into explicit leaf targets before
-                          // clearing one leaf.
-                std::set<ID> explicitTracks = tracks;
-                for (const auto &track : song->tracks)
-                    if (!regionPitch::folder(*song, track.id) && selected(track))
-                        explicitTracks.insert(track.id);
-                tracks = std::move(explicitTracks);
-                groups.clear();
-                tracks.erase(id);
-            } else
-                tracks.insert(id);
-        }
+        const auto targets = targetIDs(id);
+        if (value) tracks.insert(targets.begin(), targets.end());
+        else for (const auto &track : targets) tracks.erase(track);
     }
     void refresh() {
         checks.clear();
@@ -219,7 +173,10 @@ class PitchTargetsPanel final : public Component {
                     visible.push_back(track.id);
                     auto *check = checks.add(new ToggleButton(text(track.name)));
                     content.addAndMakeVisible(check);
-                    check->setToggleState(selected(track), dontSendNotification);
+                    const auto targets = targetIDs(track.id);
+                    check->setEnabled(!targets.empty());
+                    check->setToggleState(!targets.empty() && std::includes(tracks.begin(), tracks.end(), targets.begin(), targets.end()),
+                        dontSendNotification);
                     check->onClick = [this, id = track.id, check] {
                         select(id, check->getToggleState());
                         refresh();
@@ -233,14 +190,14 @@ class PitchTargetsPanel final : public Component {
     }
     void commit() {
         try {
-            session.edit([&](jaras::Project &p) {
-                for (auto &song : p.songs)
-                    for (auto &part : song.parts)
-                        if (part.id == region) {
-                            part.pitchTrackIDs = std::vector<ID>(tracks.begin(), tracks.end());
-                            part.pitchGroupIDs = std::vector<ID>(groups.begin(), groups.end());
-                        }
-            });
+            if (const auto *song = session.song()) for (const auto &part : song->parts)
+                if (part.id == region) {
+                    if (!part.pitchTrackIDs || tracks != asSet(*part.pitchTrackIDs) ||
+                        !part.pitchGroupIDs || !part.pitchGroupIDs->empty())
+                        session.setRegionPitch(region, part.pitchSemitones.value_or(0),
+                            std::vector<ID>(tracks.begin(), tracks.end()), std::vector<ID>{});
+                    break;
+                }
             close();
         } catch (const std::exception &e) {
             error(String::fromUTF8(e.what()));

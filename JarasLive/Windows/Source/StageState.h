@@ -1,4 +1,5 @@
 #pragma once
+#include "ConfirmationPanel.h"
 #include "Appearance.h"
 #include "Localization.h"
 namespace catlive {
@@ -8,19 +9,76 @@ class StageState final {
         const auto saved = p.value("jaras.teleprompter.timer");
         target = jlimit(0, 359999, (int)num(saved, "targetSeconds"));
         autoStart = flag(saved, "initAutoEnabled");
+        progressive = str(saved, "mode") == "progressive";
+        const auto slots = p.value("jaras.teleprompter.previewSlots");
+        previewPage = jlimit(0, (int)previewSteps.size() - 1, (int)num(slots, "selected"));
+        const auto steps = list(get(slots, "steps"));
+        for (int i = 0; i < std::min((int)previewSteps.size(), steps.size()); ++i) {
+            const int step = (int)steps[i];
+            if (step >= 0 && step < previewStepsPerSlot) previewSteps[i] = step;
+        }
     }
     Appearance &preferences;
-    int target = 0;
-    bool running = false, autoStart = false, preview = false;
+    int target = 0, previewPage = 0;
+    static constexpr int previewStepsPerSlot = 10;
+    std::array<int, 6> previewSteps{-1, -1, -1, -1, -1, -1};
+    std::pair<int, int> previewBlocks(int slot) const {
+        const int step = previewSteps[slot];
+        if (step < 0) return {slot * 4, 4};
+        const int first = slot * 4 + step / 3;
+        return {first + (step % 3 == 1 ? 1 : 0), step % 3 == 2 ? 2 : 1};
+    }
+    String previewLabel(int slot) const {
+        const auto [first, count] = previewBlocks(slot);
+        return count == 1 ? String(first + 1) : String(first + 1) + String::fromUTF8("–") + String(first + count);
+    }
+    var previewSlots() const {
+        auto saved = object();
+        put(saved, "selected", previewPage);
+        Array<var> steps;
+        for (int step : previewSteps) steps.add(step);
+        put(saved, "steps", steps);
+        return saved;
+    }
+    void selectPreviewPage(int slot) {
+        previewPage = jlimit(0, (int)previewSteps.size() - 1, slot);
+        preferences.set("jaras.teleprompter.previewSlots", previewSlots());
+    }
+    void advancePreviewSlot(int slot) {
+        auto &step = previewSteps[slot];
+        step = step == previewStepsPerSlot - 1 ? -1 : step + 1;
+        selectPreviewPage(slot);
+    }
+    bool running = false, autoStart = false, preview = false, progressive = false;
     double started = 0;
     String notice;
     Image noticeImage;
-    bool pinned = false;
+    bool pinned = false, pinWhenStopped = false, stoppedNoticeActive = false;
+    bool noticePlaybackRunning = false;
+    String stoppedNotice;
+    Image stoppedImage;
+    void setPinWhenStopped(bool enabled, String message = {}, Image image = {}) {
+        pinWhenStopped = enabled;
+        if (enabled) {
+            stoppedNotice = message.trim().substring(0,500); stoppedImage = image;
+            if (!noticePlaybackRunning) presentStoppedNotice();
+        } else if (stoppedNoticeActive) clearNotice();
+    }
+    void presentStoppedNotice() {
+        if (stoppedNotice.isEmpty() && !stoppedImage.isValid()) return;
+        sendNotice(stoppedNotice, stoppedImage);
+        stoppedNoticeActive = true; pinned = true;
+    }
     double noticeSent = 0, noticeDeadline = 0, pausedRemaining = 20;
     static double now() { return Time::getMillisecondCounterHiRes() / 1000; }
-    double seconds() const { return running ? target - std::max(0., now() - started) : target; }
+    double seconds() const {
+        const auto elapsed = running ? std::max(0., now() - started) : 0.;
+        return progressive ? elapsed : target - elapsed;
+    }
+    bool expired() const { return running && !progressive && seconds() <= 0; }
+    void setProgressive(bool value) { if (!running) { progressive = value; saveTimer(); } }
     String timeText(bool spaced = false) const {
-        const int remaining = (int)std::ceil(seconds());
+        const int remaining = (int)(progressive ? std::floor(seconds()) : std::ceil(seconds()));
         const auto value = clockText(std::abs(remaining), true);
         return (remaining < 0 ? String::fromUTF8("−") : String()) +
                (spaced ? value.replace(":", " : ") : value);
@@ -34,11 +92,19 @@ class StageState final {
     void reset() { running = false; }
     void saveTimer() {
         auto p = object();
+        put(p, "mode", progressive ? "progressive" : "countdown");
         put(p, "targetSeconds", target);
         put(p, "initAutoEnabled", autoStart);
         preferences.set("jaras.teleprompter.timer", p);
     }
     void observe(const jaras::TransportState &t) {
+        const bool playing = t.playing || t.subPlay.playing;
+        if (playing != noticePlaybackRunning) {
+            noticePlaybackRunning = playing;
+            if (playing) { if (stoppedNoticeActive) clearNotice(); }
+            else if (pinWhenStopped && !noticeActive()) presentStoppedNotice();
+        }
+        if (!pinned && (!notice.isEmpty() || noticeImage.isValid()) && now() >= noticeDeadline) clearNotice();
         if (!t.playing) {
             wasPlaying = false;
             if (!t.paused)
@@ -68,6 +134,8 @@ class StageState final {
                               : 0;
     }
     void sendNotice(String message, Image image = {}) {
+        if (stoppedNoticeActive) pinned = false;
+        stoppedNoticeActive = false;
         notice = message.trim().substring(0, 500);
         noticeImage = image;
         noticeSent = now();
@@ -75,9 +143,13 @@ class StageState final {
         noticeDeadline = now() + 20;
     }
     void clearNotice() {
+        const bool restore = !stoppedNoticeActive && pinWhenStopped && !noticePlaybackRunning &&
+            (!notice.isEmpty() || noticeImage.isValid());
+        stoppedNoticeActive = false;
         notice.clear();
         noticeImage = {};
         pinned = false;
+        if (restore) presentStoppedNotice();
     }
     void togglePin() {
         pausedRemaining = noticeActive() ? remaining() : 20;
@@ -138,39 +210,66 @@ class StageState final {
     std::optional<ID> observed;
     bool wasPlaying = false;
 };
+class StageTimerReadout final : public Label, private Timer {
+  public:
+    explicit StageTimerReadout(StageState &value) : state(value) {
+        setComponentID("stageTimerReadout");
+        setFont(Font(FontOptions(Font::getDefaultMonospacedFontName(), 16, Font::bold)));
+        setJustificationType(Justification::centred);
+        setInterceptsMouseClicks(false, false);
+        refresh(); startTimerHz(4);
+    }
+    void refresh() {
+        setVisible(state.running);
+        if (!state.running) return;
+        const bool expired = state.expired();
+        setText(state.timeText(), dontSendNotification);
+        setColour(textColourId, expired ? Colours::red : theme::green);
+        setAlpha(expired && (int)(StageState::now() * 2) % 2 ? .25f : 1.f);
+    }
+  private:
+    StageState &state;
+    void timerCallback() override { refresh(); }
+};
 class StageTimerControl final : public Component, private Timer {
   public:
     StageTimerControl(StageState &s, std::function<void()> configure = {})
         : state(s), settings(std::move(configure)) {
+        setComponentID("stageTimerControl");
         for (int i = 0; i < 3; ++i) {
             addAndMakeVisible(digits[i]);
+            digits[i].setComponentID(i==0?"timerHours":i==1?"timerMinutes":"timerSeconds");
+            digits[i].setTitle(i==0?"HH":i==1?"MM":"SS");
             digits[i].setInputRestrictions(2, "0123456789");
+            digits[i].setPopupMenuEnabled(false);
             digits[i].setText("00");
             digits[i].setJustification(Justification::centred);
             digits[i].setFont(theme::semiboldFont(12));
             digits[i].onTextChange = [this] {
-                if (!state.running)
+                if (!state.running && !state.progressive)
                     state.target = jlimit(0, 99, digits[0].getText().getIntValue()) * 3600 +
                                    jlimit(0, 59, digits[1].getText().getIntValue()) * 60 +
                                    jlimit(0, 59, digits[2].getText().getIntValue());
             };
             digits[i].onFocusLost = [this] { state.saveTimer(); };
-            digits[i].addMouseListener(this, false);
+            digits[i].addMouseListener(this, true);
         }
-        addAndMakeVisible(start);
+        addAndMakeVisible(start);start.setComponentID("timerStart");
+        start.getProperties().set("flat",true);start.getProperties().set("fontSize",11.f);
+        start.context = [this](Point<int>) { if (settings) settings(); };
         start.setColour(TextButton::textColourOffId, theme::green);
         start.onClick = [this] {
             if (state.running) {
                 const auto safe = Component::SafePointer<StageTimerControl>(this);
-                AlertWindow::showOkCancelBox(MessageBoxIconType::QuestionIcon, "Cronômetro",
-                                             "Parar e reiniciar o cronômetro?", "Parar", "Cancelar",
+                ConfirmationPanel::show(MessageBoxIconType::QuestionIcon, String::fromUTF8("Cronômetro"),
+                                             String::fromUTF8("Parar e reiniciar o cronômetro?"), "Parar", "Cancelar",
                                              this,
                                              ModalCallbackFunction::create([safe](int result) {
                                                  if (safe && result)
                                                      safe->state.reset();
                                              }));
             } else {
-                state.target = jlimit(0, 99, digits[0].getText().getIntValue()) * 3600 +
+                if (!state.progressive) state.target = jlimit(0, 99, digits[0].getText().getIntValue()) * 3600 +
                                jlimit(0, 59, digits[1].getText().getIntValue()) * 60 +
                                jlimit(0, 59, digits[2].getText().getIntValue());
                 state.saveTimer();
@@ -182,18 +281,20 @@ class StageTimerControl final : public Component, private Timer {
     }
     void paint(Graphics &g) override {
         g.setColour(theme::display);
-        g.fillRoundedRectangle(getLocalBounds().toFloat(), 4);
+        const auto bounds=getLocalBounds().toFloat().reduced(.5f);
+        g.fillRoundedRectangle(bounds, 6);
         g.setColour(theme::line);
-        g.drawRoundedRectangle(getLocalBounds().toFloat().reduced(.5f), 4, 1);
+        g.drawRoundedRectangle(bounds, 6, 1);
     }
     void resized() override {
         const float scale = std::min(1.f, getWidth() / 157.f);
         const float cell = 32 * scale;
+        const int verticalInset=getHeight()<30?1:4;
         for (int i = 0; i < 3; ++i)
-            digits[i].setBounds(4 + roundToInt(i * cell), 4, roundToInt(cell - 2 * scale),
-                                getHeight() - 8);
+            digits[i].setBounds(4 + roundToInt(i * cell), verticalInset, roundToInt(cell - 2 * scale),
+                                getHeight() - 2*verticalInset);
         const int buttonX = 4 + roundToInt(cell * 3 + scale);
-        start.setBounds(buttonX, 4, getWidth() - buttonX - 4, getHeight() - 8);
+        start.setBounds(buttonX, verticalInset, getWidth() - buttonX - 4, getHeight() - 2*verticalInset);
     }
     void mouseDown(const MouseEvent &e) override {
         if (e.mods.isPopupMenu() && settings)
@@ -204,12 +305,12 @@ class StageTimerControl final : public Component, private Timer {
     StageState &state;
     std::function<void()> settings;
     TextEditor digits[3];
-    TextButton start{"Iniciar"};
+    QuietButton start{localization::translate("Iniciar")};
     void timerCallback() override {
         auto parts = StringArray::fromTokens(
             state.timeText().removeCharacters(String::fromUTF8("−")), ":", {});
         for (int i = 0; i < 3; ++i) {
-            digits[i].setReadOnly(state.running);
+            digits[i].setReadOnly(state.running || state.progressive);
             if (state.running || !digits[i].hasKeyboardFocus(true))
                 digits[i].setText(parts[i], false);
         }

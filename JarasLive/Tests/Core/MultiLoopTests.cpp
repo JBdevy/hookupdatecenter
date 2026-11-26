@@ -48,7 +48,7 @@ int main() {
     disabled.applyProjectEdit(enabledProject);
     assert(disabled.transport().multiLoop && disabled.transport().loop.enabled);
     assert(disabled.transport().multiLoop->config.tracks[0].autoFader);
-    assert(!disabled.transport().multiLoop->config.tracks[0].mute && !disabled.transport().multiLoop->config.tracks[0].solo);
+    assert(disabled.transport().multiLoop->config.tracks[0].mute && disabled.transport().multiLoop->config.tracks[0].solo);
     assert(disabled.project().songs[0].parts[0].multiLoops[0].tracks[0].mute); // Presets remain saved.
     enabledProject.songs[0].parts[0].multiLoops[0].mixerEnabled = true;
     disabled.applyProjectEdit(enabledProject);
@@ -74,13 +74,19 @@ int main() {
     assert(e.transport().multiLoop && near(e.transport().multiLoop->amount,0.5));
     assert(!e.transport().loop.enabled && !e.transport().multiLoop->gates);
     e.advance(1.5);assert(e.transport().loop.enabled && e.transport().multiLoop->gates);
-    assert(near(e.transport().position,10));e.advance(25.25);assert(near(e.transport().position,15.25));
+    assert(near(e.transport().position,10));
+    const auto beforeRepeat = e.transport().repeatWrapSerial;
+    const auto beforeJump = e.transport().sectionJumpSerial;
+    e.advance(25.25);
+    assert(near(e.transport().position,15.25));
+    assert(e.transport().repeatWrapSerial == beforeRepeat + 1 && e.transport().sectionJumpSerial == beforeJump + 1);
     assert(e.project().songs[0].tracks[0].volume==1 && !e.project().songs[0].tracks[0].mute && !e.project().songs[0].tracks[0].solo);
     e.execute({CommandKind::toggleLoop});assert(!e.transport().loop.enabled && e.transport().multiLoop->released);
     e.advance(2.375);assert(near(e.transport().multiLoop->amount,0.5) && e.transport().multiLoop->gates);
     e.execute({CommandKind::toggleLoop});assert(e.transport().loop.enabled && near(e.transport().multiLoop->amount,1));
     e.execute({CommandKind::toggleLoop});e.advance(2.375);assert(near(e.transport().position,20) && !e.transport().multiLoop && !e.transport().loop.enabled);
     e.execute({CommandKind::seek,"",12});e.advance(0);assert(e.transport().multiLoop && e.transport().loop.enabled);
+    assert(e.transport().repeatWrapSerial == beforeRepeat + 1);
     e.execute({CommandKind::stop});assert(!e.transport().multiLoop && !e.transport().loop.enabled);
     e.execute({CommandKind::editSeek,"",0});e.execute({CommandKind::play});e.advance(32);assert(near(e.transport().position,12));
     e.execute({CommandKind::pause});assert(e.transport().multiLoop);e.execute({CommandKind::play});e.advance(1);assert(near(e.transport().position,13));
@@ -110,11 +116,20 @@ int main() {
     escape.execute({CommandKind::toggleLoop});
     assert(escape.transport().loop.start == 0 && escape.transport().loop.end == 10);
     escape.advance(12); assert(near(escape.transport().position, 2));
+    escape.execute({CommandKind::queueSection,"b"});
+    assert(escape.transport().queuedSectionMarkerId=="b" && near(escape.transport().editPosition,20));
+    const auto escapeSerial=escape.transport().sectionJumpSerial;
+    escape.execute({CommandKind::escape,"",1});
+    assert(!escape.transport().queuedSectionMarkerId && !escape.transport().sectionQueueStartedAt);
+    assert(escape.transport().loop.enabled && escape.transport().loop.start==0 && escape.transport().loop.end==10);
+    assert(escape.transport().queuedRegionId=="next" && escape.project().regionSetlist->autoAdvance);
+    assert(escape.transport().playing && near(escape.transport().position,2) && near(escape.transport().editPosition,10));
     escape.execute({CommandKind::escape,"",1});
     assert(!escape.transport().loop.enabled && escape.project().regionSetlist->autoAdvance);
     assert(escape.transport().queuedRegionId == "next");
     escape.execute({CommandKind::escape}); assert(!escape.transport().queuedRegionId);
     assert(!escape.project().regionSetlist->autoAdvance);
+    assert(escape.transport().sectionJumpSerial==escapeSerial && near(escape.transport().position,2));
     escape.execute({CommandKind::queueRegion,"next"}); escape.execute({CommandKind::escape,"",1});
     assert(!escape.transport().queuedRegionId); // Queue cancellation wins over an area selection.
     escape.execute({CommandKind::escape}); assert(!escape.transport().queuedRegionId);

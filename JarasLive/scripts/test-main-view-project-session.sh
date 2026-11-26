@@ -8,7 +8,7 @@ from pathlib import Path
 import sys
 source = Path(sys.argv[2]).read_text()
 start = source.index('            .onAppear {', source.index('struct MainView:'))
-appear = source[start + len('            .onAppear {'):source.index('\n            }\n            .onChange', start)]
+appear = source[start + len('            .onAppear {'):source.index('\n            }', start)]
 start = source.index('            .onDisappear {', start)
 disappear = source[start + len('            .onDisappear {'):source.index('\n            }\n            .alert', start)]
 fixture = Path('Tests/Apple/MainViewProjectSessionTests.swift').read_text()

@@ -11,6 +11,8 @@ NS_ASSUME_NONNULL_BEGIN
 #else
 + (BOOL)start:(AVAudioUnitEffect *)node coreMLModel:(NSURL *)model error:(NSError **)error;
 #endif
+/// Offline operation. Call only from an export worker, never the UI/audio callback.
++ (BOOL)separateAudio:(NSURL *)input outputDirectory:(NSURL *)outputDirectory coreMLModel:(NSURL *)model cancellation:(BOOL (^)(void))cancellation progress:(void (^)(double))progress error:(NSError **)error;
 + (void)configure:(AVAudioUnitEffect *)node enabled:(BOOL)enabled gains:(NSArray<NSNumber *> *)gains muteMask:(NSUInteger)muteMask soloMask:(NSUInteger)soloMask;
 + (void)invalidate:(AVAudioUnitEffect *)node;
 + (void)stop:(AVAudioUnitEffect *)node;

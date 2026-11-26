@@ -33,7 +33,6 @@ private struct PulseFixture: View {
             }.buttonStyle(.plain).modifier(JarasBlink(active: state.flashing, interval: 0.08, lowOpacity: 0.2))
                 .accessibilityLabel("Pulse action").jarasHelp("Pulse action help")
                 .keyboardShortcut("b", modifiers: [])
-            MetronomeControl(show: show)
             Button { PulseJournal.labelClicks += 1 } label: {
                 Text("REC").frame(width: 30, height: 35).background(Color.red)
                     .modifier(JarasBlink(active: state.flashing, interval: 0.08, lowOpacity: 0.2))
@@ -104,9 +103,19 @@ MainActor.assumeIsolated {
     sizingWindow.orderOut(nil); sizingWindow.close()
     print("NATIVE_BLINK_NATURAL_HEIGHT_SETLIST_HEADER_BASELINE_GEOMETRY_OK")
     let blink = descendants(root, NativeJarasBlinkHost.self).first!
-    let metronome = descendants(root, NativeMetronomePulseHost.self).first!
-    let rootLayouts = root.layouts, blinkLayouts = blink.layoutCount, metronomeLayouts = metronome.layoutCount
-    let songRefreshes = metronome.songRefreshCount
+    let metronome = NSHostingView(rootView: MetronomeControl(show: show))
+    let metronomeWindow = NSWindow(contentRect: CGRect(x: -4000, y: -4000, width: 45, height: 35), styleMask: [.borderless], backing: .buffered, defer: false)
+    metronomeWindow.isReleasedWhenClosed = false; metronomeWindow.contentView = metronome; metronomeWindow.orderFront(nil)
+    defer { metronomeWindow.orderOut(nil); metronomeWindow.contentView = nil; metronomeWindow.close() }
+    pump(0.1)
+    let rootLayouts = root.layouts, blinkLayouts = blink.layoutCount
+    func metronomePixels() -> Data {
+        metronome.layoutSubtreeIfNeeded()
+        let bitmap = metronome.bitmapImageRepForCachingDisplay(in: metronome.bounds)!
+        metronome.cacheDisplay(in: metronome.bounds, to: bitmap)
+        return Data(bytes: bitmap.bitmapData!, count: bitmap.bytesPerRow * bitmap.pixelsHigh)
+    }
+    let activeMetronomePixels = metronomePixels()
 
     // Test the compositor's observed output, not just its configured animation.
     var observed: [Float] = []
@@ -118,46 +127,17 @@ MainActor.assumeIsolated {
         "native flashing must not relayout the root or hosted controls")
 
     for position in [0.0, 0.1, 0.19, 0.49, 0.51, 0.68, 0.9] {
-        show.sample(position)
-        let section = song.tempoSection(at: position)
-        let beat = (position - section.start) * section.bpm / 60 * Double(section.unit) / 4
-        let expected: Float = beat.truncatingRemainder(dividingBy: 1) < 0.35 ? 1 : 0.45
-        precondition(metronome.layer?.opacity == expected, "beat duty cycle changed at \(position)")
-        precondition(metronome.layer?.animationKeys()?.isEmpty != false, "beat pulse must not lag through implicit animations")
-        pump(0.015)
+        show.sample(position); pump(0.02)
+        precondition(metronomePixels() == activeMetronomePixels, "Active metronome must remain yellow without beat dimming")
     }
-    precondition(root.layouts == rootLayouts && metronome.layoutCount == metronomeLayouts,
-        "beat changes must not relayout the root or hosted controls")
-    precondition(metronome.songRefreshCount == songRefreshes, "transport ticks must reuse the cached song")
-    show.sample(0.3, playing: false); precondition(metronome.layer?.opacity == 1)
-    show.sample(0.3); precondition(metronome.layer?.opacity == 0.45)
-    metronome.bind(show, enabled: false); precondition(metronome.layer?.opacity == 1)
-    metronome.bind(show, enabled: true); precondition(metronome.layer?.opacity == 0.45)
-
-    var edited = song
-    edited.markers = [TimelineMarker(id: UUID(), position: 1, tempoBPM: 60, tempoUnit: 8)]
-    show.editSong(edited); show.sample(1.2)
-    precondition(metronome.layer?.opacity == 0.45, "tempo marker and beat unit changes must refresh the cached song")
-    show.sample(1.05); precondition(metronome.layer?.opacity == 1)
-    edited.bpm = 60; edited.markers = nil
-    show.sample(0.3); show.editSong(edited)
-    precondition(metronome.layer?.opacity == 1, "editing BPM during playback must refresh immediately")
-    let nextSong = Song(id: UUID(), bpm: 60)
-    var transition = show.snapshot
-    transition.project.songs = [nextSong]; transition.transport.songId = nextSong.id
-    transition.transport.position = 0.3
-    show.snapshot = transition
-    precondition(metronome.layer?.opacity == 1,
-        "song transitions must use the incoming snapshot before Published stores it")
+    show.sample(0.3, playing: false); pump(0.02)
+    precondition(metronomePixels() == activeMetronomePixels, "Stopping transport must retain active yellow metronome")
+    print("METRONOME_ACTIVE_REMAINS_STEADY_THROUGH_BEATS_AND_STOP_OK")
 
     let replacement = CALayer(); blink.layer = replacement; pump(0.02)
     precondition(replacement.animation(forKey: "jarasBlink") != nil, "replacement backing layer must retain flashing")
-    let metronomeReplacement = CALayer(); metronome.layer = metronomeReplacement
-    show.sample(0.7); precondition(metronomeReplacement.opacity == 0.45)
     blink.isHidden = true; precondition(replacement.animation(forKey: "jarasBlink") == nil)
     blink.isHidden = false; precondition(replacement.animation(forKey: "jarasBlink") != nil)
-    metronome.isHidden = true; precondition(metronomeReplacement.opacity == 1)
-    metronome.isHidden = false; precondition(metronomeReplacement.opacity == 0.45)
     blink.setBlink(active: false, interval: 0.08, lowOpacity: 0.2)
     precondition(replacement.animation(forKey: "jarasBlink") == nil && replacement.opacity == 1)
     pump(0.2); precondition(replacement.opacity == 1, "inactive flash must stay steady")
@@ -168,16 +148,17 @@ MainActor.assumeIsolated {
     precondition(blink.hitTest(center) != nil, "pulse host must retain normal hit testing")
     let controls = buttons(root)
     let action = controls.first { $0.accessibilityLabel() == "Pulse action" }
-    let click = controls.first { $0.accessibilityLabel() == "Metronome" }
+    let click = buttons(metronome).first { $0.accessibilityLabel() == "Metronome" }
     let labelAction = controls.first { $0.accessibilityLabel() == "Pulse label action" }
     func mousePress(_ view: NSView) {
+        guard let targetWindow = view.window else { preconditionFailure("Detached test control") }
         let location = view.convert(CGPoint(x: view.bounds.midX, y: view.bounds.midY), to: nil)
         let down = NSEvent.mouseEvent(with: .leftMouseDown, location: location, modifierFlags: [], timestamp: 1,
-            windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1)!
+            windowNumber: targetWindow.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1)!
         let up = NSEvent.mouseEvent(with: .leftMouseUp, location: location, modifierFlags: [], timestamp: 1.01,
-            windowNumber: window.windowNumber, context: nil, eventNumber: 2, clickCount: 1, pressure: 0)!
+            windowNumber: targetWindow.windowNumber, context: nil, eventNumber: 2, clickCount: 1, pressure: 0)!
         // Native button implementations can track synchronously until MouseUp.
-        app.postEvent(up, atStart: true); window.sendEvent(down); window.sendEvent(up); pump(0.03)
+        app.postEvent(up, atStart: true); targetWindow.sendEvent(down); targetWindow.sendEvent(up); pump(0.03)
     }
     if controls.isEmpty {
         let baseline = NSHostingView(rootView: Button("Baseline") {}.frame(width: 70, height: 35))
@@ -206,14 +187,14 @@ MainActor.assumeIsolated {
         precondition(click.accessibilityValue() as? String == "On")
         precondition(click.accessibilityPerformPress()); pump(0.05)
     } else { mousePress(metronome) }
-    precondition(!MetronomeSettings.shared.enabled && metronome.layer?.opacity == 1)
+    precondition(!MetronomeSettings.shared.enabled && metronomePixels() != activeMetronomePixels)
     let point = metronome.convert(CGPoint(x: metronome.bounds.midX, y: metronome.bounds.midY), to: nil)
     let rightClick = NSEvent.mouseEvent(with: .rightMouseDown, location: point, modifierFlags: [], timestamp: 1,
-        windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1)!
+        windowNumber: metronomeWindow.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1)!
     precondition(RightClickRouter.shared.handle(rightClick), "metronome right click must remain routed")
     pump(0.1); precondition(PulseJournal.editorOpened == 1, "right click must open metronome settings")
-    window.attachedSheet?.orderOut(nil)
-    if let sheet = window.attachedSheet { window.endSheet(sheet) }
+    metronomeWindow.attachedSheet?.orderOut(nil)
+    if let sheet = metronomeWindow.attachedSheet { metronomeWindow.endSheet(sheet) }
     print("NATIVE_PULSE_BUTTON_HIT_ACCESSIBILITY_ACTION_VALUE_KEYBOARD_AND_RIGHT_CLICK_SETTINGS_OK")
 
     precondition(window.makeFirstResponder(root), "control root must remain focusable")
@@ -230,19 +211,4 @@ MainActor.assumeIsolated {
     precondition(PulseJournal.clicks == 4, "restarting flashing must preserve the keyboard action")
     print("NATIVE_BLINK_ACTIVE_TRANSITION_RETAINS_CONTROLS_AND_IDLE_HAS_NO_EXTRA_HOSTS_OK")
 
-    // Detaching must cancel observation, and neither native host retains show.
-    metronome.removeFromSuperview(); show.sample(0.7)
-    precondition(metronome.layer?.opacity == 1)
-    weak var releasedShow: ShowController?
-    weak var releasedHost: NativeMetronomePulseHost?
-    autoreleasepool {
-        let detached = NativeMetronomePulseHost(rootView: AnyView(Text("Pulse")))
-        let temporaryShow = ShowController(song: song)
-        releasedShow = temporaryShow; releasedHost = detached
-        detached.bind(temporaryShow, enabled: true)
-    }
-    pump(0.05)
-    precondition(releasedShow == nil && releasedHost == nil,
-        "native pulse must not retain controller or itself; showReleased=\(releasedShow == nil), hostReleased=\(releasedHost == nil)")
-    print("NATIVE_METRONOME_DETACH_CANCEL_AND_WEAK_LIFECYCLE_OK")
 }

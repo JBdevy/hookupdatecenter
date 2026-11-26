@@ -10,7 +10,7 @@
 #include <mach/mach_time.h>
 
 struct TimecodeSignal {
-    std::atomic<double> position{0},end{0},fps{30};
+    std::atomic<double> position{0},end{0},fps{30},speed{1};
     std::atomic<uint64_t> host{0};
     std::atomic<bool> active{false};
     std::atomic<float> peak{0}, gain{1};
@@ -22,7 +22,7 @@ struct TimecodeSignal {
     int64_t frame=-1;
     std::array<float,160> halves{};
     explicit TimecodeSignal(double rate):sampleRate(rate) { mach_timebase_info_data_t info; mach_timebase_info(&info); ticksPerSecond=1e9*info.denom/info.numer; }
-    double clock(uint64_t now) const { return position.load()+double(int64_t(now-host.load()))/ticksPerSecond; }
+    double clock(uint64_t now) const { return position.load()+double(int64_t(now-host.load()))/ticksPerSecond*speed.load(); }
     void render(const AudioTimeStamp* time, AVAudioFrameCount count, AudioBufferList* list) {
         const auto physical = jaras::physicalRenderTime(*time, sampleRate); time = &physical;
         const bool enabled=active.load(std::memory_order_acquire);
@@ -33,7 +33,7 @@ struct TimecodeSignal {
             anchorPosition=clock((time->mFlags & kAudioTimeStampHostTimeValid) ? time->mHostTime : mach_absolute_time());
         }
         if(renderedFPS!=rate) { renderedFPS=rate; frame=-1; }
-        const double start=(time->mFlags & kAudioTimeStampSampleTimeValid) ? anchorPosition+(time->mSampleTime-anchorSample)/sampleRate : clock(mach_absolute_time());
+        const double start=(time->mFlags & kAudioTimeStampSampleTimeValid) ? anchorPosition+(time->mSampleTime-anchorSample)/sampleRate*speed.load() : clock(mach_absolute_time());
         const double limit=end.load();
         const double first=std::max(0.0,position.load());
         float observedPeak=0;
@@ -41,7 +41,7 @@ struct TimecodeSignal {
         const float smoothing = float(1.0 - std::exp(-1.0 / (sampleRate * 0.01)));
         for(unsigned sample=0;sample<count;++sample) {
             float value=0;
-            const double seconds=start+sample/sampleRate;
+            const double seconds=start+sample/sampleRate*speed.load();
             if(enabled && seconds>=first && seconds<limit) {
                 const int64_t half=int64_t(std::floor(seconds*actualRate*160));
                 const int64_t current=half/160;
@@ -70,7 +70,7 @@ struct TimecodeSignal {
     MIDIClientRef _client;
     MIDIPortRef _port;
     MIDIEndpointRef _destination;
-    double _position, _end, _fps, _ticksPerSecond;
+    double _position, _end, _fps, _ticksPerSecond, _speed;
     uint64_t _host;
     int64_t _quarter;
     jaras::NativeMtcTimeFields _fields;
@@ -98,7 +98,7 @@ struct TimecodeSignal {
 }
 - (void)pulse {
     const uint64_t now=mach_absolute_time();
-    const double elapsed=double(int64_t(now-_host))/_ticksPerSecond;
+    const double elapsed=double(int64_t(now-_host))/_ticksPerSecond*_speed;
     const double rate=_fps==29.97 ? 30000.0/1001 : _fps;
     if(elapsed<0 || _position+elapsed>=_end) return;
     const int64_t quarter=int64_t(std::floor(elapsed*rate*4));
@@ -109,19 +109,23 @@ struct TimecodeSignal {
         const double at=_position+double(_quarter)/(rate*4);
         if((_quarter&7)==0) _fields=jaras::nativeMtcTimeFields(at,_fps,_fps==29.97);
         Byte bytes[2]={0xf1,Byte(jaras::nativeMtcQuarterFrameData(_fields,int(_quarter&7)))};
-        [self send:bytes length:2 at:_host+uint64_t(double(_quarter)*_ticksPerSecond/(rate*4))];
+        [self send:bytes length:2 at:_host+uint64_t(double(_quarter)*_ticksPerSecond/(rate*4*_speed))];
     }
 }
 - (void)configurePosition:(double)position end:(double)end hostTime:(uint64_t)hostTime rate:(double)fps mode:(NSString*)mode running:(BOOL)running destination:(int32_t)destination {
+    [self configurePosition:position end:end hostTime:hostTime rate:fps speed:1 mode:mode running:running destination:destination];
+}
+- (void)configurePosition:(double)position end:(double)end hostTime:(uint64_t)hostTime rate:(double)fps speed:(double)speed mode:(NSString*)mode running:(BOOL)running destination:(int32_t)destination {
+    speed=std::isfinite(speed) && speed>0 ? speed : 1;
     _signal->active.store(false,std::memory_order_release);
     _signal->peak.store(0,std::memory_order_relaxed);
-    _signal->position=position; _signal->end=end; _signal->host=hostTime; _signal->fps=fps;
+    _signal->position=position; _signal->end=end; _signal->host=hostTime; _signal->fps=fps; _signal->speed=speed;
     _signal->generation.fetch_add(1,std::memory_order_release);
     _signal->active.store(running && [mode isEqualToString:@"ltc"],std::memory_order_release);
     const bool mtc=[mode isEqualToString:@"mtc"];
     dispatch_async(_queue,^{
         if(self->_timer) { dispatch_source_cancel(self->_timer); self->_timer=nil; }
-        self->_position=position; self->_end=end; self->_host=hostTime; self->_fps=fps; self->_quarter=-1;
+        self->_position=position; self->_end=end; self->_host=hostTime; self->_fps=fps; self->_speed=speed; self->_quarter=-1;
         self->_destination=0;
         if(destination) for(ItemCount i=0;i<MIDIGetNumberOfDestinations();++i) { auto endpoint=MIDIGetDestination(i); SInt32 identifier=0, offline=0; MIDIObjectGetIntegerProperty(endpoint,kMIDIPropertyUniqueID,&identifier); MIDIObjectGetIntegerProperty(endpoint,kMIDIPropertyOffline,&offline); if(identifier==destination && !offline) self->_destination=endpoint; }
         if(!mtc || !self->_destination || !self->_port) return;
@@ -152,8 +156,8 @@ struct TimecodeSignal {
 - (void)dealloc { if(_timer) dispatch_source_cancel(_timer); if(_port) MIDIPortDispose(_port); if(_client) MIDIClientDispose(_client); }
 @end
 
-// Immutable sound/tempo programs are published with a hazard pointer. The render
-// callback neither locks nor allocates; retired programs are reclaimed by the UI.
+// Immutable sound/tempo programs use bounded reader admission. The callback
+// never retries publication; retired programs are reclaimed by the UI.
 struct MetronomeProgram {
     struct Tempo { double start, bpm; int beats, unit; double end=INFINITY, origin=NAN; };
     std::vector<Tempo> sections;
@@ -163,7 +167,8 @@ struct MetronomeProgram {
     uint64_t timingRevision = 0;
 };
 struct MetronomeSignal {
-    std::atomic<MetronomeProgram*> program{nullptr}, reading{nullptr};
+    std::atomic<MetronomeProgram*> program{nullptr};
+    std::atomic<unsigned> readers{0};
     std::atomic<float> gainA{1}, gainB{1};
     float renderedA=1, renderedB=1;
     std::vector<std::unique_ptr<MetronomeProgram>> programs;
@@ -171,6 +176,38 @@ struct MetronomeSignal {
     std::atomic<uint64_t> host{0}, generation{0};
     std::atomic<uint64_t> retimedGeneration{~uint64_t(0)};
     std::atomic<bool> running{false}, enabled{true};
+    std::atomic<uint64_t> countInHost{0};
+    std::atomic<double> countInPeriod{0};
+    std::atomic<unsigned> countInBeats{0};
+
+    void renderCountIn(const MetronomeProgram* p, const AudioTimeStamp* time,
+                       unsigned count, AudioBufferList* list) {
+        const auto host = countInHost.load(std::memory_order_acquire);
+        if (!host || !p || !(time->mFlags & kAudioTimeStampHostTimeValid)) return;
+        const auto beats = countInBeats.load(std::memory_order_relaxed);
+        const double beatFrames = countInPeriod.load(std::memory_order_relaxed) * sampleRate;
+        const double elapsed = double(int64_t(time->mHostTime - host)) * sampleRate / ticksPerSecond;
+        if (!beats || beatFrames <= 0 || elapsed + count <= -.5 || elapsed >= beats * beatFrames) return;
+        const auto start = std::llround(elapsed);
+        const auto end = std::llround(beatFrames * beats);
+        for (unsigned beat = 0; beat < beats; ++beat) {
+            const auto onset = std::llround(beat * beatFrames);
+            if (onset >= start + count) break;
+            const bool accent = p->mode == 1 || (p->mode == 0 && beat == 0);
+            const auto &sound = accent ? p->a : p->b;
+            const auto level = accent ? gainA.load(std::memory_order_relaxed) : gainB.load(std::memory_order_relaxed);
+            const auto first = std::max<int64_t>(0, onset - start);
+            const auto last = std::min<int64_t>({count, end - start, onset + int64_t(sound.size()) - start});
+            for (unsigned i = 0; i < list->mNumberBuffers; ++i) {
+                auto &buffer = list->mBuffers[i];
+                auto *data = static_cast<float*>(buffer.mData);
+                if (!data) continue;
+                for (auto frame = first; frame < last; ++frame)
+                    for (unsigned channel = 0; channel < buffer.mNumberChannels; ++channel)
+                        data[frame * buffer.mNumberChannels + channel] += sound[size_t(start + frame - onset)] * level;
+            }
+        }
+    }
     struct Jump { uint64_t version=0, host=0; double position=0, sample=NAN, first=0, last=0; };
     std::atomic<uint64_t> jumpVersion{0}, jumpHost{0};
     std::atomic<double> jumpPosition{0}, jumpSample{NAN}, jumpFirst{0}, jumpLast{0};
@@ -199,6 +236,7 @@ struct MetronomeSignal {
     }
     uint64_t renderedGeneration = ~uint64_t(0);
     uint64_t renderedTimingRevision = 0, nextTimingRevision = 0, configuredTimingRevision = 0;
+    bool renderedRunning=false, renderedEnabled=false, waitForNextBeat=false;
     double sampleRate, ticksPerSecond, anchorSample=0, anchorPosition=0;
     double previousPosition=-1, previousSample=-1; int64_t previousBeat=-1; size_t previousSection=~size_t(0);
     struct Voice { size_t frame=0; bool a=true; MetronomeProgram* sound=nullptr; };
@@ -234,13 +272,15 @@ struct MetronomeSignal {
         }
         value->timingRevision=sameTiming ? current->timingRevision : ++nextTimingRevision;
         auto* next=value.get(); programs.push_back(std::move(value)); program.store(next);
-        const auto* protectedProgram=reading.load();
-        // Read the callback hazard before the voice hazards: the callback
-        // publishes a voice's sound before releasing its program hazard.
+        // Admission, publication and this check are seq_cst across distinct
+        // atomics. A new reader after quiescence can only take the new program;
+        // an admitted reader keeps all old programs alive until it finishes.
+        if(readers.load()!=0)return;
+        // Completed callbacks may still own sounding tails across blocks.
         std::array<MetronomeProgram*,32> sounding{};
         for(size_t i=0;i<sounding.size();++i) sounding[i]=voicePrograms[i].load();
         programs.erase(std::remove_if(programs.begin(),programs.end(),[&](const auto& p) {
-            return p.get()!=next && p.get()!=protectedProgram &&
+            return p.get()!=next &&
                 std::find(sounding.begin(),sounding.end(),p.get())==sounding.end();
         }),programs.end());
     }
@@ -265,19 +305,30 @@ struct MetronomeSignal {
         running.store(nextRunning);
     }
     void render(const AudioTimeStamp* time, AVAudioFrameCount count, AudioBufferList* list) {
+        jaras::ScopedAudioDenormals denormals;
         const auto physical = jaras::physicalRenderTime(*time, sampleRate); time = &physical;
-        MetronomeProgram* p;
-        do { p=program.load(); reading.store(p); } while(p!=program.load());
+        readers.fetch_add(1);
+        struct ReaderExit { std::atomic<unsigned>& readers; ~ReaderExit(){readers.fetch_sub(1);} } readerExit{readers};
+        auto* p=program.load();
         const auto version=generation.load(std::memory_order_acquire);
         const auto jumpSerial=jumpVersion.load(std::memory_order_acquire);
         if(!(jumpSerial&1)) {
             Jump next{jumpSerial,jumpHost.load(),jumpPosition.load(),jumpSample.load(),jumpFirst.load(),jumpLast.load()};
             if(jumpVersion.load(std::memory_order_acquire)==jumpSerial) renderJump=next;
         }
-        const bool active=running.load() && enabled.load(std::memory_order_acquire);
+        const bool nowRunning=running.load(), nowEnabled=enabled.load(std::memory_order_acquire);
+        const bool active=nowRunning && nowEnabled;
+        if (active && renderedRunning && !renderedEnabled) {
+            waitForNextBeat=true;
+            clearVoices();
+        }
+        if (!active) waitForNextBeat=false;
+        renderedRunning=nowRunning;
+        renderedEnabled=nowEnabled;
         if(!active && gain==0) {
             for(unsigned b=0;b<list->mNumberBuffers;++b) if(list->mBuffers[b].mData) std::memset(list->mBuffers[b].mData,0,list->mBuffers[b].mDataByteSize);
-            reading.store(nullptr); return;
+            renderCountIn(p, time, count, list);
+            return;
         }
         bool rebaseBeat=p && renderedTimingRevision!=0 && renderedTimingRevision!=p->timingRevision;
         if(p) renderedTimingRevision=p->timingRevision;
@@ -335,12 +386,22 @@ struct MetronomeSignal {
                 // A tempo edit changes the mapping of the current sample, not
                 // the musical event being heard. Adopt its new beat identity
                 // once, then trigger only the following real beat crossings.
-                if(rebaseBeat) {
+                if (waitForNextBeat) {
+                    previousBeat=beat; previousSection=section;
+                    waitForNextBeat=false;
+                    rebaseBeat=false;
+                } else if(rebaseBeat) {
                     const bool exactCrossing=preservingPulse && beat!=beatBeforeRetime && phase>=-0.5/sampleRate && phase<=1.0/sampleRate;
                     if(!exactCrossing) { previousBeat=beat; previousSection=section; }
                     rebaseBeat=false;
                 }
-                if((beat!=previousBeat || section!=previousSection) && (previousPosition>=0 || phase<0.003)) {
+                // A resuming route may first render a buffer after the scheduled
+                // downbeat. Recover that pulse only when the transport actually
+                // started on it. A mid-beat seek or enabling while running must
+                // still wait for the next beat.
+                const bool lateStartBeat = previousPosition < 0 && !p->bounded && !jumped &&
+                    phase >= 0 && phase <= 0.050 && std::abs(position-phase-first) <= 0.5/sampleRate;
+                if((beat!=previousBeat || section!=previousSection) && (previousPosition>=0 || phase<0.003 || lateStartBeat)) {
                     const auto index=nextVoice++%voices.size();
                     voices[index]={0,p->mode==1 || (p->mode==0 && beat%tempo.beats==0),p};
                     voicePrograms[index].store(p);
@@ -376,9 +437,17 @@ struct MetronomeSignal {
                 if(data) for(unsigned ch=0;ch<buffer.mNumberChannels;++ch) data[sample*buffer.mNumberChannels+ch]=value;
             }
         }
-        reading.store(nullptr);
+        renderCountIn(p, time, count, list);
     }
 };
+@interface JarasPreparedMetronomeProgram () {
+@public
+    std::unique_ptr<MetronomeProgram> value;
+}
+@end
+@implementation JarasPreparedMetronomeProgram
+@end
+
 @implementation JarasMetronomeGenerator {
     std::shared_ptr<MetronomeSignal> _signal;
 }
@@ -391,12 +460,20 @@ struct MetronomeSignal {
     } return self;
 }
 - (void)setSections:(NSArray<NSDictionary*>*)sections soundA:(NSData*)a soundB:(NSData*)b mode:(NSInteger)mode {
+    [self applyPreparedSections:[JarasMetronomeGenerator prepareSections:sections soundA:a soundB:b mode:mode]];
+}
++ (JarasPreparedMetronomeProgram *)prepareSections:(NSArray<NSDictionary*>*)sections soundA:(NSData*)a soundB:(NSData*)b mode:(NSInteger)mode {
     auto value=std::make_unique<MetronomeProgram>(); value->mode=int(mode);
     for(NSDictionary* s in sections) value->sections.push_back({[s[@"start"] doubleValue],[s[@"bpm"] doubleValue],[s[@"beats"] intValue],[s[@"unit"] intValue]});
     const auto* pa=static_cast<const float*>(a.bytes); const auto* pb=static_cast<const float*>(b.bytes);
     if(a.length) value->a.assign(pa,pa+a.length/sizeof(float));
     if(b.length) value->b.assign(pb,pb+b.length/sizeof(float));
-    _signal->publish(std::move(value));
+    auto *prepared=[JarasPreparedMetronomeProgram new];
+    prepared->value=std::move(value);
+    return prepared;
+}
+- (void)applyPreparedSections:(JarasPreparedMetronomeProgram *)prepared {
+    if(prepared->value) _signal->publish(std::move(prepared->value));
 }
 - (void)setClickSections:(NSArray<NSDictionary*>*)sections sound:(NSData*)sound {
     auto value=std::make_unique<MetronomeProgram>(); value->mode=1; value->bounded=true;
@@ -406,6 +483,13 @@ struct MetronomeSignal {
     _signal->publish(std::move(value));
 }
 - (void)setEnabled:(BOOL)enabled { _signal->enabled.store(enabled, std::memory_order_release); }
+- (void)setCountInStart:(uint64_t)host period:(double)period beats:(NSUInteger)beats {
+    _signal->countInHost.store(0, std::memory_order_release);
+    if (!host) return;
+    _signal->countInPeriod.store(period, std::memory_order_relaxed);
+    _signal->countInBeats.store(unsigned(beats), std::memory_order_relaxed);
+    _signal->countInHost.store(host, std::memory_order_release);
+}
 - (void)scheduleJump:(double)position hostTime:(uint64_t)host sampleTime:(double)sampleTime loopStart:(double)first loopEnd:(double)last {
     _signal->scheduleJump(position,host,sampleTime,first,last);
 }
@@ -413,5 +497,98 @@ struct MetronomeSignal {
 - (void)setGainA:(float)a gainB:(float)b { _signal->gainA.store(a); _signal->gainB.store(b); }
 - (void)configurePosition:(double)position hostTime:(uint64_t)host running:(BOOL)running loopStart:(double)first loopEnd:(double)last sampleTime:(double)sampleTime {
     _signal->configure(position,host,running,first,last,sampleTime);
+}
+@end
+
+#include "../../Core/MIDI/ProgramChangePlayback.hpp"
+#include <unordered_map>
+@implementation JarasProgramChangeSender {
+    dispatch_queue_t _pcQueue;
+    dispatch_source_t _pcTimer;
+    MIDIClientRef _pcClient;
+    MIDIPortRef _pcPort;
+    std::unordered_map<std::string,MIDIEndpointRef> _pcDestinations;
+    std::vector<jaras::ProgramChangeMarker> _pcMarkers;
+    std::array<jaras::ProgramChangeCursor,2> _pcCursors;
+    std::array<double,2> _pcPosition;
+    std::array<bool,2> _pcRunning, _pcJumped;
+    uint64_t _pcHost, _pcPromotion;
+    double _pcTicks;
+    bool _pcMuted;
+}
+- (instancetype)init {
+    if((self=[super init])) {
+        mach_timebase_info_data_t info;mach_timebase_info(&info);_pcTicks=1e9*info.denom/info.numer;
+        _pcQueue=dispatch_queue_create("live.jaras.program-change",DISPATCH_QUEUE_SERIAL);
+        MIDIClientCreate(CFSTR("CatLive Program Change"),nullptr,nullptr,&_pcClient);
+        MIDIOutputPortCreate(_pcClient,CFSTR("Program Change Output"),&_pcPort);
+        _pcTimer=dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER,0,0,_pcQueue);
+        dispatch_source_set_timer(_pcTimer,DISPATCH_TIME_NOW,NSEC_PER_MSEC,NSEC_PER_MSEC/4);
+        __weak JarasProgramChangeSender* weak=self;
+        dispatch_source_set_event_handler(_pcTimer,^{[weak pulseProgramChanges];});
+        dispatch_resume(_pcTimer);
+    }
+    return self;
+}
+- (void)setMarkers:(NSArray<NSDictionary*>*)markers destination:(int32_t)destination muted:(BOOL)muted {
+    dispatch_async(_pcQueue,^{
+        self->_pcMarkers.clear();self->_pcDestinations.clear();
+        std::unordered_map<int32_t,MIDIEndpointRef> endpoints;
+        for(ItemCount i=0;i<MIDIGetNumberOfDestinations();++i) {
+            auto endpoint=MIDIGetDestination(i);SInt32 identifier=0,offline=0;
+            MIDIObjectGetIntegerProperty(endpoint,kMIDIPropertyUniqueID,&identifier);
+            MIDIObjectGetIntegerProperty(endpoint,kMIDIPropertyOffline,&offline);
+            if(!offline)endpoints[identifier]=endpoint;
+        }
+        for(NSDictionary* value in markers) {
+            const std::string id=[[value[@"id"] description] UTF8String];
+            self->_pcMarkers.push_back({id,[value[@"position"] doubleValue],[value[@"program"] intValue],[value[@"channel"] intValue]});
+            const auto target=value[@"destination"]?[value[@"destination"] intValue]:destination;
+            if(target && endpoints.count(target))self->_pcDestinations[id]=endpoints[target];
+        }
+        std::stable_sort(self->_pcMarkers.begin(),self->_pcMarkers.end(),[](const auto& a,const auto& b){return a.position<b.position;});
+        self->_pcMuted=muted;
+    });
+}
+- (void)setPosition:(double)position subPosition:(double)subPosition running:(BOOL)running subRunning:(BOOL)subRunning hostTime:(uint64_t)hostTime promotion:(uint64_t)promotion {
+    dispatch_async(_pcQueue,^{
+        const bool promoted=self->_pcPromotion!=promotion;
+        if(promoted) {
+            self->_pcCursors[0]=self->_pcCursors[1];self->_pcCursors[1].stop();self->_pcPromotion=promotion;
+        }
+        const double elapsed=self->_pcHost?double(int64_t(hostTime-self->_pcHost))/self->_pcTicks:0;
+        const double positions[]{position,subPosition};const bool states[]{bool(running),bool(subRunning)};
+        for(int head=0;head<2;++head) {
+            const double predicted=self->_pcPosition[head]+(self->_pcRunning[head]?elapsed:0);
+            if(!(promoted&&head==0) && (self->_pcRunning[head]!=states[head] || std::abs(positions[head]-predicted)>.08))self->_pcJumped[head]=true;
+            self->_pcPosition[head]=positions[head];self->_pcRunning[head]=states[head];
+        }
+        self->_pcHost=hostTime;
+        [self pulseProgramChanges];
+    });
+}
+- (void)pulseProgramChanges {
+    if(!_pcHost)return;
+    const uint64_t now=mach_absolute_time();
+    const double elapsed=double(int64_t(now-_pcHost))/_pcTicks;
+    if(elapsed<0)return;
+    for(int head=0;head<2;++head) {
+        auto send=[&](const auto& marker){
+            auto destination=_pcDestinations.find(marker.id);
+            if(_pcMuted || destination==_pcDestinations.end() || !_pcPort)return;
+            const Byte bytes[]{Byte(0xc0|(marker.channel-1)),Byte(marker.program)};
+            MIDIPacketList list;auto packet=MIDIPacketListInit(&list);MIDIPacketListAdd(&list,sizeof(list),packet,now,2,bytes);
+            MIDISend(_pcPort,destination->second,&list);
+        };
+        if(_pcJumped[head])_pcCursors[head].advance(_pcMarkers,_pcPosition[head],_pcRunning[head],true,send);
+        _pcCursors[head].advance(_pcMarkers,_pcPosition[head]+(_pcRunning[head]?elapsed:0),_pcRunning[head],false,send);
+        _pcJumped[head]=false;
+    }
+}
+- (void)stop { dispatch_async(_pcQueue,^{for(int head=0;head<2;++head){self->_pcRunning[head]=false;self->_pcCursors[head].stop();}}); }
+- (void)dealloc {
+    if(_pcTimer)dispatch_source_cancel(_pcTimer);
+    if(_pcPort)MIDIPortDispose(_pcPort);
+    if(_pcClient)MIDIClientDispose(_pcClient);
 }
 @end

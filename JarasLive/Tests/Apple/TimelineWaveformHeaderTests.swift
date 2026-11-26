@@ -110,12 +110,15 @@ Thread.sleep(forTimeInterval: 1.05)
 try writeAudio(url, frames: 2048)
 let aged = WaveformHeaderNormalizationProbe.calls
 precondition(cache.header(url) === original && cache.header(missing) == nil,
-             "Non-refresh reads preserve cached values even after one second")
-precondition(WaveformHeaderNormalizationProbe.calls == aged)
+             "Positive headers stay cached; aged failures retry in the background")
+worker.sync {}
+precondition(WaveformHeaderNormalizationProbe.calls == aged + 1,
+             "An aged missing file retries once without requiring an explicit refresh")
+precondition(cache.header(missing)?.frames == 512, "A previously unavailable source recovers automatically")
 precondition(cache.header(url, refresh: true) === original)
-precondition(cache.header(missing, refresh: true) == nil)
+_ = cache.header(missing, refresh: true)
 precondition(WaveformHeaderNormalizationProbe.calls == aged + 2,
-             "Aged refreshes must use the original canonical/file refresh path")
+             "Positive refresh reopens only its own source; recovered negative state is reused")
 worker.sync {}
 let updated = cache.header(url)!, discovered = cache.header(missing)!
 precondition(updated !== original && updated.frames == 2048 && updated.channels == 2)

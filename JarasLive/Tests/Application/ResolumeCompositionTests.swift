@@ -44,20 +44,26 @@ final class ResolumeCompositionTests: XCTestCase {
         XCTAssertFalse(paths.contains { $0.hasPrefix("DELETE") || $0.hasSuffix("/save") || $0.hasSuffix("/add") })
     }
     func testTimedOutDeckPostIsConfirmedWithoutDuplicateAndCompositionIsSaved() async throws {
-        let p = project(); var settings = ResolumeSettings()
+        var p = project(); var settings = ResolumeSettings()
+        p.name = "Show Açúcar 🎶"
+        p.songs[0].parts[0].name = "Ação & \"Um\""
+        p.songs[0].parts[1].name = "🎶<>"
         settings.withMarkers = ResolumeMap.build(project: p, settings: settings).assignments
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: folder) }
-        let file = folder.appendingPathComponent("Show.avc")
-        var deckNames = ["Empty"], selected = 1, compositionName = "Untitled", columnName = "Column 1", posts = 0
-        func body(_ request: URLRequest) throws -> [String: Any] {
+        let file = folder.appendingPathComponent("Show Açúcar.avc")
+        var deckNames = ["Empty"], selected = 1, compositionName = "Untitled", columnName = "Column 1", posts = 0, savedURL = ""
+        func payload(_ request: URLRequest) -> Data {
             var data = request.httpBody ?? Data()
             if data.isEmpty, let stream = request.httpBodyStream {
                 stream.open(); defer { stream.close() }; var buffer = [UInt8](repeating: 0, count: 4096)
                 while stream.hasBytesAvailable { let count = stream.read(&buffer, maxLength: buffer.count); if count <= 0 { break }; data.append(contentsOf: buffer.prefix(count)) }
             }
-            return try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
+            return data
+        }
+        func body(_ request: URLRequest) throws -> [String: Any] {
+            try JSONSerialization.jsonObject(with: payload(request)) as? [String: Any] ?? [:]
         }
         ResolumeHTTPStub.handler = { request in
             let path = request.url!.path
@@ -70,12 +76,14 @@ final class ResolumeCompositionTests: XCTestCase {
                 deckNames = (json["decks"] as! [[String: Any]]).map { ($0["name"] as! [String: String])["value"]! }
             }
             if path.hasSuffix("/columns/1"), request.httpMethod == "PUT" { columnName = ((try body(request))["name"] as! [String: String])["value"]! }
-            if path.hasSuffix("/save") { try Data("Saved composition".utf8).write(to: file) }
+            if path.hasSuffix("/save") { savedURL = String(decoding: payload(request), as: UTF8.self); try Data("Saved composition".utf8).write(to: file) }
             return ["name": ["value": compositionName], "decks": deckNames.enumerated().map { index, name in ["id": index + 1, "name": ["value": name], "selected": ["value": selected == index + 1]] as [String: Any] }, "columns": [["id": 1, "name": ["value": columnName]]], "layers": []]
         }
         let session = session(); defer { session.invalidateAndCancel(); ResolumeHTTPStub.handler = nil }
         try await ResolumeComposition(settings: settings, session: session).create(project: p, destination: file)
-        XCTAssertEqual(posts, 1); XCTAssertEqual(deckNames, ["One", "Two"])
+        XCTAssertEqual(posts, 1); XCTAssertEqual(deckNames, ["Acao Um", "Musica"])
+        XCTAssertEqual(compositionName, "Show Acucar"); XCTAssertEqual(columnName, "Inicio")
+        XCTAssertEqual(savedURL, file.absoluteString, "The chosen file path must not be normalized")
         XCTAssertEqual(selected, 1); XCTAssertTrue(FileManager.default.fileExists(atPath: file.path))
     }
 }

@@ -1,4 +1,5 @@
 #pragma once
+#include "Localization.h"
 #include "Session.h"
 #include "ModalSheet.h"
 namespace catlive {
@@ -56,7 +57,7 @@ class MediaCleanupPanel final : public Component, private Timer {
             String::fromUTF8(
                 "Isso salva o projeto e exclui permanentemente das pastas Stems e Videos os "
                 "arquivos removidos da timeline. Arquivos ainda em uso são mantidos. Os backups de "
-                "recuperação conservam suas mídias. O histórico de desfazer será limpo. Esta "
+                "recuperação deste projeto também serão excluídos. O histórico de desfazer será limpo. Esta "
                 "limpeza não pode ser desfeita."),
             24, 14, getWidth() - 48, 132, Justification::topLeft, 7, 1.f);
         g.setFont(theme::font(11));
@@ -64,7 +65,7 @@ class MediaCleanupPanel final : public Component, private Timer {
         g.drawFittedText(session.document.getParentDirectory().getFullPathName(), 24, 156,
                          getWidth() - 48, 40, Justification::topLeft, 2, 1.f);
         g.setColour(failure.isNotEmpty() ? Colour(0xffff7777) : theme::green);
-        g.drawFittedText(working ? String::fromUTF8("Preservando backups e limpando mídias… ") +
+        g.drawFittedText(working ? String::fromUTF8("Excluindo backups antigos e mídias sem uso… ") +
                                        String((int)(session.importProgress * 100)) + "%"
                                  : failure,
                          24, 204, getWidth() - 48, 42, Justification::topLeft, 2, 1.f);
@@ -76,7 +77,7 @@ class MediaCleanupPanel final : public Component, private Timer {
 
   private:
     Session &session;
-    TextButton cancel{"Cancelar"}, remove{"Excluir"};
+    TextButton cancel{localization::translate("Cancelar")}, remove{localization::translate("Excluir")};
     bool working = false;
     String failure;
     double readyAt = Time::getMillisecondCounterHiRes() + 3000;
@@ -88,7 +89,7 @@ class MediaCleanupPanel final : public Component, private Timer {
     void timerCallback() override {
         const int seconds =
             std::max(0, (int)std::ceil((readyAt - Time::getMillisecondCounterHiRes()) / 1000));
-        remove.setButtonText(seconds > 0 ? "Excluir em " + String(seconds) + "s" : "Excluir");
+        remove.setButtonText(seconds > 0 ? "Excluir em " + String(seconds) + "s" : localization::translate("Excluir"));
         remove.setEnabled(available() && seconds == 0);
         if (working)
             repaint();

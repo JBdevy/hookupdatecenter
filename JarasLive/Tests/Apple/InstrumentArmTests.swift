@@ -3,7 +3,8 @@ import AVFoundation
 
 try MainActor.assumeIsolated {
     let sf2 = URL(fileURLWithPath: ProcessInfo.processInfo.environment["JARAS_TEST_SF2"]!)
-    let engine = AVAudioEngine(), format = AVAudioFormat(standardFormatWithSampleRate: 44100, channels: 2)!
+    let rate = Double(ProcessInfo.processInfo.environment["JARAS_TEST_SAMPLE_RATE"] ?? "44100")!
+    let engine = AVAudioEngine(), format = AVAudioFormat(standardFormatWithSampleRate: rate, channels: 2)!
     try engine.enableManualRenderingMode(.offline, format: format, maximumFrameCount: 512)
     let audio = StemAudioPlayback(engine: engine, realtime: true)
     audio.onError = { error in fatalError(error.localizedDescription) }
@@ -36,9 +37,22 @@ try MainActor.assumeIsolated {
     func peak(_ blocks: Int = 12) -> Float { do { return try render(blocks) } catch { fatalError(error.localizedDescription) } }
     @MainActor func midi(_ status: UInt8, _ number: UInt8, _ value: UInt8) { audio.receiveMIDI(device: 123, status: status, number: number, value: value) }
     midi(0x90, 60, 100)
-    precondition(peak() < 0.000001, "SF2 rejects note-on without Rec arm")
-    audio.setArmedInstrumentTracks([track.id]); midi(0x90, 60, 100)
-    precondition(peak() > 0.0001, "SF2 accepts notes while armed")
+    precondition(peak() < 0.000001, "SF2 rejects note-on with monitoring off")
+    precondition(!track.monitorsInput(armed: false) && track.monitorsInput(armed: true))
+    track.inputMonitoring = true
+    precondition(track.monitorsInput(armed: false) && audio.armedMIDIRecordingTracks.isEmpty)
+    audio.setArmedInstrumentTracks(track.monitorsMIDIInstrument(armed: false) ? [track.id] : [])
+    midi(0x90, 60, 100)
+    precondition(peak() > 0.0001, "SF2 accepts monitored MIDI with REC off")
+    midi(0x80, 60, 0)
+    precondition(peak(50) < 0.00001)
+    track.inputMonitoring = false
+    precondition(!track.monitorsInput(armed: true) && track.monitorsMIDIInstrument(armed: true))
+    precondition(!track.monitorsMIDIInstrument(armed: false))
+    audio.setArmedInstrumentTracks(track.monitorsMIDIInstrument(armed: true) ? [track.id] : [])
+    midi(0x90, 60, 100)
+    precondition(peak(1) > 0.0001, "REC with I off must sound in the first audio buffer")
+    print("SF2_HARDWARE_MIDI_REC_ON_MONITOR_OFF_FIRST_BUFFER_OK")
     audio.setArmedInstrumentTracks([])
     precondition(peak() > 0.0001, "disarming SF2 does not cut the playing note")
     midi(0x80, 60, 0)
@@ -51,6 +65,42 @@ try MainActor.assumeIsolated {
     precondition(peak() > 0.0001, "sustain continues sounding after disarm")
     midi(0xb0, 64, 0)
     precondition(peak(50) < 0.00001, "sustain up still releases SF2 while unarmed")
+    audio.setArmedInstrumentTracks([track.id])
+    audio.previewMIDIChannel(track.id, channel: 16)
+    midi(0x90, 60, 100)
+    precondition(peak() < 0.00001, "A selected MIDI channel rejects other channels")
+    midi(0x9f, 60, 100)
+    precondition(peak() > 0.0001, "Channel 16 is available to the native instrument")
+    midi(0x8f, 60, 0)
+    precondition(peak(50) < 0.00001)
+    audio.previewMIDIChannel(track.id, channel: 0)
+    midi(0x9a, 60, 100)
+    precondition(peak() > 0.0001, "Omni accepts MIDI outside channel one")
+    midi(0x8a, 60, 0)
+    precondition(peak(50) < 0.00001)
+    let savedChannel = UserDefaults.standard.object(forKey: "jaras.keyboard.channel")
+    UserDefaults.standard.set(0, forKey: "jaras.keyboard.channel")
+    defer {
+        if let savedChannel { UserDefaults.standard.set(savedChannel, forKey: "jaras.keyboard.channel") }
+        else { UserDefaults.standard.removeObject(forKey: "jaras.keyboard.channel") }
+    }
+    audio.setArmedInstrumentTracks([])
+    audio.armedMIDIRecordingTracks = [track.id]
+    var recorded: [UInt8] = []
+    audio.onLiveKeyboardMIDI = { _, status, _, _ in recorded.append(status & 0xf0) }
+    audio.playKeyboardNote(60)
+    audio.releaseKeyboardNote(60)
+    precondition(recorded == [0x90, 0x80], "Virtual MIDI recording receives both events")
+    precondition(peak() < 0.00001, "Recording virtual MIDI with monitoring off stays silent")
+    audio.armedMIDIRecordingTracks = []
+    audio.setArmedInstrumentTracks([track.id])
+    audio.playKeyboardNote(60)
+    precondition(peak() > 0.0001, "The virtual keyboard reaches a monitored native instrument with REC off")
+    audio.setArmedInstrumentTracks([])
+    audio.releaseKeyboardNote(60)
+    precondition(peak(50) < 0.00001, "The virtual key-up releases its old target after REC disarm")
+    audio.playKeyboardNote(62)
+    precondition(peak() < 0.00001, "A later virtual note cannot wake a disarmed track")
     audio.prepareForClosing()
-    print("SF2_REC_ARM_NEW_NOTES_ONLY_NOTE_OFF_SUSTAIN_CONTINUE_PCM_OK")
+    print("SF2_REC_ARM_CHANNEL_OMNI_VIRTUAL_KEYBOARD_NOTE_OFF_SUSTAIN_PCM_OK rate=\(rate)")
 }

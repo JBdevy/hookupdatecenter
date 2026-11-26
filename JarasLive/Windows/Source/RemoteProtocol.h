@@ -1,5 +1,6 @@
 #pragma once
 #include "RemoteCipher.h"
+#include "../../Core/Tracks/Track.hpp"
 namespace catlive::remote {
 inline bool validID(const var &value) {
     if (!value.isString())
@@ -28,7 +29,9 @@ struct Command {
     String action, message;
     ID id, project, song, target, playlist;
     double value = 0;
+    int pad = -1, preset = -1;
     std::optional<bool> enabled, receipt;
+    std::vector<jaras::OutputPatch> outputRoutes;
     static Command decode(const var &v) {
         require(v.isObject() && validID(v["id"]) && validID(v["project"]) &&
                 v["action"].isString());
@@ -50,16 +53,38 @@ struct Command {
         c.value = (double)value;
         require(std::isfinite(c.value));
         const auto a = c.action;
+        const auto routes = get(v, "outputRoutes");
+        if (a == "setOutputRoutes") {
+            require(routes.isArray() && routes.getArray()->size() <= 64);
+            for (const auto& route : *routes.getArray()) {
+                const auto first = get(route, "firstChannel"), count = get(route, "channelCount");
+                require(route.isObject() && (first.isInt() || first.isInt64()) && (count.isInt() || count.isInt64()));
+                const auto channel = static_cast<int64>(first), width = static_cast<int64>(count);
+                require(channel >= (c.target.empty() ? -1 : -2) && channel <= 1024 && width >= 1 && width <= 2 &&
+                    (channel > 0 || width == 2) && (channel != 0 || !c.target.empty()));
+                c.outputRoutes.push_back({static_cast<int>(channel), static_cast<int>(width)});
+            }
+        } else require(routes.isVoid() || routes.isUndefined());
+        const bool padAction = a == "vinhetasDown" || a == "vinhetasVolume" || a == "vinhetasGate";
+        for (auto entry : {std::pair<const char *, int *>{"pad", &c.pad}, {"preset", &c.preset}}) {
+            auto field = get(v, Identifier(entry.first));
+            if (!field.isVoid() && !field.isUndefined()) {
+                require(padAction && (field.isInt() || field.isInt64()) && (int)field >= 0 &&
+                        (int)field < (String(entry.first) == "pad" ? 16 : 6));
+                *entry.second = (int)field;
+            }
+        }
+        require(!padAction || (c.pad >= 0 && c.preset >= 0));
         const auto t = v["text"];
         if (!t.isVoid() && !t.isUndefined()) {
             require(t.isString() && t.toString().length() <= 500 &&
                     t.toString().getNumBytesAsUTF8() <= 4000 &&
-                    (a == "noticeSend" || a == "noticeSaveTemplate" || a == "editRegion" ||
+                    (a == "noticeSend" || a == "noticeSaveTemplate" || a == "noticePinStopped" || a == "editRegion" ||
                      a == "renamePlaylist"));
             c.message = t.toString();
         }
         if (!c.playlist.empty())
-            require(a == "deleteRegion");
+            require(a == "deleteRegion" || a == "duplicateRegion");
         for (auto entry : {std::pair<const char *, std::optional<bool> *>{"enabled", &c.enabled},
                            {"noticeReceiptRequested", &c.receipt}}) {
             auto field = get(v, Identifier(entry.first));
@@ -68,7 +93,7 @@ struct Command {
                 *entry.second = (bool)field;
             }
         }
-        require(!c.enabled || a == "noticeDestination");
+        require(!c.enabled || a == "noticeDestination" || a == "noticePinStopped" || a == "vinhetasGate" || a == "transportFadeout");
         require(!c.receipt || a == "noticeSend");
         const bool target = !c.target.empty(), zero = c.value == 0,
                    integral = std::floor(c.value) == c.value;
@@ -76,23 +101,45 @@ struct Command {
             return c.value >= low && c.value <= high;
         };
         bool valid = false;
-        if (a == "editRegion")
+        if (a == "setOutputRoutes") valid = zero;
+        else if (a == "vinhetasDown" || a == "vinhetasUp")
+            valid = target && zero && !c.enabled.has_value();
+        else if (a == "vinhetasVolume")
+            valid = !target && range(0, 2) && !c.enabled.has_value();
+        else if (a == "transportFadeout")
+            valid = !target && zero && c.enabled.has_value();
+        else if (a == "vinhetasGate")
+            valid = !target && zero && c.enabled.has_value();
+        else if (a == "vinhetasPreset")
+            valid = !target && range(0, 5) && integral;
+        else if (a == "vinhetasPanic")
+            valid = !target && zero;
+        else if (a == "editRegion")
             valid = target && c.message.trim().isNotEmpty() && range(0, 16777215) && integral;
+        else if (a == "duplicateRegion")
+            valid = target && zero && !c.playlist.empty();
         else if (a == "renamePlaylist")
             valid = target && zero && c.message.trim().isNotEmpty();
         else if (a == "deleteRegion" || a == "duplicatePlaylist" || a == "deletePlaylist" ||
-                 a == "requestImage" || a == "openRecentProject" || a == "clipMute" ||
+                 a == "requestImage" || a == "openRecentProject" || a == "openRecentProjectInNewTab" || a == "selectProjectTab" || a == "closeProjectTab" || a == "clipMute" ||
                  a == "queueSection")
             valid = target && zero;
         else if (a == "toggleMultiLoopBypass" || a == "toggleSetlistLive" || a == "cancelSection" ||
-                 a == "timerStop" || a == "noticeClear")
+                 a == "timerStop" || a == "timerStartProgressive" || a == "noticeClear" || a == "togglePreview" || a == "toggleRecord")
             valid = !target && zero;
+        else if (a == "selectPreviewPage")
+            valid = !target && range(0, 5) && integral;
+        else if (a == "timerSetMode")
+            valid = !target && range(0, 1) && integral;
         else if (a == "timerStart")
             valid = !target && range(0, 359999) && integral;
         else if (a == "remotePanel")
             valid = !target && range(0, 3) && integral;
         else if (a == "noticeSend" || a == "noticeSaveTemplate")
             valid = !target && t.isString() && range(a == "noticeSend" ? -1 : 0, 2) && integral;
+        else if (a == "noticePinStopped")
+            valid = !target && range(-1, 2) && integral && c.enabled.has_value() &&
+                    (!*c.enabled || t.isString());
         else if (a == "noticePin")
             valid = !target && (zero || c.value == 1);
         else if (a == "noticeDestination")
@@ -102,14 +149,16 @@ struct Command {
         else if (a == "volume")
             valid = range(0, 4);
         else if (a == "pan")
-            valid = target && range(-1, 1);
+            valid = range(-1, 1);
+        else if (a == "tapTempo")
+            valid = target ? c.value >= 0 : zero;
         else if (a == "tempo")
             valid = range(20, 400);
         else if (a == "pitch")
             valid = target && range(-12, 12) && integral;
         else if (a == "seek")
             valid = range(0, 604800);
-        else if (a == "selectRegion" || a == "selectSong")
+        else if (a == "selectRegion" || a == "selectSong" || a == "browseRegion")
             valid = target;
         else if (StringArray{"play", "pause", "stop", "subPlay", "subStop", "toggleLoop", "mute",
                              "solo", "masterMono", "resetMeterPeak", "save", "toggleRegionAuto",
@@ -125,7 +174,7 @@ struct Command {
         if (mode == "observer")
             return action == "requestImage" || (action == "remotePanel" && value <= 2);
         if (mode == "notices")
-            return StringArray{"noticeSend", "noticeClear", "noticePin", "noticeDestination",
+            return StringArray{"noticeSend", "noticeClear", "noticePin", "noticePinStopped", "noticeDestination",
                                "noticeSaveTemplate"}
                        .contains(action) ||
                    (action == "remotePanel" && (value == 0 || value == 3));

@@ -1,16 +1,42 @@
 import AppKit
-let input = TimelineTrackHeightInput.height
-let first = input(64, exp(0.2))
-precondition(abs(first - (64 + 12.8)) < 0.00001, "A wheel event immediately applies its complete travel")
-precondition(abs(input(first, exp(-0.2)) - 64) < 0.00001, "Reversal has no pending animation to consume")
-var burst: CGFloat = 64
+let input: (CGFloat, Double) -> CGFloat = { TimelineTrackHeightInput.height(from: $0, factor: $1) }
+let base = TimelineTrackHeightLimits.defaultHeight
+let first = input(base, exp(0.2))
+precondition(abs(first - (base * 1.2)) < 0.00001, "A wheel event immediately applies its complete travel")
+precondition(abs(input(first, exp(-0.2)) - base) < 0.00001, "Reversal has no pending animation to consume")
+var burst = base
 for _ in 0..<4 { burst = input(burst, exp(0.2)) }
-precondition(abs(burst - (64 + 51.2)) < 0.00001)
+precondition(abs(burst - (base * 1.8)) < 0.00001)
 precondition(input(200, 10) == TimelineTrackHeightLimits.maximum)
 precondition(input(60, 0.01) == TimelineTrackHeightLimits.minimum)
 precondition(input(64, .nan) == 64 && input(64, .infinity) == 64 && input(64, -1) == 64)
-precondition(input(64, 1.001) > 64 && input(64, 1.001) < 65, "Trackpad keeps fractional heights")
+precondition(input(base, 1.001) > base && input(base, 1.001) < base + 1, "Trackpad keeps fractional heights")
 print("TRACK_HEIGHT_DIRECT_INPUT_OK immediate travel, reversal, bounds, fractional heights")
+
+let compactLimits = TrackHeightGeometry.globalLimits(scales: [1, 1], laneCounts: [1, 1], compact: [true, false])
+for smooth in [false, true] {
+    let gesture = TimelineTrackHeightMotion()
+    var displayed: CGFloat = 90
+    gesture.change(factor: 0.01, current: displayed, smoothWheel: smooth, limits: CGFloat(compactLimits.lowerBound)...CGFloat(compactLimits.upperBound)) { displayed = $0 }
+    RunLoop.main.run(until: Date().addingTimeInterval(0.15))
+    precondition(displayed == TrackHeightGeometry.compactMinimumLaneHeight)
+    precondition(TrackHeightGeometry.laneHeight(base: displayed, scale: 1, count: 1, allowsCompactHeight: false) == base)
+    gesture.cancel()
+}
+let reopenedMotion = TimelineTrackHeightMotion()
+reopenedMotion.useProjectSession(UUID())
+var outgoingValues: [CGFloat] = []
+reopenedMotion.change(factor: 1.6, current: 100, smoothWheel: true) { outgoingValues.append($0) }
+let finalOutgoingCount = outgoingValues.count
+reopenedMotion.useProjectSession(UUID())
+var reopenedHeight: CGFloat = 66
+reopenedMotion.change(factor: 0.01, current: reopenedHeight,
+                      limits: CGFloat(compactLimits.lowerBound)...CGFloat(compactLimits.upperBound)) { reopenedHeight = $0 }
+RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.1))
+precondition(reopenedHeight == 28 && outgoingValues.count == finalOutgoingCount,
+             "The first wheel event after opening a project uses its compact floor and cancels the old track-height animation")
+reopenedMotion.cancel()
+print("TRACK_HEIGHT_RECENT_SWITCH_FIRST_WHEEL_EVENT_OK")
 
 let motion = TimelineTrackHeightMotion()
 var values: [CGFloat] = []
@@ -44,22 +70,22 @@ precondition(values.count == beforeCancel, "Closing or blocking the grid cancels
 print("TRACK_HEIGHT_FRAME_BATCHING_OK first response, 196 deltas, exact reversal, idle, cancel")
 
 let fineMotion = TimelineTrackHeightMotion()
-var fineHeight: CGFloat = 64
+var fineHeight = base
 var fineUpdates = 0
 func fineDelta(_ points: Double) {
-    fineMotion.change(factor: exp(points / 64), current: fineHeight) { fineHeight = $0; fineUpdates += 1 }
+    fineMotion.change(factor: exp(points / Double(base)), current: fineHeight) { fineHeight = $0; fineUpdates += 1 }
 }
 fineDelta(0.2)
-precondition(fineHeight == 64 && fineUpdates == 0, "sub-point input accumulates without publishing fractional geometry")
+precondition(fineHeight == base && fineUpdates == 0, "sub-point input accumulates without publishing fractional geometry")
 RunLoop.main.run(until: Date().addingTimeInterval(0.10))
 fineDelta(0.2); fineDelta(0.2)
-precondition(fineHeight == 65 && fineUpdates == 1, "short idle cannot discard fractional wheel travel")
+precondition(fineHeight == base + 1 && fineUpdates == 1, "short idle cannot discard fractional wheel travel")
 RunLoop.main.run(until: Date().addingTimeInterval(0.11))
 fineDelta(-0.2)
-precondition(fineHeight == 64, "a reversal consumes the retained signed remainder immediately")
+precondition(fineHeight == base, "a reversal consumes the retained signed remainder immediately")
 for _ in 0..<3 { fineDelta(0.2) }
 RunLoop.main.run(until: Date().addingTimeInterval(0.04))
-precondition(fineHeight == 65, "repeated fractional events accumulate to their exact rounded total")
+precondition(fineHeight == base + 1, "repeated fractional events accumulate to their exact rounded total")
 let settledCount = fineUpdates
 RunLoop.main.run(until: Date().addingTimeInterval(0.12))
 precondition(fineUpdates == settledCount, "idle never manufactures extra geometry")
@@ -70,13 +96,13 @@ precondition(fineHeight == 240)
 fineDelta(-1)
 RunLoop.main.run(until: Date().addingTimeInterval(0.04))
 precondition(fineHeight == 239, "the clamp drops excess remainder so reversing leaves the maximum immediately")
-fineMotion.cancel(); fineHeight = 25
+fineMotion.cancel(); fineHeight = base + 1
 fineDelta(-20); fineDelta(1)
 RunLoop.main.run(until: Date().addingTimeInterval(0.04))
-precondition(fineHeight == 25, "the minimum clamp cannot retain a hidden negative tail")
-fineMotion.cancel(); fineHeight = 64
+precondition(fineHeight == base + 1, "the minimum clamp cannot retain a hidden negative tail")
+fineMotion.cancel(); fineHeight = base
 fineDelta(0.4); fineMotion.cancel(); fineDelta(0.2)
-precondition(fineHeight == 64, "real cancellation clears pending fractions")
+precondition(fineHeight == base, "real cancellation clears pending fractions")
 fineMotion.cancel()
 print("TRACK_HEIGHT_INTEGER_GEOMETRY_REMAINDER_IDLE_REVERSAL_AND_CLAMP_OK")
 
@@ -124,7 +150,7 @@ func requireMonotonic(_ values: [CGFloat], increasing: Bool) {
 let smoothMotion = TimelineTrackHeightMotion()
 var smoothValues: [CGFloat] = []
 let smoothStart = ProcessInfo.processInfo.systemUptime
-smoothMotion.change(factor: exp(20.0 / 64), current: 100, smoothWheel: true) { smoothValues.append($0) }
+smoothMotion.change(factor: exp(20.0 / Double(base)), current: 100, smoothWheel: true) { smoothValues.append($0) }
 precondition(smoothValues.count == 1 && smoothValues[0] > 100 && smoothValues[0] < 120,
              "a discrete notch responds immediately with partial travel")
 waitForHeight(120, values: { smoothValues }, since: smoothStart)
@@ -137,7 +163,7 @@ precondition(smoothValues.count == smoothSettled, "a settled notch has no duplic
 // New animation must start from that external value, not the old 120-point row.
 let externalStart = ProcessInfo.processInfo.systemUptime
 let externalIndex = smoothValues.count
-smoothMotion.change(factor: exp(10.0 / 64), current: 180, smoothWheel: true) { smoothValues.append($0) }
+smoothMotion.change(factor: exp(10.0 / Double(base)), current: 180, smoothWheel: true) { smoothValues.append($0) }
 precondition(smoothValues.count == externalIndex + 1 && smoothValues.last! > 180 && smoothValues.last! < 190,
              "an external idle height resets the animation's presented starting value")
 waitForHeight(190, values: { smoothValues }, since: externalStart)
@@ -147,11 +173,11 @@ print("TRACK_HEIGHT_WHEEL_PARTIAL_IMMEDIATE_EXACT_SHORT_SETTLE_AND_EXTERNAL_HEIG
 let smoothBurstMotion = TimelineTrackHeightMotion()
 var smoothBurstValues: [CGFloat] = []
 let smoothBurstStart = ProcessInfo.processInfo.systemUptime
-smoothBurstMotion.change(factor: exp(12.0 / 64), current: 100, smoothWheel: true) { smoothBurstValues.append($0) }
+smoothBurstMotion.change(factor: exp(12.0 / Double(base)), current: 100, smoothWheel: true) { smoothBurstValues.append($0) }
 for _ in 0..<40 {
     // A real SwiftUI callback may still capture the pre-frame height. Accumulate
     // every delta internally while the presentation remains frame-batched.
-    smoothBurstMotion.change(factor: exp(0.5 / 64), current: 100, smoothWheel: true) { smoothBurstValues.append($0) }
+    smoothBurstMotion.change(factor: exp(0.5 / Double(base)), current: 100, smoothWheel: true) { smoothBurstValues.append($0) }
 }
 precondition(smoothBurstValues.count == 1, "wheel retargeting must not publish one layout per input event")
 waitForHeight(132, values: { smoothBurstValues }, since: smoothBurstStart)
@@ -161,11 +187,11 @@ print("TRACK_HEIGHT_WHEEL_BURST_ACCUMULATES_COMPLETE_TRAVEL_AND_BATCHES_OK")
 
 let reverseMotion = TimelineTrackHeightMotion()
 var reverseValues: [CGFloat] = []
-reverseMotion.change(factor: exp(20.0 / 64), current: 100, smoothWheel: true) { reverseValues.append($0) }
+reverseMotion.change(factor: exp(20.0 / Double(base)), current: 100, smoothWheel: true) { reverseValues.append($0) }
 let reversalBase = reverseValues.last!
 let beforeReversalCount = reverseValues.count
 let reverseStart = ProcessInfo.processInfo.systemUptime
-reverseMotion.change(factor: exp(-8.0 / 64), current: 100, smoothWheel: true) { reverseValues.append($0) }
+reverseMotion.change(factor: exp(-8.0 / Double(base)), current: 100, smoothWheel: true) { reverseValues.append($0) }
 waitForHeight(reversalBase - 8, values: { reverseValues }, since: reverseStart)
 let reversedPresentation = [reversalBase] + Array(reverseValues.dropFirst(beforeReversalCount))
 requireMonotonic(reversedPresentation, increasing: false)
@@ -176,16 +202,16 @@ print("TRACK_HEIGHT_WHEEL_REVERSAL_DROPS_OLD_VISUAL_TAIL_OK")
 
 let directMotion = TimelineTrackHeightMotion()
 var directValues: [CGFloat] = []
-directMotion.change(factor: exp(20.0 / 64), current: 100, smoothWheel: false) { directValues.append($0) }
+directMotion.change(factor: exp(20.0 / Double(base)), current: 100, smoothWheel: false) { directValues.append($0) }
 precondition(directValues == [120], "trackpad still publishes its complete first delta synchronously")
 RunLoop.main.run(until: Date().addingTimeInterval(0.10))
 precondition(directValues == [120], "trackpad gains no interpolation frames")
 directMotion.cancel()
 var switchedValues: [CGFloat] = []
-directMotion.change(factor: exp(20.0 / 64), current: 100, smoothWheel: true) { switchedValues.append($0) }
+directMotion.change(factor: exp(20.0 / Double(base)), current: 100, smoothWheel: true) { switchedValues.append($0) }
 let switchBase = switchedValues.last!
 let switchStart = ProcessInfo.processInfo.systemUptime
-directMotion.change(factor: exp(-3.0 / 64), current: 100, smoothWheel: false) { switchedValues.append($0) }
+directMotion.change(factor: exp(-3.0 / Double(base)), current: 100, smoothWheel: false) { switchedValues.append($0) }
 waitForHeight(switchBase - 3, values: { switchedValues }, since: switchStart)
 requireMonotonic([switchBase] + Array(switchedValues.dropFirst()), increasing: false)
 let afterSwitch = switchedValues.count
@@ -194,6 +220,12 @@ precondition(switchedValues.count == afterSwitch, "precise input cancels the pre
 directMotion.cancel()
 print("TRACK_HEIGHT_PRECISE_INPUT_UNCHANGED_AND_CANCELS_WHEEL_TRANSITION_OK")
 
+let evenStep = TimelineTrackHeightWheelTransition(from: 64, to: 84, began: 0)
+let presentedSteps = (0...4).map { evenStep.value(at: Double($0) / 60) }
+precondition(presentedSteps[0] > 64 && presentedSteps[0] <= 68,
+             "Wheel response starts promptly without applying most of the notch at once")
+precondition(zip(presentedSteps, presentedSteps.dropFirst()).allSatisfy { $1 - $0 <= 5 },
+             "Successive 60-Hz frames stay close instead of a large first jump")
 for sign in [-1.0, 1.0] {
     let limitMotion = TimelineTrackHeightMotion()
     var limitValues: [CGFloat] = []
@@ -211,12 +243,12 @@ for sign in [-1.0, 1.0] {
 }
 let cancelledWheel = TimelineTrackHeightMotion()
 var cancelledValues: [CGFloat] = []
-cancelledWheel.change(factor: exp(20.0 / 64), current: 100, smoothWheel: true) { cancelledValues.append($0) }
+cancelledWheel.change(factor: exp(20.0 / Double(base)), current: 100, smoothWheel: true) { cancelledValues.append($0) }
 let beforeWheelCancel = cancelledValues.count
 cancelledWheel.cancel()
 RunLoop.main.run(until: Date().addingTimeInterval(0.10))
 precondition(cancelledValues.count == beforeWheelCancel, "modal or teardown cancellation discards pending animation frames")
-cancelledWheel.change(factor: exp(1.0 / 64), current: 80, smoothWheel: true) { cancelledValues.append($0) }
+cancelledWheel.change(factor: exp(1.0 / Double(base)), current: 80, smoothWheel: true) { cancelledValues.append($0) }
 precondition(cancelledValues.last == 81, "a sub-two-point correction stays direct and starts at the new height")
 cancelledWheel.cancel()
 print("TRACK_HEIGHT_WHEEL_FULL_RANGE_BOUNDS_CANCEL_AND_SMALL_CORRECTION_OK")

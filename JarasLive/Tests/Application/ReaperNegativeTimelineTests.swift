@@ -89,6 +89,9 @@ final class ReaperNegativeTimelineTests: XCTestCase {
             <ITEM
               POSITION 1
               LENGTH 4
+              <SOURCE WAVE
+                FILE visible.wav
+              >
             >
           >
         >
@@ -115,6 +118,9 @@ final class ReaperNegativeTimelineTests: XCTestCase {
                 <ITEM
                   POSITION 9
                   LENGTH 3
+                  <SOURCE WAVE
+                    FILE visible.wav
+                  >
                 >
               >
             >
@@ -136,7 +142,7 @@ final class ReaperNegativeTimelineTests: XCTestCase {
         >
         """)
         XCTAssertTrue(result.project.songs[0].tracks[0].clips.isEmpty)
-        XCTAssertEqual(result.project.songs[0].parts[0].startTime, 0)
+        XCTAssertTrue(result.project.songs[0].parts.isEmpty)
         XCTAssertEqual(result.project.songs[0].duration, 1)
     }
     func testCustomerProjectWhenProvided() throws {

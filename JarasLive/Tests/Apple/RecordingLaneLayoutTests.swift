@@ -3,7 +3,22 @@ import Foundation
 @main struct RecordingLaneLayoutTests {
     @MainActor static func main() {
         var track = Track(id: UUID(), name: "Input", role: .other)
+        track.stackedStems = false
         track.clips = [AudioClip(id: UUID(), name: "Existing", startTime: 10, duration: 5)]
+        let rowCache = TrackLayoutCache()
+        var key = TimelineRenderKey(revision: 1, songID: UUID(), movingClip: nil, movingStart: 0,
+            movingTrack: nil, movingRegion: nil, regionDelta: 0, resizingRegion: nil, resizedStart: 0, resizedEnd: 0)
+        let before = rowCache.layout([track], height: 100, key: key)
+        let secondTake = AudioClip(id: UUID(), name: "Live same position", startTime: 10, duration: 0.01)
+        RecordingLaneLayout.shared.reserve(track: track, clip: secondTake)
+        key.recordingRevision = RecordingLaneLayout.shared.revision
+        let liveRows = rowCache.layout([track], height: 100, key: key)
+        precondition(before.lanes[0].count == 1 && liveRows.lanes[0].count == 2,
+            "A live recording must occupy its own lane before the song's saved clips change")
+        precondition(liveRows.itemLaneHeight(track.clips[0].id, track: 0) < liveRows.audioHeights[0])
+        RecordingLaneLayout.shared.remove(secondTake.id); key.recordingRevision = RecordingLaneLayout.shared.revision
+        let cancelledRows = rowCache.layout([track], height: 100, key: key)
+        precondition(cancelledRows.lanes[0].count == 1, "Cancelled recording must release its lane immediately")
         let take = AudioClip(id: UUID(), name: "Input - 001", startTime: 8, duration: 0.01)
         let layout = RecordingLaneLayout()
         layout.reserve(track: track, clip: take)
@@ -27,8 +42,51 @@ import Foundation
         precondition(layout.items[later.id]?.clip.recordingLane == 0, "no empty space above a non-overlapping take")
         layout.update(later.id, start: 11)
         precondition(layout.items[later.id]?.clip.recordingLane == 2, "actual capture start rechecks overlaps")
+        var adjacent = track
+        adjacent.clips = [AudioClip(id: UUID(), name: "Original", startTime: 10, duration: 0.1),
+                          AudioClip(id: UUID(), name: "Copy", startTime: 10.1.nextDown, duration: 0.1)]
+        precondition(TrackLanes(track: adjacent).count == 1, "rounded touching edges share one lane")
+        adjacent.clips[1].startTime = 10.1 - 0.5 / 44_100
+        precondition(TrackLanes(track: adjacent).localCount(for: adjacent.clips[1].id) == 1,
+                     "Half-sample import rounding must not stack adjacent items")
+        adjacent.clips[1].startTime = 10.099
+        precondition(TrackLanes(track: adjacent).count == 2, "real overlaps retain separate lanes")
         layout.clear()
         precondition(layout.items.isEmpty)
+        let isolated = AudioClip(id: UUID(), name: "Full height", startTime: 30, duration: 5)
+        track.clips.append(isolated)
+        let rows = TrackRowLayout(tracks: [track], baseHeight: 100)
+        precondition(rows.lanes[0].count == 2)
+        precondition(rows.itemLaneHeight(isolated.id, track: 0) == rows.audioHeights[0])
+        precondition(rows.itemLaneOffset(isolated.id, track: 0) == 0)
+        precondition(rows.itemLaneHeight(committed.id, track: 0) == rows.audioHeights[0] / 2)
+        precondition(rows.itemLaneOffset(committed.id, track: 0) == rows.audioHeights[0] / 2)
+        let live = AudioClip(id: UUID(), name: "Live", startTime: 31, duration: 1)
+        RecordingLaneLayout.shared.reserve(track: track, clip: live)
+        let during = TrackRowLayout(tracks: [track], baseHeight: 100)
+        precondition(during.itemLaneHeight(isolated.id, track: 0) == during.laneHeights[0],
+                     "active take reserves conventional height rather than covering an existing full-height item")
+        RecordingLaneLayout.shared.remove(live.id)
+        let stopped = TrackRowLayout(tracks: [track], baseHeight: 100)
+        precondition(stopped.itemLaneHeight(isolated.id, track: 0) == stopped.audioHeights[0])
+        var stackedAudio = track
+        stackedAudio.stackedStems = true
+        RecordingLaneLayout.shared.reserve(track: stackedAudio, clip: live)
+        precondition(TrackRowLayout(tracks: [stackedAudio], baseHeight: 100).lanes[0].count == 1)
+        RecordingLaneLayout.shared.remove(live.id)
+        var pcTrack = Track(id: UUID(), name: "Program Change", role: TrackRole(rawValue: "programChange"))
+        pcTrack.programChanges = (1...6).map { slot in
+            ProgramChangeMarker(id: UUID(), position: 10, program: slot, channel: 1, name: "PC \(slot)", output: slot)
+        }
+        let pcCache = TrackLayoutCache()
+        let stacked = pcCache.layout([pcTrack, track], height: 100, key: key)
+        precondition(stacked.audioHeights[0] == 152, "Six heads must fit inside their own track")
+        precondition(stacked.offsets[1] >= 152, "Following tracks must move below the stacked heads")
+        pcTrack.programChanges?.removeLast(5)
+        let oneHead = pcCache.layout([pcTrack, track], height: 100, key: key)
+        precondition(oneHead.audioHeights[0] == 100, "Deleting stacked heads must invalidate cached row height")
+        print("PROGRAM_CHANGE_SIX_HEADS_EXPAND_AND_RELEASE_ROW_HEIGHT_OK")
+        print("TRACK_ROW_LOCAL_HEIGHT_RECORDING_RESERVATION_AND_STOP_RESTORATION_OK")
         print("RECORDING_LIVE_LANES_OVERLAP_GROWTH_FINALIZATION_AND_NO_GRID_INVALIDATION_OK")
     }
 }

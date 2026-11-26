@@ -1,4 +1,5 @@
 #pragma once
+#include "Localization.h"
 #include "Common.h"
 
 namespace catlive {
@@ -24,6 +25,7 @@ struct RecentProjects {
         file.replaceWithText(JSON::toString(var(values)));
     }
     static void remember(const File &file) {
+        if (file.isAChildOf(File::getSpecialLocation(File::userDocumentsDirectory).getChildFile("catlive-temp"))) return;
         auto paths = read();
         paths.removeString(file.getFullPathName(), true);
         paths.insert(0, file.getFullPathName());
@@ -36,23 +38,42 @@ struct RecentProjects {
     }
 };
 
-class ProjectBrowser final : public Component, private ListBoxModel {
+class ProjectBrowser final : public Component, private ListBoxModel, private Timer {
   public:
     ProjectBrowser();
+    ~ProjectBrowser() override { storageCancelled->store(true); }
     void paint(Graphics &) override;
     void resized() override;
     void refresh();
-    std::function<void()> createEmpty, createStems, createReaper, createLogic, addStems, addPackage,
+    std::function<void()> createTemporary, createStems, createReaper, createLogic, createRecording, addStems, addPackage,
         browse, resume;
-    std::function<void(File)> open;
+    std::function<void(File)> open, openInNewTab, deleteProject;
+    std::function<void(std::vector<File>)> openMultiple;
     void setProjectOpen(bool);
+    void showHome() { selectMode(none); }
+    void showRecents() { selectMode(opening); }
+    void setPlaybackRunning(bool value) { playbackRunning = value; updateEnabled(); }
+    void beginLoading(const File &);
+    void setLoadingCancellation(std::function<void()>);
+    void updateLoading(const String &, double progress = -1);
+    void finishLoading(const String &error = {});
+    bool isLoading() const { return loading; }
+    String loadingMessage() const { return loadingStatus.getText(); }
+    String loadingFailure() const { return loadingError.getText(); }
+    bool keyPressed(const KeyPress &) override;
 
   private:
     class Action final : public Button {
       public:
-        enum Icon { document, plusDocument, folder, plusFolder, waveform, archive, back, piano };
+        enum Icon { document, plusDocument, folder, plusFolder, waveform, archive, back, piano, recording, clock };
         Action(String title, Icon symbol) : Button(title), icon(symbol) {}
         void paintButton(Graphics &, bool, bool) override;
+        void mouseDown(const MouseEvent &e) override {
+            if (!e.mods.isPopupMenu()) Button::mouseDown(e);
+        }
+        void mouseUp(const MouseEvent &e) override {
+            if (!e.mods.isPopupMenu()) Button::mouseUp(e);
+        }
 
       private:
         Icon icon;
@@ -60,22 +81,37 @@ class ProjectBrowser final : public Component, private ListBoxModel {
     Action create{"Criar projeto", Action::plusDocument};
     Action add{"Adicionar ao projeto", Action::plusFolder};
     Action recent{"Projetos Recentes", Action::folder};
-    Action empty{"Vazio", Action::document};
+    Action temporary{"Utilited", Action::clock};
     Action stems{"Adicionar stems", Action::waveform};
     Action reaper{"REAPER", Action::waveform};
     Action logic{"Logic", Action::piano};
+    Action recording{"REC Multitrack", Action::recording};
     Action package{"Add .ziplive", Action::archive};
     Action back{"Voltar ao projeto", Action::back};
-    TextButton browseButton{String::fromUTF8("Procurar…")};
+    TextButton browseButton{"Open existing"};
+    TextButton multipleButton{localization::translate("Open multiple projects")};
+    TextButton cancelLoading{localization::translate("Cancelar")};
+    std::function<void()> cancelLoadingAction;
     TextEditor search;
     ListBox recents;
+    Label loadingStatus, loadingError;
+    juce::Rectangle<int> spinnerBounds;
+    juce::Rectangle<int> loadingBarBounds;
+    double loadingProgress = -1;
     StringArray filtered;
+    std::map<String, std::pair<double, String>> storageSizes;
+    std::set<String> storagePending;
+    std::shared_ptr<std::atomic<bool>> storageCancelled = std::make_shared<std::atomic<bool>>(false);
+    void refreshStorage();
     enum Mode { none, creating, adding, opening } mode = none;
-    bool projectOpen = false;
+    bool projectOpen = false, playbackRunning = false;
+    bool loading = false;
     int getNumRows() override { return filtered.size(); }
     void paintListBoxItem(int, Graphics &, int, int, bool) override;
     void listBoxItemClicked(int, const MouseEvent &) override;
     void returnKeyPressed(int) override;
     void selectMode(Mode);
+    void updateEnabled();
+    void timerCallback() override { repaint(spinnerBounds); }
 };
 } // namespace catlive

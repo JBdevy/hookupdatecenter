@@ -1,13 +1,47 @@
 import Foundation
 import Combine
 import SwiftUI
+import AVFoundation
 #if os(macOS)
 import Network
+import AppKit
 #endif
 #if os(iOS)
 import UIKit
 #endif
 enum AppStartupPresentation {
+    #if os(macOS)
+    @MainActor private static var startupSound: NSSound?
+    @MainActor private static var soundPlayed = false
+    @MainActor private static var soundDeadline: TimeInterval = 0
+    @MainActor static func playSoundOnce() {
+        guard !soundPlayed else { return }
+        soundPlayed = true
+        let defaults = UserDefaults.standard
+        guard defaults.object(forKey: "jaras.startup.sound") == nil || defaults.bool(forKey: "jaras.startup.sound"),
+              let url = Bundle.main.url(forResource: "StartupSound", withExtension: "wav") else { return }
+        startupSound = NSSound(contentsOf: url, byReference: false)
+        if let sound = startupSound, sound.play() {
+            soundDeadline = ProcessInfo.processInfo.systemUptime + sound.duration + 1
+        } else { startupSound = nil }
+    }
+    @MainActor static func waitForSound() async throws {
+        try Task.checkCancellation()
+        // Finder can deliver a document before the splash's queued play call.
+        // Finish the introduction before replacing/restarting the project graph:
+        // CoreAudio shares the output with NSSound, and a graph rebuild here
+        // was dropping output cycles in the last second of the introduction.
+        playSoundOnce()
+        while let sound = startupSound, sound.isPlaying,
+              ProcessInfo.processInfo.systemUptime < soundDeadline {
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        try Task.checkCancellation()
+        // A lost output route must not hold project opening indefinitely.
+        startupSound?.stop()
+        startupSound = nil
+    }
+    #endif
     static let minimumDuration = 3.0
     static func wait(since start: TimeInterval) async throws {
         try Task.checkCancellation()
@@ -15,15 +49,24 @@ enum AppStartupPresentation {
         if remaining > 0 {
             try await Task.sleep(nanoseconds: UInt64((remaining * 1_000_000_000).rounded(.up)))
         }
+        #if os(macOS)
+        try await waitForSound()
+        #endif
     }
 }
 @MainActor final class AppContainer: ObservableObject {
     let auth: AuthService, show: ShowController
+    let remoteProjectTabID = UUID()
+    #if os(macOS)
+    var desktopWorkspaceHost: NSHostingView<AnyView>?
+    var desktopWorkspaceIdentity: UUID?
+    var desktopWorkspaceEnvironment: String?
+    #endif
     let backend: any BackendClient
     @Published private(set) var starting = true
     @Published private(set) var startupProgress = 0.1
     @Published private(set) var startupStage = "Carregando projeto…"
-    private var started = false
+    private var startupTask: Task<Void, Never>?
     #if os(iOS)
     @Published private(set) var localPlaybackEnabled = false
     private var localPlaybackTransition: UInt64 = 0
@@ -34,11 +77,16 @@ enum AppStartupPresentation {
     #if os(macOS)
     private let accessConnectivity = NWPathMonitor()
     #endif
-    private var armedInstrumentObservation: AnyCancellable?
     private var projectInstrumentObservation: AnyCancellable?
     let documents: ProjectDocuments
     let preview: Bool
-    init(preview: Bool = false) throws {
+    let projectRecorder: TrackRecording
+    let projectAudio: StemAudioPlayback
+    private let tabContext: Bool
+    init(preview: Bool = false, sharedAuth: AuthService? = nil, audio: StemAudioPlayback? = nil) throws {
+        self.projectRecorder = sharedAuth == nil ? TrackRecording.shared : TrackRecording()
+        self.projectAudio = audio ?? StemAudioPlayback.shared
+        self.tabContext = sharedAuth != nil
         self.preview = preview
         backend = preview ? MockBackendClient() : RemoteBackendClient(baseURL: URL(string: "https://backcatlive.up.railway.app")!)
         let store: any SecureStore = preview ? MemorySecureStore() : KeychainStore(service: "com.hookdeveloper.jaraslive")
@@ -49,11 +97,16 @@ enum AppStartupPresentation {
         #endif
         // A Keychain failure must be visible; never replace the installation silently.
         do {
-            let device = try DeviceAuthorizationService.installation(store: store, name: name, platform: platform)
-            auth = AuthService(backend: backend, store: store, installation: device, feature: feature, verifier: preview ? nil : .production)
+            if let sharedAuth { auth = sharedAuth }
+            else {
+                let device = try DeviceAuthorizationService.installation(store: store, name: name, platform: platform)
+                auth = AuthService(backend: backend, store: store, installation: device, feature: feature, verifier: preview ? nil : .production)
+            }
             let persistence = DocumentProjectStore()
             show = try ShowController(executor: LocalCommandExecutor(), persistence: persistence, initialProject: preview ? .demo() : .empty(name: "Untitled"), cursorMemory: preview ? nil : ProjectCursorMemory(), globalDefaults: preview ? nil : .standard)
             documents = ProjectDocuments(store: persistence, show: show, preview: preview)
+            documents.projectAudio = projectAudio
+            projectRecorder.projectAudio = projectAudio
         } catch { throw error }
         #if os(macOS)
         if !preview {
@@ -61,8 +114,21 @@ enum AppStartupPresentation {
             auth.onDeviceNameChanged = { DAWRemoteSession.shared.setHostName($0) }
         }
         #endif
-        auth.isPlaying = { [weak show] in show?.isPlaying ?? false }
-        auth.onPendingRevocation = { [weak show] pending in show?.finishCurrentSong(pending) }
+        if !tabContext {
+            auth.isPlaying = { [weak show] in
+                #if os(macOS)
+                return DesktopProjectTabs.shared.anyPlaying || show?.isPlaying == true
+                #else
+                return show?.isPlaying ?? false
+                #endif
+            }
+            auth.onPendingRevocation = { [weak show] pending in
+                #if os(macOS)
+                DesktopProjectTabs.shared.setPendingRevocation(pending)
+                #endif
+                show?.finishCurrentSong(pending)
+            }
+        }
         #if os(iOS)
         // The mode picker and Remote never activate the local audio graph.
         show.canExecute = { [weak self] in preview || (self?.localPlaybackEnabled == true && NativePurchaseStore.shared.canAccessNative) }
@@ -74,23 +140,34 @@ enum AppStartupPresentation {
         #else
         show.canExecute = { [weak auth] in preview || auth?.allowed == true }
         #endif
+        show.togglePreview = { TeleprompterWindow.shared.togglePreview() }
         #if os(macOS)
         show.toggleVideoWindow = { VideoPlayback.shared.toggle() }
+        show.toggleWorkspaceFullscreen = { ProjectWindowAnchor.toggleFullscreen() }
         show.toggleTeleprompterWindow = { [weak show] in
             if let show { TeleprompterWindow.shared.toggle(show: show) }
         }
         #endif
         if !preview {
-            let audio = StemAudioPlayback.shared
-            #if os(macOS)
-            projectInstrumentObservation = documents.$currentURL.removeDuplicates().sink { url in
-                InstrumentLibrary.shared.setProjectDirectory(url?.deletingLastPathComponent())
+            let audio = projectAudio
+            let recorder = projectRecorder
+            projectInstrumentObservation = documents.$currentURL.removeDuplicates().sink { [weak show] url in
+                #if os(macOS)
+                if DesktopProjectTabs.shared.isForeground(show) {
+                    InstrumentLibrary.shared.setProjectDirectory(url?.deletingLastPathComponent())
+                }
+                #else
+                if NativeProjectTabs.shared.isForeground(show) {
+                    InstrumentLibrary.shared.setProjectDirectory(url?.deletingLastPathComponent())
+                }
+                #endif
             }
-            #endif
             #if os(macOS)
+            if !tabContext {
             AudioLicenseAccess.shared.setAllowed(false)
             audio.setLicenseAllowed(false)
             auth.onAudioAuthorization = { [weak show] allowed in
+                DesktopProjectTabs.shared.setLicenseAllowed(allowed)
                 AudioLicenseAccess.shared.setAllowed(allowed)
                 audio.setLicenseAllowed(allowed)
                 if !allowed {
@@ -98,35 +175,38 @@ enum AppStartupPresentation {
                     TrackRecording.shared.finish()
                 }
             }
-            #endif
-            TrackRecording.shared.bind(show)
-            #if os(macOS)
-            armedInstrumentObservation = TrackRecording.shared.$armed.sink { [weak show] _ in
-                // Published state is sent before the REC button redraws. Queue
-                // graph changes after the click, and only wake live instruments.
-                Task { @MainActor [weak self, weak show] in
-                    #if os(iOS)
-                    guard self?.localPlaybackEnabled == true, !AudioDeviceSettings.shared.localSessionInterrupted else { return }
-                    #endif
-                    guard let show else { return }
-                    let instruments = Set(show.snapshot.project.songs.flatMap(\.tracks).filter { track in
-                        track.fx?.instrumentKeys.isEmpty == false || (track.fx?.externalPlugins?.contains { $0.category.contains("Instrument") } ?? false)
-                    }.map(\.id))
-                    audio.armedMIDIRecordingTracks = TrackRecording.shared.armed.intersection(Set(show.snapshot.project.songs.flatMap(\.tracks).filter { $0.recordingMode == .midi }.map(\.id)))
-                    audio.setArmedInstrumentTracks(TrackRecording.shared.armed.intersection(instruments))
-                }
             }
+            else { audio.setLicenseAllowed(auth.allowed) }
+            #endif
+            if !tabContext { TrackRecording.shared.bind(show) }
             audio.instrumentFile = { [weak audio] id in
-                guard let instrument = InstrumentLibrary.catalog.first(where: { $0.id == id }),
-                      let file = InstrumentLibrary.shared.resolvedFile(id, projectDirectory: audio?.mediaDirectory) else { return nil }
-                return (file, instrument.percussion)
+                guard let file = InstrumentLibrary.shared.resolvedFile(id, projectDirectory: audio?.mediaDirectory) else { return nil }
+                return (file, InstrumentLibrary.category(id) == .drum)
             }
-            #endif
             show.selectedLoopArea = { [weak show] in
                 guard let area = TimelineAreaSelection.shared.range, area.song == show?.snapshot.transport.songId else { return nil }
                 return area.start...area.end
             }
             show.audioPresentationPosition = { [weak audio] head, time in audio?.presentationPosition(head: head, sampledAt: time) }
+            show.pendingAudioPreparation = { [weak self, weak audio] snapshot, revision in
+                #if os(iOS)
+                guard self?.localPlaybackEnabled == true else { return nil }
+                #endif
+                return try audio?.pendingPlaybackPreparation(snapshot, revision: revision)
+            }
+            show.pendingSubplayPreparation = { [weak self, weak audio] snapshot, revision in
+                #if os(iOS)
+                guard self?.localPlaybackEnabled == true else { return nil }
+                #endif
+                return audio?.pendingSubplayPreparation(snapshot, revision: revision)
+            }
+            show.pendingSeekPreparation = { [weak self, weak audio] snapshot, revision, position in
+                #if os(iOS)
+                guard self?.localPlaybackEnabled == true else { return nil }
+                #endif
+                return audio?.pendingSeekPreparation(snapshot, revision: revision, position: position)
+            }
+            show.cancelDestinationPreparations = { [weak audio] in audio?.cancelDestinationPreparations() }
             var repeatWasEnabled = show.snapshot.transport.loop.enabled
             show.audioUpdate = { [weak self, weak show] snapshot, revision in
                 #if os(iOS)
@@ -135,17 +215,27 @@ enum AppStartupPresentation {
                       !AudioDeviceSettings.shared.localSessionReconfiguring else { return }
                 #endif
                 let repeatEnabled = snapshot.transport.loop.enabled
-                if repeatWasEnabled && !repeatEnabled { TimelineAreaSelection.shared.clear() }
+                #if os(macOS)
+                let foreground = DesktopProjectTabs.shared.isForeground(show)
+                #else
+                let foreground = NativeProjectTabs.shared.isForeground(show)
+                #endif
+                if foreground && repeatWasEnabled && !repeatEnabled { TimelineAreaSelection.shared.clear() }
                 repeatWasEnabled = repeatEnabled
                 do {
                     try audio.update(snapshot, revision: revision, sampledAt: show?.timelinePlaybackSampleTime ?? ProcessInfo.processInfo.systemUptime)
-                    TrackRecording.shared.observe(snapshot); VideoPlayback.shared.update(snapshot)
-                    if repeatEnabled, let start = snapshot.transport.loop.start, let end = snapshot.transport.loop.end, let song = snapshot.transport.songId {
+                    if foreground, let show {
+                        TrackRecording.shared.observe(snapshot, playbackAdvance: show.timelinePlaybackAdvance)
+                        VideoPlayback.shared.update(snapshot, revision: show.projectRevision)
+                    }
+                    if foreground, repeatEnabled, let start = snapshot.transport.loop.start, let end = snapshot.transport.loop.end, let song = snapshot.transport.songId {
                         TimelineAreaSelection.shared.update(song: song, from: start, to: end)
                     }
                     #if os(macOS)
-                    TeleprompterWindow.shared.update(snapshot, revision: show?.projectRevision ?? revision)
-                    TeleprompterWindow.second.update(snapshot, revision: show?.projectRevision ?? revision)
+                    if foreground {
+                        TeleprompterWindow.shared.update(snapshot, revision: show?.projectRevision ?? revision)
+                        TeleprompterWindow.second.update(snapshot, revision: show?.projectRevision ?? revision)
+                    }
                     #endif
                 }
                 catch { show?.message = error.localizedDescription }
@@ -165,12 +255,23 @@ enum AppStartupPresentation {
             show.audioClipFX = { audio.previewClipFX($0, settings: $1) }
             show.audioClipFXBypass = { audio.previewClipFXBypass($0, bypassed: $1) }
             show.audioItemFade = { audio.previewItemFade($0, fadeIn: $1, seconds: $2) }
+            show.audioItemFadeShape = { audio.previewItemFadeShape($0, fadeIn: $1, curvature: $2, sCurve: $3) }
             show.audioItemPhase = { audio.previewItemPhase($0, inverted: $1) }
             show.audioItemPan = { audio.previewItemPan($0, pan: $1) }
             show.audioItemGain = { audio.previewItemGain($0, gain: $1) }
+            show.itemSourceInfo = { [weak audio] file in
+                let url: URL
+                if file.path.hasPrefix("/") { url = URL(fileURLWithPath: file.path) }
+                else if let directory = audio?.mediaDirectory { url = directory.appendingPathComponent(file.path) }
+                else { return nil }
+                let header = TimelineAudioWaveform.shared.header(url)
+                return (url, header.flatMap { $0.rate > 0 ? Double($0.frames) / $0.rate : nil })
+            }
             show.audioItemChannelMode = { audio.previewItemChannelMode($0, mode: $1) }
             show.audioItemNormalization = { audio.previewItemNormalization($0, gain: $1) }
             show.audioVolume = { audio.previewVolume($0, gain: $1) }
+            show.audioTransportFade = { audio.setTransportFadeGains($0) }
+            show.audioStartTransportFade = { audio.startTransportFade(tracks: $0, duration: $1) }
             show.audioMasterPan = { audio.previewMasterPan($0) }
             show.audioPan = { audio.previewPan($0, pan: $1) }
             show.audioMute = { [weak show] track, muted in
@@ -188,8 +289,17 @@ enum AppStartupPresentation {
             show.audioClipMute = { audio.previewClipMute($0, muted: $1) }
             #if os(macOS)
             show.prepareForSave = { [weak show] in if let show { try ExternalPluginState.captureAllForSaving(show: show) } }
+            show.prepareForFXChange = { [weak show] track, clip, effects in
+                guard let show else { return }
+                let settings = ExternalPluginState.settings(show: show, track: track, clip: clip)
+                for plugin in settings.externalPlugins ?? [] where effects.contains(plugin.effectKey) {
+                    try ExternalPluginState.captureForSaving(show: show, track: track, clip: clip, identifier: plugin.id)
+                }
+            }
             #endif
             show.audioRouting = { audio.previewRouting($0) }
+            show.audioSendGain = { audio.previewTrackSendGain($0, gain: $1) }
+            show.audioMatrixPatch = { audio.previewMatrixPatch(routes: $0, outputs: $1, master: $2) }
             show.audioPatches = { [weak show] track, patches in
                 audio.previewPatches(track, patches: patches)
                 if let track, let show, show.current?.tracks.first(where: { $0.id == track })?.kind == .timecode { audio.updateTimecode(show.snapshot) }
@@ -199,6 +309,7 @@ enum AppStartupPresentation {
                 if let track, let show, show.current?.tracks.first(where: { $0.id == track })?.kind == .timecode { audio.updateTimecode(show.snapshot) }
             }
             show.audioMIDIChannel = { audio.previewMIDIChannel($0, channel: $1) }
+            show.preferredInstrumentMIDIInput = { AudioDeviceSettings.shared.firstAvailableMIDIInputSlot() }
             show.audioMIDIInput = { audio.previewMIDIInput($0, slot: $1) }
             audio.prepareAfterDeviceChange = { [weak show] in show?.preparePlayback() }
             #if os(macOS)
@@ -210,12 +321,30 @@ enum AppStartupPresentation {
             #endif
             audio.onError = { [weak show] error in show?.message = error.localizedDescription }
             #if os(macOS)
+            show.validateAudioOutput = { try AudioDeviceSettings.shared.requireSelectedOutput() }
+            audio.onOutputDisconnected = { [weak show] in
+                guard let show, show.isPlaying else { return }
+                show.audioOutputDisconnected("Audio device disconnected. Playback stopped.")
+            }
             do { try audio.startDeviceSession() } catch { audio.onError(error) }
             #else
-            AudioDeviceSettings.shared.mobileSessionEvent = { [weak self] event in self?.handleMobileAudioEvent(event) }
+            show.validateAudioOutput = { [weak self, weak audio] in
+                guard self?.localPlaybackEnabled == true, let audio else {
+                    throw ProjectError.invalid(JarasLocalization.string("Audio output is unavailable"))
+                }
+                try audio.requireMobilePlaybackOutput()
+            }
+            AudioDeviceSettings.shared.mobileSessionEvent = { event in NativeProjectTabs.shared.handleAudioEvent(event) }
             #endif
         }
-        show.onStop = { [weak auth] in auth?.transportDidStop() }
+        show.recordingBlocksTapTempo = { [weak recorder = projectRecorder] in
+            recorder?.countingIn == true || recorder?.recording == true
+        }
+        show.onStop = { [weak auth, weak recorder = projectRecorder] in
+            recorder?.cancelCountIn()
+            auth?.transportDidStop()
+        }
+        if tabContext { starting = false }
     }
     #if os(iOS)
     func closeNativeProject(resumeAudio: Bool = true) async -> Bool {
@@ -246,7 +375,7 @@ enum AppStartupPresentation {
         mobileRouteRevision &+= 1
         mobileRouteRecovery?.cancel(); mobileRouteRecovery = nil
         let transition = localPlaybackTransition
-        let audio = StemAudioPlayback.shared, settings = AudioDeviceSettings.shared
+        let audio = projectAudio, settings = AudioDeviceSettings.shared
         if enabled {
             guard !localPlaybackEnabled else { return true }
             do {
@@ -257,19 +386,20 @@ enum AppStartupPresentation {
                 localPlaybackEnabled = true
                 try audio.startDeviceSession()
                 if documents.ready { show.preparePlayback() }
-                TrackRecording.shared.setLocalAudioAvailable(true)
+                projectRecorder.setLocalAudioAvailable(true)
                 return true
             } catch {
                 localPlaybackEnabled = false
-                settings.beginLocalRouteChange()
-                TrackRecording.shared.setLocalAudioAvailable(false)
+                let lastAudioTab = !NativeProjectTabs.shared.hasEnabledAudio(excluding: self)
+                if lastAudioTab { settings.beginLocalRouteChange() }
+                projectRecorder.setLocalAudioAvailable(false)
                 audio.suspendDeviceSession()
                 show.message = error.localizedDescription
                 do {
                     try await audio.waitForSuspendedProcessors()
-                    try await TrackRecording.shared.waitForLocalHardwareSuspension()
+                    try await projectRecorder.waitForLocalHardwareSuspension()
                     guard transition == localPlaybackTransition else { return false }
-                    try settings.deactivateLocalSession()
+                    if lastAudioTab { try settings.deactivateLocalSession() }
                 }
                 catch { show.message += "\n" + error.localizedDescription }
                 return false
@@ -277,28 +407,29 @@ enum AppStartupPresentation {
         }
         show.send(.stopAll)
         localPlaybackEnabled = false
-        settings.beginLocalRouteChange()
-        TrackRecording.shared.setLocalAudioAvailable(false)
+        let lastAudioTab = !NativeProjectTabs.shared.hasEnabledAudio(excluding: self)
+        if lastAudioTab { settings.beginLocalRouteChange() }
+        projectRecorder.setLocalAudioAvailable(false)
         audio.suspendDeviceSession()
         do {
             try await audio.waitForSuspendedProcessors()
-            try await TrackRecording.shared.waitForLocalHardwareSuspension()
-            await TrackRecording.shared.finishAndWait()
+            try await projectRecorder.waitForLocalHardwareSuspension()
+            await projectRecorder.finishAndWait()
             guard transition == localPlaybackTransition else { return true }
-            try settings.deactivateLocalSession(); return true
+            if lastAudioTab { try settings.deactivateLocalSession() }; return true
         }
         catch { settings.error = error.localizedDescription; show.message = error.localizedDescription; return false }
     }
-    private func handleMobileAudioEvent(_ event: MobileAudioSessionEvent) {
+    func handleMobileAudioEvent(_ event: MobileAudioSessionEvent) {
         guard localPlaybackEnabled else { return }
-        let audio = StemAudioPlayback.shared, settings = AudioDeviceSettings.shared
+        let audio = projectAudio, settings = AudioDeviceSettings.shared
         switch event {
         case .interrupted:
             mobileRouteRevision &+= 1
             mobileRouteRecovery?.cancel(); mobileRouteRecovery = nil
             settings.beginLocalRouteChange()
             audio.suspendDeviceSession()
-            TrackRecording.shared.setLocalAudioAvailable(false)
+            projectRecorder.setLocalAudioAvailable(false)
             show.send(.stopAll)
         case .interruptionEnded:
             recoverMobileRoute(outputRemoved: false)
@@ -309,7 +440,7 @@ enum AppStartupPresentation {
         }
     }
     private func recoverMobileRoute(outputRemoved: Bool) {
-        let audio = StemAudioPlayback.shared, settings = AudioDeviceSettings.shared
+        let audio = projectAudio, settings = AudioDeviceSettings.shared
         let disconnectedNotice = JarasLocalization.string("Audio device disconnected. Playback stopped.")
         settings.error = ""
         mobileRouteRevision &+= 1
@@ -319,7 +450,7 @@ enum AppStartupPresentation {
         settings.beginLocalRouteChange()
         if !alreadySuspended {
             audio.suspendDeviceSession()
-            TrackRecording.shared.setLocalAudioAvailable(false)
+            projectRecorder.setLocalAudioAvailable(false)
             show.send(.stopAll)
         }
         if outputRemoved { show.message = disconnectedNotice }
@@ -330,8 +461,8 @@ enum AppStartupPresentation {
                 try await Task.sleep(nanoseconds: 150_000_000)
                 guard let self else { return }
                 try await audio.waitForSuspendedProcessors()
-                try await TrackRecording.shared.waitForLocalHardwareSuspension()
-                await TrackRecording.shared.finishAndWait()
+                try await projectRecorder.waitForLocalHardwareSuspension()
+                await projectRecorder.finishAndWait()
                 try Task.checkCancellation()
                 guard localPlaybackEnabled, transition == localPlaybackTransition,
                       revision == mobileRouteRevision, !settings.localSessionInterrupted else { return }
@@ -340,7 +471,7 @@ enum AppStartupPresentation {
                 try audio.startDeviceSession()
                 if documents.ready { show.preparePlayback() }
                 settings.inputDeviceChanged?()
-                TrackRecording.shared.setLocalAudioAvailable(true)
+                projectRecorder.setLocalAudioAvailable(true)
                 if show.message == disconnectedNotice { show.message = "" }
                 mobileRouteRecovery = nil
             } catch is CancellationError { }
@@ -350,7 +481,7 @@ enum AppStartupPresentation {
                 // route fails. Reconnecting USB or choosing an output schedules
                 // another recovery; neither action requires relaunching the app.
                 audio.suspendDeviceSession()
-                TrackRecording.shared.setLocalAudioAvailable(false)
+                projectRecorder.setLocalAudioAvailable(false)
                 settings.finishLocalRouteChange()
                 settings.error = error.localizedDescription
                 show.message = error.localizedDescription
@@ -361,10 +492,28 @@ enum AppStartupPresentation {
     #endif
     func start() async {
         guard !preview else { starting = false; return }
-        guard !started else { return }
-        started = true
-        // A closed startup window cancels its task; a later appearance can retry.
-        defer { if starting { started = false } }
+        // Reparenting the hosting view for interface scaling cancels SwiftUI's
+        // appearance task. Initialization belongs to the container and must
+        // finish once, even when the view disappears and immediately returns.
+        if tabContext { starting = false }
+        else {
+            if startupTask == nil { startupTask = Task { await self.initialize() } }
+            await startupTask?.value
+        }
+        guard !Task.isCancelled else { return }
+        #if os(macOS)
+        var nextQuarantineCheck = ProcessInfo.processInfo.systemUptime
+        while !Task.isCancelled {
+            do { try await Task.sleep(nanoseconds: 1_000_000_000) } catch { return }
+            auth.checkLocalExpiry()
+            if ProcessInfo.processInfo.systemUptime >= nextQuarantineCheck {
+                nextQuarantineCheck = ProcessInfo.processInfo.systemUptime + 30
+                Task { await auth.checkOnlineAccess() }
+            }
+        }
+        #endif
+    }
+    private func initialize() async {
         let startupBegan = ProcessInfo.processInfo.systemUptime
         startupProgress = 0.15
         await Task.yield()
@@ -390,16 +539,336 @@ enum AppStartupPresentation {
         #endif
         guard !Task.isCancelled else { return }
         starting = false
-        #if os(macOS)
-        var nextQuarantineCheck = ProcessInfo.processInfo.systemUptime
-        while !Task.isCancelled {
-            do { try await Task.sleep(nanoseconds: 1_000_000_000) } catch { return }
-            auth.checkLocalExpiry()
-            if ProcessInfo.processInfo.systemUptime >= nextQuarantineCheck {
-                nextQuarantineCheck = ProcessInfo.processInfo.systemUptime + 30
-                Task { await auth.checkOnlineAccess() }
-            }
-        }
-        #endif
     }
 }
+
+#if os(macOS)
+/// Controllers and audio engines live for the lifetime of the open project,
+/// independently of which workspace is being shown. Selecting never reloads it.
+@MainActor final class DesktopProjectTabs: ObservableObject {
+    static let shared = DesktopProjectTabs()
+    @Published private(set) var selected = 0 {
+        didSet { for project in projects { project.documents.projectTabIndex = selected } }
+    }
+    @Published private(set) var projects: [AppContainer] = []
+    private var openingObservers: [ObjectIdentifier: Set<AnyCancellable>] = [:]
+    private var loadingProjects: Set<ObjectIdentifier> = []
+    private var closingTab = false
+    var active: AppContainer? { projects.indices.contains(selected) ? projects[selected] : nil }
+    var anyPlaying: Bool { projects.contains { $0.show.isPlaying } }
+    var needsSaveOnClose: Bool {
+        projects.contains { (!$0.documents.isTemporary && $0.show.hasUnsavedChanges) || $0.show.saving ||
+            $0.documents.busy || $0.documents.importingAudio ||
+            $0.projectRecorder.recording || $0.projectRecorder.busy }
+    }
+    func isForeground(_ show: ShowController?) -> Bool {
+        projects.isEmpty || (show != nil && active?.show === show)
+    }
+    func audio(for show: ShowController) -> StemAudioPlayback {
+        projects.first { $0.show === show }?.projectAudio ?? StemAudioPlayback.shared
+    }
+    func install(_ initial: AppContainer) {
+        guard projects.isEmpty else { return }
+        projects = [initial]; configure(initial); selected = 0
+        DAWRemoteHostBridge.projectTabsProvider = { [weak self] in
+            guard let self else { return [] }
+            return self.projects.enumerated().map { index, container in
+                .init(id: container.remoteProjectTabID, name: container.documents.currentURL?.deletingPathExtension().lastPathComponent ?? container.show.snapshot.project.name, selected: index == self.selected)
+            }
+        }
+        DAWRemoteHostBridge.selectProjectTabHandler = { [weak self] id in
+            guard let self, let index = self.projects.firstIndex(where: { $0.remoteProjectTabID == id }) else { return }
+            self.select(index)
+        }
+        DAWRemoteHostBridge.closeProjectTabHandler = { [weak self] id in
+            guard let self, let index = self.projects.firstIndex(where: { $0.remoteProjectTabID == id }) else { return }
+            self.close(index)
+        }
+    }
+    private func configure(_ container: AppContainer) {
+        container.documents.additionalProtectedMediaURLs = { [weak self, weak container] in
+            guard let self else { return [] }
+            var protected = Set<URL>()
+            for project in self.projects where project !== container {
+                protected.formUnion(project.projectAudio.activeMediaURLs)
+                if let directory = project.documents.currentURL?.deletingLastPathComponent() {
+                    protected.formUnion(project.show.snapshot.project.mediaPaths.map {
+                        directory.appendingPathComponent($0).standardizedFileURL.resolvingSymlinksInPath()
+                    })
+                }
+            }
+            return protected
+        }
+        container.documents.activateExistingProjectTab = { [weak self, weak container] url in
+            guard let self, let container else { return false }
+            let path = url.standardizedFileURL.resolvingSymlinksInPath()
+            guard let index = self.projects.firstIndex(where: { $0 !== container && $0.documents.currentURL?.standardizedFileURL.resolvingSymlinksInPath() == path }) else { return false }
+            self.select(index); return self.selected == index
+        }
+        container.documents.canChangeProject = { [weak self, weak container] in
+            guard let self, let container else { return false }
+            return !self.closingTab && self.active === container && !container.documents.importingAudio
+        }
+        container.documents.openInNewProjectTab = { [weak self] url in self?.open(url) }
+        container.documents.openProjectTabAndWait = { [weak self] url in
+            guard let self else { throw CancellationError() }
+            try await self.openAndWait(url)
+        }
+        container.documents.openRemoteInNewProjectTab = { [weak self] url, id in self?.open(url, remoteCommandID: id) }
+        container.documents.navigateProjectTab = { [weak self] direction in self?.navigate(direction) }
+        container.show.navigateProjectTab = { [weak self] direction in self?.navigate(direction) }
+    }
+    func navigate(_ direction: Int) {
+        guard let index = ProjectTabNavigation.destination(current: selected, count: projects.count, direction: direction) else { return }
+        select(index)
+    }
+    func select(_ index: Int) {
+        guard !closingTab, projects.indices.contains(index), index != selected, let old = active,
+              !old.documents.busy, !old.documents.importingAudio,
+              !TrackRecording.shared.recording, !TrackRecording.shared.busy else { return }
+        // Engines and processors remain owned by their tab. Closing the visible
+        // editors captures their edits; a full snapshot of every FX is unnecessary.
+        FXWindows.shared.closeAll()
+        old.projectAudio.releaseKeyboardNotes()
+        old.projectAudio.setArmedInstrumentTracks([])
+        old.projectRecorder.suspendProjectTab()
+        selected = index
+        let next = projects[index]
+        StemAudioPlayback.shared = next.projectAudio
+        TrackRecording.shared = next.projectRecorder
+        next.projectRecorder.bind(next.show)
+        if let directory = next.documents.currentURL?.deletingLastPathComponent() {
+            VideoPlayback.shared.open(directory: directory)
+            VideoPlayback.teleprompter.open(directory: directory)
+            VideoPlayback.teleprompter2.open(directory: directory)
+            TeleprompterRemote.setProjectDirectory(directory)
+        }
+        InstrumentLibrary.shared.setProjectDirectory(next.documents.currentURL?.deletingLastPathComponent())
+        DAWRemoteHostBridge.documents = next.documents
+        DAWRemoteHostBridge.bind(next.show)
+        ResolumeController.shared.bind(next.show)
+        ControlMappings.shared.bind(next.show)
+        VideoPlayback.shared.update(next.show.snapshot, revision: next.show.projectRevision)
+        next.documents.recent = (UserDefaults.standard.stringArray(forKey: "jaras.recentProjects") ?? []).map { URL(fileURLWithPath: $0) }
+        AudioDeviceSettings.shared.canChangeConfiguration = {
+            !TrackRecording.shared.recording && !TrackRecording.shared.busy
+        }
+    }
+    private func openAndWait(_ url: URL) async throws {
+        open(url)
+        guard let project = active else { throw ProjectError.invalid("Could not open project.") }
+        try await project.documents.waitUntilOpened(at: url)
+    }
+    func open(_ url: URL, remoteCommandID: UUID? = nil) {
+        let rejectRemote: (String) -> Void = { message in
+            if let remoteCommandID { ProjectDocuments.finishRemoteProjectOpening(remoteCommandID, state: "failed", error: message) }
+        }
+        guard !closingTab else { rejectRemote("Finish closing the current tab first."); return }
+        guard let current = active, current.documents.ready, !current.documents.busy, !current.documents.importingAudio,
+              !TrackRecording.shared.recording, !TrackRecording.shared.busy else {
+            rejectRemote("Finish the current operation before opening another project."); return
+        }
+        let canonical = url.standardizedFileURL.resolvingSymlinksInPath()
+        if let index = projects.firstIndex(where: { $0.documents.currentURL?.standardizedFileURL.resolvingSymlinksInPath() == canonical }) {
+            select(index)
+            guard selected == index else { rejectRemote("Finish the current operation before opening another project."); return }
+            if let remoteCommandID { ProjectDocuments.finishRemoteProjectOpening(remoteCommandID, state: "completed") }
+            return
+        }
+        do {
+            let audio = StemAudioPlayback(engine: AVAudioEngine(), auxiliarySelectedHardware: true)
+            let next = try AppContainer(sharedAuth: current.auth, audio: audio)
+            configure(next)
+            projects.append(next)
+            for project in projects { project.documents.projectTabCount = projects.count }
+            select(projects.count - 1)
+            guard active === next else {
+                projects.removeAll { $0 === next }
+                for project in projects { project.documents.projectTabCount = projects.count }
+                next.projectAudio.prepareForClosing()
+                rejectRemote("Finish the current operation before opening another project."); return
+            }
+            watchOpening(next, fallback: current)
+            next.documents.open(url, remoteCommandID: remoteCommandID)
+        } catch {
+            current.documents.error = error.localizedDescription
+            rejectRemote("Could not open the project. Check the Mac for details.")
+        }
+    }
+    private func watchOpening(_ project: AppContainer, fallback: AppContainer) {
+        let id = ObjectIdentifier(project)
+        var subscriptions = Set<AnyCancellable>()
+        let check: () -> Void = { [weak self, weak project, weak fallback] in
+            DispatchQueue.main.async {
+                guard let self, let project, let fallback, self.loadingProjects.contains(id),
+                      !project.documents.busy else { return }
+                if project.documents.ready {
+                    self.loadingProjects.remove(id); self.openingObservers.removeValue(forKey: id); return
+                }
+                guard project.documents.missingAudioPrompt == nil,
+                      let index = self.projects.firstIndex(where: { $0 === project }),
+                      let previous = self.projects.firstIndex(where: { $0 === fallback }) else { return }
+                let error = project.documents.error
+                if self.selected == index { self.select(previous) }
+                project.projectAudio.prepareForClosing()
+                self.projects.remove(at: index)
+                if self.selected > index { self.selected -= 1 }
+                for item in self.projects { item.documents.projectTabCount = self.projects.count }
+                self.loadingProjects.remove(id); self.openingObservers.removeValue(forKey: id)
+                if !error.isEmpty {
+                    let alert = NSAlert(); alert.alertStyle = .warning
+                    alert.messageText = JarasLocalization.string(error); alert.runModal()
+                }
+            }
+        }
+        project.documents.$busy.dropFirst().sink { [weak self] busy in
+            if busy { self?.loadingProjects.insert(id) } else { check() }
+        }.store(in: &subscriptions)
+        project.documents.$missingAudioPrompt.dropFirst().sink { _ in check() }.store(in: &subscriptions)
+        openingObservers[id] = subscriptions
+    }
+    func setLicenseAllowed(_ allowed: Bool) {
+        for project in projects {
+            project.projectAudio.setLicenseAllowed(allowed)
+            if !allowed { project.show.send(.stopAll); project.projectRecorder.finish() }
+        }
+    }
+    func setPendingRevocation(_ pending: Bool) {
+        for project in projects { project.show.finishCurrentSong(pending) }
+    }
+    func receiveMIDI(device: Int32, status: UInt8, number: UInt8, value: UInt8) {
+        if projects.isEmpty { StemAudioPlayback.shared.receiveMIDI(device: device, status: status, number: number, value: value); return }
+        let newNote = status & 0xf0 == 0x90 && value > 0
+        for (index, project) in projects.enumerated() where !newNote || index == selected {
+            project.projectAudio.receiveMIDI(device: device, status: status, number: number, value: value)
+        }
+    }
+    func prepareBackgroundProjectsForClosing(excluding documents: ProjectDocuments, save: Bool) async throws {
+        let background = projects.filter { $0.documents !== documents }
+        // The main window owns a single Save all / Discard / Cancel decision.
+        // Validate every tab before writing any of them, and never close a tab
+        // here: a failed write must leave all of the projects available.
+        for project in background {
+            guard !project.documents.busy, !project.documents.importingAudio,
+                  !project.projectRecorder.recording, !project.projectRecorder.busy else {
+                throw ProjectError.invalid("Finish the current operation before closing.")
+            }
+        }
+        for project in background {
+            while project.show.saving { try await Task.sleep(nanoseconds: 20_000_000) }
+            if save { try await project.show.saveForClosing() }
+            do { try await project.documents.rememberProjectMedia() }
+            catch { NSLog("CatLive: could not update background media inventory while closing: %@", error.localizedDescription) }
+        }
+    }
+    func close(_ index: Int) {
+        guard !ProjectSyncControl.following else { return }
+        guard !closingTab, projects.indices.contains(index), let current = active,
+              !current.documents.busy, !current.documents.importingAudio,
+              !current.projectRecorder.recording, !current.projectRecorder.busy else { return }
+        select(index)
+        guard selected == index else { return }
+        let project = projects[index]
+        guard !project.documents.busy, !project.documents.importingAudio,
+              !project.projectRecorder.recording, !project.projectRecorder.busy else { return }
+        closingTab = true
+        Task { @MainActor in
+            defer { closingTab = false }
+            do {
+                if project.show.hasUnsavedChanges && !project.documents.isTemporary {
+                    let alert = NSAlert()
+                    alert.icon = ProjectSaveAlert.appIcon
+                    alert.messageText = JarasLocalization.string("Do you want to save this project?")
+                    alert.informativeText = project.show.snapshot.project.name
+                    alert.addButton(withTitle: JarasLocalization.string("Save"))
+                    alert.addButton(withTitle: JarasLocalization.string("Close without saving"))
+                    alert.addButton(withTitle: JarasLocalization.string("Cancel"))
+                    let answer = alert.runModal()
+                    if answer == .alertThirdButtonReturn { return }
+                    if answer == .alertFirstButtonReturn { try await project.show.saveForClosing() }
+                } else if project.show.isPlaying {
+                    let alert = NSAlert()
+                    alert.messageText = JarasLocalization.string("Close tab")
+                    alert.informativeText = project.show.snapshot.project.name
+                    alert.addButton(withTitle: JarasLocalization.string("Close"))
+                    alert.addButton(withTitle: JarasLocalization.string("Cancel"))
+                    guard alert.runModal() == .alertFirstButtonReturn else { return }
+                }
+                try await project.documents.rememberProjectMedia()
+                if projects.count == 1 {
+                    let empty = try AppContainer(sharedAuth: project.auth,
+                        audio: StemAudioPlayback(engine: AVAudioEngine(), auxiliarySelectedHardware: true))
+                    empty.documents.ready = false
+                    projects.append(empty); configure(empty)
+                }
+                guard let closing = projects.firstIndex(where: { $0 === project }) else { return }
+                closingTab = false
+                select(closing == 0 ? 1 : closing - 1)
+                guard active !== project else { return }
+                project.show.send(.stopAll)
+                project.projectAudio.prepareForClosing()
+                project.projectRecorder.finish()
+                try project.documents.discardTemporarySession()
+                project.desktopWorkspaceHost = nil
+                project.desktopWorkspaceIdentity = nil
+                project.desktopWorkspaceEnvironment = nil
+                projects.remove(at: closing)
+                if selected > closing { selected -= 1 }
+                for item in projects { item.documents.projectTabCount = projects.count }
+            } catch { project.documents.error = error.localizedDescription }
+        }
+    }
+    func stopAll(forApplicationTermination: Bool = false) {
+        for project in projects {
+            project.show.send(.stopAll)
+            if forApplicationTermination { project.projectAudio.prepareForApplicationTermination() }
+            else { project.projectAudio.prepareForClosing() }
+        }
+    }
+}
+struct DesktopProjectTabBar: View {
+    @ObservedObject private var tabs = DesktopProjectTabs.shared
+    var body: some View {
+        HStack(spacing: 3) {
+            ForEach(Array(tabs.projects.enumerated()), id: \.offset) { index, project in
+                HStack(spacing: 0) {
+                    Button { tabs.select(index) } label: {
+                        DesktopProjectTabName(documents: project.documents)
+                            .font(.jarasSystem(size: 11, weight: .semibold))
+                            .lineLimit(1).truncationMode(.middle)
+                            .frame(maxWidth: .infinity).frame(height: 23)
+                            .contentShape(Rectangle())
+                    }.buttonStyle(.plain).frame(maxWidth: .infinity)
+                    Button { tabs.close(index) } label: {
+                        Image(systemName: "xmark").font(.jarasSystem(size: 9, weight: .semibold))
+                            .frame(width: 22, height: 22).contentShape(Rectangle())
+                    }.buttonStyle(.plain).accessibilityLabel(JarasLocalization.string("Close tab"))
+                        .accessibilityIdentifier("closeProjectTab-\(index)")
+                }
+                .frame(maxWidth: .infinity)
+                .foregroundStyle(tabs.selected == index ? Color.white : Color.white.opacity(0.6))
+                .background(tabs.selected == index ? Color.white.opacity(0.12) : Color.white.opacity(0.04))
+                .overlay(alignment: .bottom) {
+                    if tabs.selected == index { Rectangle().fill(Color.green).frame(height: 2) }
+                }
+            }
+        }.padding(.horizontal, 6).background(Color.black.opacity(0.2))
+    }
+}
+/// A tab's document finishes loading independently of the tab selection.
+/// Observe its URL directly so the title never waits for another tab click.
+private struct DesktopProjectTabName: View {
+    @ObservedObject var documents: ProjectDocuments
+    var body: some View {
+        Text(documents.currentURL?.deletingPathExtension().lastPathComponent ?? documents.show.snapshot.project.name)
+    }
+}
+struct DesktopProjectRoot: View {
+    let initial: AppContainer
+    @ObservedObject private var tabs = DesktopProjectTabs.shared
+    var body: some View {
+        let container = tabs.active ?? initial
+        RootView(container: container)
+    }
+}
+#endif

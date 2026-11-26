@@ -9,19 +9,20 @@ namespace catlive::remote {
 class Discovery final {
   public:
     ~Discovery() { stop(); }
-    void start(const String &name, int port) {
+    void start(const String &name, int port, const String &service="_jaras-live._tcp", ULONG interfaceIndex = 0) {
         stop();
         auto next = std::make_shared<State>();
+        next->interfaceIndex = interfaceIndex;
         auto host = SystemStats::getComputerName().retainCharacters(
             "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-");
         if (host.isEmpty())
             host = "CatLive";
-        auto label = name.replaceCharacters(".\\", "--").substring(0, 40);
+        auto label = name.replaceCharacters(".\\", "--").substring(0, 60);
         while (label.getNumBytesAsUTF8() > 60)
             label = label.dropLastCharacters(1);
         if (label.isEmpty())
             label = "CatLive";
-        const auto instance = label + "._jaras-live._tcp.local";
+        const auto instance = label + "." + service + ".local";
         host += ".local";
         next->instance =
             DnsServiceConstructInstance(instance.toWideCharPointer(), host.toWideCharPointer(),
@@ -56,6 +57,7 @@ class Discovery final {
                 DnsServiceFreeInstance(instance);
         }
         PDNS_SERVICE_INSTANCE instance = nullptr;
+        ULONG interfaceIndex = 0;
         std::mutex mutex;
         bool stopped = false, registered = false;
         std::atomic<DWORD> status{DNS_REQUEST_PENDING};
@@ -101,6 +103,7 @@ class Discovery final {
         operation->remove = remove;
         auto &request = operation->request;
         request.Version = DNS_QUERY_REQUEST_VERSION1;
+        request.InterfaceIndex = state->interfaceIndex;
         request.pServiceInstance = state->instance;
         request.pQueryContext = operation.get();
         request.pRegisterCompletionCallback = completed;

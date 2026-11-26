@@ -26,7 +26,7 @@ class ResolumeComposition {
         std::function<var(const String &, const String &, const String &, const String &)>;
     static Plan plan(const Lighting &lighting, const String &name) {
         Plan result;
-        result.name = name;
+        result.name = Lighting::cleanName(name, "Projeto CatLive");
         for (const auto &region : lighting.resolumeRegions)
             for (size_t i = 0; i < region.cues.size(); ++i)
                 if (i == 0 || lighting.includeMarkers) {
@@ -45,8 +45,8 @@ class ResolumeComposition {
                         throw std::runtime_error("O mapa excede 1.000 decks ou 10.000 colunas.");
                     auto &entry = result.decks[deck];
                     entry.number = deck;
-                    entry.name = region.name;
-                    entry.columns[column] = region.cues[i].name;
+                    entry.name = Lighting::cleanName(region.name, "Musica");
+                    entry.columns[column] = Lighting::cleanName(region.cues[i].name);
                 }
         if (result.decks.empty())
             throw std::runtime_error("Crie um mapa Resolume com músicas primeiro.");

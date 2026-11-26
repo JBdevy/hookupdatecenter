@@ -12,6 +12,7 @@ struct CatMIDINote {
     // Stable source identity survives tempo remapping. Zero means unidentified,
     // and cannot authorize preserving a note across a changed sequence.
     uint64_t identityHigh=0,identityLow=0;
+    uint8_t headMask=3;
 };
 struct CatMIDIEvent { unsigned offset; uint8_t status, pitch, velocity; };
 
@@ -60,6 +61,26 @@ class CatMIDISequence {
     std::array<Transition,32768> transitions{};
     unsigned transitionCount=0;
     bool overflow=false;
+    double renderEpoch = 0, epochSample = 0, nextSample = NAN, renderRate = 0;
+
+    double continuousClock(double hostTime, double rate, unsigned frames, double sample) {
+        if (!std::isfinite(sample)) {
+            nextSample = NAN;
+            return hostTime;
+        }
+        const double expected = renderEpoch + (sample - epochSample) / rate;
+        // A continuous device sample counter identifies adjacent pulls. Host
+        // timestamps can wobble between those pulls without a transport seek.
+        // Reanchor on a render discontinuity, device change or missed deadline.
+        if (renderRate != rate || !std::isfinite(nextSample) ||
+            std::abs(sample - nextSample) > 0.5 || std::abs(hostTime - expected) > 0.020) {
+            renderEpoch = hostTime;
+            epochSample = sample;
+            renderRate = rate;
+        }
+        nextSample = sample + frames;
+        return renderEpoch + (sample - epochSample) / rate;
+    }
     void enqueue(Transition value) {
         if(transitionCount<transitions.size()) transitions[transitionCount++]=value;else overflow=true;
     }
@@ -98,8 +119,12 @@ public:
             next->events.push_back({n.start,index,true});next->events.push_back({n.end,index,false});
         }
         std::sort(next->events.begin(),next->events.end(),[](const auto&a,const auto&b){return a.time==b.time ? a.on<b.on : a.time<b.time;});
-        auto old=std::move(current);current=std::move(next);published.store(current.get(),std::memory_order_seq_cst);
-        if(old)retired.push_back(std::move(old));if(readers.load(std::memory_order_seq_cst)==0)retired.clear();
+        // Allocate the retirement slot before exposing new storage. A failed
+        // allocation must leave the plan held by an audio reader alive.
+        if(current)retired.emplace_back();
+        if(current)retired.back()=std::move(current);
+        current=std::move(next);published.store(current.get(),std::memory_order_seq_cst);
+        if(readers.load(std::memory_order_seq_cst)==0)retired.clear();
     }
     void configure(unsigned head,double position,double clock,bool running,double loopStart,double loopEnd) {
         if(head>=2)return;auto& c=clocks[head];c.generation.fetch_add(1);
@@ -107,8 +132,9 @@ public:
         c.generation.fetch_add(1,std::memory_order_release);
     }
     void stop() {for(unsigned h=0;h<2;++h) configure(h,0,0,false,0,0);}
-    void render(double clock,double rate,unsigned frames) {
+    void render(double clock,double rate,unsigned frames,double sampleTime=NAN) {
         count=0;transitionCount=0;overflow=false;if(rate<=0||!std::isfinite(clock))return;
+        clock=continuousClock(clock,rate,frames,sampleTime);
         readers.fetch_add(1,std::memory_order_seq_cst);auto* plan=published.load(std::memory_order_seq_cst);
         for(unsigned head=0;head<2;++head) {
             auto& c=clocks[head];auto serial=c.generation.load(std::memory_order_acquire);if(serial&1)continue;
@@ -138,7 +164,7 @@ public:
                     state.plan=plan->generation;
                     for(unsigned index=0;index<plan->notes.size();++index) {
                         const auto& note=plan->notes[index];
-                        if(note.start<position-1e-10&&note.end>position) {
+                        if((note.headMask&(1u<<head)) && note.start<position-1e-10&&note.end>position) {
                             if(preserve) {
                                 const int key=int(note.channel)*128+note.pitch;
                                 chases[head].held[key].include(note);chases[head].velocities[key]=note.velocity;
@@ -170,6 +196,7 @@ public:
             if(t.kind==TransitionKind::reset) {releaseNow(t.head,t.offset);continue;}
             if(t.kind==TransitionKind::reconcile) {reconcileNow(t.head,t.offset);continue;}
             const auto& note=plan->notes[t.note];
+            if(!(note.headMask&(1u<<t.head)))continue;
             const int key=int(note.channel)*128+note.pitch;auto& held=states[t.head].held[key];
             if(t.on) {
                 const bool start=held.count==0&&!states[1-t.head].held[key].count;

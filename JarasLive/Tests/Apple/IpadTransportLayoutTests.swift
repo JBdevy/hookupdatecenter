@@ -1,5 +1,5 @@
 let controls = IpadTransportControl.allCases
-precondition(controls == [.play, .pause, .subPlay, .repeatPlayback, .record, .metronome, .bpm, .tuner])
+precondition(controls == [.play, .fadeout, .pause, .repeatPlayback, .record, .metronome, .bpm, .tuner])
 for mask in 0..<(1 << controls.count) {
     let hidden = controls.enumerated().filter { mask & (1 << $0.offset) != 0 }.map { $0.element.rawValue }.joined(separator: ",")
     let visible = IpadTransportControl.visible(hidden: hidden)

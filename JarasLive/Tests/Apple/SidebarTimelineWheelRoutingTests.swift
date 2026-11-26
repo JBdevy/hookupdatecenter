@@ -46,7 +46,7 @@ setlistProbe.attach()
 precondition(mixerController.scrollView === mixerScroll && setlistController.scrollView === setlistScroll, "each probe attaches only its own enclosing sidebar scroll view")
 
 func settle(_ seconds: TimeInterval = 0.04) { RunLoop.main.run(until: Date().addingTimeInterval(seconds)) }
-// A physical wheel applies its exact step immediately; trackpad keeps native momentum.
+// Hidden indicators must retain physical wheel and precise/momentum input.
 final class SidebarWheelEvent: NSEvent {
     var targetWindow: NSWindow!
     var point = NSPoint.zero
@@ -76,13 +76,18 @@ precondition(mixerController.handleWheel(physicalWheel))
 settle(0.65)
 precondition(abs(mixerController.metrics.offset - max(0, beforeReversal - 32)) < 0.001, "reversal cancels outstanding travel")
 physicalWheel.precise = true
+let preciseStart = mixerController.metrics.offset
+precondition(mixerController.handleWheel(physicalWheel), "hidden scrollers must accept trackpad input on Monterey")
+precondition(abs(mixerController.metrics.offset - (preciseStart - 2)) < 0.001, "precise delta must be applied exactly once")
+mixerScroll.hasVerticalScroller = true
 let hitProbe = mixerScroll.contentView as! SidebarHitProbeClip
 let previousHits = hitProbe.hitCount
 for _ in 0..<120 {
     precondition(!mixerController.handleWheel(physicalWheel), "trackpad remains native")
 }
 precondition(hitProbe.hitCount == previousHits, "trackpad zoom must not hit-test the sidebar's entire hosted document")
-print("SIDEBAR_PHYSICAL_WHEEL_IMMEDIATE_EXACT_TARGET_AND_REVERSAL_OK")
+mixerScroll.hasVerticalScroller = false
+print("SIDEBAR_WHEEL_TRACKPAD_WITHOUT_SCROLLBARS_AND_NATIVE_MOMENTUM_OK")
 
 // The mixer shares its vertical document with a horizontal timeline. Wheel
 // zoom there must pass through without first walking the whole hosting tree.
@@ -139,6 +144,18 @@ precondition(releasedTimelineClip == nil, "timeline wheel registration does not 
 print("SIDEBAR_TIMELINE_WHEEL_EXCLUSION_NO_ROOT_HIT_TEST_OVERLAY_HIDDEN_DETACH_AND_LIFETIME_OK")
 
 
+// Older hosting layouts can mount the probe before its ancestor enters a scroll.
+let lateController = SidebarScrollController()
+let parent = NSView(frame: .zero)
+let lateProbe = SidebarScrollProbeView(frame: .zero)
+lateProbe.controller = lateController
+parent.addSubview(lateProbe)
+precondition(lateController.scrollView == nil)
+setlistScroll.documentView!.addSubview(parent)
+lateProbe.layout()
+precondition(lateController.scrollView === setlistScroll)
+parent.removeFromSuperview()
+precondition(lateController.scrollView == nil)
 mixerController.attach(nil); setlistController.attach(nil)
 window.close()
 }

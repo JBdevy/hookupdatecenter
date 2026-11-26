@@ -12,10 +12,14 @@ struct Project: Equatable {
     var pluginState = "old preset"
     var cursor = 0.0
     static func empty(name: String) -> Project { Project() }
+    static func recordingMultitrack(name: String, channels: Int, trackPrefix: String) throws -> Project { Project() }
 }
 struct Snapshot { var project = Project() }
 struct StemScan {}
-enum ProjectDirectoryPolicy { static func validate(_ url: URL) throws {} }
+enum ProjectDirectoryPolicy {
+    static func validate(_ url: URL) throws {}
+    static func newProjectDestination(for selection: URL) -> URL { selection }
+}
 final class TrackRecording {
     static let shared = TrackRecording()
     var recording = false, busy = false
@@ -32,6 +36,7 @@ final class NSSavePanel {
     var isPlaying = false, hasUnsavedChanges = true
     var failSave = false, changedWhileSaving = false
     var canExecute: () -> Bool = { true }
+    func canControl() -> Bool { canExecute() }
     var saveWasLocked = false
     var cursor = 42.5
     var saved: Project?
@@ -56,6 +61,7 @@ final class NSSavePanel {
     func load() async throws -> Project? { show.saved }
 }
 @MainActor final class ProjectDocuments {
+    var activateExistingProjectTab: ((URL) -> Bool)?
     var ready = true, busy = false, adding = true, showingOpenProjectAlert = false
     var currentURL: URL?
     var appendDestination: (project: UUID, url: URL)?
@@ -65,6 +71,7 @@ final class NSSavePanel {
     var openingRequests = 0, migrationRequests = 0
     var capturedBase: Project?
     func importDAW(_ url: URL) { migrationRequests += 1 }
+    func importPortablePackage(_ url: URL) { migrationRequests += 1 }
     func closeProjectEditors() {}
     func runAppend() { finish(scan: StemScan(), detectBPM: false) }
     // INSERT_TRANSITION_METHODS
@@ -128,3 +135,5 @@ Task { @MainActor in
     }
 }
 dispatchMain()
+
+enum JarasLocalization { static func string(_ key: String) -> String { key } }

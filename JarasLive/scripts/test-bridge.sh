@@ -9,6 +9,7 @@ var resolume = ResolumeSettings(); resolume.oscPort = 7001; resolume.withMarkers
 project.resolume = resolume
 project.savedCursor = SavedProjectCursor(songID: project.songs[0].id, position: 42.125)
 project.songs[0].markers = [TimelineMarker(id: UUID(), name: "Refrão", position: 12, color: 0xffcc00, section: true, loopSection: true)]
+project.songs[0].markers?[0].automaticSectionTargetID = UUID()
 project.songs[0].tracks[1].parentTrackID = project.songs[0].tracks[0].id
 project.songs[0].tracks[1].patch = .masterGroup
 project.songs[0].tracks[1].secondaryPatch = OutputPatch(firstChannel: 3, channelCount: 2)
@@ -22,6 +23,7 @@ project.songs[0].tracks[0].clips[0].fadeIn = 2
 project.songs[0].tracks[0].clips[0].fadeOut = 3
 project.songs[0].tracks[0].clips[0].gain = 1.25
 project.songs[0].tracks[0].clips[0].playbackRate = 1.5
+project.songs[0].tracks[0].clips[0].elasticPoints = [ElasticPoint(position: 0.6, source: 0.4)]
 project.songs[0].tracks[0].clips[0].loopStart = 1
 project.songs[0].tracks[0].clips[0].loopLength = 3
 var itemFX = NativeFXSettings()
@@ -50,6 +52,9 @@ project.songs[0].parts[0].uppercaseName = true
 project.songs[0].parts[1].uppercaseName = false
 let list = RegionPlaylist(id: UUID(), name: "Show order", songId: project.songs[0].id, regionIds: [second.id, first.id])
 project.regionSetlist = RegionSetlist(playlists: [list], selectedId: list.id, autoAdvance: false)
+project.regionSetlist?.automaticSubplayNext = true
+project.songs[0].parts[0].subplayInitSeconds = 3
+project.songs[0].parts[1].subplayInitBars = 2
 project.regionSetlist?.liveEnabled = true
 project.regionSetlist?.playedLiveRegionIDs = [first.id]
 let gridID = project.songs[0].id
@@ -70,7 +75,7 @@ for song in project.songs.indices {
 // Persist both attached and intentionally loose material across the bridge.
 for index in project.songs.indices {
     project.songs[index].regionOwnershipInitialized = true
-    project.songs[index].regionOwnershipVersion = 2
+    project.songs[index].regionOwnershipVersion = 4
 }
 project.songs[0].tracks[0].clips[0].regionOwnerID = first.id
 project.songs[0].markers?[0].regionOwnerID = first.id
@@ -82,7 +87,7 @@ project.songs[0].tracks[0].automation = automation; project.masterAutomation = a
 let data = try JSONEncoder().encode(project)
 try data.write(to: URL(fileURLWithPath: CommandLine.arguments[1]))
 SWIFT
-swiftc Application/Project/OutputPatch.swift Application/Project/NativeFXSettings.swift Application/Project/TrackRouting.swift Application/Project/MultiLoop.swift Application/Project/TrackAutomation.swift Application/Controls/NativeFXParameter.swift Application/Project/ProjectModels.swift Application/Project/MIDIItem.swift Application/Project/TimelineTempo.swift build/bridge-tests/main.swift -o build/bridge-tests/fixture
+swiftc Application/Project/OutputPatch.swift Application/Project/DrummerPadKit.swift Application/Project/NativeFXSettings.swift Application/Project/TrackRouting.swift Application/Project/MultiLoop.swift Application/Project/TrackAutomation.swift Application/Controls/NativeFXParameter.swift Application/Project/ProjectModels.swift Application/Project/MIDIItem.swift Application/Project/ItemFade.swift Application/Project/ItemFadeCurve.swift Application/Project/TimelineTempo.swift build/bridge-tests/main.swift -o build/bridge-tests/fixture
 build/bridge-tests/fixture build/bridge-tests/demo.json
 clang++ -std=c++17 -fobjc-arc -framework Foundation Core/Project/Models.cpp Core/Transport/Engine.cpp Core/Import/TrackTaxonomy.cpp Apple/Bridge/JarasCoreBridge.mm Tests/Core/BridgeTests.mm -o build/bridge-tests/test
 build/bridge-tests/test build/bridge-tests/demo.json

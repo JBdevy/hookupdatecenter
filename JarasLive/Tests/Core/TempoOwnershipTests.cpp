@@ -16,7 +16,8 @@ static TimelineMarker tempo(ID id,double position,std::optional<ID> owner,double
 static Project fixture() {
     Project project;project.id="tempo-tail-project";project.name="Owned tails";
     Song song{"tempo-tail-song","Song",40,120,{},{}};
-    song.regionOwnershipInitialized=true;song.timeSettings=ProjectTimeSettings{};song.timeSettings->timebase=ProjectTimebase::relative;
+    // Explicit ownership in this fixture is already migrated; legacy repair is tested separately.
+    song.regionOwnershipInitialized=true;song.regionOwnershipVersion=3;song.timeSettings=ProjectTimeSettings{};song.timeSettings->timebase=ProjectTimebase::relative;
     song.parts={{"a","A",0,16},{"b","B",10,30},{"group","Unified",0,30}};
     song.parts[0].parentRegionID="group";song.parts[1].parentRegionID="group";
     Track track;track.id="audio";track.name="Audio";track.role={"other"};
@@ -45,6 +46,55 @@ static void edit(Engine& engine,const ID& id,double bpm,bool batch=false) {
 }
 int main() {
     try {
+        {
+            Project p;p.id="scoped-tempo";p.name="Scoped tempo";
+            Song song{"music","Music",80,120,{},{}};
+            song.regionOwnershipInitialized=true;song.regionOwnershipVersion=3;
+            song.timeSettings=ProjectTimeSettings{};song.timeSettings->timebase=ProjectTimebase::relative;
+            song.parts={{"first","First",10,40},{"next","Next",50,70}};
+            auto a=tempo("147",10,"first",147),b=tempo("140",20,"first",140);
+            a.tempoReferenceBPM=147;b.tempoReferenceBPM=140;song.markers=std::vector<TimelineMarker>{a,b};
+            Track track;track.id="audio";track.name="Audio";track.role={"other"};
+            AudioClip item;item.id="first-item";item.name="First";item.startTime=10;item.duration=30;item.audioFile=AudioFile{"first.wav"};item.regionOwnerID="first";
+            auto next=item;next.id="next-item";next.startTime=50;next.duration=20;next.regionOwnerID="next";
+            track.clips={item,next};song.tracks={track};p.songs={song};
+            Engine engine;engine.loadProject(p);
+            a.tempoBPM=148;b.tempoBPM=140.*148/147;engine.setMarkers({a,b},{},true);
+            const auto& result=*engine.currentSong();
+            expect(result.markers->size()==2,"Tempo edit created an end/reset marker");
+            near(result.markers->at(1).position,10+10.*147/148,"Tempo marker did not move with the audio");
+            near(result.tracks[0].clips[0].duration,30.*147/148,"Item duration did not follow the reference speed");
+            near(result.tracks[0].clips[1].duration,20,"Tempo edit changed the next song duration");
+            near(TempoEditMap::playbackRate(result,result.tracks[0].clips[0],result.tracks[0].clips[0].startTime+1),148./147,"Wrong source speed");
+            near(TempoEditMap::playbackRate(result,result.tracks[0].clips[1],result.tracks[0].clips[1].startTime+1),1,"Tempo edit leaked to following audio");
+            expect(!tempoPlayback::active(result,result.parts[0].endTime+1),"Tempo edit leaked outside its region");
+            std::cout<<"TEMPO_REGION_SCOPED_WITHOUT_END_MARKER_AND_SOURCE_ALIGNMENT_OK\n";
+        }
+        {
+            auto song=fixture().songs[0];song.parts[0].endTime=12;
+            auto first=song.tracks[0].clips[0],last=song.tracks[0].clips.back();
+            first.startTime=0;first.duration=12;first.playbackRate=1;
+            last.playbackRate=1;song.tracks[0].clips={first,last};
+            auto a=tempo("a-start",0,"a"),b=tempo("b-start",10.5,"b",160);b.tempoReferenceBPM=160;
+            song.markers=std::vector<TimelineMarker>{a,b};
+            for(int step=0;step<20;++step) {
+                const auto before=song;const double end=song.parts[2].endTime;
+                bool hasBoundary=false;
+                for(auto& marker:*song.markers) {
+                    if(std::abs(marker.position-end)<.000001)hasBoundary=true;
+                    else if(marker.position<end)*marker.tempoBPM+=step%2?-1:1;
+                }
+                if(!hasBoundary){auto boundary=tempo("restore",end,{},160);boundary.tempoReferenceBPM=160;song.markers->push_back(boundary);}
+                TempoEditMap(before,song).apply(song);
+                expect(song.markers->size()==3,"Unified boundary drift created extra tempo markers");
+                near(song.markers->back().position,song.parts[2].endTime,"Restoring tempo must follow the unified region end");
+                near(*song.markers->back().tempoBPM,160,"Restoring tempo was edited as part of the group");
+                if(step%2) {
+                    for(const auto& item:song.tracks[0].clips)
+                        near(TempoEditMap::playbackRate(song,item,item.startTime+item.duration-.0000001),1,"Returning unified BPM left altered audio in its tail");
+                }
+            }
+        }
         for(bool batch:{false,true}) {
             Engine engine;engine.loadProject(fixture());
             edit(engine,"b-start",240,batch);
@@ -104,6 +154,27 @@ int main() {
             Engine engine;engine.loadProject(project);edit(engine,"a-middle",240);
             near(clip(engine,"late").startTime,5,"a leading item uses signed local time before its owner's mapped onset");
             near(clip(engine,"late").duration,3,"a leading item does not inherit the preceding song's tempo");
+        }
+        {
+            auto project=fixture();
+            project.songs[0].tracks[0].clips[0].waveform.assign(200000,0.4);
+            project.songs[0].tracks[0].clips[0].waveformChannels={std::vector<double>(200000,0.6)};
+            Engine engine;engine.loadProject(std::move(project));
+            const auto* peaks=clip(engine,"early").waveform.data();
+            const auto* channel=clip(engine,"early").waveformChannels[0].data();
+            auto marker=engine.currentSong()->markers->at(0);marker.tempoBPM=130;
+            engine.setMarkers({marker},{},true);
+            expect(clip(engine,"early").waveform.data()==peaks && clip(engine,"early").waveformChannels[0].data()==channel,
+                   "tempo edits must retain the existing peak arrays without copying them");
+            const auto start=clip(engine,"early").startTime, duration=clip(engine,"early").duration;
+            marker.tempoBPM=-1;bool rejected=false;
+            try {engine.setMarkers({marker},{},true);} catch(...) {rejected=true;}
+            expect(rejected,"invalid tempo must still be rejected");
+            expect(clip(engine,"early").waveform.data()==peaks && clip(engine,"early").waveform[1]==0.4 &&
+                   clip(engine,"early").waveformChannels[0].data()==channel && clip(engine,"early").waveformChannels[0][1]==0.6,
+                   "failed tempo edits must restore peak arrays and channel data");
+            near(clip(engine,"early").startTime,start,"failed tempo edit must preserve onset");
+            near(clip(engine,"early").duration,duration,"failed tempo edit must preserve duration");
         }
         std::cout<<"TEMPO_OWNERSHIP_TAILS_SINGLE_BATCH_LOOSE_FOREIGN_AND_LEGACY_OK\n";
     } catch(const std::exception& error) { std::cerr<<error.what()<<'\n';return 1; }

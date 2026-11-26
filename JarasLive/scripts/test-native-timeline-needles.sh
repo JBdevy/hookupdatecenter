@@ -14,27 +14,41 @@ import sys
 scroll = Path('Apple/Shared/GridScrollView.swift').read_text()
 diagnostics = scroll[scroll.index('enum TimelineLayoutDiagnostics'):scroll.index('protocol SidebarResizeLayoutBoundary')]
 start = scroll.index('final class GridNativeScrollView: NSScrollView')
-native = scroll[start:scroll.index('\n#endif', start)]
+reveal = scroll.index('struct GridRowReveal:')
+native = scroll[reveal:scroll.index('\n}', scroll.index('enum TimelineVerticalBar', reveal)) + 2] + '\n' + scroll[start:scroll.index('\n#endif', start)]
 start = scroll.index('private final class TimelineClipView: NSClipView')
 clip = scroll[start:scroll.index('\n#endif', start)]
 start = scroll.index('final class NativeTimelinePinnedView: NSView')
 pin = scroll[start:scroll.index('\n#endif', start)]
 grid = Path('Apple/Shared/TimelineGridView.swift').read_text()
+transfer = Path('Apple/Shared/VinhetasPanel.swift').read_text()
+diagnostics += '\nimport UniformTypeIdentifiers\ntypealias MixerDividerView = NSView\n'
+diagnostics += scroll[scroll.index('private protocol TimelineSetlistResizeHost:'):scroll.index('private final class WorkspaceSplitView<')]
+diagnostics += transfer[transfer.index('enum LibrarySamplerTransfer {'):transfer.index('enum PadAudioBuffer {')]
+transportView = Path('Apple/Shared/TransportView.swift').read_text()
+start = transportView.index('enum TimelineEditPreferences {')
+diagnostics += transportView[start:transportView.index('\n}', start) + 2] + '\n'
+head = grid[grid.index('private let markerLaneHeight:'):grid.index('struct TimelineHeaderBands')]
 start = grid.index('/// Moving needles update Core Animation layers')
 layer = grid[start:grid.index('private struct TimelineCursorAppearance<', start)].rsplit('#endif', 1)[0]
 models = Path('Application/Project/ProjectModels.swift').read_text()
-transport = models[models.index('public struct QueueState:'):models.index('public struct AudioRoute:')]
+transport = models[models.index('public struct QueueState:'):models.index('public struct PlaybackItemStartIndex')]
 multi = Path('Application/Project/MultiLoop.swift').read_text()
 start = multi.index('public struct MultiLoopPlayback:')
 multi = multi[start:multi.index('\n}', start) + 2]
 # Only the track payload type is irrelevant to this view; all transport fields,
 # the presentation helper, needle view and native follow remain real code.
 presentation = Path('Application/Transport/TimelinePlaybackPresentation.swift').read_text().split('/// Song names and explicit tempo metadata')[0]
-Path(sys.argv[1]).with_name('Presentation.swift').write_text(presentation)
+audio = Path('Apple/Shared/StemAudioPlayback.swift').read_text()
+clock_start = audio.index('struct AudioPresentationClock {')
+clock = audio[clock_start:audio.index('\n}', clock_start) + 2]
+Path(sys.argv[1]).with_name('Presentation.swift').write_text(presentation + '\n' + clock)
 stub_track = 'public struct MultiLoopTrack: Codable, Equatable, Sendable {}\n'
+stub_track += 'final class GridDocumentView: NSView { var followsViewportWidth = false; func synchronizeHostedViewport() {} }\n'
 stubs = Path('Tests/Apple/TimelinePlaybackLayerTests.swift').read_text().split('@MainActor private final class PresentationJournal')[0]
 stubs = stubs.replace('let duration: Double; let parts:', 'let id = UUID(); let duration: Double; let parts:')
-stubs = stubs.replace('var isPlaying: Bool', '@Published var subCursorPreview = false\n    @Published var timelineFollowPaused = false\n    var subCursorVisible: Bool { subCursorPreview || snapshot.transport.subPlay.playing }\n    var isPlaying: Bool')
+stubs = stubs.replace('let endTime: Double }', 'var startTime: Double = 0; let endTime: Double }', 1)
+stubs = stubs.replace('var isPlaying: Bool', '@Published var timelineFollowPaused = false\n    var subCursorVisible: Bool { snapshot.transport.queuedRegionId != nil }\n    var isPlaying: Bool')
 stubs = stubs.replace('    private var sampledAt =', '    var timelinePlaybackIsPublishingTick = false\n    private var sampledAt =', 1)
 stubs = stubs.replace('subPlaying: Bool = false) {', 'subPlaying: Bool = false, tick: Bool = false) {', 1)
 stubs = stubs.replace('        generation += 1', '        timelinePlaybackIsPublishingTick = tick\n        defer { timelinePlaybackIsPublishingTick = false }\n        generation += 1', 1)
@@ -72,10 +86,11 @@ tick = producer[tick_start:producer.index('    private var tempoControlRegion:',
 auto_fader = Path('Tests/Apple/NativeTimelineNeedlesAutoFaderTests.swift').read_text().replace('__PRODUCTION_FLAGS__', flags).replace('__PRODUCTION_GETTER__', getter).replace('__PRODUCTION_TICK__', tick)
 Path(sys.argv[1]).write_text('import AppKit\nimport SwiftUI\nimport Combine\n' +
     stub_track + transport + '\n' + multi + '\n' + diagnostics + '\n' + native + '\n' + clip + '\n' + pin + '\n' +
-    layer + '\n' + stubs + '\n' + Path('Tests/Apple/NativeTimelineNeedlesTests.swift').read_text() +
+    head + '\n' + layer + '\n' + stubs + '\n' + Path('Tests/Apple/NativeTimelineNeedlesTests.swift').read_text() +
     Path('Tests/Apple/NativeTimelineNeedlesCadenceTests.swift').read_text() + auto_fader)
 PY
-swiftc -swift-version 5 "$test_dir/Presentation.swift" \
+python3 scripts/track-height-test-geometry.py "$test_dir/TrackHeightGeometry.swift"
+swiftc "$test_dir/TrackHeightGeometry.swift" -swift-version 5 "$test_dir/Presentation.swift" \
     Apple/Shared/NativeTimelineInputGate.swift Apple/Shared/TimelinePlaybackFollow.swift \
     "$test_dir/main.swift" -o "$test_dir/test"
 "$test_dir/test"

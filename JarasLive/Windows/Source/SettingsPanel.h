@@ -1,36 +1,54 @@
 #pragma once
+#include "ConfirmationPanel.h"
+#include "Localization.h"
 #include "ActionsPage.h"
 #include "Auth.h"
 #include "Lighting.h"
+#include "VST3Catalog.h"
+#include "ShowMode.h"
+#include "SMK37Connection.h"
+#include "SMK37Firmware.h"
 namespace catlive {
-class SettingsPanel final : public Component {
+class SettingsPanel final : public Component, private Timer {
   public:
     SettingsPanel(Session &s, Auth &a, Lighting &l, Appearance &p, ActionBindings &bindings,
-                  int initial, std::function<void(String)> fail, std::function<void()> signIn)
+                  int initial, std::function<void(String)> fail, std::function<void()> signIn,
+                  std::function<void()> audioWarning = {})
         : session(s), auth(a), lighting(l), preferences(p), actions(bindings),
-          error(std::move(fail)), login(std::move(signIn)) {
+          error(std::move(fail)), login(std::move(signIn)), warnAudio(std::move(audioWarning)) {
         const StringArray names{"Geral",       String::fromUTF8("Áudio"),
                                 "MIDI",        String::fromUTF8("Ações"),
                                 "Mapeamentos", "Plugins",
-                                "Conta"};
-        const char *icons[]{"mixer",    "speaker", "piano",  "keyboard",
-                            "mappings", "plugins", "account"};
+                                "Conta", "SMK37PRO"};
+        const char *icons[]{"slider.horizontal.3", "speaker.wave.2", "pianokeys", "tabs.actions",
+                            "tabs.mappings", "tabs.plugins", "tabs.account", "pianokeys"};
         for (int i = 0; i < names.size(); ++i) {
             auto *tab = tabs.add(new TextButton(names[i]));
             addAndMakeVisible(tab);
+            tab->setComponentID("settingsTab" + String(i));
             tab->getProperties().set("plain", true);
             tab->getProperties().set("flat", true);
             tab->getProperties().set("leadingIcon", icons[i]);
             tab->getProperties().set("fontSize", 13.f);
             tab->setColour(TextButton::buttonOnColourId, theme::green.withAlpha(.15f));
             tab->setColour(TextButton::textColourOnId, Colours::white);
-            tab->onClick = [this, i] { select(i); };
+            tab->onClick = [this, i] { selectPage(i); };
         }
         addAndMakeVisible(viewport);
         viewport.setViewedComponent(&page, false);
-        viewport.setScrollBarsShown(true, false);
+        viewport.setScrollBarsShown(true, true);
         select(initial);
+
+        startTimerHz(4);
     }
+    ~SettingsPanel() override { stopTimer(); }
+    void selectPage(int index) {
+        if (isPositiveAndBelow(index, tabs.size()) && selected != index) {
+            select(index);
+
+        }
+    }
+    void cancelLearning() { actions.cancel(); }
     bool keyPressed(const KeyPress &key) override { return actions.captureKey(key); }
     void paint(Graphics &g) override {
         g.setColour(theme::background);
@@ -41,10 +59,25 @@ class SettingsPanel final : public Component {
         g.drawVerticalLine(144, 0, (float)getHeight());
     }
     void resized() override {
-        for (int i = 0; i < tabs.size(); ++i)
-            tabs[i]->setBounds(10, 10 + i * 46, 124, 40);
+        const int tabStep = jlimit(32, 46, (getHeight() - 20) / tabs.size());
+        for (int i = 0; i < tabs.size(); ++i) {
+            const int row = i == 7 ? 3 : i >= 3 ? i + 1 : i;
+            tabs[i]->setBounds(10, 10 + row * tabStep, 124, tabStep - 6);
+        }
         viewport.setBounds(145, 0, getWidth() - 145, getHeight());
-        page.setSize(std::max(620, viewport.getWidth() - 10), contentHeight);
+        if (selected == 6) {
+            page.setSize(std::max(360, viewport.getWidth()), contentHeight);
+            layoutAccount();
+            return;
+        }
+        int contentWidth = selected == 0 ? 240 : 620;
+        if (selected == 0)
+            for (auto *field : fields)
+                if (dynamic_cast<Label *>(field) || dynamic_cast<GeneralSegments *>(field))
+                    field->setSize(std::max(240, viewport.getWidth() - 56), field->getHeight());
+        for (auto *field : fields)
+            contentWidth = std::max(contentWidth, field->getRight() + 12);
+        page.setSize(std::max(contentWidth, viewport.getWidth() - 10), contentHeight);
         if (actionPage)
             actionPage->setBounds(24, 70, page.getWidth() - 48, getHeight() - 82);
     }
@@ -57,15 +90,217 @@ class SettingsPanel final : public Component {
     ActionBindings &actions;
     std::function<void(String)> error;
     std::function<void()> login;
+    std::function<void()> warnAudio;
     int selected = 0, contentHeight = 500;
+    bool audioPageLocked = false;
     OwnedArray<TextButton> tabs;
     Viewport viewport;
     Component page;
     OwnedArray<Component> fields;
     ActionsPage *actionPage = nullptr;
+    SafePointer<TextButton> accountLogin, accountLogout;
+    SafePointer<Label> accountTitle, accountEmail, accountMessage;
+    OwnedArray<Component> deviceFields;
+    String deviceSnapshot;
+    Array<MidiDeviceInfo> midiInputs, midiOutputs;
+    std::shared_ptr<ShowMode> showMode = ShowMode::shared();
+    SafePointer<ComboBox> showModeChoice;
+    SafePointer<Label> showModeStatus;
+    SafePointer<Label> scanningPlugin;
+    uint64 pluginRevision = ~uint64(0);
+    std::unique_ptr<FileChooser> pluginFolderChooser;
+    std::unique_ptr<FileChooser> smkChooser;
+    bool smkChoosing = false;
+    SafePointer<Label> smkStatus;
+    std::vector<SafePointer<TextButton>> smkButtons;
+    std::shared_ptr<SMK37FirmwareTask> smkFirmware = SMK37FirmwareTask::shared();
+    void timerCallback() override {
+        if (selected == 7) {
+            for (auto &b : smkButtons) if (b) b->setEnabled(!smkFirmware->busy && !smkChoosing && !locked());
+            if (smkStatus) smkStatus->setText(localization::translate(smkFirmware->message) + "\n" + localization::translate(smkFirmware->error), dontSendNotification);
+            return;
+        }
+        if (selected == 2) {
+            // WinRT discovers USB and Bluetooth ports asynchronously. Keep the
+            // ordinary selectors current without closing a menu being used.
+            for (auto *field : fields)
+                if (auto *combo = dynamic_cast<ComboBox *>(field); combo && combo->isPopupActive()) return;
+            if (MidiInput::getAvailableDevices() != midiInputs || MidiOutput::getAvailableDevices() != midiOutputs) {
+                const auto position = viewport.getViewPosition();
+                select(2);
+                viewport.setViewPosition(position);
+            }
+            return;
+        }
+        if (selected == 1) {
+            if (audioPageLocked != audioConfigurationLocked()) select(1);
+            return;
+        }
+        if (selected == 0 && showModeChoice && showModeStatus) {
+            showModeChoice->setEnabled(!showMode->busy && showMode->loaded);
+            showModeChoice->setSelectedId(showMode->enabled ? 2 : 1, dontSendNotification);
+            showModeStatus->setText(showMode->busy ? localization::translate(String::fromUTF8("Aguarde…")) : localization::translate(showMode->error), dontSendNotification);
+            showModeStatus->setColour(Label::textColourId, showMode->error.isEmpty() ? theme::secondary : Colour(0xffff454a));
+            return;
+        }
+        if (selected == 5) { updatePlugins(); return; }
+        if (selected != 6 || !accountLogin) return;
+        accountLogin->setEnabled(!auth.busy && !locked());
+        accountLogout->setEnabled(!auth.busy && !locked() && auth.loginData.isObject());
+        accountLogout->setButtonText(auth.busy ? localization::translate(String::fromUTF8("Aguarde…")) : localization::translate("Sair e liberar dispositivo"));
+        accountTitle->setText(auth.title, dontSendNotification);
+        accountEmail->setText(str(get(auth.loginData, "account"), "email"), dontSendNotification);
+        accountEmail->setVisible(auth.loginData.isObject() && str(get(auth.loginData, "entitlement"), "planId") != "trial");
+        accountMessage->setText(auth.message, dontSendNotification);
+        updateDevices();
+    }
+    bool audioConfigurationLocked() const { return locked(); }
     bool locked() const {
         return session.transport().playing || session.transport().subPlay.playing ||
                session.audio.isRecording();
+    }
+    class DeviceAccountCard final : public Component {
+      public:
+        DeviceAccountCard(var value, bool thisComputer, std::function<void()> action)
+            : device(std::move(value)), current(thisComputer), remove(localization::translate("Remover")) {
+            setName(str(device, "deviceName"));
+            addAndMakeVisible(remove);
+            remove.getProperties().set("fontSize", 12.f);
+            remove.getProperties().set("flat", true);
+            remove.setColour(TextButton::buttonColourId, Colours::transparentBlack);
+            remove.setColour(TextButton::textColourOffId, Colour(0xffff6868));
+            remove.onClick = std::move(action);
+        }
+        void paint(Graphics &g) override {
+            g.setColour(theme::panel);
+            g.fillRoundedRectangle(getLocalBounds().toFloat(), 8.f);
+            g.setColour(Colours::white.withMultipliedAlpha(isEnabled() ? 1.f : .35f));
+            const float iconY = (getHeight() - 18.f) / 2.f;
+            const bool desktop = str(device, "platform") == "macOS";
+            g.drawRoundedRectangle(12.f, iconY, 25.f, 16.f, 2.f, 1.5f);
+            if (desktop) {
+                g.drawLine(24.5f, iconY + 16.f, 24.5f, iconY + 21.f, 1.5f);
+                g.drawLine(18.5f, iconY + 21.f, 30.5f, iconY + 21.f, 1.5f);
+            } else {
+                g.drawLine(9.f, iconY + 19.f, 40.f, iconY + 19.f, 1.5f);
+                g.drawLine(9.f, iconY + 19.f, 12.f, iconY + 16.f, 1.5f);
+                g.drawLine(37.f, iconY + 16.f, 40.f, iconY + 19.f, 1.5f);
+            }
+            const int textWidth = std::max(0, remove.getX() - 60);
+            g.setFont(theme::font(13.f, true));
+            g.drawText(str(device, "deviceName"), 49, 11, textWidth, 22, Justification::centredLeft, true);
+            g.setColour(theme::secondary.withMultipliedAlpha(isEnabled() ? 1.f : .35f));
+            g.setFont(theme::font(11.f));
+            g.drawText(str(device, "platform") + (current ? String::fromUTF8(" · ") + localization::translate("Este computador") : String()),
+                       49, 35, textWidth, 17, Justification::centredLeft, true);
+            const auto lastSeen = Time::fromISO8601(str(device, "lastSeenAt"));
+            g.setFont(theme::font(10.f));
+            g.drawText(localization::translate(String::fromUTF8("Último acesso:")) + " " +
+                           (lastSeen.toMilliseconds() > 0 ? lastSeen.formatted("%d/%m/%Y %H:%M") : String::fromUTF8("—")),
+                       49, 55, textWidth, 16, Justification::centredLeft, true);
+        }
+        void resized() override { remove.setBounds(getWidth() - 99, (getHeight() - 28) / 2, 87, 28); }
+      private:
+        var device;
+        bool current;
+        TextButton remove;
+    };
+    void layoutAccount() {
+        if (!accountLogin || !accountTitle || !accountEmail || !accountLogout || !accountMessage) return;
+        const int width = std::max(0, page.getWidth() - 48);
+        accountTitle->setBounds(24, 66, width, 22);
+        accountEmail->setBounds(24, 108, width, 20);
+        accountLogin->setBounds(24, accountEmail->isVisible() ? 148 : 108, 190, 40);
+        accountMessage->setSize(width, accountMessage->getHeight());
+        for (auto *field : deviceFields)
+            if (dynamic_cast<DeviceAccountCard *>(field) || dynamic_cast<Label *>(field))
+                field->setSize(width, field->getHeight());
+    }
+    void updatePlugins() {
+        auto &catalog = VST3Catalog::shared();
+        if (catalog.revision == pluginRevision) {
+            if (scanningPlugin) { scanningPlugin->setText(catalog.progressText(),dontSendNotification); scanningPlugin->setTooltip(catalog.currentPlugin); }
+            return;
+        }
+        pluginRevision = catalog.revision; deviceFields.clear();
+        auto addLabel = [this](String value,int y,int height=26) {
+            auto *field=new Label();deviceFields.add(field);page.addAndMakeVisible(field);
+            field->setText(value,dontSendNotification);field->setFont(theme::font(12));field->setBounds(24,y,526,height);
+            field->setColour(Label::textColourId,theme::secondary);
+        };
+        auto addButton = [this](String title,int x,int y,int width,std::function<void()> click) {
+            auto *button=new TextButton(title);deviceFields.add(button);page.addAndMakeVisible(button);
+            button->setBounds(x,y,width,30);button->getProperties().set("flat",true);button->onClick=std::move(click);
+            button->setEnabled(!VST3Catalog::shared().scanning);
+        };
+        addLabel("Caminhos VST3",66);int y=106;
+        for (const auto &path : catalog.paths) {
+            addLabel(path,y,38);
+            addButton("Remover",550,y,86,[path] { VST3Catalog::shared().removePath(path); });y+=50;
+        }
+        addButton("Adicionar caminho",24,y,166,[safe=SafePointer<SettingsPanel>(this)] {
+            if (!safe) return;
+            safe->pluginFolderChooser=std::make_unique<FileChooser>("Adicionar caminho VST3",File("C:\\Program Files\\Common Files\\VST3"));
+            safe->pluginFolderChooser->launchAsync(FileBrowserComponent::openMode|FileBrowserComponent::canSelectDirectories,
+                [safe](const FileChooser &chooser) {
+                    if(safe && chooser.getResult().isDirectory()) VST3Catalog::shared().addPath(chooser.getResult());
+                });
+        });
+        addButton(catalog.scanning?"Cancelar escaneamento":"Escanear plugins",204,y,180,[] { auto &catalog=VST3Catalog::shared(); if(catalog.scanning)catalog.cancelScan();else catalog.scan(); });
+        deviceFields.getLast()->setEnabled(true);
+        if (catalog.hasFailedPlugins())
+            addButton("Tentar falhas",398,y,148,[] { VST3Catalog::shared().scan(true); });
+        y+=44;
+        addLabel(catalog.status,y,64);y+=72;
+        if (catalog.scanning) {
+            auto *label = new Label(); deviceFields.add(label); page.addAndMakeVisible(label); scanningPlugin = label;
+            label->setText(catalog.progressText(),dontSendNotification); label->setFont(theme::font(12));
+            label->setColour(Label::textColourId,theme::secondary); label->setBounds(24,y,580,26); y+=32;
+            auto *bar = new ProgressBar(catalog.scanProgress); deviceFields.add(bar); page.addAndMakeVisible(bar);
+            bar->setBounds(24,y,580,16); bar->setPercentageDisplay(false); y+=36;
+        }
+        contentHeight=y+36;localization::panel(page);resized();
+    }
+    void updateDevices() {
+        const auto snapshot = JSON::toString(auth.devices) + JSON::toString(get(auth.loginData, "entitlement")) +
+                              String((int)auth.busy) + String((int)locked()) + String((int)accountEmail->isVisible()) + auth.message;
+        if (snapshot == deviceSnapshot) return;
+        deviceSnapshot = snapshot;
+        deviceFields.clear();
+        Array<var> active;
+        for (const auto &device : list(auth.devices))
+            if (str(device, "status") == "active") active.add(device);
+        auto *count = new Label(); deviceFields.add(count); page.addAndMakeVisible(count);
+        count->setText(String(active.size()) + " / " + String((int)get(get(auth.loginData, "entitlement"), "maxDevices", 4)) + " dispositivos", dontSendNotification);
+        count->setFont(theme::font(11.f));
+        count->setColour(Label::textColourId, theme::secondary);
+        const int countTop = accountEmail->isVisible() ? 208 : 168;
+        count->setBounds(24, countTop, 480, 16);
+        int y = countTop + 36;
+        for (const auto &device : active) {
+            const auto installation = str(device, "installationId");
+            const bool current = installation.equalsIgnoreCase(auth.installationId);
+            auto *card = new DeviceAccountCard(device, current, [safe = SafePointer<SettingsPanel>(this), installation, current, name = str(device, "deviceName")] {
+                if (!safe) return;
+                ConfirmationPanel::show(MessageBoxIconType::QuestionIcon, "Remover dispositivo?", current
+                    ? String::fromUTF8("Você sairá da conta neste computador e a licença ficará disponível.")
+                    : "Remover " + name + " e liberar sua licença para outro computador?", "Remover", "Cancelar",
+                    safe.getComponent(), ModalCallbackFunction::create([safe, installation](int accepted) { if (safe && accepted) safe->auth.removeDevice(installation); }));
+            });
+            deviceFields.add(card); page.addAndMakeVisible(card);
+            card->setBounds(24, y, 580, 86);
+            card->setEnabled(!auth.busy && (!current || !locked()));
+            y += 106;
+        }
+        auto *refresh = new TextButton("Atualizar dispositivos"); deviceFields.add(refresh); page.addAndMakeVisible(refresh);
+        refresh->setBounds(24, y, 184, 26); refresh->getProperties().set("flat", true);
+        refresh->getProperties().set("fontSize", 12.f);
+        refresh->setEnabled(!auth.busy && auth.loginData.isObject());
+        refresh->onClick = [this] { auth.refreshDevices(); };
+        accountLogout->setBounds(24, y + 46, 232, 40);
+        accountMessage->setBounds(24, y + 106, 580, auth.message.isEmpty() ? 0 : 64);
+        contentHeight = y + (auth.message.isEmpty() ? 110 : 194);
+        localization::panel(page); resized();
     }
     Label &label(String title, int y, int height = 26, bool bold = false,
                  Colour colour = Colours::white) {
@@ -93,11 +328,62 @@ class SettingsPanel final : public Component {
         fields.add(field);
         page.addAndMakeVisible(field);
         field->setName(name);
+        field->setComponentID(name);
         field->addItemList(items, 1);
         field->setSelectedId(current, dontSendNotification);
         field->setBounds(x, y, width, 26);
         field->onChange = [field, action] { action(field->getSelectedId()); };
         return *field;
+    }
+    class GeneralSegments final : public Component {
+      public:
+        GeneralSegments(const String &name, const StringArray &labels, int selected,
+                        std::function<bool(int)> change) {
+            setComponentID(name);
+            setTitle(localization::translate(name));
+            for (int i = 0; i < labels.size(); ++i) {
+                auto *item = options.add(new Segment(labels[i]));
+                item->setComponentID(name + String(i));
+                addAndMakeVisible(item);
+                item->onClick = [this, i, change] {
+                    if (!change(i)) return;
+                    for (int index = 0; index < options.size(); ++index)
+                        options[index]->setToggleState(index == i, dontSendNotification);
+                };
+                item->setToggleState(i == selected, dontSendNotification);
+            }
+        }
+        void paint(Graphics &g) override {
+            g.setColour(theme::display.brighter(.12f));
+            g.fillRoundedRectangle(getLocalBounds().toFloat(), 5);
+        }
+        void resized() override {
+            for (int i = 0; i < options.size(); ++i) {
+                const int start = i * getWidth() / options.size();
+                const int end = (i + 1) * getWidth() / options.size();
+                options[i]->setBounds(start, 0, end - start, getHeight());
+            }
+        }
+      private:
+        class Segment final : public Button {
+          public:
+            explicit Segment(String label) : Button(std::move(label)) {}
+            void paintButton(Graphics &g, bool over, bool down) override {
+                if (getToggleState() || over || down || hasKeyboardFocus(false)) {
+                    g.setColour(theme::line.brighter(getToggleState() ? .20f : .08f));
+                    g.fillRoundedRectangle(getLocalBounds().toFloat().reduced(2), 4);
+                }
+                g.setFont(theme::semiboldFont(12));
+                g.setColour(Colours::white);
+                g.drawText(getName(), getLocalBounds().reduced(4, 0), Justification::centred, false);
+            }
+        };
+        OwnedArray<Segment> options;
+    };
+    void generalSegments(String name, StringArray labels, int selected, int y, std::function<bool(int)> change) {
+        auto *control = fields.add(new GeneralSegments(name, labels, selected, std::move(change)));
+        page.addAndMakeVisible(control);
+        control->setBounds(24, y, 176, 26);
     }
     void refreshLater() {
         Timer::callAfterDelay(1, [safe = SafePointer<SettingsPanel>(this)] {
@@ -107,6 +393,7 @@ class SettingsPanel final : public Component {
     }
     void saveAudio() {
         if (auto xml = session.audio.devices.createStateXml()) {
+            session.audio.systemDefaults.write(*xml);
             auto file = auth.dataDirectory().getChildFile("audio-device.xml");
             file.getParentDirectory().createDirectory();
             if (!xml->writeTo(file))
@@ -114,8 +401,8 @@ class SettingsPanel final : public Component {
         }
     }
     void applyAudio(std::function<void(AudioDeviceManager::AudioDeviceSetup &)> change) {
-        if (locked()) {
-            error(String::fromUTF8("Pare o transporte antes de alterar o dispositivo de áudio."));
+        if (audioConfigurationLocked()) {
+            error(String::fromUTF8("Conclua a gravação antes de alterar o dispositivo de áudio."));
             return;
         }
         auto setup = session.audio.devices.getAudioDeviceSetup();
@@ -123,39 +410,60 @@ class SettingsPanel final : public Component {
         const auto result = session.audio.devices.setAudioDeviceSetup(setup, true);
         if (result.isNotEmpty())
             error(result);
-        else
-            saveAudio();
+        else {
+            // A missing device at launch has no callback yet. Attach it when
+            // the user explicitly selects an available output.
+            const auto opened = session.audio.openDevice();
+            if (opened.isNotEmpty()) error(opened); else saveAudio();
+        }
         refreshLater();
     }
     void select(int index) {
         selected = index;
         localization::english = preferences.value("jaras.language", "pt-BR").toString() == "en";
         actionPage = nullptr;
+        deviceFields.clear(); deviceSnapshot.clear();
         fields.clear();
+        smkButtons.clear(); smkStatus = nullptr;
+        viewport.setScrollBarsShown(index != 6, index != 6, index == 6, false);
         contentHeight = std::max(450, getHeight());
         for (int i = 0; i < tabs.size(); ++i)
             tabs[i]->setToggleState(i == index, dontSendNotification);
         auto &title = label(tabs[index]->getButtonText(), 20, 30, true);
         title.setFont(theme::font(18, true));
         if (index == 0) {
-            label("Idioma", 66, 26, true);
-            for (int language = 0; language < 2; ++language) {
-                auto &b = button(language == 0 ? "English" : String::fromUTF8("Português"),
-                                 24 + language * 88, 106, 88, [this, language] {
-                                     auto result = preferences.set("jaras.language",
-                                                                   language == 0 ? "en" : "pt-BR");
-                                     if (result.failed())
-                                         error(result.getErrorMessage());
-                                     refreshLater();
-                                 });
-                b.setToggleState(preferences.value("jaras.language", "pt-BR").toString() ==
-                                     (language == 0 ? "en" : "pt-BR"),
-                                 dontSendNotification);
-                b.setBounds(24 + language * 88, 102, 88, 24);
-                b.getProperties().set("fontSize", 13.f);
-                b.setColour(TextButton::buttonOnColourId, Colour(0xff64b64a));
-                b.setColour(TextButton::textColourOnId, Colours::white);
-            }
+            contentHeight = 500;
+            label(localization::translate("Idioma"), 66, 26, true);
+            generalSegments("language", {"English", String::fromUTF8("Português")},
+                preferences.value("jaras.language", "pt-BR").toString() == "en" ? 0 : 1, 102,
+                [this](int value) {
+                    const auto result = preferences.set("jaras.language", value == 0 ? "en" : "pt-BR");
+                    if (result.failed()) { error(result.getErrorMessage()); return false; }
+                    refreshLater();
+                    return true;
+                });
+            label(localization::translate("Theme"), 148, 26, true);
+            generalSegments("interfaceTheme", {"Dark", "Light Dark"},
+                preferences.value(theme::interfaceThemeKey, theme::defaultInterfaceTheme).toString() == "lightDark" ? 1 : 0, 184,
+                [this](int value) {
+                    const auto result = preferences.set(theme::interfaceThemeKey, value == 1 ? "lightDark" : "dark");
+                    if (result.failed()) error(result.getErrorMessage());
+                    return result.wasOk();
+                });
+            label(localization::translate("Startup sound"), 230, 26, true);
+            choice("startupSound", {"Disabled", "Enabled"}, (bool)preferences.value("jaras.startup.sound", true) ? 2 : 1,
+                   24, 266, 176, [this](int id) {
+                       auto result = preferences.set("jaras.startup.sound", id == 2);
+                       if (result.failed()) error(result.getErrorMessage());
+                   });
+            label(localization::translate("Show Mode"), 312, 26, true);
+            showModeChoice = &choice("showMode", {"Disabled", "Enabled"}, showMode->enabled ? 2 : 1, 24, 348, 176,
+                [this](int id) { showMode->setEnabled(id == 2); timerCallback(); });
+            auto &description = label(localization::translate("When enabled, the notebook lid can be closed without stopping playback."), 382, 48, false, theme::secondary);
+            description.setFont(theme::font(11));
+            showModeStatus = &label({}, 438, 38, false, theme::secondary);
+            showModeStatus->setFont(theme::font(11));
+            showMode->refresh(); timerCallback();
         } else if (index == 1)
             audioPage();
         else if (index == 2)
@@ -173,28 +481,35 @@ class SettingsPanel final : public Component {
             page.addAndMakeVisible(actionPage);
             contentHeight = std::max(450, getHeight());
         } else if (index == 5) {
-            label("Plugins VST3", 66, 26, true);
-            label(String::fromUTF8("Pasta de plugins"), 112);
-            const auto folder = File::getSpecialLocation(File::commonApplicationDataDirectory)
-                                    .getParentDirectory()
-                                    .getChildFile("Program Files/Common Files/VST3");
-            label(folder.getFullPathName(), 148, 26, false, theme::secondary);
-            button("Abrir pasta", 24, 196, 140, [folder] { folder.revealToUser(); });
-            label(String::fromUTF8(
-                      "O carregamento de VST3 externo ainda não está disponível neste build."),
-                  252, 56, false, theme::yellow);
+            pluginRevision = ~uint64(0); updatePlugins();
+        } else if (index == 7) {
+            smkPage();
         } else {
-            label(auth.title, 66, 26, true);
-            label(str(get(auth.loginData, "account"), "email"), 104, 26, false, theme::secondary);
+            accountTitle = &label(auth.title, 66, 26, true);
+            accountTitle->setFont(theme::font(13.f, true));
+            accountEmail = &label(str(get(auth.loginData, "account"), "email"), 104, 26, false, theme::secondary);
             auto &signin = button("Login / Trocar conta", 24, 146, 190, login);
+            accountLogin = &signin;
+            signin.getProperties().set("fontSize", 13.f);
+            signin.getProperties().set("cornerRadius", 6.f);
+            signin.getProperties().set("flat", false);
+            signin.getProperties().set("borderAlpha", .12f);
+            signin.setColour(TextButton::buttonColourId, theme::panel.withAlpha(.45f));
+            signin.setComponentID("settingsLogin");
             signin.setEnabled(!auth.busy && !locked());
-            label("Dispositivo: " + auth.deviceName, 194);
-            button("Validar agora", 24, 242, 150, [this] { auth.validate(); });
             auto &logout =
-                button("Sair e liberar dispositivo", 24, 304, 210, [this] { auth.logout(); });
-            logout.setColour(TextButton::buttonColourId, Colour(0xff8d3033));
+                button(localization::translate("Sair e liberar dispositivo"), 24, 304, 210, [this] { auth.logout(); });
+            accountLogout = &logout; logout.setComponentID("settingsLogout");
+            logout.getProperties().set("fontSize", 13.f);
+            logout.getProperties().set("cornerRadius", 6.f);
+            logout.getProperties().set("flat", false);
+            logout.getProperties().set("borderAlpha", .25f);
+            logout.setColour(TextButton::buttonColourId, Colours::red.withAlpha(.45f));
             logout.setEnabled(!auth.busy && !locked());
-            label(auth.message, 354, 80, false, theme::yellow);
+            accountMessage = &label(auth.message, 354, 80, false, theme::yellow);
+            accountMessage->setFont(theme::font(11.f));
+            timerCallback();
+            auth.refreshDevices();
         }
         viewport.setViewPosition(0, 0);
         localization::panel(*this);
@@ -202,70 +517,86 @@ class SettingsPanel final : public Component {
         repaint();
     }
     void audioPage() {
-        auto &manager = session.audio.devices;
-        const auto setup = manager.getAudioDeviceSetup();
-        StringArray types;
-        for (auto *type : manager.getAvailableDeviceTypes())
-            types.add(type->getTypeName());
-        label("Driver", 66, 26, true);
-        choice("Driver", types, types.indexOf(manager.getCurrentAudioDeviceType()) + 1, 24, 102,
-               260,
-               [this, types](int id) {
-                   if (locked())
-                       return;
-                   session.audio.devices.setCurrentAudioDeviceType(types[id - 1], true);
-                   saveAudio();
-                   refreshLater();
-               })
-            .setEnabled(!locked());
-        if (locked())
-            label(String::fromUTF8("Pare o transporte antes de alterar o dispositivo de áudio."),
-                  136, 28, false, theme::yellow);
-        auto *type = manager.getCurrentDeviceTypeObject();
-        if (!type) {
-            button(String::fromUTF8("Iniciar áudio"), 24, 166, 160, [this] {
-                auto result = session.audio.openDevice();
-                if (result.isNotEmpty())
-                    error(result);
-                refreshLater();
-            });
+        audioPageLocked = audioConfigurationLocked();
+        if (audioPageLocked) {
+            label("Stop the transport before changing the audio device.", 76, 70, false, theme::yellow);
             return;
         }
-        type->scanForDevices();
+        auto &manager = session.audio.devices;
+        StringArray types;
+        // The first query initializes the driver catalog. A fresh manager can
+        // show a selected driver only after this call, even with no open device.
+        for (auto *type : manager.getAvailableDeviceTypes())
+            types.add(type->getTypeName());
+        auto *type = manager.getCurrentDeviceTypeObject();
+        const auto setup = manager.getAudioDeviceSetup();
+        constexpr int driverY = 66;
+        label("Driver", driverY, 26, true);
+        choice("Driver", types, types.indexOf(manager.getCurrentAudioDeviceType()) + 1, 24, driverY + 36,
+               260,
+               [this, types](int id) {
+                   if (audioConfigurationLocked() || !isPositiveAndBelow(id - 1, types.size()))
+                       return;
+                   session.audio.systemDefaults.input = session.audio.systemDefaults.output = false;
+                   session.audio.devices.setCurrentAudioDeviceType(types[id - 1], true);
+                   const auto opened = session.audio.openDevice();
+                   if (opened.isNotEmpty()) error(opened); else saveAudio();
+                   refreshLater();
+               })
+            .setEnabled(!audioConfigurationLocked());
+        if (!type) {
+            label(String::fromUTF8("Nenhum dispositivo de áudio disponível."), 150, 28,
+                  false, theme::secondary);
+            return;
+        }
+        // Opening a settings window uses the device manager's current catalog.
+        // Hardware enumeration belongs to the explicit refresh action; rescanning
+        // every page rebuild can stall device notifications during playback.
         auto inputNames = type->getDeviceNames(true), outputNames = type->getDeviceNames(false);
+        const bool offersDefault = session.audio.systemDefaults.supported();
+        if (offersDefault) {
+            const auto title = localization::english ? String("System default") : String::fromUTF8("Padrão do sistema");
+            inputNames.insert(0, title); outputNames.insert(0, title);
+        }
         inputNames.insert(0, "None");
         outputNames.insert(0, "None");
-        label(String::fromUTF8("Dispositivo de áudio — Entrada"), 172, 26, true);
+        const bool loopback = manager.getCurrentAudioDeviceType() == "Windows Audio (Loopback)";
+        label(String::fromUTF8(loopback ? "Capturar áudio da saída do Windows" : "Dispositivo de áudio — Entrada"), 150, 26, true);
         choice("Entrada", inputNames,
-               setup.inputDeviceName.isEmpty() ? 1 : inputNames.indexOf(setup.inputDeviceName) + 1,
-               290, 210, 290,
-               [this, inputNames](int id) {
-                   applyAudio([id, inputNames](auto &s) {
-                       s.inputDeviceName = id == 1 ? String() : inputNames[id - 1];
+               offersDefault && session.audio.systemDefaults.input ? 2 : setup.inputDeviceName.isEmpty() ? 1 : inputNames.indexOf(setup.inputDeviceName) + 1,
+               24, 188, 440,
+               [this, inputNames, offersDefault](int id) {
+                   session.audio.systemDefaults.input = offersDefault && id == 2;
+                   const auto name = session.audio.systemDefaults.input ? session.audio.systemDefaults.deviceName(true) : id == 1 ? String() : inputNames[id - 1];
+                   applyAudio([name](auto &s) {
+                       s.inputDeviceName = name;
                        s.useDefaultInputChannels = false;
                        s.inputChannels.clear();
-                       if (id != 1)
-                           s.inputChannels.setRange(0, 2, true);
+                       if (name.isNotEmpty())
+                           s.inputChannels.setBit(0);
                    });
                })
-            .setEnabled(!locked());
-        label(String::fromUTF8("Dispositivo de áudio — Saída"), 256, 26, true);
+            .setEnabled(!audioConfigurationLocked());
+        label(String::fromUTF8("Dispositivo de áudio — Saída"), 234, 26, true);
         choice(String::fromUTF8("Saída"), outputNames,
-               setup.outputDeviceName.isEmpty() ? 1
+               offersDefault && session.audio.systemDefaults.output ? 2 : setup.outputDeviceName.isEmpty() ? 1
                                                 : outputNames.indexOf(setup.outputDeviceName) + 1,
-               290, 294, 290,
-               [this, outputNames](int id) {
-                   applyAudio([id, outputNames](auto &s) {
-                       s.outputDeviceName = id == 1 ? String() : outputNames[id - 1];
-                       s.useDefaultOutputChannels = true;
+               24, 272, 440,
+               [this, outputNames, offersDefault](int id) {
+                   session.audio.systemDefaults.output = offersDefault && id == 2;
+                   const auto name = session.audio.systemDefaults.output ? session.audio.systemDefaults.deviceName(false) : id == 1 ? String() : outputNames[id - 1];
+                   applyAudio([name](auto &s) {
+                       s.outputDeviceName = name;
+                       s.useDefaultOutputChannels = false; s.outputChannels.clear();
+                       if (name.isNotEmpty()) s.outputChannels.setBit(0);
                    });
                })
-            .setEnabled(!locked());
+            .setEnabled(!audioConfigurationLocked());
         auto *device = manager.getCurrentAudioDevice();
         label(device ? String(device->getActiveOutputChannels().countNumberOfSetBits()) +
                            String::fromUTF8(" canais de saída")
-                     : String::fromUTF8("Nenhum dispositivo de saída"),
-              332, 26, false, theme::secondary);
+                     : String::fromUTF8("Nenhum dispositivo de áudio disponível."),
+              310, 26, false, theme::secondary);
         if (device) {
             auto rates = device->getAvailableSampleRates();
             StringArray choices;
@@ -275,11 +606,13 @@ class SettingsPanel final : public Component {
                 if (std::abs(rates[i] - device->getCurrentSampleRate()) < 1)
                     chosen = i + 1;
             }
-            label("Taxa de amostragem", 374, 26, true);
-            choice("Taxa de amostragem", choices, chosen, 24, 412, 160, [this, rates](int id) {
+            label(localization::translate("Taxa de amostragem"), 352, 26, true);
+            auto &rateChoice = choice("Taxa de amostragem", choices, chosen, 24, 390, 160, [this, rates](int id) {
                 if (id > 0 && id <= rates.size())
                     applyAudio([rates, id](auto &s) { s.sampleRate = rates[id - 1]; });
-            }).setEnabled(!locked());
+            });
+            rateChoice.setEnabled(!audioConfigurationLocked());
+            rateChoice.setComponentID("audioSampleRate");
             auto sizes = device->getAvailableBufferSizes();
             choices.clear();
             chosen = 1;
@@ -288,44 +621,56 @@ class SettingsPanel final : public Component {
                 if (sizes[i] == device->getCurrentBufferSizeSamples())
                     chosen = i + 1;
             }
-            label("Tamanho do buffer", 456, 26, true);
-            choice("Tamanho do buffer", choices, chosen, 24, 494, 180, [this, sizes](int id) {
+            label(localization::translate("Tamanho do buffer"), 434, 26, true);
+            auto &bufferChoice = choice("Tamanho do buffer", choices, chosen, 24, 472, 180, [this, sizes](int id) {
                 if (id > 0 && id <= sizes.size())
                     applyAudio([sizes, id](auto &s) { s.bufferSize = sizes[id - 1]; });
-            }).setEnabled(!locked());
+            });
+            bufferChoice.setEnabled(!audioConfigurationLocked());
+            bufferChoice.setComponentID("audioBufferSize");
+            if (loopback)
+                label(String::fromUTF8("Loopback: selecione nas entradas a saída usada pelos outros aplicativos.\nUse Monitor Off na pista para gravar sem devolver o sinal à saída."),
+                      652, 56, false, theme::secondary);
+            else if (manager.getCurrentAudioDeviceType() == "Windows Audio")
+                label(String::fromUTF8("Modo compartilhado: o Windows define o buffer.\nPara outras opções, selecione baixa latência, modo exclusivo ou ASIO em Driver."),
+                      652, 56, false, theme::secondary);
+            if (device->hasControlPanel())
+                button(String::fromUTF8("Painel do dispositivo"), 24, 718, 210, [this] {
+                    if (audioConfigurationLocked()) return;
+                    if (auto *current = session.audio.devices.getCurrentAudioDevice()) current->showControlPanel();
+                    refreshLater();
+                }).setEnabled(!audioConfigurationLocked());
         }
-        label(String::fromUTF8("Buffers menores reduzem a latência e usam mais CPU."), 534, 26,
+        label(String::fromUTF8("Buffers menores reduzem a latência e usam mais CPU."), 512, 26,
               false, theme::secondary);
-        button("Atualizar dispositivos", 24, 574, 190, [this] { refreshLater(); });
-        button("Canais de entrada e saída", 230, 574, 230, [this] {
-            auto selector = std::make_unique<AudioDeviceSelectorComponent>(
-                session.audio.devices, 0, 32, 0, 32, false, false, true, false);
-            selector->setSize(600, 420);
-            CallOutBox::launchAsynchronously(
-                std::move(selector), getScreenBounds().withSizeKeepingCentre(50, 20), nullptr);
-        }).setEnabled(!locked());
-        contentHeight = 640;
+        button(localization::translate("Atualizar dispositivos"), 24, 552, 190, [this] {
+            if (auto *current = session.audio.devices.getCurrentDeviceTypeObject()) current->scanForDevices();
+            refreshLater();
+        });
+        contentHeight = 774;
     }
     void midiPage() {
         const auto inputs = MidiInput::getAvailableDevices(),
                    outputs = MidiOutput::getAvailableDevices();
-        label("Entradas MIDI", 66, 26, true);
-        if (inputs.isEmpty())
-            label("Nenhuma entrada MIDI", 104, 26, false, theme::secondary);
-        StringArray choices{"Nenhum"};
+        midiInputs = inputs; midiOutputs = outputs;
+        label(localization::translate("Entradas MIDI"), 66, 26, true);
+        StringArray choices{localization::translate(inputs.isEmpty() ? "Nenhuma entrada MIDI" : "Nenhum")};
         for (const auto &device : inputs)
             choices.add(device.name);
-        for (int slot = 0; slot < 3; ++slot) {
+        for (int slot = 0; slot < 6; ++slot) {
             const auto key = "catlive.midi.slot" + String(slot + 1);
-            const auto current = preferences.value(key).toString();
+            const auto saved = preferences.value(key).toString();
+            const auto current = midiDeviceCompatibility::resolve(saved, true);
+            if (current != saved) session.audio.setMIDISlot(slot, saved);
             int selectedInput = 1;
             for (int i = 0; i < inputs.size(); ++i)
                 if (inputs[i].identifier == current)
                     selectedInput = i + 2;
-            label("MIDI " + String(slot + 1), 154 + slot * 64);
-            choice("MIDI " + String(slot + 1), choices, selectedInput, 110, 154 + slot * 64, 350,
+            label("MIDI " + String(slot + 1), 112 + slot * 42);
+            choice("midiInputSlot" + String(slot + 1), choices, selectedInput, 110, 112 + slot * 42, 350,
                    [this, inputs, key, slot](int id) {
-                       const auto previous = preferences.value(key).toString();
+                       if (id < 1 || id > inputs.size() + 1) return;
+                       const auto previous = midiDeviceCompatibility::resolve(preferences.value(key).toString(), true);
                        const String next = id > 1 ? inputs[id - 2].identifier : String();
                        const auto result = preferences.set(key, next);
                        if (result.failed()) {
@@ -334,9 +679,9 @@ class SettingsPanel final : public Component {
                        }
                        if (previous.isNotEmpty()) {
                            bool used = false;
-                           for (int i = 1; i <= 3; ++i)
+                           for (int i = 1; i <= 6; ++i)
                                used |=
-                                   preferences.value("catlive.midi.slot" + String(i)).toString() ==
+                                   midiDeviceCompatibility::resolve(preferences.value("catlive.midi.slot" + String(i)).toString(), true) ==
                                    previous;
                            if (!used)
                                session.audio.devices.setMidiInputDeviceEnabled(previous, false);
@@ -345,26 +690,73 @@ class SettingsPanel final : public Component {
                            session.audio.devices.setMidiInputDeviceEnabled(next, true);
                        session.audio.setMIDISlot(slot, next);
                        saveAudio();
-                   });
+                   }).setEnabled(!inputs.isEmpty());
         }
-        label(String::fromUTF8("Saída MIDI"), 352, 26, true);
-        choices = {"Nenhum"};
-        int selectedOutput = 1;
-        for (int i = 0; i < outputs.size(); ++i) {
-            choices.add(outputs[i].name);
-            if (outputs[i].identifier == session.audio.devices.getDefaultMidiOutputIdentifier())
-                selectedOutput = i + 2;
+        label(String::fromUTF8("Saídas MIDI"), 382, 26, true);
+        choices = {"Nenhum"}; for (const auto &output : outputs) choices.add(output.name);
+        for (int slot = 0; slot < 6; ++slot) {
+            const auto key = "catlive.midi.outputSlot" + String(slot + 1);
+            const auto saved = preferences.value(key, slot == 0 ? session.audio.devices.getDefaultMidiOutputIdentifier() : String()).toString();
+            const auto current = midiDeviceCompatibility::resolve(saved, false);
+            if (current != saved) session.audio.setMIDIOutputSlot(slot, saved);
+            int selected = 1; for (int i = 0; i < outputs.size(); ++i) if (outputs[i].identifier == current) selected = i + 2;
+            label("MIDI " + String(slot + 1), 426 + slot * 42);
+            choice("midiOutputSlot" + String(slot + 1), choices, selected, 110, 426 + slot * 42, 350,
+                [this, outputs, key, slot](int id) {
+                    if (id < 1 || id > outputs.size() + 1) return;
+                    const String next = id > 1 ? outputs[id-2].identifier : String();
+                    const auto result = preferences.set(key,next); if (result.failed()) { error(result.getErrorMessage()); return; }
+                    session.audio.setMIDIOutputSlot(slot,next);
+                    if (slot == 0) session.audio.devices.setDefaultMidiOutputDevice(next);
+                    saveAudio();
+                });
         }
-        choice(String::fromUTF8("Saída MIDI"), choices, selectedOutput, 24, 398, 430,
-               [this, outputs](int id) {
-                   session.audio.devices.setDefaultMidiOutputDevice(
-                       id > 1 ? outputs[id - 2].identifier : String());
-                   saveAudio();
-               });
-        if (outputs.isEmpty())
-            label(String::fromUTF8("Nenhuma saída MIDI"), 442, 26, false, theme::secondary);
-        button("Atualizar dispositivos", 24, 490, 190, [this] { refreshLater(); });
-        contentHeight = 550;
+        button(localization::translate("Atualizar dispositivos"),24,700,190,[this]{refreshLater();});
+        contentHeight = 760;
+    }
+    void smkPage() {
+        label(localization::translate("Connect one SMK-37 Pro using a USB data cable. Firmware operations are unavailable during playback or recording."),66,60,false,theme::secondary);
+        smkButtons.push_back(&button(localization::translate("Backup Firmware SMK-37 Pro"),24,150,320,[this]{smkDestination(SMK37FirmwareFlow::backup);}));
+        smkButtons.push_back(&button(localization::translate("Install SMK Integration"),24,202,320,[this]{smkConfirm(SMK37FirmwareFlow::install,{});}));
+        smkButtons.push_back(&button(localization::translate("Install Backup/Firmware…"),24,254,320,[this]{smkSource();}));
+        label(localization::translate("Choose where to save your backup. Installing firmware first saves and verifies the current firmware at the location you select. Keep the USB cable connected until the operation finishes."),310,80,false,theme::secondary);
+        label(localization::translate("Supported files: .smkbackup, .fwsc, and full .bin backups with their matching .json file. Only compatible SMK-37 Pro firmware is accepted."),400,70,false,theme::secondary);
+        smkStatus = &label({},480,150,false,theme::yellow);
+        button(localization::translate("Show saved backup"),24,650,240,[this]{if(smkFirmware->saved.existsAsFile())smkFirmware->saved.revealToUser();});
+        button(localization::translate("Show operation log"),24,694,240,[this]{if(smkFirmware->log.existsAsFile())smkFirmware->log.revealToUser();});
+        button(localization::translate("Firmware licenses and source"),24,738,320,[]{File::getSpecialLocation(File::currentExecutableFile).getSiblingFile("SMK37").revealToUser();});
+        contentHeight = 800; timerCallback();
+    }
+    void smkConfirm(SMK37FirmwareFlow::Operation operation, File source) {
+        if (locked() || smkFirmware->busy || smkChoosing) return;
+        smkChoosing = true;
+        ConfirmationPanel::show(MessageBoxIconType::WarningIcon,"Install firmware on SMK-37 Pro?",
+            "This replaces the keyboard firmware and can change its controls, sounds and settings. Choose where to save the current firmware backup before continuing.",
+            "Continue","Cancel",this,ModalCallbackFunction::create([safe=SafePointer<SettingsPanel>(this),operation,source](int result){
+                if(!safe)return; safe->smkChoosing=false;
+                if(result)MessageManager::callAsync([safe,operation,source]{if(safe)safe->smkDestination(operation,source);});
+            }));
+    }
+    void smkSource() {
+        if (locked() || smkFirmware->busy || smkChoosing) return;
+        smkChoosing = true;
+        smkChooser = std::make_unique<FileChooser>(localization::translate("Install Backup/Firmware…"),File{},"*.smkbackup;*.fwsc;*.bin");
+        smkChooser->launchAsync(FileBrowserComponent::openMode|FileBrowserComponent::canSelectFiles,
+            [safe=SafePointer<SettingsPanel>(this)](const FileChooser &picker){
+                if(!safe)return; safe->smkChoosing=false; const auto source=picker.getResult();
+                if(source.existsAsFile())MessageManager::callAsync([safe,source]{if(safe)safe->smkConfirm(SMK37FirmwareFlow::installFile,source);});
+            });
+    }
+    void smkDestination(SMK37FirmwareFlow::Operation operation, File source = {}) {
+        if (locked() || smkFirmware->busy || smkChoosing) return;
+        smkChoosing = true;
+        const auto name="SMK37-Pro-Backup-"+Time::getCurrentTime().formatted("%Y-%m-%d-%H%M%S")+".smkbackup";
+        smkChooser = std::make_unique<FileChooser>(localization::translate("Save current firmware backup"),File::getSpecialLocation(File::userDocumentsDirectory).getChildFile(name),"*.smkbackup");
+        smkChooser->launchAsync(FileBrowserComponent::saveMode|FileBrowserComponent::canSelectFiles|FileBrowserComponent::warnAboutOverwriting,
+            [safe=SafePointer<SettingsPanel>(this),operation,source](const FileChooser &picker){
+                if(!safe)return; safe->smkChoosing=false; const auto destination=picker.getResult();
+                if(destination!=File{} && !safe->locked())safe->smkFirmware->start(operation,destination,source);
+            });
     }
 };
 } // namespace catlive

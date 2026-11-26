@@ -35,7 +35,7 @@ final class SpecialTrackOrderingTests: XCTestCase {
         var project = fixture()
         let initial = project.songs[0].tracks
         project.orderSpecialTracks()
-        XCTAssertEqual(project.songs[0].tracks.map(\.name), ["Timecode", "Chords", "Teleprompter", "Video", "Video", "Keys", "Piano", "Bass"])
+        XCTAssertEqual(project.songs[0].tracks.map(\.name), ["Timecode", "Teleprompter", "Chords", "Video", "Video", "Keys", "Piano", "Bass"])
         XCTAssertEqual(project.songs[0].tracks.filter { $0.kind == .video }, initial.filter { $0.kind == .video })
         XCTAssertEqual(project.songs[0].tracks.filter { $0.kind == .standard }, initial.filter { $0.kind == .standard })
         XCTAssertEqual(project.songs[0].tracks.first { $0.kind == .timecode }, initial.first { $0.kind == .timecode })
@@ -57,6 +57,33 @@ final class SpecialTrackOrderingTests: XCTestCase {
         XCTAssertNil(project.songs[0].tracks.first { $0.name == "Piano" }?.parentTrackID)
         XCTAssertEqual(project.songs[0].tracks.first { $0.name == "Piano" }?.primaryOutput, .master)
         XCTAssertEqual(project.songs[0].tracks.prefix(4).map(\.kind), [.timecode,.chords,.video,.video])
+        try project.validate()
+    }
+    func testSpecialTracksInsertedOutOfOrderFillOnlyTheirExistingSlots() throws {
+        var project = Project.empty(name: "Partial special tracks")
+        let normal = Track(id: UUID(), name: "Audio", role: .other)
+        project.songs[0].tracks = [normal]
+        let order: [TrackKind] = [.timecode, .teleprompt, .teleprompt2, .chords, .click]
+        for kind in order.reversed() {
+            project.songs[0].tracks.append(Track(id: UUID(), name: kind.title, role: .init(rawValue: kind.rawValue)))
+            let existing = Set(project.songs[0].tracks.map(\.kind))
+            project.orderSpecialTracks()
+            XCTAssertEqual(project.songs[0].tracks.map(\.kind), order.filter { existing.contains($0) } + [.standard])
+            XCTAssertEqual(project.songs[0].tracks.last, normal)
+        }
+        let canonical = project
+        for special in canonical.songs[0].tracks.dropLast() {
+            project.moveNormalTrack(special.id, on: normal.id, after: true, outsideGroup: true, song: project.songs[0].id)
+            XCTAssertEqual(project, canonical, "Special tracks cannot be dragged into the normal list")
+        }
+        let tp1 = try XCTUnwrap(project.songs[0].tracks.first { $0.kind == .teleprompt })
+        var history = ProjectEditHistory(project)
+        project.deleteTracks([tp1.id]); history.record(project)
+        XCTAssertEqual(project.songs[0].tracks.map(\.kind), [.timecode, .teleprompt2, .chords, .click, .standard])
+        project.songs[0].tracks.append(tp1); project.orderSpecialTracks(); history.record(project)
+        XCTAssertEqual(project, canonical, "Recreated special track returns to its fixed slot")
+        XCTAssertEqual(history.undo()?.songs[0].tracks.map(\.kind), [.timecode, .teleprompt2, .chords, .click, .standard])
+        XCTAssertEqual(history.redo(), canonical)
         try project.validate()
     }
 }

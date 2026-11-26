@@ -19,33 +19,48 @@ import AVFoundation
                                      node suppliedNode: AVAudioUnitEffect?, project: UUID?, saving: Bool) throws {
         guard project == nil || project == show.snapshot.project.id else { return }
         if let clip, FXModelLookup.clip(clip, in: show.snapshot.project) == nil { return }
-        let node = suppliedNode ?? StemAudioPlayback.shared.effects(for: clip ?? track)?.externalNode(identifier)
-        guard let node, let state = JarasVST3.state(node, identifier: identifier) else { return }
+        let node = suppliedNode ?? DesktopProjectTabs.shared.audio(for: show).effects(for: clip ?? track)?.externalNode(identifier)
+        // A wrapper may exist even when its module failed to load. It has no
+        // live edits to capture; keep the document's blobs for Save and Undo.
+        guard let node, JarasVST3.isPluginLoaded(node, identifier: identifier) else { return }
+        guard let state = JarasVST3.state(node, identifier: identifier) else {
+            if saving {
+                let name = settings(show: show, track: track, clip: clip).externalPlugins?.first { $0.id == identifier }?.name ?? identifier
+                throw ProjectError.invalid(String(format: JarasLocalization.string("Could not capture the current state of plugin %@. The operation was cancelled to preserve its settings."), name))
+            }
+            return
+        }
         var settings = settings(show: show, track: track, clip: clip)
         guard let index = settings.externalPlugins?.firstIndex(where: { $0.id == identifier }) else { return }
         let before = settings
         settings.externalPlugins?[index].componentState = state["componentState"] as? String
         settings.externalPlugins?[index].controllerState = state["controllerState"] as? String
         guard settings != before else { return }
-        if saving {
-            guard try show.storeCapturedPluginState(track, clip: clip, identifier: identifier,
-                componentState: settings.externalPlugins?[index].componentState,
-                controllerState: settings.externalPlugins?[index].controllerState),
-                let plugin = settings.externalPlugins?[index] else { return }
-            StemAudioPlayback.shared.rememberCapturedPluginState(track: track, clip: clip, plugin: plugin, source: node)
-            return
-        }
-        if let clip { show.previewClipFX(clip, settings: settings) }
-        else { show.previewFX(track, settings: settings) }
-        show.commitFX()
+        // A capture acknowledges the live processor, including when its editor
+        // closes. Reapplying this snapshot can recreate the instrument and send
+        // controller defaults back into it; only a real preset edit needs that.
+        guard try show.storeCapturedPluginState(track, clip: clip, identifier: identifier,
+            componentState: settings.externalPlugins?[index].componentState,
+            controllerState: settings.externalPlugins?[index].controllerState),
+            let plugin = settings.externalPlugins?[index] else { return }
+        DesktopProjectTabs.shared.audio(for: show).rememberCapturedPluginState(track: track, clip: clip, plugin: plugin, source: node)
     }
     static func captureAll(show: ShowController) {
         do { try captureAllForSaving(show: show) }
         catch { show.message = error.localizedDescription }
     }
     static func captureAllForSaving(show: ShowController) throws {
-        let targets: [UUID?] = [nil] + (show.current?.tracks.filter { $0.kind == .standard }.map { Optional($0.id) } ?? [])
-        for target in targets { for plugin in show.fxSettings(target).externalPlugins ?? [] { try captureForSaving(show: show, track: target, identifier: plugin.id) } }
+        // The track already owns its FX metadata. Looking it up by UUID for
+        // every row repeatedly flattened/searched the whole project, even
+        // when none of those tracks had a plugin to capture.
+        for plugin in show.snapshot.project.masterFX?.externalPlugins ?? [] {
+            try captureForSaving(show: show, track: nil, identifier: plugin.id)
+        }
+        for track in show.current?.tracks ?? [] where track.kind == .standard {
+            for plugin in track.fx?.externalPlugins ?? [] {
+                try captureForSaving(show: show, track: track.id, identifier: plugin.id)
+            }
+        }
         // Only open take editors can have uncaptured UI edits. Do not instantiate
         // every project's item chain merely because the user saved the project.
         try ClipExternalPluginHostView.captureAllForSaving(show: show)
@@ -90,7 +105,7 @@ struct ExternalPluginEditor: View {
     }
     static func nativeEditor(show: ShowController, track: UUID?, clip: UUID? = nil, effect: String) -> NSView? {
         guard let plugin = ExternalPluginState.settings(show: show, track: track, clip: clip).externalPlugins?.first(where: { $0.effectKey == effect }),
-              let chain = StemAudioPlayback.shared.effects(for: clip ?? track), chain.externalError == nil, let node = chain.externalNode(plugin.id),
+              let chain = DesktopProjectTabs.shared.audio(for: show).effects(for: clip ?? track), chain.externalError == nil, let node = chain.externalNode(plugin.id),
               let view = JarasVST3.editor(node, identifier: plugin.id) else { return nil }
         ExternalPluginState.bindEdits(show: show, track: track, clip: clip, plugin: plugin, node: node)
         return view
@@ -121,7 +136,7 @@ struct ExternalPluginEditor: View {
         }.background(JarasTheme.panel).foregroundStyle(JarasTheme.text)
             .onAppear {
                 guard let plugin else { failure = "Plugin settings are unavailable"; return }
-                guard let chain = StemAudioPlayback.shared.effects(for: clip ?? track) else { failure = "Audio track is not prepared"; return }
+                guard let chain = DesktopProjectTabs.shared.audio(for: show).effects(for: clip ?? track) else { failure = "Audio track is not prepared"; return }
                 if let error = chain.externalError { failure = error.localizedDescription; return }
                 guard let node = chain.externalNode(plugin.id) else { failure = "Plugin is not loaded"; return }
                 editingNode = node
@@ -183,12 +198,13 @@ struct ExternalPluginEditor: View {
         StemAudioPlayback.shared.observeEffect(clip, effect: effect, active: true); observing = true
         node = StemAudioPlayback.shared.effects(for: clip)?.externalNode(plugin.id); pluginIdentifier = plugin.id
         if let native = ExternalPluginEditor.nativeEditor(show: show, track: nil, clip: clip, effect: effect) {
+            native.identifier = NSUserInterfaceItemIdentifier("catlive.managedPluginEditor")
             scroll.documentView = native
         } else {
             usesParameterEditor = true
             let language = UserDefaults.standard.string(forKey: "jaras.language") ?? "en"
             let host = NSHostingView(rootView: ExternalPluginEditor(show: show, track: nil, clip: clip, effect: effect)
-                .environment(\.locale, Locale(identifier: language)).preferredColorScheme(.dark))
+                .environment(\.locale, Locale(identifier: language)).preferredColorScheme(.dark).interfaceScaled())
             if #available(macOS 13, *) { host.sizingOptions = [] }
             host.frame = bounds; scroll.documentView = host
         }
@@ -210,14 +226,31 @@ struct ExternalPluginEditor: View {
 
 #if os(macOS)
 import Combine
+@MainActor enum FXHistoryShortcut {
+    static func handle(_ event: NSEvent, in window: NSWindow, undo: () -> Void, redo: () -> Void) -> Bool {
+        guard event.window === window, window.attachedSheet == nil,
+              !(window.firstResponder is NSTextView), !(window.firstResponder is NSTextField),
+              event.charactersIgnoringModifiers?.lowercased() == "z" else { return false }
+        let flags = event.modifierFlags.intersection([.shift, .command, .control, .option])
+        guard flags == .command || flags == .control || flags == [.command, .shift] || flags == [.control, .shift] else { return false }
+        if !event.isARepeat { if flags.contains(.shift) { redo() } else { undo() } }
+        return true
+    }
+}
+/// Let the table handle selection and native row drag tracking.
+private final class FXChainEffectNameView: NSTextField {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
 @MainActor private final class FXChainTableView: NSTableView {
     var bypassRow: ((Int) -> Void)?
     var removeRow: ((Int) -> Void)?
+    override func canDragRows(with rowIndexes: IndexSet, at mouseDownPoint: NSPoint) -> Bool {
+        !rowIndexes.isEmpty && column(at: mouseDownPoint) > 0
+    }
     override func mouseDown(with event: NSEvent) {
         if event.modifierFlags.contains(.option) {
-            bypassRow?(row(at: convert(event.locationInWindow, from: nil))); return
-        }
-        super.mouseDown(with: event)
+            bypassRow?(row(at: convert(event.locationInWindow, from: nil)))
+        } else { super.mouseDown(with: event) }
     }
     override func menu(for event: NSEvent) -> NSMenu? {
         let index = row(at: convert(event.locationInWindow, from: nil))
@@ -240,17 +273,24 @@ import Combine
     private let list = FXChainTableView()
     private let scroll = NSScrollView()
     private let editorArea = NSView()
+    private var presetBar: FXPresetBar!
     private let footer = NSView()
     private let addButton = NSButton()
     private let removeButton = NSButton()
-    private var insertionPanel: NSPanel?
+    private let openLibrary: () -> Void
     private var editor: NSView?
+    var hasHostedExternalEditor: Bool {
+        (editor as? NSScrollView)?.documentView?.identifier?.rawValue == "catlive.managedPluginEditor"
+    }
     private var rows: [Row] = []
     private var selection: String?
     private var observation: AnyCancellable?
+    private var historyMonitor: Any?
     private var refreshing = false
-    private let sidebarWidth: CGFloat = 190
+    private let singleEffect: String?
+    private var sidebarWidth: CGFloat { singleEffect == nil ? 190 : 0 }
     private static let dragType = NSPasteboard.PasteboardType("com.jaras.fx-order")
+    private static let libraryType = NSPasteboard.PasteboardType(FooterEffectTransfer.libraryType.identifier)
     private(set) var preferredContentSize = NSSize(width: 930, height: 560)
     override var isFlipped: Bool { true }
     private var settings: NativeFXSettings { clip.map(show.clipFXSettings) ?? show.fxSettings(track) }
@@ -259,9 +299,13 @@ import Combine
         if let clip { return FXModelLookup.clip(clip, in: show.snapshot.project) != nil }
         return track == nil || track.flatMap { FXModelLookup.track($0, in: show.snapshot.project) } != nil
     }
-    init(show: ShowController, track: UUID?, clip: UUID? = nil, effect: String, panel: NSPanel) {
+    init(show: ShowController, track: UUID?, clip: UUID? = nil, effect: String, panel: NSPanel, singlePlugin: Bool = false, openLibrary: @escaping () -> Void = {}) {
         self.show = show; self.track = track; self.clip = clip; self.panel = panel; project = show.snapshot.project.id
+        self.openLibrary = openLibrary
+        singleEffect = singlePlugin ? effect : nil
         super.init(frame: NSRect(origin: .zero, size: preferredContentSize))
+        NotificationCenter.default.addObserver(self, selector: #selector(pluginEditorSizeChanged(_:)),
+            name: NSNotification.Name("CatLivePluginEditorSizeChanged"), object: nil)
         wantsLayer = true; layer?.backgroundColor = NSColor(calibratedWhite: 0.085, alpha: 1).cgColor
         let enabled = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("enabled")); enabled.width = 30; enabled.minWidth = 30; enabled.maxWidth = 30
         let name = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("name")); name.width = 148
@@ -277,15 +321,37 @@ import Combine
             guard let self, self.rows.indices.contains(row) else { return }
             self.removeEffect(self.rows[row].effect)
         }
-        if clip == nil {
-            list.registerForDraggedTypes([Self.dragType]); list.setDraggingSourceOperationMask(.move, forLocal: true)
-        }
+        list.registerForDraggedTypes(clip == nil ? [Self.dragType] : [Self.dragType, Self.libraryType])
+        list.setDraggingSourceOperationMask(.move, forLocal: true)
+        if clip != nil { registerForDraggedTypes([Self.libraryType]) }
         scroll.documentView = list; scroll.hasVerticalScroller = false; scroll.hasHorizontalScroller = false
         scroll.drawsBackground = false; scroll.automaticallyAdjustsContentInsets = false
         addButton.title = JarasLocalization.string("Add"); addButton.bezelStyle = .rounded; addButton.target = self; addButton.action = #selector(addEffect)
         removeButton.title = JarasLocalization.string("Remove"); removeButton.bezelStyle = .rounded; removeButton.target = self; removeButton.action = #selector(removeSelectedEffect)
         footer.addSubview(addButton); footer.addSubview(removeButton)
         addSubview(scroll); addSubview(editorArea); addSubview(footer)
+        scroll.isHidden = singlePlugin; footer.isHidden = singlePlugin
+        presetBar = FXPresetBar(read: { [weak self] in self?.settings ?? NativeFXSettings() }, capture: { [weak self] effect in
+            guard let self, self.targetIsCurrent else { throw ProjectError.invalid("Effect no longer exists") }
+            var value = self.settings
+            if let index = value.externalPlugins?.firstIndex(where: { $0.effectKey == effect }), let plugin = value.externalPlugins?[index] {
+                guard let node = StemAudioPlayback.shared.effects(for: self.clip ?? self.track)?.externalNode(plugin.id),
+                      let state = JarasVST3.state(node, identifier: plugin.id) else { throw ProjectError.invalid("Could not read the plugin state") }
+                value.externalPlugins?[index].componentState = state["componentState"] as? String
+                value.externalPlugins?[index].controllerState = state["controllerState"] as? String
+            }
+            return value
+        }, apply: { [weak self] value in
+            guard let self, self.targetIsCurrent else { return }
+            if let clip = self.clip { self.show.previewClipFX(clip, settings: value) }
+            else { self.show.previewFX(self.track, settings: value) }
+            self.show.commitFX()
+        }, report: { [weak self] message in
+            guard let self else { return }
+            self.show.message = message
+            if let window = self.window { let alert = NSAlert(); alert.messageText = message; alert.beginSheetModal(for: window) }
+        })
+        addSubview(presetBar)
         let initial = settings
         refresh(initial, preferred: effect)
         let empty = NativeFXSettings()
@@ -293,30 +359,50 @@ import Combine
             if let clip { return FXModelLookup.clip(clip, in: snapshot.project)?.fx ?? empty }
             return track.flatMap { id in snapshot.project.songs.lazy.flatMap(\.tracks).first(where: { $0.id == id })?.fx }
                 ?? (track == nil ? snapshot.project.masterFX : nil) ?? empty
-        }.removeDuplicates().sink { [weak self] settings in self?.refresh(settings) }
+        }.removeDuplicates().receive(on: RunLoop.main).sink { [weak self] settings in self?.refresh(settings) }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if let historyMonitor { NSEvent.removeMonitor(historyMonitor); self.historyMonitor = nil }
+        guard window != nil, !closed else { return }
+        historyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self, self.targetIsCurrent, let window = self.window, window.isKeyWindow,
+                  ControlMappings.shared.editing == nil, !NativeTimelineInputGate.shared.isBlocked(window) else { return event }
+            return FXHistoryShortcut.handle(event, in: window, undo: self.show.undo, redo: self.show.redo) ? nil : event
+        }
+    }
+    deinit { if let historyMonitor { NSEvent.removeMonitor(historyMonitor) } }
     override func layout() {
         super.layout()
         scroll.frame = NSRect(x: 0, y: 0, width: sidebarWidth, height: max(0, bounds.height - 40))
         footer.frame = NSRect(x: 0, y: max(0, bounds.height - 40), width: sidebarWidth, height: 40)
         addButton.frame = NSRect(x: 6, y: 6, width: 84, height: 28)
         removeButton.frame = NSRect(x: 96, y: 6, width: 88, height: 28)
-        editorArea.frame = NSRect(x: sidebarWidth, y: 0, width: max(1, bounds.width - sidebarWidth), height: bounds.height)
+        presetBar.frame = NSRect(x: sidebarWidth, y: 0, width: max(1, bounds.width - sidebarWidth), height: 36)
+        let top: CGFloat = presetBar.isHidden ? 0 : 36
+        editorArea.frame = NSRect(x: sidebarWidth, y: top, width: max(1, bounds.width - sidebarWidth), height: max(0, bounds.height - top))
         editor?.frame = editorArea.bounds
     }
     private func refresh(_ settings: NativeFXSettings, preferred: String? = nil) {
         guard targetIsCurrent else { return }
-        let effectKeys = clip == nil ? settings.effectKeys : settings.clipEffectKeys
+        let allEffects = clip == nil ? settings.effectKeys : settings.clipEffectKeys
+        let effectKeys = singleEffect.map { allEffects.contains($0) ? [$0] : [] } ?? allEffects
         let next = effectKeys.map { effect in
             Row(effect: effect, name: settings.externalPlugins?.first(where: { $0.effectKey == effect })?.name
                 ?? (settings.kind(of: effect) == "Instruments" ? InstrumentLibrary.displayName(settings.settings(for: effect).instrumentID) : JarasLocalization.string(settings.kind(of: effect))), enabled: settings.isEnabled(effect))
         }
+        let removedEffect = rows.contains { old in !next.contains(where: { $0.effect == old.effect }) }
         if next != rows { rows = next; refreshing = true; list.reloadData(); refreshing = false }
-        let selected = preferred.flatMap { value in rows.first(where: { $0.effect == value })?.effect }
+        let selected = preferred.flatMap { value in rows.first(where: { $0.effect == value })?.effect } ?? (removedEffect ? rows.last?.effect : nil)
             ?? selection.flatMap { value in rows.first(where: { $0.effect == value })?.effect } ?? rows.first?.effect
         removeButton.isEnabled = selected != nil
-        guard let selected else { removeEditor(); selection = nil; return }
+        presetBar.refresh(effect: selected, settings: settings)
+        guard let selected else {
+            removeEditor(); selection = nil
+            if singleEffect != nil { panel?.performClose(nil) }
+            return
+        }
         select(selected)
         if let index = rows.firstIndex(where: { $0.effect == selected }) {
             refreshing = true; list.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false); refreshing = false
@@ -328,6 +414,7 @@ import Combine
             ExternalPluginState.capture(show: show, track: track, identifier: plugin.id)
         }
         selection = effect; removeButton.isEnabled = true; removeEditor()
+        presetBar.refresh(effect: effect, settings: settings)
         let content: NSView
         let size: NSSize
         if effect.hasPrefix("External:"), let clip {
@@ -335,36 +422,68 @@ import Combine
             size = NSSize(width: 740, height: 560)
             panel?.contentMinSize = NSSize(width: sidebarWidth + 400, height: 320)
         } else if effect.hasPrefix("External:"), let native = ExternalPluginEditor.nativeEditor(show: show, track: track, effect: effect) {
-            content = native; size = native.frame.size
-            panel?.contentMinSize = NSSize(width: sidebarWidth + 64, height: 64)
+            let viewport = NSScrollView()
+            viewport.hasVerticalScroller = true; viewport.hasHorizontalScroller = true
+            viewport.autohidesScrollers = true; viewport.drawsBackground = false
+            native.identifier = NSUserInterfaceItemIdentifier("catlive.managedPluginEditor")
+            viewport.documentView = native
+            content = viewport; size = native.frame.size
+            panel?.contentMinSize = NSSize(width: sidebarWidth + 400, height: 64)
         } else {
             let language = UserDefaults.standard.string(forKey: "jaras.language") ?? "en"
             // editorArea supplies the frame; the panel below supplies the
             // minimum size. Do not ask SwiftUI to remeasure window limits.
-            if effect == "CatStemSeparation 5" {
-                let host = NSHostingView(rootView: CatStemFXEditor(show: show, track: track, clip: clip).environment(\.locale, Locale(identifier: language)).preferredColorScheme(.dark))
-                if #available(macOS 13, *) { host.sizingOptions = [] }
-                content = host
-            } else if effect.hasPrefix("External:") {
-                let host = NSHostingView(rootView: ExternalPluginEditor(show: show, track: track, effect: effect).environment(\.locale, Locale(identifier: language)).preferredColorScheme(.dark))
+            if effect.hasPrefix("External:") {
+                let host = NSHostingView(rootView: ExternalPluginEditor(show: show, track: track, effect: effect).environment(\.locale, Locale(identifier: language)).preferredColorScheme(.dark).interfaceScaled())
                 if #available(macOS 13, *) { host.sizingOptions = [] }
                 content = host
             } else {
-                let host = NSHostingView(rootView: FXEditor(show: show, track: track, clip: clip, effect: effect, close: { [weak panel] in panel?.close() }).environment(\.locale, Locale(identifier: language)).preferredColorScheme(.dark))
+                let host = NSHostingView(rootView: FXEditor(show: show, track: track, clip: clip, effect: effect, close: { [weak panel] in panel?.close() }).environment(\.locale, Locale(identifier: language)).preferredColorScheme(.dark).interfaceScaled())
                 if #available(macOS 13, *) { host.sizingOptions = [] }
                 content = host
             }
             let kind = settings.kind(of: effect)
             let compactControls = kind == "Delay" || kind == "Reverb"
-            size = NSSize(width: 740, height: compactControls ? 360 : 560)
-            panel?.contentMinSize = NSSize(width: sidebarWidth + 640, height: compactControls ? 340 : 540)
+            if kind == "CatSynth" {
+                let frame = NSRect(x: 0, y: 0, width: 1047, height: 713)
+                let minimum = panel?.contentRect(forFrameRect: frame).size ?? frame.size
+                size = NSSize(width: minimum.width, height: minimum.height - (presetBar.isHidden ? 0 : 36))
+                panel?.contentMinSize = NSSize(width: sidebarWidth + size.width, height: size.height)
+            } else {
+                size = NSSize(width: kind == DrummerPadKind.full.rawValue ? 1000 : 740,
+                              height: compactControls ? 360 : 560)
+                panel?.contentMinSize = NSSize(width: sidebarWidth + 640, height: compactControls ? 340 : 540)
+            }
         }
         editor = content; editorArea.addSubview(content)
-        preferredContentSize = NSSize(width: size.width + sidebarWidth, height: size.height)
-        panel?.setContentSize(preferredContentSize); needsLayout = true
+        if let panel, !presetBar.isHidden { panel.contentMinSize.height += 36 }
+        needsLayout = true
+        fitEditor(size)
         if let index = rows.firstIndex(where: { $0.effect == effect }) {
             refreshing = true; list.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false); refreshing = false
         }
+    }
+    @objc private func pluginEditorSizeChanged(_ notification: Notification) {
+        guard let native = notification.object as? NSView, let editor,
+              native.isDescendant(of: editor) else { return }
+        fitEditor(native.frame.size)
+    }
+    private func fitEditor(_ size: NSSize) {
+        guard size.width > 0, size.height > 0, let panel else { return }
+        preferredContentSize = NSSize(width: max(panel.contentMinSize.width, size.width + sidebarWidth),
+                                      height: max(panel.contentMinSize.height, size.height + (presetBar.isHidden ? 0 : 36)))
+        var frame = panel.frameRect(forContentRect: NSRect(origin: .zero, size: preferredContentSize))
+        frame.origin = NSPoint(x: panel.frame.minX, y: panel.frame.maxY - frame.height)
+        if let visible = (panel.screen ?? NSScreen.main)?.visibleFrame {
+            frame.size.width = min(frame.width, visible.width); frame.size.height = min(frame.height, visible.height)
+            frame.origin.x = min(max(frame.minX, visible.minX), visible.maxX - frame.width)
+            frame.origin.y = min(max(frame.minY, visible.minY), visible.maxY - frame.height)
+        }
+        // Keep the titlebar reachable. Oversized editors remain at their native
+        // dimensions inside the scroll view rather than being cropped or scaled.
+        panel.setFrame(frame, display: true)
+        preferredContentSize = panel.contentRect(forFrameRect: frame).size
+        needsLayout = true
     }
     private func removeEditor() {
         // Direct AppKit containment does not invoke NSViewRepresentable's
@@ -376,9 +495,8 @@ import Combine
     }
     func closeEditors() {
         closed = true
+        if let historyMonitor { NSEvent.removeMonitor(historyMonitor); self.historyMonitor = nil }
         observation = nil
-        if let insertionPanel { insertionPanel.parent?.removeChildWindow(insertionPanel); insertionPanel.close() }
-        insertionPanel = nil
         removeEditor()
     }
     func suspendAudioEditor() {
@@ -395,17 +513,17 @@ import Combine
         let value = rows[row]
         if tableColumn?.identifier.rawValue == "enabled" {
             let button = NSButton(title: "By", target: self, action: #selector(toggle(_:)))
-            button.isBordered = false; button.font = NSFont.systemFont(ofSize: 10, weight: .semibold)
+            button.isBordered = false; button.font = NSFont.jarasSystemFont(ofSize: 10, weight: .semibold)
             button.identifier = NSUserInterfaceItemIdentifier(value.effect)
             button.wantsLayer = true; button.layer?.cornerRadius = 3
             button.layer?.backgroundColor = (value.enabled ? NSColor.white.withAlphaComponent(0.12) : NSColor.systemRed.withAlphaComponent(0.75)).cgColor
             button.contentTintColor = value.enabled ? .secondaryLabelColor : .white
-            button.setAccessibilityLabel("Bypass · " + value.name)
-            button.toolTip = JarasLocalization.string("Bypass") + " · " + value.name
+            button.setAccessibilityLabel(JarasLocalization.string("Bypass") + " · " + value.name)
             return button
         }
-        let text = NSTextField(labelWithString: value.name); text.lineBreakMode = .byTruncatingTail
-        text.font = NSFont.systemFont(ofSize: 12); text.textColor = value.enabled ? .labelColor : .secondaryLabelColor
+        let text = FXChainEffectNameView(labelWithString: value.name); text.lineBreakMode = .byTruncatingTail
+        text.isSelectable = false; text.isEditable = false; text.refusesFirstResponder = true
+        text.font = NSFont.jarasSystemFont(ofSize: 12); text.textColor = value.enabled ? .labelColor : .secondaryLabelColor
         return text
     }
     @objc private func toggle(_ sender: NSButton) {
@@ -421,42 +539,30 @@ import Combine
         guard targetIsCurrent else { return }
         if let clip { show.removeClipFX(clip, effect: effect) }
         else { show.removeFX(track, effect: effect) }
+        refresh(settings)
     }
     @objc private func addEffect() {
-        guard targetIsCurrent else { return }
-        if let insertionPanel, insertionPanel.isVisible { insertionPanel.makeKeyAndOrderFront(nil); return }
-        let insert = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 460, height: 500),
-                             styleMask: [.titled, .closable], backing: .buffered, defer: false)
-        insert.title = JarasLocalization.string("Insert effect")
-        insert.isFloatingPanel = true
-        insert.hidesOnDeactivate = false
-        insert.contentView = NSHostingView(rootView:
-            FXInsertEditor(show: show, track: track, targets: [track], clip: clip, inserted: { [weak self] effect in
-                guard let self, self.targetIsCurrent else { return }
-                self.refresh(self.settings, preferred: effect)
-                self.panel?.makeKeyAndOrderFront(nil)
-            }, isActive: { [weak self, weak insert] in
-                self?.targetIsCurrent == true && insert?.isVisible == true
-            }, resize: { [weak insert] height in
-                guard let insert, abs(insert.contentLayoutRect.height - height) > 1 else { return }
-                let center = CGPoint(x: insert.frame.midX, y: insert.frame.midY)
-                insert.setContentSize(NSSize(width: 460, height: height))
-                insert.setFrameOrigin(CGPoint(x: center.x - insert.frame.width / 2, y: center.y - insert.frame.height / 2))
-            }, dismiss: { [weak insert] in insert?.close() })
-                .environment(\.locale, Locale(identifier: UserDefaults.standard.string(forKey: "jaras.language") ?? "en"))
-                .environment(\.openFX, { [weak self] target, effect in
-                    guard let self else { return }
-                    FXWindows.shared.open(show: self.show, track: target, effect: effect, language: UserDefaults.standard.string(forKey: "jaras.language") ?? "en")
-                }).preferredColorScheme(.dark).frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(JarasTheme.panel))
-        let owner = panel ?? window
-        if let owner {
-            insert.setFrameOrigin(CGPoint(x: owner.frame.midX - insert.frame.width / 2,
-                                          y: owner.frame.midY - insert.frame.height / 2))
-            owner.addChildWindow(insert, ordered: .above)
-        } else { insert.center() }
-        insertionPanel = insert
-        insert.makeKeyAndOrderFront(nil)
+        guard targetIsCurrent, clip != nil else { return }
+        openLibrary()
+    }
+    private func libraryTransfer(_ sender: NSDraggingInfo) -> FooterEffectTransfer? {
+        guard targetIsCurrent, clip != nil,
+              let data = sender.draggingPasteboard.data(forType: Self.libraryType),
+              let transfer = try? JSONDecoder().decode(FooterEffectTransfer.self, from: data),
+              transfer.library, transfer.project == project else { return nil }
+        return transfer
+    }
+    private func insertLibraryEffect(_ transfer: FooterEffectTransfer) -> Bool {
+        guard let clip, let key = LibraryEffectInsertion.apply(identity: transfer.effect, presetID: transfer.presetID,
+                                                                to: nil, clip: clip, show: show) else { return false }
+        refresh(settings, preferred: key)
+        return true
+    }
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        libraryTransfer(sender) == nil ? [] : .copy
+    }
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        libraryTransfer(sender).map(insertLibraryEffect) ?? false
     }
     @objc private func removeSelectedEffect() {
         guard let selection else { return }
@@ -467,16 +573,28 @@ import Combine
         select(rows[list.selectedRow].effect)
     }
     func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> NSPasteboardWriting? {
-        guard clip == nil, rows.indices.contains(row) else { return nil }
+        guard targetIsCurrent, rows.indices.contains(row) else { return nil }
         let item = NSPasteboardItem(); item.setString(rows[row].effect, forType: Self.dragType); return item
     }
     func tableView(_ tableView: NSTableView, validateDrop info: NSDraggingInfo, proposedRow row: Int, proposedDropOperation operation: NSTableView.DropOperation) -> NSDragOperation {
-        guard clip == nil, info.draggingSource as? NSTableView === list, info.draggingPasteboard.string(forType: Self.dragType) != nil else { return [] }
+        if libraryTransfer(info) != nil { tableView.setDropRow(rows.count, dropOperation: .above); return .copy }
+        guard targetIsCurrent, info.draggingSource as? NSTableView === list, info.draggingPasteboard.string(forType: Self.dragType) != nil else { return [] }
         tableView.setDropRow(row, dropOperation: .above); return .move
     }
     func tableView(_ tableView: NSTableView, acceptDrop info: NSDraggingInfo, row: Int, dropOperation: NSTableView.DropOperation) -> Bool {
-        guard clip == nil, let effect = info.draggingPasteboard.string(forType: Self.dragType), rows.contains(where: { $0.effect == effect }) else { return false }
-        show.reorderFX(track, effect: effect, before: rows.indices.contains(row) ? rows[row].effect : nil)
+        if let transfer = libraryTransfer(info) { return insertLibraryEffect(transfer) }
+        guard info.draggingSource as? NSTableView === list,
+              let effect = info.draggingPasteboard.string(forType: Self.dragType) else { return false }
+        return moveEffect(effect, to: row)
+    }
+    @discardableResult private func moveEffect(_ effect: String, to row: Int) -> Bool {
+        guard targetIsCurrent, (0...rows.count).contains(row),
+              rows.contains(where: { $0.effect == effect }) else { return false }
+        let target = rows.indices.contains(row) ? rows[row].effect : nil
+        if let clip {
+            guard let moved = show.reorderClipFX(clip, effect: effect, before: target) else { return false }
+            refresh(settings, preferred: selection == effect ? moved : selection)
+        } else { show.reorderFX(track, effect: effect, before: target) }
         return true
     }
 }
