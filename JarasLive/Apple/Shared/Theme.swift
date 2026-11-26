@@ -7,7 +7,6 @@ enum TimelineEditingBarMetrics {
     static let sliderWidth: CGFloat = 96
     static let groupSpacing: CGFloat = 14
     static let nativeMemoryButtonWidth: CGFloat = 38
-    static let minimumCenteredWidth: CGFloat = 768
 }
 
 private struct JarasNativePaletteKey: EnvironmentKey {

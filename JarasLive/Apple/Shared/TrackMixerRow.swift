@@ -2076,6 +2076,7 @@ struct MasterStrip: View {
                 HStack(spacing: 4) {
                     if let workspaceButtons { workspaceButtons }
                     routingButtons
+                    if workspaceButtons != nil { Spacer(minLength: 4) }
                     TrackPanKnob(show: show, track: nil, pan: show.snapshot.project.masterPan ?? 0).frame(width: 22, height: 24)
                     Button("M") { show.send(.mute) }.frame(width: 26, height: 24).modifier(MappingRightClick(track: nil, command: "mute")).buttonStyle(CompactTrackButtonStyle(activeColor: show.snapshot.project.masterMute == true ? .red : nil, idleColor: workspaceButtons == nil ? nil : Color(hex: 0x292929))).jarasHelp("Mute")
                     Button("S") { show.send(.solo) }.frame(width: 26, height: 24).modifier(MappingRightClick(track: nil, command: "solo")).buttonStyle(CompactTrackButtonStyle(activeColor: show.snapshot.project.masterSolo == true ? JarasTheme.yellow : nil, idleColor: workspaceButtons == nil ? nil : Color(hex: 0x292929))).jarasHelp("Solo")

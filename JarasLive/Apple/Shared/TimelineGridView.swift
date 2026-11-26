@@ -18,6 +18,11 @@ struct TimelineLockOptionsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Bloqueios da grade").font(.headline)
+            Toggle("Lock", isOn: Binding(get: { show.timelineMovementLocked }, set: show.setTimelineMovementLocked))
+            #if os(macOS)
+            .toggleStyle(.checkbox)
+            #endif
+            Divider()
             option("Bloquear tudo", mask: TimelineLocks.all)
             Divider()
             option("Regiões e marcadores", mask: TimelineLocks.regions)
@@ -363,7 +368,6 @@ private struct TimelineGridContent: View, Equatable {
     private let itemEditors: TimelineItemEditors
     @Environment(\.gridInteractionBlocked) private var gridInteractionBlocked
     @State private var cutGridItems: Set<UUID> = []
-    @State private var showingTimelineLocks = false
     @State private var zoomState = TimelineZoomState()
     @State private var hostedItemsGate = TimelineHostedItemsGate()
     @State private var rowLayoutCache = TrackLayoutCache()
@@ -1045,20 +1049,6 @@ private struct TimelineGridContent: View, Equatable {
                                                 .disabled(movingRegion != nil)
                                         }
                                         #endif
-                                        Button { show.setTimelineMovementLocked(!show.timelineMovementLocked) } label: {
-                                            ControlIcon(name: show.timelineMovementLocked ? "lock" : "unlock", active: show.timelineMovementLocked)
-                                        }
-                                        .buttonStyle(TimelineMovementLockButtonStyle(locked: show.timelineMovementLocked))
-                                        .accessibilityLabel("Lock timeline movement")
-                                        .accessibilityIdentifier("timeline-movement-lock")
-                                        #if os(macOS)
-                                        .immediateRightClick { showingTimelineLocks = true }
-                                        #endif
-                                        .popover(isPresented: $showingTimelineLocks, arrowEdge: .top) {
-                                            TimelineLockOptionsView(show: show)
-                                        }
-                                        .accessibilityValue(show.timelineMovementLocked ? "Locked" : "Unlocked")
-                                        .help(Text(verbatim: "Lock- Timeline"))
                                         Button { addingTrack = true } label: {
                                             Text(verbatim: "Add").font(.jarasSystem(size: 10, weight: .semibold))
                                                 .foregroundStyle(JarasTheme.accent).frame(width: 32, height: 24)
@@ -3588,8 +3578,8 @@ private final class NativeTimelineHeaderText: NSObject {
         addSubview(regionsInput)
         regionsInput.rename = { [weak self] target in
             guard let self, let part = self.configuration?.song.parts.first(where: { $0.id == target.id }) else { return }
-            let frame = CGRect(x: part.startTime * self.scale, y: CGFloat(target.lane) * markerLaneHeight,
-                               width: (part.endTime - part.startTime) * self.scale, height: markerLaneHeight)
+            let frame = CGRect(x: part.startTime * self.scale, y: CGFloat(target.lane) * TimelineHeaderBands.regionRowHeight,
+                               width: (part.endTime - part.startTime) * self.scale, height: TimelineHeaderBands.regionRowHeight)
             self.beginRename(part.id, name: part.name, region: true, at: frame)
         }
     }
@@ -8364,17 +8354,43 @@ private struct ClipDragInput: View {
 }
 #endif
 
-private struct TimelineMovementLockButtonStyle: ButtonStyle {
-    let locked: Bool
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(.jarasSystem(size: 10, weight: .semibold))
-            .foregroundStyle(locked ? Color.black : JarasTheme.text)
-            .frame(width: 24, height: 21)
-            .background(locked ? JarasTheme.yellow.opacity(configuration.isPressed ? 0.75 : 1)
-                : JarasTheme.text.opacity(configuration.isPressed ? 0.24 : 0.12))
-            .clipShape(RoundedRectangle(cornerRadius: 3))
-            .contentShape(Rectangle())
+struct TimelineLockSelector: View {
+    let show: ShowController
+    let height: CGFloat
+    @ObservedObject private var updates: ShowProjectPresentation
+    @State private var showingOptions = false
+
+    init(show: ShowController, height: CGFloat = TimelineEditingBarMetrics.controlHeight) {
+        self.show = show
+        self.height = height
+        _updates = ObservedObject(wrappedValue: show.projectPresentation)
+    }
+
+    var body: some View {
+        let locked = show.timelineMovementLocked
+        Button { showingOptions.toggle() } label: {
+            HStack(spacing: 5) {
+                ControlIcon(name: locked ? "lock" : "unlock", active: locked)
+                    .frame(width: 16, height: 16)
+                Text(verbatim: "Lock")
+                Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold))
+            }
+        }
+        .buttonStyle(TransportButtonStyle(color: locked ? JarasTheme.yellow : Color(hex: 0x454545),
+            active: locked, inactiveOpacity: 1, width: 74, height: height, bordered: false))
+        .accessibilityLabel("Lock")
+        .accessibilityIdentifier("timeline-movement-lock")
+        .accessibilityValue(locked ? "Locked" : "Unlocked")
+        .onChange(of: show.snapshot.project.id) { _ in showingOptions = false }
+        .popover(isPresented: $showingOptions) {
+            let options = TimelineLockOptionsView(show: show)
+            #if os(iOS)
+            if #available(iOS 16.4, *) { options.presentationCompactAdaptation(.popover) }
+            else { options }
+            #else
+            options
+            #endif
+        }
     }
 }
 

@@ -1008,6 +1008,7 @@ struct MainView: View {
     }
     private var desktopEditingLiveButtons: some View {
         HStack(spacing: 6) {
+            TimelineLockSelector(show: show)
             MacProjectionRail(show: show)
             TeleprompterTimerToolbarButton()
             desktopLiveButtons

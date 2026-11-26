@@ -2692,9 +2692,9 @@ private struct TrackMixFeedbackPanel: View {
                     if local {
                         HStack(spacing: 5) {
                             messagesAndTimerButtons(width: railButton)
-                            tabletPrompterButton(.first, width: railButton)
-                            tabletPrompterButton(.second, width: railButton)
-                            IpadNativePreviewButton(width: 54, horizontal: true)
+                            if !nativeProMode, let localShow {
+                                nativePrompterTools(show: localShow, width: railButton, height: 32)
+                            }
                             IpadNativeVideoButton()
                             if let openRemoteSettings {
                                 IpadNativeRemoteToggle(openSettings: openRemoteSettings, width: 68)
@@ -2719,7 +2719,9 @@ private struct TrackMixFeedbackPanel: View {
                             mixerButtons: AnyView(HStack(spacing: 6) {
                                 tabletLibraryButtons(width: railButton, height: TimelineEditingBarMetrics.controlHeight)
                                 tabletMixerButtons(width: railButton, height: TimelineEditingBarMetrics.controlHeight)
-                            }.environment(\.toolbarIconSurface, true)))
+                            }.environment(\.toolbarIconSurface, true)),
+                            liveButtons: AnyView(nativePrompterTools(show: localShow, width: railButton,
+                                height: TimelineEditingBarMetrics.controlHeight)))
                     }
                     HStack(alignment: .top, spacing: 0) {
                         if let localShow, libraryWidth > 0 {
@@ -3289,6 +3291,7 @@ private struct TrackMixFeedbackPanel: View {
                 RoundedRectangle(cornerRadius: 7).strokeBorder(JarasInterfaceTheme.lightDark.transportBorder)
                     .allowsHitTesting(false)
             }
+            .modifier(MasterMuteIndicator(muted: local && state.masterMute))
             .overlay(alignment: .bottom) {
                 transportProgress
                     .padding(.horizontal, 3)
@@ -3618,10 +3621,19 @@ private struct TrackMixFeedbackPanel: View {
                 }
             }
     }
-    private func tabletPrompterButton(_ panel: PrompterPanel, width: CGFloat) -> some View {
+    private func nativePrompterTools(show: ShowController, width: CGFloat, height: CGFloat) -> some View {
+        HStack(spacing: 5) {
+            TimelineLockSelector(show: show, height: height)
+            tabletPrompterButton(.first, width: width, height: height)
+            tabletPrompterButton(.second, width: width, height: height)
+            IpadNativePreviewButton(width: 54, horizontal: true)
+        }.environment(\.toolbarIconSurface, true)
+    }
+
+    private func tabletPrompterButton(_ panel: PrompterPanel, width: CGFloat, height: CGFloat = 32) -> some View {
         Button { showPrompter(prompterPanel == panel ? nil : panel) } label: {
             ControlIcon(name: "teleprompter\(panel.rawValue)", active: prompterPanel == panel).font(.jarasSystem(size: 10, weight: .bold))
-                .frame(width: width, height: 32)
+                .frame(width: width, height: height)
         }.foregroundStyle(JarasTheme.toolbarTint(active: prompterPanel == panel))
             .accessibilityLabel("Teleprompter \(panel.rawValue)")
             .accessibilityValue(prompterPanel == panel ? "On" : "Off")
@@ -5183,7 +5195,9 @@ private struct RemoteNativeTimeline: View {
     @State private var rulerSelectionAnchor: Double?
     @State private var rulerMenuX: CGFloat = 0
     @State private var rulerMenuSelection: TimelineAreaSelection.Range?
-    @GestureState private var markerPreview: (id: UUID, position: Double)?
+    @State private var normalMarkerPreview: (id: UUID, position: Double)?
+    @GestureState private var markerGesturePreview: (id: UUID, position: Double)?
+    private var markerPreview: (id: UUID, position: Double)? { normalMarkerPreview ?? markerGesturePreview }
     @State private var rulerSelectionEnd: Double?
     @State private var selectionResizeFixedEdge: Double?
     @State private var gestureControl = IpadTimelineGestureControl()
@@ -6020,7 +6034,7 @@ private struct RemoteNativeTimeline: View {
                         .clipShape(RoundedRectangle(cornerRadius: 2.5))
                         .overlay(IpadRegionHeaderGesture(singleTap: { pauseFollowing(); selectedRegionID = part.id }, doubleTap: {
                             pauseFollowing(); selectedRegionID = part.id; renamingTimelineHeader = part.id
-                        }, moved: { translation in
+                        }, accessibilityTitle: part.name, moved: { translation in
                             // Use original document coordinates throughout the gesture.
                             guard localShow?.timelineRegionsLocked == false,
                                   let original = localShow?.current?.parts.first(where: { $0.id == part.id }) else { return }
@@ -6033,12 +6047,17 @@ private struct RemoteNativeTimeline: View {
                             }
                         }))
                         .overlay(RoundedRectangle(cornerRadius: 2.5).strokeBorder(selectedRegionID == part.id ? JarasTheme.green : .clear, lineWidth: 2).allowsHitTesting(false))
-                        .contextMenu { nativeRegionMenu(part, song: song) }
+                        .overlay(alignment: .trailing) {
+                            if selectedRegionID == part.id && renamingTimelineHeader != part.id && (right - left) / span * width >= 48 {
+                                Menu { nativeRegionMenu(part, song: song) } label: { timelineHeaderMenuIcon.foregroundStyle(.black) }
+                                    .buttonStyle(.plain).accessibilityLabel("Editar região")
+                            }
+                        }
                         .overlay(alignment: .leading) {
                             if renamingTimelineHeader == part.id {
                                 IpadTimelineNameField(name: part.name) { name in
                                     if let name, localShow?.current?.id == song.id { localShow?.renameTimelineLabel(part.id, name: name, region: true) }
-                                    renamingTimelineHeader = nil
+                                    if renamingTimelineHeader == part.id { renamingTimelineHeader = nil }
                                 }.frame(width: min(200, max(100, (right - left) / span * width)))
                             }
                         }
@@ -6103,40 +6122,69 @@ private struct RemoteNativeTimeline: View {
             }
             .onTapGesture { if local { pauseFollowing() } }.accessibilityLabel("Marcadores da música")
     }
-    private func markerTarget(_ marker: TimelineMarker, width: CGFloat, height: CGFloat, pixelsPerSecond: Double) -> some View {
-        Color.clear.frame(width: max(1, width), height: height).contentShape(Rectangle())
-            .onTapGesture(count: 2) {
-                pauseFollowing()
-                if local, !marker.isTempo, marker.sourceRegionID == nil, marker.unifiedRegionID == nil {
-                    renamingTimelineHeader = marker.id
-                } else { openMarkerEditor?(marker) }
-            }
-            .contextMenu {
-                Button("Editar marcador") { pauseFollowing(); openMarkerEditor?(marker) }
-                Button("Delete", role: .destructive) { localShow?.deleteManualMarker(marker.id) }
-            }.accessibilityLabel(marker.name)
-            .gesture(DragGesture(minimumDistance: 3)
-                .updating($markerPreview) { value, preview, _ in
-                    guard let moved = draggedMarker(marker.id, translation: value.translation.width, pixelsPerSecond: pixelsPerSecond) else { return }
-                    preview = (moved.id, moved.position)
-                }
-                .onChanged { _ in if local { pauseFollowing() } }
-                .onEnded { value in
-                    guard let moved = draggedMarker(marker.id, translation: value.translation.width, pixelsPerSecond: pixelsPerSecond) else { return }
-                    localShow?.setMarker(moved)
+    private var timelineHeaderMenuIcon: some View {
+        Image(systemName: "ellipsis")
+            .font(.system(size: 11, weight: .bold))
+            .frame(width: 22, height: TimelineHeaderBands.regionRowHeight).contentShape(Rectangle())
+    }
+
+    @ViewBuilder private func markerTarget(_ marker: TimelineMarker, width: CGFloat, height: CGFloat, pixelsPerSecond: Double) -> some View {
+        let surface = Color.clear.frame(width: max(1, width), height: height).contentShape(Rectangle())
+        if local, !marker.isTempo, marker.sourceRegionID == nil, marker.unifiedRegionID == nil {
+            surface.overlay {
+                IpadRegionHeaderGesture(singleTap: { pauseFollowing() }, doubleTap: {
+                    pauseFollowing(); renamingTimelineHeader = marker.id
+                }, accessibilityTitle: marker.name, moved: { translation in
+                    guard let moved = draggedMarker(marker.id, translation: translation, pixelsPerSecond: pixelsPerSecond) else { return }
+                    pauseFollowing()
+                    normalMarkerPreview = (moved.id, moved.position)
+                }, ended: { cancelled in
+                    if !cancelled, let preview = normalMarkerPreview, preview.id == marker.id,
+                       let moved = localShow?.current?.markers?.first(where: { $0.id == marker.id }) {
+                        var updated = moved
+                        updated.position = preview.position
+                        localShow?.setMarker(updated)
+                    }
+                    normalMarkerPreview = nil
                 })
+            }
             .overlay(alignment: .leading) {
                 if renamingTimelineHeader == marker.id {
                     let songID = localShow?.current?.id
-                    IpadTimelineNameField(name: marker.name) { name in
-                        if let name, localShow?.current?.id == songID {
-                            localShow?.renameTimelineLabel(marker.id, name: name, region: false, includesParts: true)
+                    HStack(spacing: 2) {
+                        IpadTimelineNameField(name: marker.name) { name in
+                            if let name, localShow?.current?.id == songID {
+                                localShow?.renameTimelineLabel(marker.id, name: name, region: false, includesParts: true)
+                            }
+                            if renamingTimelineHeader == marker.id { renamingTimelineHeader = nil }
                         }
-                        renamingTimelineHeader = nil
-                    }.frame(width: min(200, max(100, width)))
+                        Menu { markerMenu(marker) } label: { timelineHeaderMenuIcon.foregroundStyle(JarasTheme.text) }
+                            .buttonStyle(.plain).accessibilityLabel("Editar marcador")
+                    }.frame(width: min(220, max(120, width)))
+                        .background(JarasTheme.display, in: RoundedRectangle(cornerRadius: 3))
                 }
             }
+        } else {
+            surface.onTapGesture(count: 2) { pauseFollowing(); openMarkerEditor?(marker) }
+                .contextMenu { markerMenu(marker) }.accessibilityLabel(marker.name)
+                .gesture(DragGesture(minimumDistance: 3)
+                    .updating($markerGesturePreview) { value, preview, _ in
+                        guard let moved = draggedMarker(marker.id, translation: value.translation.width, pixelsPerSecond: pixelsPerSecond) else { return }
+                        preview = (moved.id, moved.position)
+                    }
+                    .onChanged { _ in if local { pauseFollowing() } }
+                    .onEnded { value in
+                        guard let moved = draggedMarker(marker.id, translation: value.translation.width, pixelsPerSecond: pixelsPerSecond) else { return }
+                        localShow?.setMarker(moved)
+                    })
+        }
     }
+
+    @ViewBuilder private func markerMenu(_ marker: TimelineMarker) -> some View {
+        Button("Editar marcador") { pauseFollowing(); openMarkerEditor?(marker) }
+        Button("Delete", role: .destructive) { localShow?.deleteManualMarker(marker.id) }
+    }
+
     private func draggedMarker(_ id: UUID, translation: Double, pixelsPerSecond: Double) -> TimelineMarker? {
         guard local, editorEnabled, let show = localShow, !show.timelineRegionsLocked,
               let song = show.current, var marker = song.markers?.first(where: { $0.id == id }),
@@ -8858,13 +8906,12 @@ private struct IpadTimelineEditingBar: View {
     @Binding var tool: ProGridTool
     let movingRegion: Bool
     let mixerButtons: AnyView
+    let liveButtons: AnyView
 
     var body: some View {
         let memoryWidth = TimelineEditingBarMetrics.nativeMemoryButtonWidth
-        let extraZoomWidth = 2 * memoryWidth + 1 - DesktopZoomControls.memoryWidth
         return TimelineEditingBar(show: show, editKey: TimelineEditPreferences.native, tool: $tool, movingRegion: movingRegion,
-                                  minimumCenteredWidth: TimelineEditingBarMetrics.minimumCenteredWidth + 2 * extraZoomWidth,
-                                  mixerButtons: mixerButtons) { _ in
+                                  mixerButtons: mixerButtons, liveButtons: liveButtons) { _ in
             DesktopZoomControls(
                 height: .init(label: "Track height", toggleLabel: "Toggle track height", id: "track-height",
                               value: Binding(get: { max(scrolling.minimumTrackHeightScale, scrolling.heightScale) },

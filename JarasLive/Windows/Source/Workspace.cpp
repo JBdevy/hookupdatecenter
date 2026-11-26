@@ -107,6 +107,7 @@ Colour workspaceToolbarColour() {
     return theme::background == theme::darkBackground ? theme::background : Colour(0xff2a2a2a);
 }
 constexpr int mainStripWidth = 248;
+constexpr int timelineLockButtonWidth = 74;
 }
 
 namespace {
@@ -361,12 +362,14 @@ void MacLook::drawButtonText(Graphics &g, TextButton &b, bool, bool) {
         const bool compact = b.getWidth() < 56;
         const float preferredIcon = toolbar ? 14.f : 12.f;
         const float padding = compact ? 2.f : 6.f, gapSize = toolbar ? 4.f : compact ? 2.f : 4.f;
-        const float available = std::max(0.f, b.getWidth() - padding);
+        const bool selectorChevron = (bool)b.getProperties()["selectorChevron"];
+        const float trailingSpace = selectorChevron ? 14.f : 0.f;
+        const float available = std::max(0.f, b.getWidth() - padding - trailingSpace);
         const float scale = jlimit(.75f, 1.f, available / std::max(1.f, textWidth + preferredIcon + gapSize));
         const float iconSize = preferredIcon * scale, gap = gapSize * scale;
         const float labelWidth = std::max(0.f, std::min(textWidth * scale,
                                                       available - iconSize - gap));
-        const float x = (b.getWidth() - iconSize - gap - labelWidth) * .5f;
+        const float x = (b.getWidth() - iconSize - gap - labelWidth - trailingSpace) * .5f;
         if (leading == "record" && !b.getToggleState()) g.setColour(theme::liveOffRed.withMultipliedAlpha(opacity));
         const juce::Rectangle<float> iconBounds{x, (b.getHeight() - iconSize) * .5f, iconSize, iconSize};
         const bool drawn = transportDrawing ? drawDesktopToolbarSymbol(g, leading, iconBounds)
@@ -377,6 +380,9 @@ void MacLook::drawButtonText(Graphics &g, TextButton &b, bool, bool) {
         g.setFont(font.withPointHeight(font.getHeightInPoints() * scale));
         g.drawText(label, juce::Rectangle<float>(x + iconSize + gap, 0, labelWidth,
                                            (float)b.getHeight()), Justification::centredLeft, false);
+        if (selectorChevron)
+            drawDesktopToolbarSymbol(g, "chevron.down", {x + iconSize + gap + labelWidth + 4,
+                (b.getHeight() - 10.f) * .5f, 10.f, 10.f});
         return;
     }
     if (leading.isNotEmpty()) {
@@ -4606,19 +4612,18 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
             if (e.mods.isPopupMenu() || e.mods.isAltDown()) return;
             if (const auto *song = t.w.session.song(); song && e.y < headerHeight()) {
                 if (const auto [part, edge] = regionHit(e.position, false); part) {
-                    beginNameEdit(part->id, text(part->name), true,
-                        {roundToInt(t.xAt(part->startTime)), t.regionLanes().lane(part->id) * headerLaneHeight,
-                         roundToInt(t.xAt(part->endTime) - t.xAt(part->startTime)), headerLaneHeight});
+                    beginNameEdit(part->id, text(part->name), true, t.regionHeaderBounds(part->id));
                     return;
                 }
                 if (song->markers) {
                     t.refreshMarkers(*song);
-                    for (const auto &flag : t.markerFlags) {
-                        if (flag.tempo || flag.linked) continue;
-                        const auto width = timelineRegionLabels::markerHeadWidth(flag.position, flag.next, flag.regionEnd, flag.width, t.w.pixelsPerSecond);
-                        const juce::Rectangle<float> bounds(t.xAt(flag.position), float(t.markerTop(false) + 1), std::max(8.f, width), float(headerLaneHeight - 2));
+                    for (auto flag = t.markerFlags.rbegin(); flag != t.markerFlags.rend(); ++flag) {
+                        if (flag->tempo) continue;
+                        const auto head = t.markerHead(*flag);
+                        const auto bounds = head.withWidth(std::max(8.f, head.getWidth()));
                         if (!bounds.contains(e.position)) continue;
-                        for (const auto &marker : *song->markers) if (marker.id == flag.id) {
+                        if (flag->linked) break;
+                        for (const auto &marker : *song->markers) if (marker.id == flag->id) {
                             beginNameEdit(marker.id, text(marker.name), false, bounds.getSmallestIntegerContainer());
                             return;
                         }
@@ -5480,12 +5485,12 @@ class Workspace::TrackHeightHandle final : public Component, private Timer {
 
 void Workspace::paintOverChildren(Graphics &g) {
     if (!browserVisible && !loginPanel && controls["masterMute"]->isVisible() && session.project().masterMute) {
-        const bool bright = (int64(Time::getMillisecondCounterHiRes() / 500.0) % 2) == 0;
-        const juce::Rectangle<float> bounds(4, (float)transportBounds.getY() + 8, 266, 70);
+        const bool bright = masterMuteBlinkPhase != 1;
+        const auto bounds = transportBounds.toFloat();
         g.setColour(Colour(0xffff3b30).withAlpha(bright ? .28f : .04f));
-        g.fillRoundedRectangle(bounds, 5);
+        g.fillRect(bounds);
         g.setColour(Colour(0xffff3b30).withAlpha(bright ? 1.f : .25f));
-        g.drawRoundedRectangle(bounds.reduced(1), 5, 2);
+        g.drawRect(bounds.reduced(1), 2.f);
     }
     if(externalDropPoint&&session.song()&&!externalDropFiles.empty()) {
         const auto local=timeline->getLocalPoint(this,*externalDropPoint);
@@ -6459,21 +6464,22 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
     addTrack.onClick = [this] { createTrack(); };
     addAndMakeVisible(timelineLock);
     timelineLock.setComponentID("timelineMovementLock");
-    timelineLock.getProperties().set("icon", "unlock");
+    timelineLock.setButtonText("Lock");
+    timelineLock.getProperties().set("leadingIcon", "unlock");
+    timelineLock.getProperties().set("centredIconLabel", true);
+    timelineLock.getProperties().set("selectorChevron", true);
     timelineLock.getProperties().set("flat", true);
+    timelineLock.getProperties().set("cornerRadius", 6.f);
     timelineLock.setWantsKeyboardFocus(false);
-    timelineLock.setColour(TextButton::buttonColourId, Colours::white.withAlpha(.18f));
+    timelineLock.setColour(TextButton::buttonColourId, Colour(0xff454545));
     timelineLock.setColour(TextButton::buttonOnColourId, theme::yellow);
     timelineLock.setColour(TextButton::textColourOffId, Colours::white);
     timelineLock.setColour(TextButton::textColourOnId, Colours::black);
     addAndMakeVisible(timelineTimebase);
     timelineTimebase.setComponentID("timelineTimebase");
     timelineTimebase.setTitle("Relative timebase");
-    timelineTimebase.setButtonText("Timebase");
+    timelineTimebase.setTooltip("Timebase");
     timelineTimebase.getProperties().set("icon", "itemTimebase");
-    timelineTimebase.getProperties().set("leadingIcon", "itemTimebase");
-    timelineTimebase.getProperties().set("centredIconLabel", true);
-    timelineTimebase.getProperties().set("iconAccentOnly", true);
     timelineTimebase.getProperties().set("transportDrawing", true);
     timelineTimebase.getProperties().set("borderAlpha", .23f);
     timelineTimebase.setWantsKeyboardFocus(false);
@@ -6499,11 +6505,8 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
     };
     addAndMakeVisible(timelineSnap);
     timelineSnap.setComponentID("timelineSnap");
-    timelineSnap.setButtonText("Snap");
+    timelineSnap.setTitle("Snap");
     timelineSnap.getProperties().set("icon", "magnet");
-    timelineSnap.getProperties().set("leadingIcon", "magnet");
-    timelineSnap.getProperties().set("centredIconLabel", true);
-    timelineSnap.getProperties().set("iconAccentOnly", true);
     timelineSnap.getProperties().set("transportDrawing", true);
     timelineSnap.getProperties().set("borderAlpha", .23f);
     timelineSnap.setColour(TextButton::buttonColourId, Colour(0xff454545));
@@ -6565,19 +6568,26 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
                     if (auto* mixer = dynamic_cast<MixerPanel*>(entry.second->getContentComponent())) mixer->setVUStyle(style);
             });
     };
-    timelineLock.onClick = [this] { perform([&] { session.edit([](jaras::Project &p) {
-        p.timelineMovementLocked = !p.timelineMovementLocked.value_or(false);
-    }, false); }); };
-    timelineLock.context = [this](Point<int>) {
+    timelineLock.onClick = [this] {
         if (!projectReady || session.busy || session.audio.isRecording()) return;
-        auto safe=SafePointer<Workspace>(this);
-        auto panel=std::make_unique<TimelineLockPanel>([safe] { return safe ? safe->session.project().configuredTimelineLocks() : jaras::TimelineLocks::all; }, [safe](int options) {
-            if(!safe || safe->session.busy || safe->session.audio.isRecording())return;
-            safe->perform([&] { safe->session.edit([=](jaras::Project &p) {
-                p.timelineLockOptions=jaras::TimelineLocks::normalize(options);
-            },false); });
-        });
-        CallOutBox::launchAsynchronously(std::move(panel),timelineLock.getScreenBounds(),nullptr);
+        const auto safe = SafePointer<Workspace>(this);
+        const auto project = session.project().id;
+        auto panel = std::make_unique<TimelineLockPanel>(
+            [safe] { return safe && safe->session.project().timelineMovementLocked.value_or(false); },
+            [safe, project](bool locked) {
+                if (!safe || safe->session.project().id != project || safe->session.busy || safe->session.audio.isRecording()) return;
+                safe->perform([&] { safe->session.edit([locked](jaras::Project &p) {
+                    p.timelineMovementLocked = locked;
+                }, false); });
+            },
+            [safe] { return safe ? safe->session.project().configuredTimelineLocks() : jaras::TimelineLocks::all; },
+            [safe, project](int options) {
+                if (!safe || safe->session.project().id != project || safe->session.busy || safe->session.audio.isRecording()) return;
+                safe->perform([&] { safe->session.edit([options](jaras::Project &p) {
+                    p.timelineLockOptions = jaras::TimelineLocks::normalize(options);
+                }, false); });
+            });
+        CallOutBox::launchAsynchronously(std::move(panel), timelineLock.getScreenBounds(), nullptr);
     };
     projectBrowser = std::make_unique<ProjectBrowser>();
     addChildComponent(*projectBrowser);
@@ -7627,7 +7637,7 @@ void Workspace::resized() {
     const auto proPlayback = {"proPlay","proPause","proFadeout","proRecord","proRepeat"};
     const bool multipleProjects = canNavigateProjectTab && (canNavigateProjectTab(-1) || canNavigateProjectTab(1));
     constexpr int buttonWidth = 34, proToolWidth = 30, toolPickerWidth = 42;
-    constexpr int snapWidth = 66, timebaseWidth = 88;
+    constexpr int snapWidth = 34, timebaseWidth = 34;
     const int statusWidth = std::max(1, getWidth() - statusX - 8);
     constexpr int standardActionWidth = buttonWidth * 2 + groupGap;
     constexpr int proActionWidth = standardActionWidth + 3 * (proToolWidth + groupGap);
@@ -7674,7 +7684,7 @@ void Workspace::resized() {
     const auto liveTools = {"railNotice", "railClock", "tp1", "tp2", "preview", "video", "remote"};
     constexpr int toolbarPadding = 6, toolbarGap = 4;
     constexpr float toolbarFontSize = 14.f;
-    int liveToolsWidth = 0;
+    int liveToolsWidth = timelineLockButtonWidth + toolbarGap;
     for (const auto *id : liveTools) liveToolsWidth += toolbarWidth(id, toolbarPadding, toolbarFontSize) + toolbarGap;
     const int minimumToolbarWidth = toolbarInset*2 + settingsWidth + audioTextWidth + 6 +
         ((int)primaryTools.size() + (int)integrations.size())*(29 + toolbarGap) + liveToolsWidth;
@@ -7845,6 +7855,8 @@ void Workspace::resized() {
         const int zoomClusterWidth = showZoomSliders ? fullTimelineToolsWidth : showZoomMemories ? zoomMemoryWidth : 0;
         toolsX = right - zoomClusterWidth;
         stripX = std::max(minimumLiveX, toolsX - (showZoomMemories ? stripGap : 0) - liveGroupWidth);
+        timelineLock.setBounds(stripX, toolsY, timelineLockButtonWidth, zoomHeight);
+        stripX += timelineLockButtonWidth + toolbarGap;
         for (auto id : liveTools) placeStripButton(id);
         toolsX = std::max(toolsX, stripX + stripGap - toolbarGap);
     }
@@ -7868,9 +7880,10 @@ void Workspace::resized() {
     if (proTransport) {
         controls["masterMono"]->setTopLeftPosition(43, 14);
         controls["masterPatch"]->setTopLeftPosition(96, 14);
-        masterPan.setTopLeftPosition(140, 13);
-        controls["masterMute"]->setTopLeftPosition(166, 14);
-        controls["masterSolo"]->setTopLeftPosition(196, 14);
+        constexpr int soloX = mainStripWidth - 28, muteX = soloX - 30;
+        masterPan.setTopLeftPosition(muteX - 26, 13);
+        controls["masterMute"]->setTopLeftPosition(muteX, 14);
+        controls["masterSolo"]->setTopLeftPosition(soloX, 14);
     }
     for (auto id : {"masterMono", "masterPatch", "masterFX", "masterMute", "masterSolo"})
         controls[id]->setTopLeftPosition(masterX + controls[id]->getX(), masterY + controls[id]->getY());
@@ -7954,7 +7967,8 @@ void Workspace::resized() {
         } else {
             stageTimer->setBounds(transportResourceBounds.getX() - timerWidth - 8, titleY, timerWidth, 25);
         }
-        toolX = liveX;
+        timelineLock.setBounds(liveX, toolbarY, timelineLockButtonWidth, toolbarButtonHeight);
+        toolX = liveX + timelineLockButtonWidth + toolbarGap;
         layoutTools(liveTools, toolbarY);
         controls["audioStatus"]->setBounds(audioX, toolbarY, audioWidth, toolbarButtonHeight);
         controls["settings"]->getProperties().set("fontSize", toolbarFontSize);
@@ -8127,9 +8141,7 @@ void Workspace::layoutWorkspaceColumns(bool widthOnly) {
     const int rulerY = workspaceBounds.getY() + timeline->rulerTop();
     addTrack.setBounds(addTrackX, rulerY + (timeline->rulerHeight - 24) / 2, 32, 24);
     addTrack.setVisible(mixerVisible);
-    timelineLock.setBounds(addTrack.getX() - 30, addTrack.getY(), 24, 24);
-    timelineLock.setVisible(mixerVisible);
-    trackVisibilityButton.setBounds(timelineLock.getX()-30,timelineLock.getY(),24,24);
+    trackVisibilityButton.setBounds(addTrack.getX() - 30, addTrack.getY(), 24, 24);
     trackVisibilityButton.setVisible(mixerVisible);
     trackComponentsPreset.setBounds(trackVisibilityButton.getX() - 30, trackVisibilityButton.getY(), 24, 24);
     trackComponentsPreset.setVisible(mixerVisible);
@@ -8513,7 +8525,7 @@ void Workspace::updateState() {
     const bool relativeTimebase=session.song() && session.song()->timeSettings.value_or(jaras::ProjectTimeSettings{}).timebase==jaras::ProjectTimebase::relative && (!timeline || !timeline->suspendsTimebase());
     timelineTimebase.setToggleState(relativeTimebase,dontSendNotification);
     timelineTimebase.setEnabled(session.song() && !session.busy && !session.audio.isRecording());
-    timelineLock.getProperties().set("icon", movementLocked ? "lock" : "unlock");
+    timelineLock.getProperties().set("leadingIcon", movementLocked ? "lock" : "unlock");
     timelineLock.setTooltip("Lock- Timeline");
     timelineLock.setEnabled(!session.busy && !session.audio.isRecording());
     trackVisibilityButton.setEnabled(!session.busy);
@@ -8778,7 +8790,7 @@ void Workspace::timerCallback() {
     const int mutePhase = session.project().masterMute ? int(int64(now * 2) % 2) : -1;
     if (masterMuteBlinkPhase != mutePhase) {
         masterMuteBlinkPhase = mutePhase;
-        repaint(4, transportBounds.getY() + 8, 266, 70);
+        repaint(transportBounds);
     }
     if (masterPeakReadout) masterPeakReadout->refresh();
     masterVolume.setMeterLevels(session.audio.meterLevels());

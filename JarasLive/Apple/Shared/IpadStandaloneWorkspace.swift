@@ -1418,11 +1418,13 @@ final class IpadTrackSelectionTouchView: UIView, UIGestureRecognizerDelegate {
 struct IpadRegionHeaderGesture: UIViewRepresentable {
     let singleTap: () -> Void
     let doubleTap: () -> Void
+    let accessibilityTitle: String
     let moved: (Double) -> Void
     let ended: (Bool) -> Void
     func makeUIView(context: Context) -> IpadRegionHeaderTouchView { IpadRegionHeaderTouchView() }
     func updateUIView(_ view: IpadRegionHeaderTouchView, context: Context) {
         view.singleTap = singleTap; view.doubleTap = doubleTap; view.moved = moved; view.ended = ended
+        view.accessibilityLabel = accessibilityTitle
     }
 }
 final class IpadRegionHeaderTouchView: UIView {
@@ -1435,15 +1437,26 @@ final class IpadRegionHeaderTouchView: UIView {
         super.init(frame: frame)
         let single = UITapGestureRecognizer(target: self, action: #selector(tapped))
         let double = UITapGestureRecognizer(target: self, action: #selector(doubleTapped)); double.numberOfTapsRequired = 2
+        let secondary = UITapGestureRecognizer(target: self, action: #selector(doubleTapped))
+        secondary.buttonMaskRequired = .secondary
+        secondary.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.indirectPointer.rawValue)]
+        let hold = UILongPressGestureRecognizer(target: self, action: #selector(held(_:)))
+        hold.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
         let pan = UIPanGestureRecognizer(target: self, action: #selector(dragged(_:)))
         single.require(toFail: double); single.require(toFail: pan); double.require(toFail: pan)
-        addGestureRecognizer(single); addGestureRecognizer(double); addGestureRecognizer(pan)
-        isAccessibilityElement = true; accessibilityLabel = JarasLocalization.string("Editar região")
+        pan.require(toFail: secondary)
+        let gestures: [UIGestureRecognizer] = [single, double, secondary, hold, pan]
+        gestures.forEach(addGestureRecognizer)
+        isAccessibilityElement = true
+        accessibilityTraits = .button
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override func accessibilityActivate() -> Bool { doubleTap?(); return true }
     @objc private func tapped() { singleTap?() }
     @objc private func doubleTapped() { doubleTap?() }
+    @objc private func held(_ gesture: UILongPressGestureRecognizer) {
+        if gesture.state == .began { doubleTap?() }
+    }
     @objc private func dragged(_ gesture: UIPanGestureRecognizer) {
         switch gesture.state {
         case .began: singleTap?(); moved?(0)

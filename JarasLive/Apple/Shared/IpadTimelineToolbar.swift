@@ -9,7 +9,6 @@ struct IpadTimelineToolbar: View {
     @Binding private var editing: Bool
     @ObservedObject private var updates: ShowProjectPresentation
     @State private var showingVisibility = false
-    @State private var showingLocks = false
 
     init(show: ShowController, addTrack: @escaping () -> Void, editing: Binding<Bool>) {
         self.show = show
@@ -75,16 +74,6 @@ struct IpadTimelineToolbar: View {
                     editor
                 }
             }
-        Button { show.setTimelineMovementLocked(!show.timelineMovementLocked) } label: {
-            ControlIcon(name: show.timelineMovementLocked ? "lock" : "unlock", active: show.timelineMovementLocked)
-                .frame(width: 32, height: 32).contentShape(Rectangle())
-        }.buttonStyle(IpadTimelineToolbarButtonStyle(color: show.timelineMovementLocked ? .black : JarasTheme.text,
-                                                    background: show.timelineMovementLocked ? JarasTheme.yellow : nil))
-            .accessibilityLabel("Lock timeline movement")
-            .accessibilityIdentifier("timeline-movement-lock").help(Text(verbatim: "Lock- Timeline"))
-            .onLongPressGesture { showingLocks = true }
-            .popover(isPresented: $showingLocks) { TimelineLockOptionsView(show: show) }
-            .accessibilityValue(show.timelineMovementLocked ? "Locked" : "Unlocked")
     }
 }
 

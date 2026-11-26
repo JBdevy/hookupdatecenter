@@ -278,6 +278,7 @@ struct TransportView: View {
             }
         }
         #endif
+        .modifier(MasterMuteIndicator(muted: activeProMode && show.snapshot.project.masterMute == true))
     }
 
     private func standardPlayback(running: Bool, paused: Bool, title: Text, width: CGFloat, spacing: CGFloat,
@@ -1016,7 +1017,6 @@ struct TimelineEditingBar<Zoom: View>: View {
     let editKey: String
     @Binding var tool: ProGridTool
     var movingRegion = false
-    let minimumCenteredWidth: CGFloat
     let mixerButtons: AnyView
     let workspaceButtons: AnyView?
     let liveButtons: AnyView?
@@ -1027,13 +1027,11 @@ struct TimelineEditingBar<Zoom: View>: View {
     @State private var confirmingTimebase = false
 
     init(show: ShowController, editKey: String, tool: Binding<ProGridTool>, movingRegion: Bool,
-         minimumCenteredWidth: CGFloat = TimelineEditingBarMetrics.minimumCenteredWidth,
          mixerButtons: AnyView, workspaceButtons: AnyView? = nil, liveButtons: AnyView? = nil,
          @ViewBuilder zoom: @escaping (Bool) -> Zoom) {
         self.show = show
         self.editKey = editKey
         self.movingRegion = movingRegion
-        self.minimumCenteredWidth = minimumCenteredWidth
         self.mixerButtons = mixerButtons
         self.workspaceButtons = workspaceButtons; self.liveButtons = liveButtons
         self.zoom = zoom
@@ -1063,22 +1061,14 @@ struct TimelineEditingBar<Zoom: View>: View {
                             }
                         }
                     }
-                } else if geometry.size.width >= minimumCenteredWidth {
-                    ZStack {
-                        HStack {
-                            leftControls()
-                            Spacer(minLength: 0)
-                            zoom(true)
-                        }
-                        editTools
-                    }
                 } else {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: TimelineEditingBarMetrics.groupSpacing) {
-                            leftControls()
-                            editTools
-                            zoom(true)
+                    if #available(macOS 13, iOS 16, *) {
+                        ViewThatFits(in: .horizontal) {
+                            nativeStrip(live: liveButtons)
+                            ScrollView(.horizontal, showsIndicators: false) { nativeStrip(live: liveButtons) }
                         }
+                    } else {
+                        ScrollView(.horizontal, showsIndicators: false) { nativeStrip(live: liveButtons) }
                     }
                 }
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1096,6 +1086,17 @@ struct TimelineEditingBar<Zoom: View>: View {
             Button(LocalizedStringKey(pendingTimebase?.relative == true ? "Enable" : "Disable")) { applyTimebase() }
         } message: {
             Text(LocalizedStringKey(pendingTimebase?.relative == true ? "Relative timebase: changing the project BPM adjusts item duration and playback speed to follow the tempo. With Free timebase, changing the project BPM preserves item duration and playback speed. Tempo markers with their own timebase keep their individual settings." : "Free timebase: changing the project BPM changes the grid without stretching or shortening items. Item duration and playback speed are preserved. Tempo markers with their own timebase keep their individual settings."))
+        }
+    }
+
+    private func nativeStrip(live: AnyView?) -> some View {
+        HStack(spacing: 10) {
+            desktopStripGroup { mixerButtons.fixedSize() }
+            desktopStripGroup { timelineToggles.fixedSize() }
+            desktopStripGroup { editTools }
+            if let live { live.fixedSize() }
+            Spacer(minLength: 4)
+            zoom(true).fixedSize(horizontal: true, vertical: false)
         }
     }
 
@@ -1156,7 +1157,7 @@ struct TimelineEditingBar<Zoom: View>: View {
         let relative = show.current?.projectTime.timebase == .relative
         return HStack(spacing: TransportControlMetrics.groupSpacing) {
             Button { snapEnabled.toggle() } label: {
-                timelineLabel("Snap", icon: "magnet", active: snapEnabled, width: 66)
+                timelineLabel(icon: "magnet", active: snapEnabled)
             }.buttonStyle(TimelineSwitchStyle())
                 .accessibilityLabel("Timeline snapping").accessibilityIdentifier("timeline-snap")
                 .accessibilityValue(snapEnabled ? "On" : "Off")
@@ -1167,7 +1168,7 @@ struct TimelineEditingBar<Zoom: View>: View {
                     confirmingTimebase = true
                 }
             } label: {
-                timelineLabel("Timebase", icon: "itemTimebase", active: relative && !movingRegion, width: 88)
+                timelineLabel(icon: "itemTimebase", active: relative && !movingRegion)
             }.buttonStyle(TimelineSwitchStyle())
                 .accessibilityLabel("Relative timebase").accessibilityIdentifier("timeline-timebase")
                 .accessibilityValue(relative && !movingRegion ? "Enabled" : "Disabled")
@@ -1175,13 +1176,10 @@ struct TimelineEditingBar<Zoom: View>: View {
         }
     }
 
-    private func timelineLabel(_ title: String, icon: String, active: Bool, width: CGFloat) -> some View {
-        HStack(spacing: 5) {
-            TransportControlIcon(name: icon, size: 15)
-                .foregroundStyle(active ? JarasTheme.green : JarasTheme.yellow)
-            Text(verbatim: title).font(.jarasSystem(size: 12, weight: .semibold))
-                .foregroundStyle(JarasTheme.text)
-        }.frame(width: width, height: TimelineEditingBarMetrics.controlHeight).contentShape(Rectangle())
+    private func timelineLabel(icon: String, active: Bool) -> some View {
+        TransportControlIcon(name: icon, size: 17)
+            .foregroundStyle(active ? JarasTheme.green : JarasTheme.yellow)
+            .frame(width: 34, height: TimelineEditingBarMetrics.controlHeight).contentShape(Rectangle())
     }
 
     private func applyTimebase() {

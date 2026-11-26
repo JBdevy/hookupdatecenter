@@ -526,7 +526,9 @@ struct WorkspaceLayoutTests {
                 w.controls.at("resolume")->getRight() < w.controls.at("tp1")->getX() &&
                 w.controls.at("remote")->getRight() < w.controls.at("trackHeightFit")->getX() &&
                 w.timelineEditingBounds.contains(w.timelineTimebase.getBounds()) &&
-                w.timelineSnap.getButtonText() == "Snap" && w.timelineTimebase.getButtonText() == "Timebase" &&
+                w.timelineSnap.getButtonText().isEmpty() && w.timelineTimebase.getButtonText().isEmpty() &&
+                w.timelineSnap.getProperties()["icon"].toString() == "magnet" &&
+                w.timelineTimebase.getProperties()["icon"].toString() == "itemTimebase" &&
                 w.controls.at("editMode")->getButtonText() == "Edit",
                 "Keep the editing groups in order across the full width of the strip");
         require(
@@ -649,6 +651,11 @@ struct WorkspaceLayoutTests {
         require(minimum > 900 && minimum < 1600,"Native window minimum must follow the toolbar width");
         for (const int width : {minimum, minimum + 12, 1600}) {
             host.setBoundsConstrained(host.getBounds().withWidth(width));
+            require(w.timelineLock.isVisible() && w.timelineEditingBounds.contains(w.timelineLock.getBounds()) &&
+                    w.timelineLock.getRight() < w.controls["railNotice"]->getX() &&
+                    w.timelineLock.getHeight() == w.controls["railNotice"]->getHeight() &&
+                    w.timelineLock.getButtonText() == "Lock" && (bool)w.timelineLock.getProperties()["selectorChevron"],
+                    "Lock must be a labeled selector immediately left of Messages");
             require(w.controls["railClock"]->isVisible() &&
                     w.controls["railClock"]->getX() > w.controls["railNotice"]->getRight() &&
                     w.controls["railClock"]->getRight() < w.controls["tp1"]->getX(),
@@ -720,10 +727,9 @@ struct WorkspaceLayoutTests {
         require(w.controls["proClock"]->getProperties()["icon"].toString() == "timer" &&
                 w.controls["proTool"]->getProperties()["icon"].toString() == "cursorarrow",
                 "Clock Position and the cursor selector must use the shared desktop symbols");
-        require(w.trackVisibilityButton.getRight() < w.timelineLock.getX() &&
-                w.timelineLock.getRight() < w.addTrack.getX() &&
+        require(w.trackVisibilityButton.getRight() < w.addTrack.getX() &&
                 w.addTrack.getRight() + 5 == w.tracksViewport.getRight(),
-                "The eye, lock and Add controls must align at the right of the Track Mixer");
+                "The eye and Add controls must align at the right of the Track Mixer");
         require(w.controls["editMode"]->getProperties()["icon"].toString() == "editCursor" &&
                 w.controls["editMode"]->getRight() == w.controls["editSeekMode"]->getX() &&
                 w.controls["editSeekMode"]->getRight() + 6 == w.controls["proTool"]->getX(),
