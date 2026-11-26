@@ -150,8 +150,7 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
         } else if (const auto *song = session.song()) {
             const HozMixerTrackFilter filter(*song, mixerView);
             for (const auto &track : song->tracks)
-                if ((jaras::fixedTrackName(track.role).empty() || track.role.id == "generatedClick")&&
-                    (!isTrackVisible||isTrackVisible(track.id)) && filter.includes(track))
+                if (filter.includes(track) && (!isTrackVisible || isTrackVisible(track.id)))
                     wanted.push_back(track.id);
         }
         if (wanted != ids) {

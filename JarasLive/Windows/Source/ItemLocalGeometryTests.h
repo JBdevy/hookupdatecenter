@@ -66,6 +66,7 @@ template <typename Test> void registerTests(const File &directory, Test &test) {
     });
     test("Workspace paints local item heights and marquee selects the lower part of an isolated item", [&] {
         auto project=floatingControlTests::fixture(); project.songs[0].tracks[0]=track();
+        project.songs[0].tracks[0].stackedStems=false;
         Session session;session.inspection=true;session.audio.prepareOffline(48000);
         session.restoreSnapshot(ProjectCodec::encode(project));session.audio.setOffline(true);
         Auth auth;Lighting lighting(session);

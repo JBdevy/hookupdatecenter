@@ -11516,7 +11516,7 @@ bool Workspace::selectAllTracks(bool footer) {
         const HozMixerTrackFilter filter(*song, footer ? footerMixer->viewOptions() : HozMixerView{});
         for (const auto &track : song->tracks)
             if (!jaras::isTeleprompterRole(track.role) && track.role.id != "video" && track.role.id != "timecode" && track.role.id != "chords" &&
-                (footer ? jaras::fixedTrackName(track.role).empty() && filter.includes(track) &&
+                (footer ? filter.includes(track) &&
                     trackVisibility.visible(*song, TrackVisibility::Panel::barMixer, track.id)
                     : !rowHidden(int(trackTree::index(*song, track.id)))))
                 selectedTracks.insert(track.id);

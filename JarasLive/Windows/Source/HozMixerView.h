@@ -73,6 +73,7 @@ public:
     }
 
     bool includes(const jaras::Track &track) const {
+        if (!jaras::fixedTrackName(track.role).empty() && track.role.id != "generatedClick") return false;
         if (scope != HozMixerScope::all && (groups.count(track.id) != 0) != (scope == HozMixerScope::groups))
             return false;
         return signals == 0

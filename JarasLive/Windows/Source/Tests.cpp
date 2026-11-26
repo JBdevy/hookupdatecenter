@@ -321,7 +321,7 @@ int runTests(const File &directory) {
         session.configureEffects(id,settings);
         int opens=0;String error;
         MixerPanel mixer(session,[&](ID,String){++opens;},[](ID,ModifierKeys){},[&](String value){error=value;},[](ID,bool){},[](ID){return false;},[](ID,Point<int>){});
-        mixer.setSize(600,350);
+        mixer.setSize(600,400);
         auto *strip=uiFeatureTests::find(mixer,"mixerStrip:"+text(id));expect(strip,"Mixer strip missing");
         auto click=[&](int modifiers){Point<float> at{20,20};auto event=MouseEvent(Desktop::getInstance().getMainMouseSource(),at,ModifierKeys(modifiers|ModifierKeys::leftButtonModifier),1,0,0,0,0,strip,strip,Time::getCurrentTime(),at,Time::getCurrentTime(),1,false);strip->mouseDown(event);strip->mouseUp(event);};
         click(ModifierKeys::shiftModifier);
@@ -2042,6 +2042,7 @@ int runTests(const File &directory) {
     test("Item header controls remain disjoint and fades stay below the header", [&] {
         jaras::Track track; track.role.id="other";
         jaras::AudioClip clip;clip.id="clip";clip.duration=10;clip.fadeIn=2;clip.fadeOut=3;
+        clip.audioFile=jaras::AudioFile{"clip.wav",{}};
         ItemHeader header({-80,100,400,60},600,track,clip);
         expect(std::abs(header.gainRect.getX() - 2 * ItemHeader::headerScale) < .001f &&
                header.gainLabel.isEmpty() && header.panLabel.isEmpty(),
@@ -2799,7 +2800,9 @@ int runTests(const File &directory) {
         jaras::AudioClip heightClip;heightClip.id=uuid();heightClip.name="Height";heightClip.startTime=2;heightClip.duration=4;
         song.tracks.front().clips.push_back(heightClip);song.tracks.front().color=0xdd3030;
         Session session;session.inspection=true;session.audio.prepareOffline(48000);session.restoreSnapshot(ProjectCodec::encode(project));session.audio.setOffline(true);
-        Auth auth;Lighting lighting(session);Workspace workspace(session,auth,lighting,false,directory.getNonexistentChildFile("height-drag",".json"));workspace.setSize(1366,768);workspace.setVisible(true);
+        const auto preferences=directory.getNonexistentChildFile("height-drag",".json");
+        expect(Appearance(preferences).set("jaras.timeline.invertWaveformColors",false).wasOk(),"Set solid item color for resize fixture");
+        Auth auth;Lighting lighting(session);Workspace workspace(session,auth,lighting,false,preferences);workspace.setSize(1366,768);workspace.setVisible(true);
         auto *handle=uiFeatureTests::find(workspace,"trackHeightHandle");expect(handle!=nullptr,"Height input exists");
         auto *height = dynamic_cast<Slider *>(uiFeatureTests::find(workspace, "track-height-slider"));
         auto *zoom = dynamic_cast<Slider *>(uiFeatureTests::find(workspace, "timeline-zoom-slider"));
@@ -3058,7 +3061,9 @@ int runTests(const File &directory) {
         auto &track=song.tracks.front();track.role.id="other";track.color=0xdd3030;track.heightScale=1;track.mute=false;track.clips.clear();
         jaras::AudioClip clip;clip.id=uuid();clip.name="Live item";clip.startTime=2;clip.duration=4;track.clips.push_back(clip);
         Session session;session.inspection=true;session.audio.prepareOffline(48000);session.restoreSnapshot(ProjectCodec::encode(project));session.audio.setOffline(true);
-        Auth auth;Lighting lighting(session);Workspace workspace(session,auth,lighting,false,directory.getNonexistentChildFile("drag-visual",".json"));workspace.setSize(1366,768);
+        const auto preferences=directory.getNonexistentChildFile("drag-visual",".json");
+        expect(Appearance(preferences).set("jaras.timeline.invertWaveformColors",false).wasOk(),"Set solid item color for drag fixture");
+        Auth auth;Lighting lighting(session);Workspace workspace(session,auth,lighting,false,preferences);workspace.setSize(1366,768);
         auto *canvas=uiFeatureTests::find(workspace,"timelineCanvas");expect(canvas!=nullptr,"Canvas exists");
         auto event=[&](Point<float> at,Point<float> anchor,int mods,bool dragged){return MouseEvent(Desktop::getInstance().getMainMouseSource(),at,ModifierKeys(mods),1,0,0,0,0,canvas,canvas,Time::getCurrentTime(),anchor,Time::getCurrentTime(),1,dragged);};
         const int left=ModifierKeys::leftButtonModifier|ModifierKeys::shiftModifier;

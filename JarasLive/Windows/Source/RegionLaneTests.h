@@ -329,7 +329,11 @@ template <typename Test> void registerTests(const File &directory, Test &test) {
         setlist.selectedId.reset();session.configureSetlist(setlist);checkHeaders(rendered());
     });
     test("Dragging overlapping regions updates header and track geometry live and commits one Undo step", [&] {
+        constexpr int regionRowHeight=24;
+        constexpr int singleLaneHeader=80;
+        constexpr int doubleLaneHeader=singleLaneHeader+regionRowHeight;
         auto project=fixture();
+        project.songs[0].tracks[1].stackedStems=false;
         auto fixed=project.songs[0].tracks[0].clips[0];
         fixed.id="collision";fixed.startTime=12;
         project.songs[0].tracks[1].clips.push_back(fixed);
@@ -364,7 +368,7 @@ template <typename Test> void registerTests(const File &directory, Test &test) {
             }
             return diagnostics;
         };
-        const auto before=checkGeometry(80,1);
+        const auto before=checkGeometry(singleLaneHeader,1);
         const auto firstItemBefore=get(findEntry(get(before,"visibleItems"),"item-first"),"bounds");
         const auto secondItemBefore=get(findEntry(get(before,"visibleItems"),"item-second"),"bounds");
         const auto belowBefore=get(findEntry(get(before,"visibleItems"),"item-below"),"bounds");
@@ -377,19 +381,19 @@ template <typename Test> void registerTests(const File &directory, Test &test) {
         const int modifiers=ModifierKeys::leftButtonModifier|ModifierKeys::shiftModifier;
         canvas->mouseDown(mouse(*canvas,origin,origin,modifiers & ~ModifierKeys::shiftModifier));
         canvas->mouseDrag(mouse(*canvas,destination,origin,modifiers,true));
-        const auto preview=checkGeometry(96,2);
+        const auto preview=checkGeometry(doubleLaneHeader,2);
         screenshot("region-overlap-preview.png");
         const auto previewRegion=findEntry(get(preview,"regions"),"second");
         require((int)get(previewRegion,"lane")==1 && closeEnough((double)get(previewRegion,"start"),10) && closeEnough((double)get(previewRegion,"end"),25),
                 "Dragged region did not render in its overlapping lane before mouse release");
         require(str(previewRegion,"identifier")=="0st  02","Dragging a region changed its persisted header number");
         require(closeEnough((double)get(get(findEntry(get(preview,"visibleItems"),"item-first"),"bounds"),"y"),
-                     (double)get(firstItemBefore,"y")+16),"Existing item did not move down with expanded header");
+                     (double)get(firstItemBefore,"y")+regionRowHeight),"Existing item did not move down with expanded header");
         require(closeEnough((double)get(get(findEntry(get(preview,"visibleItems"),"item-second"),"bounds"),"x"),
                      (double)get(secondItemBefore,"x")-5*zoom),"Region-owned item did not move in live preview");
         require((int)get(findEntry(get(preview,"visibleItems"),"collision"),"lane")==1 &&
                 (double)get(get(findEntry(get(preview,"visibleItems"),"item-below"),"bounds"),"y")>
-                (double)get(belowBefore,"y")+16,"Overlapping items did not create a live lane and move following tracks down");
+                (double)get(belowBefore,"y")+regionRowHeight,"Overlapping items did not create a live lane and move following tracks down");
         require(closeEnough(part(*session.song(),"second").startTime,15) && closeEnough(clip(*session.song(),"item-second").startTime,16),
                 "Drag preview prematurely changed the session");
         struct CommitLayoutObserver : ComponentListener {
@@ -397,19 +401,19 @@ template <typename Test> void registerTests(const File &directory, Test &test) {
             void componentMovedOrResized(Component &,bool,bool) override { inspect(); }
         } observer;
         bool collapsed=false;
-        observer.inspect=[&]{ if ((int)get(state(),"headerHeight")<96) collapsed=true; };
+        observer.inspect=[&]{ if ((int)get(state(),"headerHeight")<doubleLaneHeader) collapsed=true; };
         for(auto *child:workspace.getChildren()) child->addComponentListener(&observer);
         canvas->mouseUp(mouse(*canvas,destination,origin,ModifierKeys::shiftModifier,true));
         for(auto *child:workspace.getChildren()) child->removeComponentListener(&observer);
         require(!collapsed,"Release briefly collapsed the preview lane before committing the region");
-        checkGeometry(96,2);
+        checkGeometry(doubleLaneHeader,2);
         screenshot("region-overlap-committed.png");
         require(closeEnough(part(*session.song(),"second").startTime,10) && closeEnough(clip(*session.song(),"item-second").startTime,11) &&
                 closeEnough(marker(*session.song(),"cue").position,12),"Release did not commit the displayed region and owned contents");
-        session.undo();checkGeometry(80,1);
+        session.undo();checkGeometry(singleLaneHeader,1);
         require(closeEnough(part(*session.song(),"second").startTime,15) && closeEnough(clip(*session.song(),"item-second").startTime,16) &&
                 closeEnough(marker(*session.song(),"cue").position,17),"One Undo did not restore region, media and marker together");
-        session.redo();checkGeometry(96,2);
+        session.redo();checkGeometry(doubleLaneHeader,2);
         require(closeEnough(part(*session.song(),"second").startTime,10) && closeEnough(clip(*session.song(),"item-second").startTime,11),
                 "One Redo did not restore the complete overlapping move");
 
@@ -425,11 +429,12 @@ template <typename Test> void registerTests(const File &directory, Test &test) {
                 "Click in second header lane selected the overlapping first region");
         // Marker, tempo and time-ruler hit targets all move down with the extra region lane.
         auto xAt=[&](double seconds) {return (float)(seconds*zoom-(double)get(state(),"horizontal"));};
-        click({xAt(12)+4,37});
+        const auto rulerTop=(float)(double)get(after,"rulerTop");
+        click({xAt(12)+4,rulerTop-12});
         require(closeEnough(session.transport().editPosition,12),"Ordinary marker hit target did not move below the region lanes");
-        click({xAt(6)+4,53});
+        click({xAt(6)+4,rulerTop+8});
         require(closeEnough(session.transport().editPosition,6),"Tempo marker hit target did not follow the expanded header");
-        click({xAt(4.2),76});
+        click({xAt(4.2),rulerTop+24});
         require(closeEnough(session.transport().editPosition,4.2),"Time ruler did not seek at its shifted vertical position");
     });
 }

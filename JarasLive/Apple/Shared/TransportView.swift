@@ -1011,15 +1011,6 @@ private struct DesktopTimelineEditingControls: View {
 }
 #endif
 
-enum TimelineEditingBarMetrics {
-    static let controlHeight: CGFloat = 28
-    static let height: CGFloat = 36
-    static let sliderWidth: CGFloat = 96
-    static let groupSpacing: CGFloat = 14
-    static let nativeMemoryButtonWidth: CGFloat = 38
-    static let minimumCenteredWidth: CGFloat = 768
-}
-
 struct TimelineEditingBar<Zoom: View>: View {
     let show: ShowController
     let editKey: String

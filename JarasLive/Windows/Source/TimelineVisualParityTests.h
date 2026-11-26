@@ -219,7 +219,7 @@ template <typename Test> void registerTests(const File &directory, Test &test) {
                     Time::getCurrentTime(),start,Time::getCurrentTime(),1,dragged);
             };
             canvas->createComponentSnapshot(canvas->getLocalBounds());
-            Point<float> head{(float)(marker.position*zoom-offset+2),(float)(num(state,"rulerTop")-(tempo ? 8 : 24))};
+            Point<float> head{(float)(marker.position*zoom-offset+2),(float)(num(state,"rulerTop")+(tempo ? 8 : -12))};
             auto target=head+Point<float>((float)((15.41-marker.position)*zoom),0);
             canvas->mouseDown(event(head,head,true,false));canvas->mouseDrag(event(target,head,true,true));canvas->mouseUp(event(target,head,false,true));
             auto found=std::find_if(session.song()->markers->begin(),session.song()->markers->end(),[&](const auto &value){return value.id==marker.id;});
@@ -361,6 +361,7 @@ template <typename Test> void registerTests(const File &directory, Test &test) {
         auto project=floatingControlTests::fixture();
         jaras::AudioClip clip; clip.id="fade-visual-item"; clip.name="Fade preview";
         clip.startTime=2; clip.duration=18; clip.fadeIn=1; clip.fadeOut=1;
+        clip.audioFile=jaras::AudioFile{"fade-preview.wav",{}};
         project.songs[0].tracks[0].clips={clip};
         Session session; session.inspection=true; session.audio.prepareOffline(48000);
         session.restoreSnapshot(ProjectCodec::encode(project)); session.audio.setOffline(true);

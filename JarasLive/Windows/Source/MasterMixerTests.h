@@ -63,6 +63,7 @@ template<typename Test> void registerTests(const File &directory,Test &test) {
         require(control("mixerMono")->getProperties()["icon"].toString()=="mono","Master mono must use the icon");
         for(const auto &t:session.song()->tracks)require(t.volume==1&&t.pan==0&&!t.mute&&!t.solo,"Master controls changed an ordinary track");
         auto effects=object();put(effects,"inserted",Array<var>{"EQ","Compressor"});put(effects,"eqEnabled",true);put(effects,"compressorEnabled",true);
+        mixer.setSize(640,400);
         session.configureEffects(ID{},effects);mixer.refresh();
         auto event=[&](Point<float> at,Point<float> anchor,int modifiers,bool dragged=false){return MouseEvent(Desktop::getInstance().getMainMouseSource(),at,ModifierKeys(modifiers),1,0,0,0,0,master,master,Time::getCurrentTime(),anchor,Time::getCurrentTime(),1,dragged);};
         const Point<float> name{master->getWidth()*.5f,(float)master->getHeight()-12};
@@ -213,6 +214,7 @@ template<typename Test> void registerTests(const File &directory,Test &test) {
         require(JSON::toString(session.snapshot())==original&&fader->getValue()==1&&pan->getValue()==0,
                 "Wheel changed fader, pan or project state");
         auto effects=object();put(effects,"inserted",Array<var>{"EQ","Compressor","Limiter","Delay","Reverb"});
+        mixer.setSize(640,400);
         session.configureEffects(song.tracks.front().id,effects);session.configureEffects({},effects);mixer.refresh();
         const auto slotClick=[&](Component &strip) {
             // Click the slot label. The leading portion belongs to bypass.
