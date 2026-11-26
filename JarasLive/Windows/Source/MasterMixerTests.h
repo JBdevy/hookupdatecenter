@@ -318,9 +318,11 @@ inline void MasterMixerTests::run(const File &directory) {
         };
         for(bool right:{false,true}) {
             auto &panel=*workspace.footerMixer;panel.setMasterRight(right);
-            int previousFader=0; bool previousExpanded=false;
-            for(int height:{232,240,255,256,300,480,724}) {
+            std::array<int,2> previousFader{};
+            bool previousExpanded=false;
+            for(int height:{232,240,255,256,300,MixerPanel::minimumHeight(),304,325,326,375,376,400,480,724}) {
                 panel.setSize(640,height);
+                int index=0;
                 for(auto *strip:{panel.master.get(),panel.strips[0]}) {
                     const auto geometry=strip->layout();
                     require(strip->getLocalBounds().contains(geometry.name),"Compact mixer clipped the track name");
@@ -339,17 +341,20 @@ inline void MasterMixerTests::run(const File &directory) {
                     for(const auto *value:{"-30.00","+24.00"})
                         require(GlyphArrangement::getStringWidth(theme::semiboldFont(8),value)+4.f<=strip->peak->getWidth(),
                                 "Peak readout clips its two-decimal value at the minimum text size");
-                    require(strip->fader.getHeight()>=115,"Compact mixer sacrificed the fader to keep FX slots");
-                    const bool expanded = strip->getHeight() > 253;
-                    if(!expanded)require(geometry.slots.isEmpty()&&strip->visibleSlots()==0&&strip->slotAt({20,20})<0,
-                        "Compact mixer still paints or hit-tests hidden FX slots");
-                    else require(!geometry.slots.isEmpty()&&strip->slotAt({20,geometry.slots.getY()})==0,
-                        "Expanded mixer failed to restore FX slots");
+                    const int faderHeight=strip->fader.getHeight();
+                    require(faderHeight>0 && faderHeight>=previousFader[index],
+                            "Growing the mixer shortened a fader");
+                    if (height<=MixerPanel::minimumHeight())
+                        require(geometry.slots.isEmpty()&&strip->visibleSlots()==0&&strip->slotAt({20,20})<0,
+                                "Compact mixer still paints or hit-tests hidden FX slots");
+                    if (height>=400)
+                        require(faderHeight>=115&&!geometry.slots.isEmpty()&&strip->slotAt({20,geometry.slots.getY()})==0,
+                                "Expanded mixer failed to restore FX slots while keeping a usable fader");
+                    if (!geometry.slots.isEmpty() && previousExpanded)
+                        require(faderHeight==previousFader[index],"Expanded mixer stretched controls instead of revealing slots");
+                    previousFader[index++]=faderHeight;
                 }
-                const int currentFader=panel.strips[0]->fader.getHeight();
-                const bool expanded = panel.strips[0]->getHeight() > 253;
-                if(expanded && previousExpanded)require(currentFader==previousFader,"Expanded mixer stretched controls instead of revealing slots");
-                previousFader=currentFader; previousExpanded=expanded;
+                previousExpanded=!panel.strips[0]->layout().slots.isEmpty();
             }
         }
         workspace.resized();

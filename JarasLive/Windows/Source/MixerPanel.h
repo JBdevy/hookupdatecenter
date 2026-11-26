@@ -1434,17 +1434,15 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
                     {3,13+areas.plugins,std::max(0,getWidth()-6),shows(HozMixerView::fx) ? areas.divider : 0},
                     {3,routingY,std::max(0,getWidth()-6),header>=19?19:0},controlsY,controls};
             };
-            // Match FooterMixerStrip: the docked panel hides FX at 255 pt and below.
-            // The 22 pt allowance accounts for the Mac host's inset/chrome beyond
-            // this strip's bounds; growth above the threshold belongs to FX slots.
-            if (!mixer.focusedTrack && height <= 253) {
-                const int controlsY = 4 + vuHeight;
-                const int controls = std::min(205, std::max(0, height - controlsY - 4 - 40));
-                return sections(0, controlsY + controls + 4, controlsY, controls);
-            }
             const int inner=std::max(0,height-22-vuHeight);
             const int controls=std::min(205,std::max(100,inner-40));
             const int slots=std::max(0,inner-controls-40);
+            // Grow the controls until the strip has enough room for a full FX row.
+            if (!mixer.focusedTrack && slots < MixerRoutingRows::rowHeight) {
+                const int controlsY = 4 + vuHeight;
+                const int compactControls = std::min(205, std::max(0, height - controlsY - 4 - 40));
+                return sections(0, controlsY + compactControls + 4, controlsY, compactControls);
+            }
             return sections(slots,13+slots+vuHeight+controls+4,13+slots+vuHeight,controls);
         }
         int totalSlots() const {return std::max(3,list(get(slotSettings(),"inserted")).size()+1);}
