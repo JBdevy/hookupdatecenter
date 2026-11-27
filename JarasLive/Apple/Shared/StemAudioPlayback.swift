@@ -2159,13 +2159,18 @@ struct TimecodePlaybackSpan {
         var preferredRate: Double?
         #if os(macOS)
         if bufferedOutput != nil {
-            let media = project.songs.flatMap(\.tracks).flatMap(\.clips).compactMap { clip -> String? in
-                guard !clip.isImage, let path = clip.audioFile?.path, !unreadableAudioPaths.contains(path) else { return nil }
-                return path
+            var uses: [String: Int] = [:]
+            for song in project.songs {
+                for track in song.tracks {
+                    for clip in track.clips where !clip.isImage {
+                        guard let path = clip.audioFile?.path, !unreadableAudioPaths.contains(path) else { continue }
+                        uses[path, default: 0] += 1
+                    }
+                }
             }
-            if media.count >= 256 {
-                preferredRate = try await AudioFileRead.prepare { cancelled in
-                    let uses = Dictionary(grouping: media, by: { $0 }).mapValues(\.count)
+            let mediaCount = uses.values.reduce(0, +)
+            if mediaCount >= 256 {
+                preferredRate = try await AudioFileRead.prepare { [uses] cancelled in
                     var counts: [Double: Int] = [:]
                     for (path, count) in uses {
                         if cancelled() { throw CancellationError() }
@@ -2180,7 +2185,7 @@ struct TimecodePlaybackSpan {
                     // Mixed full-band material must never inherit a speech-
                     // quality clock from a majority of low-rate source files.
                     guard let choice = counts.max(by: { $0.value < $1.value }), choice.key >= 44100,
-                          choice.value * 4 >= media.count * 3 else { return nil }
+                          choice.value * 4 >= mediaCount * 3 else { return nil }
                     return choice.key
                 }
             }

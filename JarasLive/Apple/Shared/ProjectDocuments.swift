@@ -1173,23 +1173,29 @@ extension UTType {
         let missing = await Task.detached(priority: .userInitiated) {
             Set(ProjectAudioRecovery.missingPaths(in: project, directory: directory)).union(unreadableAudioPaths)
         }.value
-        let files = project.songs.flatMap(\.tracks).filter { $0.kind == .standard }.flatMap { track in
-            track.clips.compactMap { clip -> URL? in
-                guard !clip.isImage, let file = clip.audioFile ?? track.audioFile, !missing.contains(file.path) else { return nil }
-                return directory.appendingPathComponent(file.path)
+        var paths = Set<String>()
+        #if os(macOS)
+        var movies = Set<String>()
+        #endif
+        for song in project.songs {
+            for track in song.tracks {
+                for clip in track.clips where !clip.isImage {
+                    guard let file = clip.audioFile ?? track.audioFile, !missing.contains(file.path) else { continue }
+                    if track.kind == .standard { paths.insert(file.path) }
+                    #if os(macOS)
+                    if clip.isProjectionMedia, clip.audioFile != nil { movies.insert(file.path) }
+                    #endif
+                }
             }
         }
+        let files = paths.map { directory.appendingPathComponent($0) }
         #if os(macOS)
         // Resolve movie audio before the workspace can start playback. A
         // render deadline must never wait for AVAssetReader container decoding.
-        let movies = Set(project.songs.flatMap(\.tracks).flatMap(\.clips).compactMap { clip -> String? in
-            guard clip.isProjectionMedia, !clip.isImage, let path = clip.audioFile?.path, !missing.contains(path) else { return nil }
-            return path
-        })
         let opening = openingCancellation
         if !movies.isEmpty {
             status = "Preparing audio…"
-            await Task.detached(priority: .userInitiated) {
+            await Task.detached(priority: .userInitiated) { [movies] in
                 for path in movies {
                     guard opening?.cancelled != true, !Task.isCancelled else { return }
                     _ = try? AudioFileRead.openMedia(directory.appendingPathComponent(path), cancelled: { opening?.cancelled == true })
