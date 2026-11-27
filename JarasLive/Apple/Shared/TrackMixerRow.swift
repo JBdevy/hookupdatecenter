@@ -5132,10 +5132,13 @@ private struct FooterSlotSectionsNative: NSViewRepresentable {
 }
 private final class FooterSlotSectionsView: NSView {
     private let plugins = FooterEffectSlotsViewport()
-    private let outputs = FooterEffectSlotsViewport()
-    private let sendHost = NSHostingView(rootView: AnyView(EmptyView()))
+    private var outputs: FooterEffectSlotsViewport?
+    private var sendHost: NSHostingView<AnyView>?
+    private var bypassHost: NSHostingView<AnyView>?
+    private var pendingOutputs: AnyView?
+    private var pendingHeader: AnyView?
+    private var pendingBypass: AnyView?
     private var hasHeader = false
-    private let bypassHost = NSHostingView(rootView: AnyView(EmptyView()))
     private var main = false
     private var outputsHeight: CGFloat = 0
     private var separatedRouting = false
@@ -5144,45 +5147,61 @@ private final class FooterSlotSectionsView: NSView {
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true; layer?.masksToBounds = true; autoresizesSubviews = false
-        addSubview(plugins); addSubview(outputs)
-        for host in [bypassHost, sendHost] {
-            if #available(macOS 13, *) { host.sizingOptions = [] }
-            if #available(macOS 13.3, *) { host.safeAreaRegions = [] }
-            addSubview(host)
-        }
+        addSubview(plugins)
     }
     required init?(coder: NSCoder) { fatalError() }
     func update(plugins: AnyView, pluginsHeight: CGFloat, outputs: AnyView, outputsHeight: CGFloat,
                 bypass: AnyView, main: Bool, header: AnyView?, separatedRouting: Bool) {
         hasHeader = header != nil
-        sendHost.rootView = header ?? AnyView(EmptyView())
-        self.main = main
-        bypassHost.rootView = bypass
-        self.outputsHeight = outputsHeight
-        self.separatedRouting = separatedRouting
+        pendingHeader = header; pendingBypass = bypass
+        pendingOutputs = outputsHeight > 0 ? outputs : nil
+        self.main = main; self.outputsHeight = outputsHeight; self.separatedRouting = separatedRouting
         self.plugins.update(content: plugins, height: pluginsHeight)
-        self.outputs.update(content: outputs, height: outputsHeight)
         needsLayout = true
+    }
+    private func place(_ host: NSHostingView<AnyView>?, content: AnyView?, frame: NSRect) -> NSHostingView<AnyView>? {
+        guard frame.height > 0 && frame.width > 0 else {
+            if let host, !host.isHidden { host.isHidden = true }
+            return host
+        }
+        if let host {
+            if let content { host.rootView = content }
+            if host.frame != frame { host.frame = frame }
+            if host.isHidden { host.isHidden = false }
+            return host
+        }
+        guard let content else { return nil }
+        let view = NSHostingView(rootView: content)
+        if #available(macOS 13, *) { view.sizingOptions = [] }
+        if #available(macOS 13.3, *) { view.safeAreaRegions = [] }
+        view.frame = frame; addSubview(view)
+        return view
     }
     override func layout() {
         super.layout()
         let sections = FooterSlotSectionsLayout(height: bounds.height, hasRouting: outputsHeight > 0 || hasHeader,
                                                 main: main, separatedRouting: separatedRouting)
         let pluginsFrame = NSRect(x: 0, y: 0, width: bounds.width, height: sections.pluginsHeight)
+        if plugins.frame != pluginsFrame { plugins.frame = pluginsFrame }
         let routingY = bounds.height - sections.outputsHeight
         let headerHeight = hasHeader ? min(21, sections.outputsHeight) : 0
-        if sendHost.isHidden != (headerHeight < 19) { sendHost.isHidden = headerHeight < 19 }
-        let headerFrame = NSRect(x: 0, y: routingY, width: bounds.width, height: min(19, headerHeight))
-        if sendHost.frame != headerFrame { sendHost.frame = headerFrame }
+        let headerFrame = NSRect(x: 0, y: routingY, width: bounds.width, height: headerHeight >= 19 ? 19 : 0)
+        sendHost = place(sendHost, content: pendingHeader, frame: headerFrame)
+        if sendHost?.isHidden == false { pendingHeader = nil }
+        let middle = NSRect(x: 0, y: sections.pluginsHeight, width: bounds.width, height: sections.dividerHeight)
+        bypassHost = place(bypassHost, content: pendingBypass, frame: middle)
+        if bypassHost?.isHidden == false { pendingBypass = nil }
+
         let outputsFrame = NSRect(x: 0, y: routingY + headerHeight, width: bounds.width,
                                   height: max(0, sections.outputsHeight - headerHeight))
-        if plugins.frame != pluginsFrame { plugins.frame = pluginsFrame }
-        if outputs.frame != outputsFrame { outputs.frame = outputsFrame }
-        let hideOutputs = outputsHeight <= 0 || outputsFrame.height <= 0
-        if outputs.isHidden != hideOutputs { outputs.isHidden = hideOutputs }
-        if bypassHost.isHidden != (sections.dividerHeight <= 0) { bypassHost.isHidden = sections.dividerHeight <= 0 }
-        let middle = NSRect(x: 0, y: sections.pluginsHeight, width: bounds.width, height: sections.dividerHeight)
-        if bypassHost.frame != middle { bypassHost.frame = middle }
+        if outputsHeight > 0 && !outputsFrame.isEmpty {
+            if outputs == nil { let view = FooterEffectSlotsViewport(); addSubview(view); outputs = view }
+            if let outputs {
+                if let pendingOutputs { outputs.update(content: pendingOutputs, height: outputsHeight); self.pendingOutputs = nil }
+                if outputs.frame != outputsFrame { outputs.frame = outputsFrame }
+                if outputs.isHidden { outputs.isHidden = false }
+            }
+        } else if let outputs, !outputs.isHidden { outputs.isHidden = true }
     }
 }
 private final class FooterMixerScrollView: NSView {
