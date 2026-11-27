@@ -94,6 +94,9 @@ import Foundation
         try core.addRecordedClip(JSONEncoder().encode(clip), track: track.uuidString)
         waveforms[clip.id] = ClipWaveform(clip)
     }
+    func setTimelineLocks(locked: Bool, options: Int) throws {
+        try core.setTimelineLocks(locked, options: Int32(options))
+    }
     func editMasterColor(_ color: UInt32) throws { try core.editMasterColor(color) }
     func setTrackMixerComponents(_ song: UUID, masks: [UUID: Int]) throws {
         try core.setTrackMixerComponents(song.uuidString, masks: Dictionary(uniqueKeysWithValues: masks.map {

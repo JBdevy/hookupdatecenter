@@ -4370,7 +4370,7 @@ struct FooterHorizontalMixer: View {
         let project = show.snapshot.project
         let visibility = trackVisibility.state(for: project.id)
         let available = show.current?.tracks ?? []
-        let channels = focused ? available.filter { $0.id == show.selectedTrackForActions }
+        let channels = focused ? available.first { $0.id == show.selectedTrackForActions }.map { [$0] } ?? []
             : visibility.visibleTracks(in: available, area: .barMixer).filter { $0.kind == .standard || $0.kind == .click }
         let signals = Set(HozMixerSignal.allCases.enumerated().compactMap { index, signal in signalFilters & (1 << index) == 0 ? nil : signal })
         let displayed = focused ? channels : show.current?.hozMixerTracks(channels, scope: scope, signals: signals) ?? channels
@@ -4380,10 +4380,7 @@ struct FooterHorizontalMixer: View {
         let receivers = available.filter(\.receivesMain).sorted {
             ($0.routing?.mainSendOrder ?? -1) < ($1.routing?.mainSendOrder ?? -1)
         }
-        let trackNumbers = Dictionary(uniqueKeysWithValues: available.enumerated().map { ($0.element.id, $0.offset + 1) })
-        let routingChannels = Dictionary(uniqueKeysWithValues: available.enumerated().map { index, track in
-            (track.id, FooterRoutingChannel(id: track.id, number: index + 1, name: track.name))
-        })
+        let (trackNumbers, routingChannels) = routingLabels(in: available, selected: tracks.first)
         let sendTargets = Dictionary(uniqueKeysWithValues: tracks.compactMap { track -> (UUID, [UUID: FooterRoutingChannel])? in
             let destinations = track.routing?.transmitters.compactMap { $0 } ?? []
             let channels = destinations.compactMap { id in routingChannels[id].map { (id, $0) } }
@@ -4422,6 +4419,21 @@ struct FooterHorizontalMixer: View {
                     #endif
             }
         }
+    }
+
+    private func routingLabels(in available: [Track], selected: Track?) -> ([UUID: Int], [UUID: FooterRoutingChannel]) {
+        // The inspector renders the selected channel and Main. Only their send
+        // destinations need labels, including Main receivers on hidden tracks.
+        let focusedDestinations = focused ? Set((selected?.routing?.transmitters ?? []).compactMap { $0 }) : []
+        var trackNumbers: [UUID: Int] = [:]
+        var routingChannels: [UUID: FooterRoutingChannel] = [:]
+        for (index, track) in available.enumerated() {
+            if !focused || track.id == selected?.id { trackNumbers[track.id] = index + 1 }
+            if !focused || track.receivesMain || focusedDestinations.contains(track.id) {
+                routingChannels[track.id] = FooterRoutingChannel(id: track.id, number: index + 1, name: track.name)
+            }
+        }
+        return (trackNumbers, routingChannels)
     }
 
     private var toolbar: some View {
@@ -4630,7 +4642,7 @@ private final class FooterMixerStripVersions {
     private(set) var masterVersion: UInt64 = 0
     func update(_ state: FooterMixerRenderState, active: Bool, locale: String) -> [UInt64] {
         let commonChanged = previous?.project != state.project || previous?.showsInstrumentIcons != state.showsInstrumentIcons ||
-            previous?.wideTracks != state.wideTracks || previousActive != active || previousLocale != locale
+            previousActive != active || previousLocale != locale
         if previous?.project != state.project || previousActive != active || previousLocale != locale ||
             previous?.masterFX != state.masterFX || previous?.masterVolume != state.masterVolume ||
             previous?.masterPan != state.masterPan || previous?.masterMute != state.masterMute ||
@@ -5633,7 +5645,12 @@ private struct FooterMixerStrip: View, Equatable {
         overrides[id] = updated == 0 ? nil : updated
         if let data = try? JSONEncoder().encode(overrides) { defaults.set(data, forKey: HozMixerComponent.tracksKey) }
     }
-    private var stripWidth: CGFloat {
+    private var stripWidth: CGFloat? {
+        #if os(macOS)
+        // The scroll view already sizes each track host to the channel stride.
+        // Keep its fader and menus mounted when the width button is pressed.
+        if !focused && track != nil { return nil }
+        #endif
         return focused || wide || track == nil ? FooterMixerMetrics.masterWidth : FooterMixerMetrics.width
     }
     @AppStorage(MixerTrackStyle.hozMixerKey) private var trackStyle = MixerTrackStyle.defaultStyle

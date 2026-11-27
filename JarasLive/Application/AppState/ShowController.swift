@@ -263,13 +263,13 @@ public final class ShowTrackSelectionPresentation: ObservableObject {
     private func updateTimelineLocks(locked: Bool, options: Int) {
         let options = TimelineLocks.normalize(options)
         guard canControl(), !finishing, options != timelineLockOptions || locked != timelineMovementLocked else { return }
-        var project = snapshot.project
-        project.timelineLockOptions = options
-        project.timelineMovementLocked = locked
         do {
-            tick(); try executor.applyProjectEdit(project)
-            snapshot = try executor.snapshot()
-            markChanged(refreshAudio: false, preservingMediaStorage: true)
+            try executor.setTimelineLocks(locked: locked, options: options)
+            var next = snapshot
+            next.project.timelineLockOptions = options
+            next.project.timelineMovementLocked = locked
+            snapshot = next
+            markChanged(refreshAudio: false, preservingMediaStorage: true, updateAudio: false, knownChanged: true)
             onProjectEdited()
         } catch { message = error.localizedDescription }
     }
@@ -3262,16 +3262,21 @@ public final class ShowTrackSelectionPresentation: ObservableObject {
         settings.toggleLanes(volume: row.volume, volumeName: "Volume")
         setAutomation(track, settings: settings)
     }
-    private var tracksWithAutomationControls: [Track] {
-        (current?.tracks ?? []).filter { $0.kind == .standard }
+    public var canToggleAllTrackAutomationLanes: Bool {
+        current?.tracks.contains { $0.kind == .standard } == true
     }
-    public var canToggleAllTrackAutomationLanes: Bool { !tracksWithAutomationControls.isEmpty }
     public var allTrackAutomationLanesVisible: Bool {
-        let tracks = tracksWithAutomationControls
-        return !tracks.isEmpty && tracks.allSatisfy { $0.automation?.visibleEnvelopes.isEmpty == false }
+        guard let tracks = current?.tracks else { return false }
+        var found = false
+        for track in tracks where track.kind == .standard {
+            guard track.automation?.visibleEnvelopes.isEmpty == false else { return false }
+            found = true
+        }
+        return found
     }
     public func toggleAllTrackAutomationLanes() {
-        toggleAutomationLanes(Set(tracksWithAutomationControls.map(\.id)))
+        let tracks = current?.tracks ?? []
+        toggleAutomationLanes(Set(tracks.lazy.filter { $0.kind == .standard }.map(\.id)))
     }
     public func toggleAutomationLanes(_ targets: Set<UUID>) {
         guard canControl(), !finishing, !targets.isEmpty, let songID = current?.id else { return }
@@ -4307,9 +4312,9 @@ public final class ShowTrackSelectionPresentation: ObservableObject {
     }
     public func canCreateTrackGroup(_ id: UUID, selection: Set<UUID>? = nil) -> Bool {
         let selected = selection ?? mixerTrackSelection
-        guard let song = current, let parent = song.tracks.first(where: { $0.id == id }),
-              parent.kind == .standard, parent.role.rawValue != "vinhetas", parent.stereoLink == nil,
-              selected.contains(id) else { return false }
+        guard selected.count > 1, selected.contains(id), let song = current,
+              let parent = song.tracks.first(where: { $0.id == id }), parent.kind == .standard,
+              parent.role.rawValue != "vinhetas", parent.stereoLink == nil else { return false }
         let ancestors = TrackHierarchy(song.tracks).ancestors(of: id)
         return song.tracks.contains { $0.id != id && selected.contains($0.id) &&
             $0.kind == .standard && $0.role.rawValue != "vinhetas" &&

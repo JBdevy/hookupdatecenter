@@ -951,6 +951,11 @@ void Engine::addRecordedClip(const ID& id, AudioClip clip, bool replacing) {
     }
     throw std::invalid_argument("Unknown recording track");
 }
+void Engine::setTimelineLocks(bool locked, int options) {
+    projectSync::requireWritable();
+    project_.timelineMovementLocked = locked;
+    project_.timelineLockOptions = TimelineLocks::normalize(options);
+}
 void Engine::editMasterColor(unsigned color) {
     projectSync::requireWritable();
     if (color > 0xffffff) throw std::invalid_argument("Invalid master color");

@@ -38,6 +38,7 @@ public protocol CommandExecutor {
     func insertAudioTracks(_ tracks: [Track], song: UUID) throws
     func replaceAudioClip(_ clip: AudioClip, track: UUID) throws
     func addRecordedClip(_ clip: AudioClip, track: UUID) throws
+    func setTimelineLocks(locked: Bool, options: Int) throws
     func editMasterColor(_ color: UInt32) throws
     func setTrackMixerComponents(_ song: UUID, masks: [UUID: Int]) throws
     func editTrack(_ id: UUID, name: String, color: UInt32) throws
@@ -88,6 +89,12 @@ public extension CommandExecutor {
         try setTempoMarkers(markers)
     }
     func pasteItems(_ entries: [GridItemClipboard.Entry], song: UUID, moving: Bool) throws { throw BackendFailure.notConfigured }
+    func setTimelineLocks(locked: Bool, options: Int) throws {
+        var project = try snapshot().project
+        project.timelineMovementLocked = locked
+        project.timelineLockOptions = TimelineLocks.normalize(options)
+        try applyProjectEdit(project)
+    }
     func applyProjectEdit(_ project: Project) throws { throw BackendFailure.notConfigured }
     func applyTrackStructureEdit(_ project: Project, previous: Project) throws { try applyProjectEdit(project) }
     func setTimecode(_ track: UUID, settings: TimecodeSettings) throws { throw BackendFailure.notConfigured }

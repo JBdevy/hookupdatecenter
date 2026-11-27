@@ -297,7 +297,7 @@ struct MainView: View {
     private func setFocusOpen(_ visible: Bool) {
         focusOpen = visible
         if visible && !partsLeftHorizontal {
-            partsLeftOpen = false
+            if partsLeftOpen { partsLeftOpen = false }
             if detachedParts.isVisible { detachedParts.hide() }
         }
     }

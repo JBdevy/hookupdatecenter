@@ -64,6 +64,7 @@ public:
     void setTimecode(const ID& track, TimecodeSettings settings);
     void editTrack(const ID& id, std::string name, std::optional<unsigned> color);
     bool soloTrackExclusively(const ID& id);
+    void setTimelineLocks(bool locked, int options);
     void editMasterColor(unsigned color);
     std::map<ID, int> setTrackMixerComponents(const ID& song, const std::map<ID, int>& masks);
     void setMarkers(const std::vector<TimelineMarker>& markers, const std::vector<ID>& removing = {}, bool retime = false);

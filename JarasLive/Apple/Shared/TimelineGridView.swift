@@ -379,7 +379,9 @@ private struct TimelineGridContent: View, Equatable {
             lhs.visibility == rhs.visibility
     }
     @AppStorage(JarasInterfaceTheme.preferenceKey) private var interfaceTheme = JarasInterfaceTheme.defaultTheme
+    #if !os(macOS)
     @AppStorage(TimelineSnapPreference.key) private var snapEnabled = true
+    #endif
     @AppStorage(TimelineAppearanceDefaults.invertWaveformColorsKey) private var invertWaveformColors = TimelineAppearanceDefaults.invertWaveformColors
     @ObservedObject private var recordingLayout = RecordingLaneLayout.shared
     @Environment(\.locale) private var locale
@@ -536,7 +538,10 @@ private struct TimelineGridContent: View, Equatable {
     }
     var body: some View {
         VStack(spacing: 0) {
-            TimelineGeometryReader(documentHeight: { rowLayoutCache.trackContentHeight }) { geometry in
+            // Above this width even the widest mixer fits beside the grid. Docks
+            // can crop existing drawing coverage without rebuilding its hosting root.
+            TimelineGeometryReader(minimumRetainedWidth: 486.5 + minimumTimelineBodyWidth + TimelineVerticalBar.width + dividerWidth,
+                                   documentHeight: { rowLayoutCache.trackContentHeight }) { geometry in
                 if let originalSong = visibleSong {
                     #if os(macOS)
                     let gridViewportWidth = max(0, geometry.size.width - TimelineVerticalBar.width)

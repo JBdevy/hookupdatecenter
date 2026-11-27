@@ -34,6 +34,10 @@ precondition(versions.update(routed, active: true, locale: "pt_BR") == group && 
 let translated = versions.update(state([tracks[5].id, tracks[9].id]), active: true, locale: "en")
 precondition(original.indices.allSatisfy { translated[$0] != group[$0] }, "locale changes still update every channel")
 print("FOOTER_SELECTION_UPDATES_ONLY_AFFECTED_CHANNELS_AND_PRESERVES_CURRENT_GROUP_TARGETS_OK")
+private var wide = state([tracks[5].id, tracks[9].id])
+wide.wideTracks = true
+precondition(versions.update(wide, active: true, locale: "en") == translated,
+             "Changing native channel width must preserve the mounted controls")
 private let insertedTrack = Track()
 private let inserted = Array(tracks.prefix(3)) + [insertedTrack] + Array(tracks.dropFirst(3))
 let afterInsertion = versions.update(state([tracks[5].id, tracks[9].id], items: inserted), active: true, locale: "en")
