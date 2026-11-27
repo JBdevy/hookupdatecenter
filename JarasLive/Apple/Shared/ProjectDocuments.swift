@@ -1376,9 +1376,15 @@ extension UTType {
     }
     private func finishOpening(_ project: Project, at url: URL) async throws {
         status = "Preparing waveforms…"
+        #if os(macOS)
+        let externalOverviewIsCurrent: (@Sendable (URL) -> Bool)? = { TimelineAudioWaveform.hasCurrentPeakFile($0) }
+        #else
+        let externalOverviewIsCurrent: (@Sendable (URL) -> Bool)? = nil
+        #endif
         let prepared = try await ProjectOpeningWork.run {
             var ignored = Set<String>(), notices: [String] = []
-            let enriched = try StemProjectImporter.populateChannelOverviews(project, directory: url.deletingLastPathComponent(), onUnreadable: { path, error in
+            let enriched = try StemProjectImporter.populateChannelOverviews(project, directory: url.deletingLastPathComponent(),
+                externalOverviewIsCurrent: externalOverviewIsCurrent, onUnreadable: { path, error in
                 ignored.insert(path); notices.append(path + "\n" + error.localizedDescription)
             })
             return (enriched, ignored, notices)

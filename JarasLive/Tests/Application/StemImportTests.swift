@@ -556,6 +556,30 @@ final class StemImportTests: XCTestCase {
         let opened = try StemProjectImporter.populateChannelOverviews(project, directory: root)
         XCTAssertFalse(try XCTUnwrap(opened.songs[0].tracks[0].clips[0].waveformChannels).isEmpty)
     }
+    func testOpeningKeepsRepeatedExternalOverviewsAndEnrichesOnlyLegacyClips() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        _ = try fixture(root, folder: "Stems", file: "Kick.wav")
+        _ = try fixture(root, folder: "Stems", file: "Bass.wav")
+        var project = Project.empty(name: "External waveforms")
+        var track = Track(id: UUID(), name: "Audio", role: .init(rawValue: "audio"))
+        track.clips = ["Kick.wav", "Kick.wav", "Bass.wav", "Kick.wav"].enumerated().map { index, name in
+            AudioClip(id: UUID(), name: name, startTime: Double(index), duration: 0.1, audioFile: AudioFile(path: "Stems/" + name))
+        }
+        track.clips[3].waveform = [0.5]
+        project.songs[0].tracks = [track]
+        var checked: [String: Int] = [:]
+        let opened = try StemProjectImporter.populateChannelOverviews(project, directory: root, externalOverviewIsCurrent: {
+            checked[$0.lastPathComponent, default: 0] += 1
+            return $0.lastPathComponent == "Kick.wav"
+        })
+        let clips = opened.songs[0].tracks[0].clips
+        XCTAssertEqual(checked, ["Kick.wav": 1, "Bass.wav": 1])
+        XCTAssertEqual(Array(clips.prefix(2)), Array(track.clips.prefix(2)))
+        XCTAssertNotNil(clips[2].waveformChannels)
+        XCTAssertNotNil(clips[3].waveformChannels)
+        XCTAssertEqual(clips[3].waveform, [0.5])
+    }
     func fixture(_ root: URL, folder: String, file: String, seconds: Double = 0.1) throws -> URL {
         let directory = root.appendingPathComponent(folder)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

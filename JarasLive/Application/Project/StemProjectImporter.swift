@@ -531,9 +531,11 @@ enum StemProjectImporter {
     }
     /// Enrich older imported items once; the saved overview avoids decoding on redraw.
     public static func populateChannelOverviews(_ source: Project, directory: URL,
+                                                externalOverviewIsCurrent: ((URL) -> Bool)? = nil,
                                                 onUnreadable: ((String, Error) -> Void)? = nil) throws -> Project {
         var project = source
         var cache: [String: [[Double]]] = [:]
+        var externalOverviews: [String: Bool] = [:]
         var unreadable = Set<String>()
         for song in project.songs.indices {
             for track in project.songs[song].tracks.indices {
@@ -543,6 +545,17 @@ enum StemProjectImporter {
                     let clip = project.songs[song].tracks[track].clips[item]
                     guard !clip.isProjectionMedia, clip.waveformChannels == nil, let file = clip.audioFile else { continue }
                     if unreadable.contains(file.path) { continue }
+                    // Documents can use separate peak files instead of embedding
+                    // a second waveform in every repeated instance of a source.
+                    if clip.waveform.isEmpty, let externalOverviewIsCurrent {
+                        let current: Bool
+                        if let cached = externalOverviews[file.path] { current = cached }
+                        else {
+                            current = externalOverviewIsCurrent(directory.appendingPathComponent(file.path))
+                            externalOverviews[file.path] = current
+                        }
+                        if current { continue }
+                    }
                     if cache[file.path] == nil {
                         let url = directory.appendingPathComponent(file.path)
                         guard FileManager.default.fileExists(atPath: url.path) else { continue }
