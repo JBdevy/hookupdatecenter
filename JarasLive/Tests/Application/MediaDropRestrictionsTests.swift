@@ -26,18 +26,18 @@ final class MediaDropRestrictionsTests: XCTestCase {
         XCTAssertEqual(writer.status, .completed)
         return url
     }
-    func testVideoUsesCompatibleTracksAndRejectsProgramChangeAndMixedBatches() async throws {
+    func testVideoAndAudioUseCompatibleTracksAndRejectProgramChange() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         let source = try await video(root.appendingPathComponent("Source"))
         let destination = root.appendingPathComponent("Project/Show.jl")
         let audio = try StemImportTests().fixture(root, folder: "Source", file: "Audio.wav").appendingPathComponent("Audio.wav")
-        XCTAssertThrowsError(try StemProjectImporter.prepareDroppedAudio([audio, source], start: 0, destinationTracks: [], destination: destination))
-        XCTAssertFalse(FileManager.default.fileExists(atPath: destination.deletingLastPathComponent().path))
         for media in [source, audio] {
             XCTAssertThrowsError(try StemProjectImporter.prepareDroppedAudio([media], start: 0, destinationTracks: [UUID()], destination: destination, destinationKind: .programChange))
         }
         XCTAssertFalse(FileManager.default.fileExists(atPath: destination.deletingLastPathComponent().path), "Rejected Program Change drops must not copy media")
+        let mixed = try StemProjectImporter.prepareDroppedAudio([audio, source], start: 0, destinationTracks: [], destination: destination)
+        XCTAssertEqual(mixed.tracks.compactMap { $0.clips.first?.isProjectionMedia }, [false, true])
         let created = try StemProjectImporter.prepareDroppedAudio([source], start: 0, destinationTracks: [], destination: destination)
         XCTAssertEqual(created.tracks[0].kind, .standard)
         for kind in TrackKind.allCases where kind != .programChange {
@@ -214,8 +214,15 @@ final class MediaDropRestrictionsTests: XCTestCase {
         }
         let unknown = root.appendingPathComponent("Source/Picture.png")
         try Data([1,2,3]).write(to: unknown)
-        XCTAssertThrowsError(try StemProjectImporter.prepareDroppedAudio([source,unknown], start: 0, destinationTracks: [], destination: destination))
+        let unrelated = root.appendingPathComponent("Source/notes.txt")
+        try Data("Notes".utf8).write(to: unrelated)
+        let skipped = try StemProjectImporter.prepareDroppedAudio([unknown, unrelated], start: 0, destinationTracks: [], destination: destination)
+        XCTAssertTrue(skipped.tracks.isEmpty && skipped.folders.isEmpty)
         XCTAssertFalse(FileManager.default.fileExists(atPath: destination.deletingLastPathComponent().path))
+        let accepted = try StemProjectImporter.prepareDroppedAudio([unknown, source, unrelated], start: 2, destinationTracks: [], destination: destination)
+        XCTAssertEqual(accepted.tracks.count, 1)
+        XCTAssertEqual(accepted.tracks.first?.clips.first?.startTime, 2)
+        XCTAssertEqual(accepted.folders.map(\.lastPathComponent), ["Audio.wav"])
         XCTAssertTrue(FileManager.default.fileExists(atPath: source.path))
     }
     func testAudioOnlyMovieIsClassifiedFromItsTracksAndCopiedAsAudio() throws {

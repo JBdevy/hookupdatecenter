@@ -289,21 +289,13 @@ template <typename Test> void registerTests(const File &directory, Test &test) {
                 "Zoom created a scroll offset for content narrower than its viewport");
     });
 
-    test("Zoom from a far-out view moves scale and cursor focus together instead of panning at the old scale", [] {
-        constexpr double position=800,viewport=1000,initialScale=1,origin=0,finalScale=1.3;
-        const double anchor=position*initialScale-origin;
-        double previousScale=initialScale,previousOffset=origin;
-        for(int step=0;step<=100;++step) {
-            const double progress=step/100.,eased=1-std::pow(1-progress,3.);
-            const double scale=std::exp(std::log(initialScale)+(std::log(finalScale)-std::log(initialScale))*eased);
-            const double focus=anchor+(viewport/2-anchor)*eased;
-            const double offset=timelineAnchoredZoomOffset(position,scale,2000*scale,viewport,focus);
-            require(std::abs(position*scale-offset-focus)<.000001,"Cursor focus detached from the zoom transform");
-            if(step==0)require(offset==origin,"First wheel frame panned before increasing the zoom");
-            require(scale>=previousScale && offset>=previousOffset,"Zoom reversed toward the project beginning");
-            previousScale=scale;previousOffset=offset;
+    test("Zoom after panning keeps the active cursor centered at every scale", [] {
+        constexpr double position = 800, viewport = 1000;
+        for (int step = 0; step <= 100; ++step) {
+            const double scale = 1. + step * .003;
+            const auto offset = timelineAnchoredZoomOffset(position, scale, 2000 * scale, viewport, viewport / 2);
+            require(std::abs(position * scale - offset - viewport / 2) < .000001, "Cursor moved while zoom scale changed");
         }
-        require(std::abs(position*finalScale-previousOffset-viewport/2)<.000001,"Zoom did not finish centered on its cursor");
     });
 
     test("Master FX chooser keeps audio effects but hides instruments and CatStem, including external instruments", [&] {

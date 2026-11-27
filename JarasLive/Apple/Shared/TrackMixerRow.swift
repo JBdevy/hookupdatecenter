@@ -4724,7 +4724,8 @@ private struct FooterMixerContent: View, Equatable {
                 masterWidth: FooterMixerMetrics.masterWidth, masterRight: state.masterRight, masterVersion: stripVersions.masterVersion,
                 masterContent: AnyView(FooterMixerStrip(masterState: state, show: show, track: nil, selection: [], active: active, showsInstrumentIcons: state.showsInstrumentIcons).equatable().padding(5)
                     .environment(\.openFX, openFX).environment(\.locale, locale).environment(\.editTrackDetails, editTrackDetails)),
-                versions: versions, identifiers: ordered.map(\.id), revealTrack: state.revealTrack, revealRequest: state.revealRequest, retainStrip: { index in
+                versions: versions, identifiers: ordered.map(\.id), project: state.project,
+                trackExists: { state.trackNumbers[$0] != nil }, revealTrack: state.revealTrack, revealRequest: state.revealRequest, retainStrip: { index in
                     ordered.indices.contains(index) && TrackSelectionRouter.shared.pinnedTracks.contains(ordered[index].id)
                 }, addTrack: addTrackInEmptySpace) { range in AnyView(strips(range, order: ordered)) }
             #else
@@ -4770,6 +4771,8 @@ private struct FooterMixerScroll: NSViewRepresentable {
     let masterContent: AnyView
     var versions: [UInt64]? = nil
     var identifiers: [UUID]? = nil
+    var project: UUID?
+    var trackExists: (UUID) -> Bool = { _ in false }
     var revealTrack: UUID? = nil
     var revealRequest: UUID? = nil
     var retainStrip: (Int) -> Bool = { _ in false }
@@ -4790,7 +4793,7 @@ private struct FooterMixerScroll: NSViewRepresentable {
         view.setScrollRailColor(NSColor(Color(hex: scrollRailHex)))
         view.updateMaster(content: masterContent, width: masterWidth, version: masterVersion, right: masterRight)
         view.update(width: contentWidth, stride: stride, count: count, versions: versions, identifiers: identifiers,
-                    retainStrip: retainStrip, makeContent: makeContent)
+                    project: project, trackExists: trackExists, retainStrip: retainStrip, makeContent: makeContent)
         if active { view.revealTrack(revealTrack, request: revealRequest) }
     }
 }
@@ -5222,6 +5225,8 @@ private final class FooterMixerScrollView: NSView {
     private var mountedVersions: [Int: UInt64] = [:]
     private var cachedStrips: [Int: (view: FooterMixerHostingView, version: UInt64?)] = [:]
     private var cachedStripOrder: [Int] = []
+    private var project: UUID?
+    private var filteredStrips: [(id: UUID, view: FooterMixerHostingView)] = []
     private var contentWidth: CGFloat = 1
     private var makeContent: ((Range<Int>) -> AnyView)?
     private var retainStrip: (Int) -> Bool = { _ in false }
@@ -5302,15 +5307,37 @@ private final class FooterMixerScrollView: NSView {
         update(width: width, stride: width, count: 1, makeContent: { _ in content })
     }
     func update(width: CGFloat, stride: CGFloat, count: Int, versions: [UInt64]? = nil, identifiers: [UUID]? = nil,
+                project: UUID? = nil, trackExists: (UUID) -> Bool = { _ in false },
                 retainStrip: @escaping (Int) -> Bool = { _ in false }, makeContent: @escaping (Range<Int>) -> AnyView) {
+        let sameProject = self.project == project
+        self.project = project
+        filteredStrips.removeAll { channel in
+            if sameProject && trackExists(channel.id) { return false }
+            channel.view.removeFromSuperview()
+            return true
+        }
         if let old = self.identifiers, let identifiers, old != identifiers {
             // Inserting a copied track shifts indices, not the identity of all
             // following channels. Move their retained hosts to the new slots.
             let positions = Dictionary(uniqueKeysWithValues: identifiers.enumerated().map { ($0.element, $0.offset) })
             func destination(_ index: Int) -> Int? { old.indices.contains(index) ? positions[old[index]] : nil }
+            // Switching signal filters can temporarily hide the entire viewport.
+            // Reuse those controls on return and let their new render version refresh them.
+            let filterLimit = min(24, max(1, Int(ceil(scroll.contentSize.width / max(1, stride))) + 2))
+            func hideFiltered(_ view: FooterMixerHostingView, at index: Int) {
+                guard sameProject, old.indices.contains(index), trackExists(old[index]) else {
+                    view.removeFromSuperview()
+                    return
+                }
+                if let responder = window?.firstResponder as? NSView, responder === view || responder.isDescendant(of: view) {
+                    window?.makeFirstResponder(nil)
+                }
+                view.isHidden = true
+                filteredStrips.append((old[index], view))
+            }
             var next: [Int: FooterMixerHostingView] = [:]
             for (index, view) in strips {
-                if let target = destination(index) { next[target] = view } else { view.removeFromSuperview() }
+                if let target = destination(index) { next[target] = view } else { hideFiltered(view, at: index) }
             }
             strips = next
             mountedVersions = Dictionary(uniqueKeysWithValues: mountedVersions.compactMap { index, value in destination(index).map { ($0, value) } })
@@ -5320,6 +5347,13 @@ private final class FooterMixerScrollView: NSView {
             }
             cachedStrips = cached
             cachedStripOrder = cachedStripOrder.compactMap(destination)
+            filteredStrips.removeAll { channel in
+                guard let index = positions[channel.id] else { return false }
+                cachedStrips[index] = (channel.view, nil)
+                cachedStripOrder.append(index)
+                return true
+            }
+            while filteredStrips.count > filterLimit { filteredStrips.removeFirst().view.removeFromSuperview() }
             pendingStripLayout = Set(pendingStripLayout.compactMap(destination))
         }
         self.identifiers = identifiers
@@ -5351,7 +5385,7 @@ private final class FooterMixerScrollView: NSView {
                 cachedStripOrder.removeAll { $0 == index }; cachedStripOrder.append(index)
             } else { strip.removeFromSuperview() }
         }
-        let cacheLimit = min(64, max(24, preparedRange.count * 3))
+        let cacheLimit = max(0, min(64, max(24, preparedRange.count * 3)) - filteredStrips.count)
         while cachedStripOrder.count > cacheLimit {
             // A reversal caches the old viewport before mounting the new
             // one. Never evict a cached destination strip in that interval.

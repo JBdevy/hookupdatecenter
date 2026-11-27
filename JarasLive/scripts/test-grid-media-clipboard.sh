@@ -9,7 +9,9 @@ import sys
 source = Path('Apple/Shared/ProjectDocuments.swift').read_text()
 start = source.index('@MainActor final class GridMediaClipboard')
 helper = source[start:source.index('\n#endif', start)]
-Path(sys.argv[1]).write_text('import AppKit\nimport UniformTypeIdentifiers\nimport AVFoundation\nstruct GridItemClipboard {}\n' + helper + '\n' + Path('Tests/Apple/GridMediaClipboardTests.swift').read_text())
+mediaTypes = Path('Application/Project/StemProjectImporter.swift').read_text().split('enum GridMediaFileFilter {', 1)[1].split('/// Runs on a worker', 1)[0]
+mediaTypes = 'enum GridMediaFileFilter {' + mediaTypes
+Path(sys.argv[1]).write_text('import AppKit\nimport UniformTypeIdentifiers\nimport AVFoundation\nstruct GridItemClipboard {}\n' + mediaTypes + helper + '\n' + Path('Tests/Apple/GridMediaClipboardTests.swift').read_text())
 PY
 swiftc -swift-version 5 "$test_dir/main.swift" -o "$test_dir/test"
 "$test_dir/test"

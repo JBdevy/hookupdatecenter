@@ -5,6 +5,15 @@ namespace catlive::externalMedia {
 inline bool supported(const File &file) {
     return file.hasFileExtension("wav;wave;aif;aiff;flac;mp3;ogg;m4a;aac;mp4;mov;m4v;avi;mkv;webm;wmv;png;jpg;jpeg;bmp;gif;tif;tiff");
 }
+inline StringArray gridFiles(const StringArray &paths, bool includeLyrics = false) {
+    StringArray result;
+    for (const auto &path : paths) {
+        const File file(path);
+        if ((supported(file) || (includeLyrics && file.hasFileExtension("jllyrics"))) && !file.isDirectory())
+            result.addIfNotAlreadyThere(path);
+    }
+    return result;
+}
 struct Preview {
     File file;
     std::optional<double> duration;

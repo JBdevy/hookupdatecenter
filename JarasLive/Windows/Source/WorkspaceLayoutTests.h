@@ -1231,6 +1231,40 @@ struct WorkspaceLayoutTests {
                 "Deleting another project lost the active project's unsaved shared-media protection");
         session->command(jaras::CommandKind::stopAll);
     }
+    static void regionsFromSelection(const File &directory) {
+        using floatingControlTests::require;
+        auto p = floatingControlTests::fixture();
+        auto &song = p.songs.front();
+        song.parts.clear();
+        std::set<ID> ids;
+        std::vector<jaras::AudioClip> expected;
+        for (int i = 0; i < 4; ++i) {
+            jaras::AudioClip clip;
+            clip.id = uuid(); clip.name = "Selection " + std::to_string(i);
+            clip.startTime = 2. + i * 4.; clip.duration = 1. + i * .25;
+            song.tracks[i % 3].clips.push_back(clip);
+            if (i != 2) { ids.insert(clip.id); expected.push_back(clip); }
+        }
+        Session session; session.inspection = true; session.audio.prepareOffline(48000);
+        session.restoreSnapshot(ProjectCodec::encode(p)); session.audio.setOffline(true);
+        Auth auth; Lighting lighting(session);
+        Workspace w(session, auth, lighting, false, directory.getNonexistentChildFile("regions-shortcut", ".json"));
+        w.setSize(1366, 900); w.projectOpened(false);
+        w.selectedClips = ids; w.selectedClip = expected.back().id;
+        session.selectTimeRange(0, 20);
+        require(w.keyPressed(KeyPress::createFromDescription("shift + R")), "Region shortcut was not handled");
+        require(session.song()->parts.size() == expected.size(), "Shift R omitted selected items or used the time range");
+        for (const auto &clip : expected)
+            require(std::any_of(session.song()->parts.begin(), session.song()->parts.end(), [&](const auto &part) {
+                return part.name == clip.name && part.startTime == clip.startTime && part.endTime == clip.startTime + clip.duration;
+            }), "Created region has the wrong item name or bounds");
+        session.undo(); require(session.song()->parts.empty(), "Region creation was not one undo step");
+        session.redo(); require(session.song()->parts.size() == expected.size(), "Redo did not restore all regions");
+        session.undo(); w.selectedClips.clear(); w.selectedClip = {}; session.selectTimeRange(3, 8);
+        w.performAction("createRegionsFromItems", 1, 0);
+        require(session.song()->parts.size() == 1 && session.song()->parts.front().startTime == 3 &&
+                session.song()->parts.front().endTime == 8, "Independent time selection no longer creates a region");
+    }
     static void unifyItems(const File &directory) {
         using floatingControlTests::require;
         for(bool midi:{false,true}) {
@@ -2264,6 +2298,7 @@ template<class Test> void registerTests(const File &directory,Test &test) {
     test("Track icons stay inside the mixer without widening the track column",[&]{WorkspaceLayoutTests::trackIconWidth(directory);});
     test("Track Mixer minimum keeps Patch and both mixers rename in place",[&]{WorkspaceLayoutTests::mixerNamesAndMinimumWidth(directory);});
     test("Deleting another recent project during playback preserves the current dirty project and audio clock",[&]{WorkspaceLayoutTests::deleteRecentWhilePlaying(directory);});
+    test("Shift R creates a region for every selected grid item across tracks in one undo step",[&]{WorkspaceLayoutTests::regionsFromSelection(directory);});
     test("Item context and Actions process full audio selections with channel conversion, Re-render, Normalize, Unify and Undo",[&]{WorkspaceLayoutTests::unifyItems(directory);});
     test("Item context export includes selected audio across tracks, ignores non-audio and locks bounds",[&]{WorkspaceLayoutTests::exportItems(directory);});
     test("Generated MIDI and text items advance edit cursor without seeking playback",[&]{WorkspaceLayoutTests::generatedItems(directory);});

@@ -94,6 +94,14 @@ expectClear { scroll.draggingEnded(drag) }
 expectClear { scroll.concludeDragOperation(drag) }
 expectClear { precondition(scroll.performDragOperation(drag)) }
 precondition(drops.count == 1 && drops[0].0 == urls && drops[0].1 == CGPoint(x: 320, y: 240), "the eventual import receives the same exact insertion coordinates")
+let unsupported = URL(fileURLWithPath: "/tmp/unhandled.catlive-unsupported")
+pasteboard.clearContents()
+precondition(pasteboard.writeObjects([urls[0], unsupported, urls[1]] as [NSURL]))
+expectClear { precondition(scroll.performDragOperation(drag)) }
+precondition(drops.count == 2 && drops[1].0 == urls)
+pasteboard.clearContents(); precondition(pasteboard.writeObjects([unsupported] as [NSURL]))
+precondition(scroll.draggingEntered(drag).isEmpty && !scroll.performDragOperation(drag) && drops.count == 2)
+pasteboard.clearContents(); precondition(pasteboard.writeObjects(urls as [NSURL]))
 let clearedCount = previews.count
 scroll.draggingExited(nil); scroll.concludeDragOperation(nil)
 precondition(previews.count == clearedCount, "duplicate clear events do not redraw")

@@ -12,8 +12,10 @@ b = source.index('    // A committed layout clears zoomAnchor', a)
 subject = 'final class GridNativeScrollView: NSScrollView {\n' + source[a:b] + '\n}\n'
 transfer = Path('Apple/Shared/VinhetasPanel.swift').read_text().split('enum LibrarySamplerTransfer {', 1)[1].split('enum PadAudioBuffer', 1)[0]
 tests = Path('Tests/Apple/GridFileDropTests.swift').read_text().replace('let application = DropTestApplication.shared', 'MainActor.assumeIsolated {\nlet application = DropTestApplication.shared', 1) + '\n}\n'
+mediaTypes = Path('Application/Project/StemProjectImporter.swift').read_text().split('enum GridMediaFileFilter {', 1)[1].split('/// Runs on a worker', 1)[0]
+mediaTypes = 'enum GridMediaFileFilter {' + mediaTypes
 Path(sys.argv[1]).write_text('import AppKit\nimport SwiftUI\nimport UniformTypeIdentifiers\n' +
-                           'enum LibrarySamplerTransfer {' + transfer + subject + tests)
+                           mediaTypes + 'enum LibrarySamplerTransfer {' + transfer + subject + tests)
 PYDEPS
 swiftc -swift-version 5 -target "${CATLIVE_TEST_ARCH:-$(uname -m)}-apple-macos12.0" Apple/Shared/NativeTimelineInputGate.swift "$test_dir/main.swift" -o "$test_dir/test"
 "$test_dir/test"

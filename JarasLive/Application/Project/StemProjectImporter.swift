@@ -247,6 +247,16 @@ struct ImportAudit: Decodable {
     var songs: [Region]; var tracks: [Channel]; var groups: [Group]
 }
 
+enum GridMediaFileFilter {
+    static func accepts(_ url: URL) -> Bool {
+        guard url.isFileURL, !url.hasDirectoryPath else { return false }
+        let ext = url.pathExtension.lowercased()
+        if ext == "jllyrics" { return true }
+        guard let type = UTType(filenameExtension: ext) else { return false }
+        return type.conforms(to: .audio) || type.conforms(to: .movie) || type.conforms(to: .image)
+    }
+}
+
 /// Runs on a worker task. Audio is read in bounded buffers, never on the UI or audio thread.
 enum AudioDropLayout: String, CaseIterable, Sendable { case separateTracks, sameTrack, stacked }
 
@@ -273,21 +283,21 @@ enum StemProjectImporter {
         for url in urls {
             try Task.checkCancellation()
             guard seen.insert(url.standardizedFileURL).inserted else { continue }
-            guard url.isFileURL else { throw ProjectError.invalid("Could not read the dropped file.") }
+            guard url.isFileURL else { continue }
             let scoped = url.startAccessingSecurityScopedResource()
             defer { if scoped { url.stopAccessingSecurityScopedResource() } }
             let values = try url.resourceValues(forKeys: [.isRegularFileKey, .contentTypeKey])
-            guard values.isRegularFile == true else { throw ProjectError.invalid("Select media files, not folders.") }
+            guard values.isRegularFile == true else { continue }
             let type = values.contentType ?? UTType(filenameExtension: url.pathExtension)
             let knownAudio = ["wav", "wave", "aif", "aiff", "mp3", "m4a", "aac", "caf", "flac"].contains(url.pathExtension.lowercased())
             let image = type?.conforms(to: .image) == true
             guard knownAudio || image || type?.conforms(to: .audio) == true || type?.conforms(to: .movie) == true else {
-                throw ProjectError.invalid("Unsupported media file: " + url.lastPathComponent)
+                continue
             }
             if image {
                 guard let source = CGImageSourceCreateWithURL(url as CFURL, nil), CGImageSourceGetCount(source) > 0,
                       CGImageSourceCopyPropertiesAtIndex(source, 0, nil) != nil else {
-                    throw ProjectError.invalid("Unsupported media file: " + url.lastPathComponent)
+                    continue
                 }
                 sources.append(DroppedSource(url: url, kind: .video, duration: 10))
                 continue
@@ -297,10 +307,11 @@ enum StemProjectImporter {
             let duration: Double
             if video { duration = asset.duration.seconds }
             else {
-                let audio = try AVAudioFile(forReading: url)
+                guard FileManager.default.isReadableFile(atPath: url.path) else { throw CocoaError(.fileReadNoPermission) }
+                guard let audio = try? AVAudioFile(forReading: url) else { continue }
                 duration = Double(audio.length) / audio.processingFormat.sampleRate
             }
-            guard duration.isFinite, duration > 0 else { throw ProjectError.invalid("Empty media file: " + url.lastPathComponent) }
+            guard duration.isFinite, duration > 0 else { continue }
             sources.append(DroppedSource(url: url, kind: video ? .video : .standard, duration: duration))
         }
         return sources
@@ -311,9 +322,8 @@ enum StemProjectImporter {
         guard destinationKind != .programChange else { throw ProjectError.invalid("Program Change tracks accept only program markers") }
         // Validate the entire batch before making any project directory or copying media.
         let sources = try droppedSources(urls)
-        guard let kind = sources.first?.kind else { throw ProjectError.invalid("No media files to import") }
-        guard sources.allSatisfy({ $0.kind == kind }) else { throw ProjectError.invalid("Drop audio and video separately") }
-        if kind != .video || layout == .stacked {
+        guard !sources.isEmpty else { return DroppedAudio(tracks: [], folders: []) }
+        if sources.contains(where: { $0.kind != .video }) || layout == .stacked {
             guard destinationKind == nil || destinationKind == .standard else { throw ProjectError.invalid("Audio files must be dropped on a standard audio track") }
         }
         let fm = FileManager.default

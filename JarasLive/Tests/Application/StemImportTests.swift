@@ -759,8 +759,13 @@ final class StemImportTests: XCTestCase {
         let bad = root.appendingPathComponent("bad.wav")
         try Data("not audio".utf8).write(to: bad)
         let existing = try FileManager.default.contentsOfDirectory(atPath: root.appendingPathComponent("Project/Stems").path)
-        XCTAssertThrowsError(try StemProjectImporter.prepareDroppedAudio([one, bad], start: 0, destinationTracks: [], destination: destination))
+        let skipped = try StemProjectImporter.prepareDroppedAudio([bad], start: 0, destinationTracks: [], destination: destination)
+        XCTAssertTrue(skipped.tracks.isEmpty)
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.appendingPathComponent("Project/Stems").path), existing)
+        let mixed = try StemProjectImporter.prepareDroppedAudio([one, bad], start: 0, destinationTracks: [], destination: destination)
+        XCTAssertEqual(mixed.tracks.count, 1)
+        let kept = try XCTUnwrap(mixed.tracks.first?.clips.first?.audioFile)
+        XCTAssertEqual(try Data(contentsOf: destination.deletingLastPathComponent().appendingPathComponent(kept.path)), try Data(contentsOf: one))
     }
     func testGridBatchDropRoutesDownFromHoveredTrackAndCreatesOnlyOverflow() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

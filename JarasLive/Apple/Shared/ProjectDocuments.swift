@@ -725,7 +725,8 @@ extension UTType {
                     urls.append(url)
                 }
                 #endif
-                let sources = urls
+                let sources = urls.filter(GridMediaFileFilter.accepts)
+                guard !sources.isEmpty else { return }
                 let lyrics = sources.filter { $0.pathExtension.lowercased() == "jllyrics" }
                 if !lyrics.isEmpty {
                     guard lyrics.count == sources.count else { throw ProjectError.invalid("Drop lyrics separately from audio and video.") }
@@ -749,7 +750,7 @@ extension UTType {
                         }
                     }
                 }.value
-                if let prepared {
+                if let prepared, !prepared.tracks.isEmpty {
                     for imported in prepared.tracks where imported.kind == .video || imported.kind.isTeleprompter {
                         guard show.snapshot.project.songs.first(where: { $0.id == song })?.tracks.contains(where: { $0.id == imported.id && $0.kind == imported.kind }) == true else {
                             throw ProjectError.invalid("The destination Video track no longer exists")
@@ -3036,7 +3037,8 @@ private final class ProjectSourcePanelValidator: NSObject, NSOpenSavePanelDelega
     func source() -> Source {
         if let token, pasteboard.string(forType: itemType) == token { return tracksCopied ? .tracks : .items }
         let urls = (pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL]) ?? []
-        return urls.isEmpty ? .none : .files(urls)
+        let supported = urls.filter(GridMediaFileFilter.accepts)
+        return supported.isEmpty ? .none : .files(supported)
     }
     nonisolated static func containsVisualMedia(_ urls: [URL]) -> Bool {
         urls.contains { url in

@@ -217,12 +217,13 @@ void Workspace::performAction(const String &action, float value, int trackNumber
         // progress, cancellation and single-transaction Undo behavior.
         clipMenuAction(anchor)(action == "normalizeItems" ? 11 : action == "reRenderItems" ? 13 : 14);
     } else if (action == "createRegionsFromItems") {
-        if (const auto range = session.selectedTimeRange()) {
+        if (session.busy) return;
+        if (!selectedClips.empty() || !selectedClip.empty()) {
+            const auto anchor = selectedClips.count(selectedClip) || selectedClips.empty()
+                              ? selectedClip : *selectedClips.begin();
+            clipMenuAction(anchor)(9);
+        } else if (const auto range = session.selectedTimeRange()) {
             session.addRegion({}, range->first, range->second);
-        } else {
-            auto anchor = selectedClip;
-            if (!selectedClips.empty() && !selectedClips.count(anchor)) anchor = *selectedClips.begin();
-            if (!anchor.empty() && !session.busy) clipMenuAction(anchor)(9);
         }
     } else if (action == "insertElasticPoint") {
         if (timelineGrid::itemsLocked(session.project()) || session.busy || session.audio.isRecording()) return;

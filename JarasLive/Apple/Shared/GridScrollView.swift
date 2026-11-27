@@ -2446,7 +2446,8 @@ final class GridNativeScrollView: NSScrollView, NativeTimelineBodyInputHost, Nat
     private func fileURLs(from pasteboard: NSPasteboard) -> [URL] {
         let sampleType = NSPasteboard.PasteboardType(LibrarySamplerTransfer.type.identifier)
         if let sample = LibrarySamplerTransfer.url(pasteboard.data(forType: sampleType)) { return [sample] }
-        return pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+        let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+        return urls.filter(GridMediaFileFilter.accepts)
     }
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
         guard fileDrop != nil, let documentView,

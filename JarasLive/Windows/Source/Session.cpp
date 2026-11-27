@@ -3005,24 +3005,28 @@ void Session::importMedia(const Array<File> &files,double at,ID targetTrack,Medi
             AudioFormatManager formats;registerAudioFormats(formats);
             // Validate the whole batch before copying any media.
             for(const auto &file:files) {
-                if(!file.existsAsFile())throw std::runtime_error("Selecione arquivos de mídia, não pastas.");
-                if(std::any_of(sources.begin(),sources.end(),[&](auto &s){return s.file==file;}))continue;
-                double duration=0;bool projection=false;
-                if(file.hasFileExtension("png;jpg;jpeg;bmp;gif;tif;tiff")) {
-                    if(!ImageFileFormat::loadFrom(file).isValid())throw std::runtime_error("Imagem inválida: "+utf8(file.getFileName()));
-                    duration=10;projection=true;
-                } else if(file.hasFileExtension("mp4;mov;m4v;avi;mkv;webm;wmv")) {
-                    auto info=inspectMediaSource(file);duration=info.duration;projection=info.video;
-                    if(!info.audio&&!info.video)throw std::runtime_error("Mídia sem áudio ou vídeo.");
-                    if(info.audio){std::unique_ptr<AudioFormatReader> reader(formats.createReaderFor(file));if(!reader)throw std::runtime_error("Não foi possível decodificar o áudio do vídeo.");}
+                if (file.isDirectory()) continue;
+                if (!file.existsAsFile()) throw std::runtime_error("Arquivo de mídia não encontrado: " + utf8(file.getFileName()));
+                if (std::any_of(sources.begin(), sources.end(), [&](const auto &s) { return s.file == file; })) continue;
+                if (!file.createInputStream()) throw std::runtime_error("Não foi possível ler: " + utf8(file.getFileName()));
+                double duration = 0;
+                bool projection = false;
+                if (file.hasFileExtension("png;jpg;jpeg;bmp;gif;tif;tiff")) {
+                    if (!ImageFileFormat::loadFrom(file).isValid()) continue;
+                    duration = 10; projection = true;
+                } else if (file.hasFileExtension("mp4;mov;m4v;avi;mkv;webm;wmv")) {
+                    MediaSourceInfo info;
+                    try { info = inspectMediaSource(file); } catch (const std::runtime_error &) { continue; }
+                    if (!info.audio && !info.video) continue;
+                    if (info.audio && !std::unique_ptr<AudioFormatReader>(formats.createReaderFor(file))) continue;
+                    duration = info.duration; projection = info.video;
                 } else {
                     std::unique_ptr<AudioFormatReader> reader(formats.createReaderFor(file));
-                    if(!reader||reader->sampleRate<=0)throw std::runtime_error("Arquivo de mídia não suportado: "+utf8(file.getFileName()));
-                    duration=reader->lengthInSamples/reader->sampleRate;
+                    if (!reader || reader->sampleRate <= 0) continue;
+                    duration = reader->lengthInSamples / reader->sampleRate;
                 }
-                if(!std::isfinite(duration)||duration<=0)throw std::runtime_error("Arquivo de mídia vazio.");
+                if (!std::isfinite(duration) || duration <= 0) continue;
                 if((!projection||layout==MediaDropLayout::stacked)&&!jaras::fixedTrackName(targetRole).empty())throw std::runtime_error("Solte arquivos de áudio em uma pista padrão.");
-                if(!sources.empty()&&sources.front().projection!=projection)throw std::runtime_error("Arraste áudio e vídeo separadamente.");
                 sources.push_back({file,duration,projection});
             }
             double cursor=at;
@@ -3063,6 +3067,11 @@ void Session::importMedia(const Array<File> &files,double at,ID targetTrack,Medi
             busy=false;
             try {
                 if(error.isNotEmpty())throw std::runtime_error(utf8(error));
+                if (tracks.empty()) {
+                    importProgress = 0; message.clear(); notify();
+                    if (!weak.expired() && completion) completion({});
+                    return;
+                }
                 if(project().id!=projectID)throw std::runtime_error("O projeto mudou durante a importação.");
                 edit([&](jaras::Project &project){
                     auto song=std::find_if(project.songs.begin(),project.songs.end(),[&](auto &s){return s.id==songID;});

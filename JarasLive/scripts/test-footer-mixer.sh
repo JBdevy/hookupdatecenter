@@ -31,7 +31,16 @@ body = body.replace('guard !preparing, let makeContent else { return }',
 body = 'enum FooterScrollLayoutProbe { static var forced = 0; static var preparations = 0 }\n' + body
 active_controls = grid.index('    @ViewBuilder func workspaceControlsAppearActive()')
 body += '\nextension View {\n' + grid[active_controls:grid.index('\n}', active_controls)] + '\n}\n'
-body += '\nstruct Track: Equatable {}\n'
+body += """
+struct Track: Equatable {}
+// The standalone layout fixture has no project controller for Library effect drops.
+@MainActor struct NativeLibraryTrackDrop {
+    static let type = NSPasteboard.PasteboardType("fixture.library.effect")
+    func operation(for sender: NSDraggingInfo, in view: NSView) -> NSDragOperation { [] }
+    func perform(_ sender: NSDraggingInfo, in view: NSView) -> Bool { false }
+}
+"""
+
 meter = Path('Apple/Shared/StemAudioPlayback.swift').read_text()
 model = meter[meter.index('@MainActor final class TrackMeterLevel'):meter.index('/// Item edges')]
 native = meter[meter.index('/// Uses the existing stereo readings'):meter.index('private final class PreparedSoundFont')]

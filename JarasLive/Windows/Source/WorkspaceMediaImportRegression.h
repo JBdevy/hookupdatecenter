@@ -312,7 +312,9 @@ void Workspace::runMediaImportRegression(const File &results, std::function<void
             require(target != nullptr, "Native HWND has no registered OLE drop target");
             target->AddRef();
             struct ReleaseTarget { IDropTarget *value; ~ReleaseTarget() { value->Release(); } } releaseTarget{target};
-            auto *data = new FileDropDataObject({first.getFullPathName()});
+            const auto unsupported = results.getChildFile("Ignored.txt");
+            require(unsupported.replaceWithText("ignored"), "Cannot create mixed Explorer selection");
+            auto *data = new FileDropDataObject({unsupported.getFullPathName(), first.getFullPathName()});
             struct ReleaseData { IDataObject *value; ~ReleaseData() { value->Release(); } } releaseData{data};
             RECT client{};
             require(GetClientRect(window, &client) != FALSE, "Cannot query native client rectangle");
@@ -345,7 +347,14 @@ void Workspace::runMediaImportRegression(const File &results, std::function<void
         }
         {
             ClipboardFixture clipboard(static_cast<HWND>(peer->getNativeHandle()));
-            clipboard.set({first.getFullPathName()});
+            const auto unsupported = results.getChildFile("Ignored.txt");
+            clipboard.set({unsupported.getFullPathName()});
+            itemClipboard.reset();
+            itemClipboardSequence.reset();
+            shortcut('V');
+            require(noTracks() && !session.busy && panel() == nullptr,
+                    "Pasting unsupported files must leave the grid unchanged");
+            clipboard.set({first.getFullPathName(), unsupported.getFullPathName()});
             itemClipboard.reset();
             itemClipboardSequence.reset();
             selectedTrack = {};

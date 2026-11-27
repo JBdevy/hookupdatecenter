@@ -139,21 +139,30 @@ void registerTests(const File &directory, Test &test) {
         require(JSON::toString(session.snapshot())==before,"Stacked batch did not undo as one edit");
         session.redo();require(JSON::toString(session.snapshot())==after,"Redo did not restore the whole aligned batch");
     });
-    test("Invalid external media batch leaves an empty timeline and its media directory unchanged", [&] {
-        const auto folder = directory.getChildFile("invalid-media-drop-" + text(uuid()));
-        const auto valid = source(folder, "valid.wav", 480), invalid = folder.getChildFile("broken.wav");
-        require(invalid.replaceWithText("This is not audio."), "Cannot create invalid media fixture");
+    test("Mixed external files keep readable media in order and ignore unsupported selections", [&] {
+        const auto folder = directory.getChildFile("mixed-media-drop-" + text(uuid()));
+        const auto first = source(folder, "first.wav", 480), last = source(folder, "last.wav", 960);
+        const auto broken = folder.getChildFile("broken.wav"), unrelated = folder.getChildFile("manual.txt");
+        require(broken.replaceWithText("Not audio") && unrelated.replaceWithText("Read me"), "Cannot create non-media fixtures");
         Session session; initialise(session, folder.getChildFile("project"));
-        const auto before = JSON::toString(ProjectCodec::encode(session.project()));
-        int completions = 0; String completionError;
-        session.importMedia({valid, invalid}, 0, {}, MediaDropLayout::separateTracks, 0, [&](String error) { ++completions; completionError = error; }); wait(session);
-        require(JSON::toString(ProjectCodec::encode(session.project())) == before && !session.canUndo(),
-                "Validation failure must not create partial tracks or undo entries");
-        require(session.message.isNotEmpty(), "Validation failure must provide an explanation");
-        require(completions == 1 && completionError.isNotEmpty() && completionError == session.message,
-                "A rejected import must deliver its error once to the visible UI");
-        require(session.mediaDirectory.findChildFiles(File::findFiles, true).isEmpty(),
-                "A rejected batch must not leave copied media behind");
+        const auto original = JSON::toString(ProjectCodec::encode(session.project()));
+        int completions = 0;
+        String result;
+        auto complete = [&](String error) { ++completions; result = error; };
+        session.importMedia({broken, unrelated, folder}, 2, {}, MediaDropLayout::sameTrack, 1, complete);
+        wait(session);
+        require(completions == 1 && result.isEmpty() && !session.canUndo() &&
+                JSON::toString(ProjectCodec::encode(session.project())) == original &&
+                session.mediaDirectory.findChildFiles(File::findFiles, true).isEmpty(), "Ignored files changed the project or showed an error");
+        session.importMedia({unrelated, first, broken, folder, last}, 2, {}, MediaDropLayout::sameTrack, 1, complete);
+        wait(session);
+        require(completions == 2 && result.isEmpty() && session.song()->tracks.size() == 1, "A bad file rejected its valid neighbours");
+        const auto &clips = session.song()->tracks.front().clips;
+        require(clips.size() == 2 && clips[0].audioFile && clips[1].audioFile &&
+                text(clips[0].audioFile->path).endsWith("first.wav") && text(clips[1].audioFile->path).endsWith("last.wav") &&
+                std::abs(clips[1].startTime - (2 + clips[0].duration + 1)) < 1.e-6, "Skipped files occupied a row, a gap or a media path");
+        session.undo();
+        require(JSON::toString(ProjectCodec::encode(session.project())) == original, "Mixed import must undo in one step");
     });
     test("Floating WAV above full scale imports with Mac waveform bounds and untouched PCM", [&] {
         const auto folder = directory.getChildFile("float-media-drop-" + text(uuid()));

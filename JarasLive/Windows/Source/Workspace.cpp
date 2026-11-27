@@ -2585,7 +2585,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
         }
         w.zoom.setValue(w.pixelsPerSecond, dontSendNotification);
     }
-    void applyCursorZoom(double scale, std::optional<double> screenAnchor = {}) {
+    void applyCursorZoom(double scale) {
         const double cursor = gestureZoomPosition ? *gestureZoomPosition : zoomPosition();
         const auto previousScale = w.pixelsPerSecond;
         const auto previousOffset = horizontal.getCurrentRangeStart();
@@ -2594,7 +2594,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
             syncZoomSlider();
             updateZoomRange();
         }
-        const double anchor = screenAnchor.value_or(canvas.getWidth()/2.);
+        const double anchor = canvas.getWidth() / 2.;
         const double offset = timelineAnchoredZoomOffset(cursor, w.pixelsPerSecond,
             horizontal.getMaximumRangeLimit() - firstOffset, canvas.getWidth(), anchor + firstOffset) + firstOffset;
         horizontal.setCurrentRangeStart(offset, dontSendNotification);
@@ -2804,7 +2804,11 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
             direction != gestureDirection || now - lastGestureInput > 250) {
             stopGesture();
             gestureMode = mode; gesturePrecise = preciseZoom;
-            if (!pan) gestureZoomPosition = zoomPosition();
+            if (!pan) {
+                gestureZoomPosition = zoomPosition();
+                // Recenter immediately after a manual pan. Only the zoom scale is animated.
+                applyCursorZoom(w.pixelsPerSecond);
+            }
             gestureTarget = pan ? horizontal.getCurrentRangeStart() : std::log(w.pixelsPerSecond);
         }
         gestureDirection = direction;
@@ -2813,7 +2817,6 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
             ? jlimit(firstOffset, std::max(firstOffset, horizontal.getMaximumRangeLimit() - horizontal.getCurrentRangeSize()), gestureTarget + delta)
             : jlimit(std::log(minimumZoom()), std::log(timelineGrid::maximumZoom), gestureTarget + delta);
         gestureOrigin = pan ? horizontal.getCurrentRangeStart() : std::log(w.pixelsPerSecond);
-        if(!pan) gestureZoomScreenX=*gestureZoomPosition*w.pixelsPerSecond-horizontal.getCurrentRangeStart();
         lastGestureInput = now;
         if (!isTimerRunning()) { startTimerHz(60); timerCallback(); }
     }
@@ -2842,7 +2845,6 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
     bool gesturePrecise = false;
     double gestureTarget = 0, gestureOrigin = 0, lastGestureInput = 0;
     std::optional<double> gestureZoomPosition;
-    double gestureZoomScreenX = 0;
 
     void stopGesture() { stopTimer(); gestureMode = 0; gestureDirection = 0; gestureZoomPosition.reset(); }
     void timerCallback() override {
@@ -2855,10 +2857,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
         const bool settled = progress >= 1.;
         const double eased = 1. - std::pow(1. - progress, 3.);
         const double next = settled ? gestureTarget : gestureOrigin + (gestureTarget - gestureOrigin) * eased;
-        if (gestureMode == 1) {
-            const double anchor=gestureZoomScreenX+(canvas.getWidth()/2.-gestureZoomScreenX)*eased;
-            applyCursorZoom(std::exp(next),anchor);
-        }
+        if (gestureMode == 1) applyCursorZoom(std::exp(next));
         else horizontal.setCurrentRangeStart(next);
         if (settled) stopGesture();
     }
@@ -9572,7 +9571,13 @@ void Workspace::filesDropped(const StringArray &files,int x,int y) {
     clearExternalDrop();++fileDropCount;
     fileDropStatus="drop received";
     if(loginPanel||session.busy){fileDropStatus=loginPanel?"login required":"import busy";return;}
-    for(auto &path:files)if(File(path).hasFileExtension("jl;bkjl;ziplive;zip")){perform([&]{openProject(File(path));});return;}
+    const auto gridFiles = externalMedia::gridFiles(files, true);
+    if (gridFiles.isEmpty() || browserVisible || !projectReady) {
+        for (const auto &path : files) if (File(path).hasFileExtension("jl;bkjl;ziplive;zip")) {
+            perform([&] { openProject(File(path)); }); return;
+        }
+        if (gridFiles.isEmpty()) return;
+    }
     if(browserVisible||!projectReady||!session.song()){fileDropStatus="project not open";return;}
     const auto local=timeline->getLocalPoint(this,Point<int>{x,y});
     if(!timeline->getLocalBounds().contains(local)||local.y<timeline->headerHeight()){fileDropStatus="outside grid";return;}
@@ -9581,15 +9586,15 @@ void Workspace::filesDropped(const StringArray &files,int x,int y) {
     const auto& dropSong = *session.song();
     const double at=timelineGrid::snapSelection(timeline->timeAt((float)local.x),dropSong,pixelsPerSecond,session.transport(),
         freeTimelinePosition(ModifierKeys::getCurrentModifiers()),nullptr,nullptr,&timeline->snapTiming(dropSong));
-    if (std::any_of(files.begin(), files.end(), [](const auto &path) { return File(path).hasFileExtension("jllyrics"); })) {
-        if (!std::all_of(files.begin(), files.end(), [](const auto &path) { return File(path).hasFileExtension("jllyrics"); })) {
+    if (std::any_of(gridFiles.begin(), gridFiles.end(), [](const auto &path) { return File(path).hasFileExtension("jllyrics"); })) {
+        if (!std::all_of(gridFiles.begin(), gridFiles.end(), [](const auto &path) { return File(path).hasFileExtension("jllyrics"); })) {
             showError("Drop lyrics separately from audio and video.");
             return;
         }
         const auto songID = session.song()->id;
         perform([&] {
             std::vector<jlLyrics::Document> lyrics;
-            for (const auto &path : files) lyrics.push_back(jlLyrics::read(File(path)));
+            for (const auto &path : gridFiles) lyrics.push_back(jlLyrics::read(File(path)));
             session.edit([&](auto &project) {
                 for (auto &song : project.songs) if (song.id == songID)
                     for (const auto &document : lyrics) jlLyrics::insert(song, document, at, jaras::regionOwnerAt(song, at));
@@ -9597,7 +9602,7 @@ void Workspace::filesDropped(const StringArray &files,int x,int y) {
         });
         return;
     }
-    Array<File> media;for(auto &path:files)media.add(File(path));
+    Array<File> media;for(const auto &path:gridFiles)media.add(File(path));
     std::vector<ID> gridTracks;
     if (media.size() > 1)
         for (const auto index : gridMediaDropRows(row, (size_t)media.size()))
@@ -11578,19 +11583,32 @@ std::function<void(int)> Workspace::clipMenuAction(ID id, ID ownerID) {
                     return;
                 }
                 if (action == 9) {
-                    if (const auto *song = w.session.song())
-                        for (const auto &track : song->tracks)
-                            for (const auto &clip : track.clips)
-                                if (clip.id == id) {
-                                    for (const auto &region : song->parts)
-                                        if (std::abs(region.startTime - clip.startTime) < .000001)
-                                            throw std::runtime_error(
-                                                "Já existe uma região começando nesta posição.");
-                                    const auto name = text(clip.name);
-                                    const auto start = clip.startTime, end = start + clip.duration;
-                                    w.session.addRegion(name, start, end);
-                                    return;
-                                }
+                    if (w.session.project().id != projectID || !w.session.song() || w.session.song()->id != songID) return;
+                    w.session.editTimeline([&](jaras::Project &project) {
+                        auto song = std::find_if(project.songs.begin(), project.songs.end(),
+                                                [&](const auto &s) { return s.id == songID; });
+                        if (song == project.songs.end()) return;
+                        std::set<double> starts;
+                        for (const auto &part : song->parts) starts.insert(part.startTime);
+                        const auto initialSize = song->parts.size();
+                        for (const auto &track : song->tracks) {
+                            for (const auto &clip : track.clips) {
+                                if (!targets.count(clip.id)) continue;
+                                const auto it = starts.lower_bound(clip.startTime - .000001);
+                                if (it != starts.end() && std::abs(*it - clip.startTime) < .000001) continue;
+                                jaras::Part region;
+                                region.id = uuid();
+                                region.name = clip.name;
+                                region.startTime = clip.startTime;
+                                region.endTime = std::min(song->duration, clip.startTime + clip.duration);
+                                region.color = 0x66556a;
+                                song->parts.push_back(std::move(region));
+                                starts.insert(clip.startTime);
+                            }
+                        }
+                        if (song->parts.size() == initialSize)
+                            throw std::runtime_error("Já existe uma região começando nesta posição.");
+                    });
                     return;
                 }
                 if (action >= 20 && action <= 24) {
@@ -11866,7 +11884,8 @@ void Workspace::pasteGridItems(bool duplicate) {
             const auto paths = gridMediaClipboard::files();
             if (paths.isEmpty()) return;
             Array<File> media;
-            for (const auto &path : paths) media.add(File(path));
+            for (const auto &path : externalMedia::gridFiles(paths)) media.add(File(path));
+            if (media.isEmpty()) return;
             ID target;
             for (const auto &track : session.song()->tracks)
                 if (trackSelected(track.id)) { target = track.id; break; }

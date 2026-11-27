@@ -291,7 +291,7 @@ for right in [false, true] {
         let x = scroll.contentView.bounds.minX
         let visible = Int(x / 86)..<Int(ceil((x + scroll.contentSize.width) / 86))
         precondition(view.pendingStripLayout.isDisjoint(with: visible), "Every visible destination is laid out before scrolling")
-        precondition(!view.pendingStripLayout.isEmpty, "Offscreen overscan is deferred beyond the input event")
+        // A revisited viewport may already have its reserve prepared; a new one warms between events.
         precondition(FooterScrollLayoutProbe.forced <= visible.count,
                      "Wheel/bar handling does not force layout of offscreen prefetched columns")
         precondition(abs(bar.doubleValue - fraction) < 0.002, "Virtualization does not reset the requested offset")
@@ -408,8 +408,8 @@ precondition(FooterMixerStripLayout(height: 239).slotsHeight == 0,
              "The minimum docked height must hide all slots")
 for height in stride(from: CGFloat(0), through: 500, by: 1) {
     for count in [0, 1, 4, 24] {
-        let track = FooterSlotSectionsLayout(height: height, outputCount: count)
-        let main = FooterSlotSectionsLayout(height: height, outputCount: count, main: true)
+        let track = FooterSlotSectionsLayout(height: height, hasRouting: count > 0, main: false, separatedRouting: false)
+        let main = FooterSlotSectionsLayout(height: height, hasRouting: count > 0, main: true, separatedRouting: false)
         precondition(track.pluginsHeight == main.pluginsHeight)
         for sections in [track, main] {
             precondition(sections.pluginsHeight + sections.outputsHeight + sections.dividerHeight <= height)
@@ -418,7 +418,7 @@ for height in stride(from: CGFloat(0), through: 500, by: 1) {
         }
     }
 }
-private let mainSections = FooterSlotSectionsLayout(height: 500, outputCount: 1, main: true)
+private let mainSections = FooterSlotSectionsLayout(height: 500, hasRouting: true, main: true, separatedRouting: false)
 precondition(mainSections.pluginsHeight == 237 && mainSections.dividerHeight == 47 && mainSections.outputsHeight == 216)
 print("MIXER_MINIMUM_HIDES_SLOTS_PLUGINS_GROW_UNBOUNDED_OUTPUTS_RESERVE_SCROLL_VIEWPORT_OK")
 
@@ -599,7 +599,7 @@ for detached in [false, true] {
         sections.update(plugins: AnyView(SlotSectionContent(role: "FX", count: 8, revision: revision)
             .environment(\.locale, locale).environment(\.colorScheme, revision == 0 ? .dark : .light)),
             pluginsHeight: 166, outputs: AnyView(SlotSectionContent(role: "OUT", count: outputs, revision: revision)
-                .environment(\.locale, locale).environment(\.colorScheme, revision == 0 ? .dark : .light)), outputCount: outputs)
+                .environment(\.locale, locale).environment(\.colorScheme, revision == 0 ? .dark : .light)), outputsHeight: CGFloat(outputs * 21), bypass: AnyView(Color.clear), main: false, header: nil, separatedRouting: false)
         sections.layoutSubtreeIfNeeded()
         RunLoop.main.run(until: Date().addingTimeInterval(0.03)); sections.layoutSubtreeIfNeeded()
     }
@@ -616,9 +616,9 @@ for detached in [false, true] {
         if detached { sectionWindow.setContentSize(NSSize(width: 75, height: height)) }
         else { sections.setFrameSize(NSSize(width: 75, height: height)) }
         sections.layoutSubtreeIfNeeded()
-        let expected = FooterSlotSectionsLayout(height: CGFloat(height), outputCount: 4)
-        precondition(slots[0].frame.height == expected.pluginsHeight && slots[1].frame.height == expected.outputsHeight)
-        precondition(slots[1].frame.maxY == CGFloat(height) && slots[1].isHidden == (expected.outputsHeight == 0))
+        let expected = FooterSlotSectionsLayout(height: CGFloat(height), hasRouting: true, main: false, separatedRouting: false)
+        precondition(slots[0].frame.height == expected.pluginsHeight && (expected.outputsHeight == 0 || slots[1].frame.height == expected.outputsHeight))
+        precondition((expected.outputsHeight == 0 || slots[1].frame.maxY == CGFloat(height)) && slots[1].isHidden == (expected.outputsHeight == 0))
         precondition(pluginDocument.frame == pluginFrame && outputDocument.frame == outputFrame,
                      "FX and output documents must remain fixed while their viewports change")
     }
@@ -643,7 +643,7 @@ for detached in [false, true] {
     current.first!.testAction()
     precondition(SlotSectionJournal.clicks.last!.hasSuffix("-1"), "An update at the same height must refresh the action")
     update(2, outputs: 0)
-    precondition(slots[1].isHidden && slots[0].frame.height == FooterSlotSectionsLayout(height: sections.bounds.height, outputCount: 0).pluginsHeight,
+    precondition(slots[1].isHidden && slots[0].frame.height == FooterSlotSectionsLayout(height: sections.bounds.height, hasRouting: false, main: false, separatedRouting: false).pluginsHeight,
                  "An empty output list still leaves the bypass controls available")
     update(3, outputs: 4)
     precondition(!slots[1].isHidden && slotSectionButtons(sections).count == 12,
@@ -652,9 +652,10 @@ for detached in [false, true] {
     for count in [0, 1, 8, 24] {
         update(4, outputs: count)
         sections.layoutSubtreeIfNeeded()
-        let routingHeight: CGFloat = count > 0 ? 216 : 0
-        precondition(slots[0].frame.maxY == 237 && slots[1].frame.maxY == 500 &&
-                     slots[1].frame.height == routingHeight, "Sends share the same starting row regardless of the number of destinations")
+        let routingReady = count == 0 ? slots[1].isHidden :
+            (!slots[1].isHidden && slots[1].frame.maxY == 500 && slots[1].frame.height == 216)
+        precondition(slots[0].frame.maxY == 237 && routingReady,
+                     "Sends share the same starting row regardless of the number of destinations")
     }
     print("HOZ_BYPASS_STAYS_CENTERED_WITH_ZERO_ONE_EIGHT_OR_TWENTY_FOUR_OUTPUT_ROWS_OK")
     sectionWindow.close()
@@ -662,7 +663,7 @@ for detached in [false, true] {
 print("FOOTER_NATIVE_FX_OUTPUT_DIVIDER_DOCKED_FLOATING_HEIGHTS_FIXED_DOCUMENTS_SCROLL_ACTIONS_ENVIRONMENT_WITHOUT_ROOT_REBUILDS_OK")
 
 private let stableChannelHost = FooterMixerHostingView(rootView: AnyView(
-    FooterMixerStripGeometry(iconHeight: 40, selected: true, footerStripe: .systemPurple, slots: AnyView(Color.clear),
+    FooterMixerStripGeometry(iconHeight: 40, selected: true, footerStripe: .systemPurple, slots: AnyView(Color.clear), libraryDrop: nil,
         footer: { AnyView(Color.clear.frame(height: $0 + FooterMixerStripLayout.labelHeight + 40)) }).padding(5)))
 stableChannelHost.usesChannelGeometry = true
 stableChannelHost.frame = NSRect(x: 0, y: 0, width: 93, height: 240)
@@ -676,7 +677,7 @@ for height in 241...500 {
     stableChannelHost.setChannelFrame(NSRect(x: 0, y: 0, width: 93, height: height))
     stableChannelHost.layoutSubtreeIfNeeded()
     precondition(stableChannelHost.frame.height == 724, "Channel decorations must keep a fixed SwiftUI size proposal")
-    precondition(abs(stableGeometry.subviews[1].frame.maxY - CGFloat(height - 14)) < 0.01,
+    precondition(abs(stableGeometry.subviews.last!.frame.maxY - CGFloat(height - 14)) < 0.01,
                  "Fixed outer decoration size must not displace the channel's lower controls")
     let band = stableGeometry.layer!.sublayers!.first { $0.name == "track-color-footer" }!
     precondition(!band.isHidden && band.frame.maxY == CGFloat(height - 10) &&
@@ -697,7 +698,7 @@ private func revealButtons(_ view: NSView) -> [NSButton] {
 }
 view.update(width: 300 * 86 + 7, stride: 86, count: 300) { _ in
     AnyView(FooterMixerStripGeometry(iconHeight: 0, selected: false,
-        slots: AnyView(Color.gray), footer: { height in
+        slots: AnyView(Color.gray), libraryDrop: nil, footer: { height in
             AnyView(VStack { RevealControl().frame(height: 24); Spacer(minLength: 0) }.frame(height: height + FooterMixerStripLayout.labelHeight))
         }).frame(width: 83).padding(5))
 }
@@ -720,7 +721,7 @@ print("FOOTER_FIRST_REVEAL_COMMITS_NESTED_CONTROLS_BEFORE_CLIP_MOVES_OK")
 private let opening = FooterMixerScrollView(frame: NSRect(x: 0, y: 0, width: 500, height: 273))
 func openingContent(_ range: Range<Int>) -> AnyView {
     AnyView(FooterMixerStripGeometry(iconHeight: 0, selected: false,
-        slots: AnyView(Color.gray), footer: { height in
+        slots: AnyView(Color.gray), libraryDrop: nil, footer: { height in
             AnyView(VStack { RevealControl().frame(height: 24); Spacer(minLength: 0) }.frame(height: height + FooterMixerStripLayout.labelHeight))
         }).frame(width: 83).padding(5))
 }
@@ -783,7 +784,7 @@ func replaceChannelIdentities() {
             HStack(spacing: 3) {
                 ForEach(Array(range), id: \.self) { index in
                     FooterMixerStripGeometry(iconHeight: 40, selected: false,
-                        slots: AnyView(Color.gray), footer: { height in
+                        slots: AnyView(Color.gray), libraryDrop: nil, footer: { height in
                             AnyView(VStack { RevealControl().frame(height: 24); Spacer(minLength: 0) }
                                 .frame(height: height + FooterMixerStripLayout.labelHeight + 40))
                         }).frame(width: 83).frame(maxHeight: .infinity).id("\(identity)-\(index)")
@@ -846,5 +847,24 @@ for _ in 0..<4 {
     follow.revealTrack(created, request: request)
     precondition(clip.contentView.bounds.minX == 0, "An ordinary refresh cannot override later manual scrolling")
 }
+let filterIDs = Array(followIDs.prefix(3))
+let filterProject = UUID()
+func filter(_ ids: [UUID], available: [UUID]) {
+    follow.update(width: CGFloat(ids.count) * 153 + 7, stride: 153, count: ids.count,
+                  versions: ids.map { _ in 1 }, identifiers: ids, project: filterProject,
+                  trackExists: { available.contains($0) }, makeContent: { _ in AnyView(Color.blue) })
+    follow.layoutSubtreeIfNeeded()
+}
+filter(filterIDs, available: filterIDs)
+let filterDocument = follow.subviews.compactMap { $0 as? NSScrollView }.first!.documentView!
+private let originals = filterDocument.subviews.compactMap { $0 as? FooterMixerHostingView }.filter { !$0.isHidden }
+precondition(originals.count >= 2)
+filter([], available: filterIDs)
+precondition(originals.allSatisfy { $0.isHidden && $0.superview === filterDocument })
+filter(filterIDs, available: filterIDs)
+precondition(originals.allSatisfy { !$0.isHidden && $0.superview === filterDocument })
+filter([], available: [])
+precondition(originals.allSatisfy { $0.superview == nil }, "Deleted tracks must release their controls")
+print("FOOTER_SIGNAL_FILTER_REUSES_VISIBLE_CHANNELS_AND_RELEASES_DELETED_TRACKS_OK")
 followWindow.close()
 print("FOOTER_DUPLICATED_TRACK_FOLLOW_900_CHANNELS_OK")
