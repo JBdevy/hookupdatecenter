@@ -400,9 +400,9 @@ private struct TimelineGridContent: View, Equatable {
     // whenever its parent is reevaluated, including a Setlist width change.
     @StateObject private var nativeBase = NativeTimelineBaseController()
     @State private var nativeBodyCache = NativeTimelineAudioBodyCache()
-    @ObservedObject private var metalRenderer = MetalWaveformRenderer.shared
     @State private var trackHeightMotion = TimelineTrackHeightMotion()
     #endif
+    @ObservedObject private var metalRenderer = MetalWaveformRenderer.shared
     @State private var overlapCache = RegionOverlapCache()
     @State private var horizontalScroll = TimelineScrollPosition()
     @State private var verticalScroll = TimelineVerticalScroll()
@@ -583,10 +583,11 @@ private struct TimelineGridContent: View, Equatable {
                     let mountedLabelWidth = labelWidth > 0 ? labelWidth : TrackMixerColumnGeometry(requestedWidth: CGFloat(restoreLabelWidth), maximum: maximumLabelWidth, showsIcons: false, extraWidth: vuWidth).totalWidth
                     let resizeViewport = mixerResizeState.limitsWidthToVisibleRows
                         ? CGRect(x: 0, y: verticalScroll.offset, width: 0, height: geometry.size.height) : nil
+                    let usesMetalWaveforms = metalRenderer.isAvailable
                     #if os(macOS)
                     let nativeAudioBody = nativeBodyCache.configuration(song: song, renderKey: renderKey, rows: rows,
                         metadata: renderMetadata, rulerHeight: rulerHeight, selectedClips: selectedClips,
-                        mediaDirectory: mediaDirectory,
+                        mediaDirectory: mediaDirectory, isSupported: usesMetalWaveforms,
                         missingAudioPaths: missingAudioPaths, language: locale.identifier, preview: itemWaveformPreview, invertWaveformColors: invertWaveformColors)
                     let hostedItems = renderMetadata.hasItems && (nativeAudioBody?.hasFallbackItems ?? true)
                     let hostedItemCoverage = nativeAudioBody.map { TimelineHostedItemCoverage(items: $0.fallbackItems, identity: $0.fallbackIdentity) }
@@ -801,7 +802,8 @@ private struct TimelineGridContent: View, Equatable {
                                             let viewport = CGRect(x: horizontalOffset, y: visibleY, width: viewportWidth, height: geometry.size.height)
                                             makeTimelineDrawing(viewport: viewport, song: song, rows: rows, renderKey: renderKey,
                                                 rulerHeight: rulerHeight, extent: extent, documentWidth: width, metadata: renderMetadata,
-                                                nativeAudioItems: nativeAudioItems, hostedMetalRequired: hostedMetalRequired).equatable()
+                                                nativeAudioItems: nativeAudioItems, hostedMetalRequired: hostedMetalRequired,
+                                                usesMetalWaveforms: usesMetalWaveforms).equatable()
                                         }
                                         }.frame(width: layoutWidth, height: contentHeight)
                                         TimelineWaveformPreviewScaleLayer(state: zoomState, extent: extent, preview: itemWaveformPreview) { _, width, pixelsPerSecond in
@@ -1814,12 +1816,13 @@ private struct TimelineGridContent: View, Equatable {
                                      renderKey: TimelineRenderKey, rulerHeight: CGFloat,
                                      extent: Double, documentWidth: CGFloat,
                                      metadata: TimelineRenderMetadata, nativeAudioItems: Set<UUID> = [],
-                                     hostedMetalRequired: Bool = true) -> TimelineDrawing {
+                                     hostedMetalRequired: Bool, usesMetalWaveforms: Bool) -> TimelineDrawing {
         var drawing = TimelineDrawing(visibleRect: viewport, song: song, renderKey: renderKey,
             rowHeight: rows.baseHeight, rulerHeight: rulerHeight, extent: extent,
             selectedClips: selectedClips, movingClip: movingClip, movingStart: movingStart)
-        drawing.mediaDirectory = documents.currentURL?.deletingLastPathComponent()
-        drawing.missingAudioPaths = documents.missingAudioPaths
+        drawing.mediaDirectory = mediaDirectory
+        drawing.missingAudioPaths = missingAudioPaths
+        drawing.usesMetalWaveforms = usesMetalWaveforms
         drawing.documentWidth = documentWidth
         #if !os(macOS)
         drawing.selectedTracks = selectedTracks
@@ -2665,8 +2668,9 @@ private struct TimelineGridContent: View, Equatable {
 
     static func make(song: Song, key: TimelineRenderKey, rows: TrackRowLayout, metadata: TimelineRenderMetadata,
                      rulerHeight: CGFloat, selectedClips: Set<UUID>, mediaDirectory: URL?,
+                     isSupported: Bool = MetalWaveformRenderer.isSupported,
                      missingAudioPaths: Set<String>, identity: Int = 0, language: String = "", invertWaveformColors: Bool = false) -> Self? {
-        guard MetalWaveformRenderer.isSupported, let mediaDirectory else { return nil }
+        guard isSupported, let mediaDirectory else { return nil }
         var ids = Set<UUID>(), hasFallbackItems = false, hasFallbackWaveforms = false
         var fallback: [FallbackItem] = []
         var decorations: [UUID: NativeTimelineItemBodyInkView.Content] = [:]
@@ -2715,10 +2719,10 @@ private struct TimelineGridContent: View, Equatable {
     private var identity = 0
     func configuration(song: Song, renderKey: TimelineRenderKey, rows: TrackRowLayout, metadata: TimelineRenderMetadata,
                        rulerHeight: CGFloat, selectedClips: Set<UUID>, mediaDirectory: URL?,
-                       missingAudioPaths: Set<String>, language: String = "", preview: ItemWaveformPreview? = nil, invertWaveformColors: Bool = false) -> NativeTimelineAudioBodyConfiguration? {
+                       isSupported: Bool = MetalWaveformRenderer.isSupported, missingAudioPaths: Set<String>,
+                       language: String = "", preview: ItemWaveformPreview? = nil, invertWaveformColors: Bool = false) -> NativeTimelineAudioBodyConfiguration? {
         let next = NativeTimelineAudioBodyConfiguration.ContentKey(document: TimelineContentKey(renderKey), metadataIdentity: ObjectIdentifier(metadata), rulerHeight: rulerHeight,
             selectedClips: selectedClips, mediaDirectory: mediaDirectory, missingAudioPaths: missingAudioPaths, language: language, invertWaveformColors: invertWaveformColors)
-        let isSupported = MetalWaveformRenderer.isSupported
         if self.key == next, supported == isSupported, value?.metadata.soloAudibleTracks == metadata.soloAudibleTracks {
             if self.rows != rows {
                 // Height gestures only reproject the existing item content.
@@ -2735,7 +2739,7 @@ private struct TimelineGridContent: View, Equatable {
         }
         self.key = next; self.rows = rows; supported = isSupported; identity &+= 1
         value = NativeTimelineAudioBodyConfiguration.make(song: song, key: renderKey, rows: rows, metadata: metadata,
-            rulerHeight: rulerHeight, selectedClips: selectedClips, mediaDirectory: mediaDirectory,
+            rulerHeight: rulerHeight, selectedClips: selectedClips, mediaDirectory: mediaDirectory, isSupported: isSupported,
             missingAudioPaths: missingAudioPaths, identity: identity, language: language, invertWaveformColors: invertWaveformColors)
         value?.preview = preview
         return value
@@ -5844,7 +5848,7 @@ struct TimelineDrawing: View, Equatable {
     @Environment(\.displayScale) private var displayScale
     @AppStorage(TimelineAppearanceDefaults.invertWaveformColorsKey) private var invertWaveformColors = TimelineAppearanceDefaults.invertWaveformColors
     static func == (lhs: Self, rhs: Self) -> Bool {
-        guard lhs.nativeAudioItems == rhs.nativeAudioItems, lhs.hostedMetalRequired == rhs.hostedMetalRequired, lhs.invertWaveformColors == rhs.invertWaveformColors else { return false }
+        guard lhs.usesMetalWaveforms == rhs.usesMetalWaveforms, lhs.nativeAudioItems == rhs.nativeAudioItems, lhs.hostedMetalRequired == rhs.hostedMetalRequired, lhs.invertWaveformColors == rhs.invertWaveformColors else { return false }
         return lhs.trackHeightScales == rhs.trackHeightScales && lhs.selectedTracks == rhs.selectedTracks && lhs.documentWidth == rhs.documentWidth && lhs.visibleRect == rhs.visibleRect && lhs.renderKey == rhs.renderKey && lhs.rowHeight == rhs.rowHeight && lhs.rulerHeight == rhs.rulerHeight && lhs.extent == rhs.extent && lhs.selectedClips == rhs.selectedClips && lhs.movingClip == rhs.movingClip && lhs.movingStart == rhs.movingStart && lhs.colorScheme == rhs.colorScheme && lhs.mediaDirectory == rhs.mediaDirectory && lhs.missingAudioPaths == rhs.missingAudioPaths
     }
     @Environment(\.colorScheme) private var colorScheme
@@ -5860,13 +5864,13 @@ struct TimelineDrawing: View, Equatable {
     var missingAudioPaths: Set<String> = []
     var nativeAudioItems: Set<UUID> = []
     var hostedMetalRequired = true
+    var usesMetalWaveforms = MetalWaveformRenderer.isSupported
     var documentWidth: CGFloat? = nil
     var selectedTracks: Set<UUID> = []
     var trackHeightScales: [Double] = []
     fileprivate var cachedRows: TrackRowLayout? = nil
     var itemPreview: ItemWaveformPreview? = nil
     fileprivate var renderMetadata: TimelineRenderMetadata? = nil
-    @ObservedObject private var metalRenderer = MetalWaveformRenderer.shared
     @State private var rowLayoutCache = TrackLayoutCache()
     @State private var metadataCache = TimelineRenderMetadataCache()
     var body: some View {
@@ -5881,13 +5885,20 @@ struct TimelineDrawing: View, Equatable {
         #endif
         ZStack(alignment: .topLeading) {
         if needsItems {
-        TimelineWaveformReadinessLayer(observesWaveforms: !MetalWaveformRenderer.isSupported) { waveformRevision in
-        ViewportTimelineCanvas(visibleRect: visibleRect, synchronized: true, documentWidth: documentWidth, batchesViewport: MetalWaveformRenderer.isSupported, diagnosticName: "items", identity: TimelineTileIdentity(renderKey: renderKey, extent: extent, light: colorScheme == .light, rowHeight: rowHeight, trackHeights: rows.heights, rulerHeight: rulerHeight, selectedClips: selectedClips, waveformRevision: waveformRevision, missingAudioPaths: missingAudioPaths, mediaDirectory: mediaDirectory, gridStyle: [invertWaveformColors ? 1 : 0]), tileIdentity: { tile, size in
-            var identity = TimelineTileIdentity(renderKey: renderKey, extent: extent, light: colorScheme == .light, rowHeight: rowHeight, trackHeights: rows.heights, rulerHeight: rulerHeight, selectedClips: selectedClips, missingAudioPaths: missingAudioPaths, mediaDirectory: mediaDirectory, gridStyle: [invertWaveformColors ? 1 : 0])
-            if MetalWaveformRenderer.isSupported { return identity }
+        TimelineWaveformReadinessLayer(observesWaveforms: !usesMetalWaveforms) { waveformRevision in
+        // The retained Canvas sits above native item bodies. A change of owner
+        // must retire its opaque fills even when viewport and zoom stay fixed.
+        let itemIdentity = TimelineTileIdentity(renderKey: renderKey, extent: extent, light: colorScheme == .light,
+            rowHeight: rowHeight, trackHeights: rows.heights, rulerHeight: rulerHeight, selectedClips: selectedClips,
+            nativeAudioItems: nativeAudioItems, waveformRevision: waveformRevision, missingAudioPaths: missingAudioPaths,
+            mediaDirectory: mediaDirectory, gridStyle: [invertWaveformColors ? 1 : 0])
+        ViewportTimelineCanvas(visibleRect: visibleRect, synchronized: true, documentWidth: documentWidth,
+            batchesViewport: usesMetalWaveforms, diagnosticName: "items", identity: itemIdentity, tileIdentity: { tile, size in
+            var identity = itemIdentity
+            if usesMetalWaveforms { return identity }
             let scale = size.width / extent
             var fingerprint = Hasher()
-            if let mediaDirectory, !MetalWaveformRenderer.isSupported {
+            if let mediaDirectory {
                 var visitedFiles = Set<String>()
                 for (index, track) in song.tracks.enumerated() where rulerHeight + rows.offsets[index] <= tile.maxY && rulerHeight + rows.offsets[index] + rows.heights[index] >= tile.minY {
                     for clip in track.clips where clip.startTime * scale <= tile.maxX && (clip.startTime + clip.duration) * scale >= tile.minX {
@@ -5902,6 +5913,7 @@ struct TimelineDrawing: View, Equatable {
             return identity
         }) { context, size, tile, waveformOwner in
             let scale = size.width / extent
+            var hostedAudioBodies = 0
             // Empty space keeps the same grid spacing without creating or stretching tracks.
             let clickTiming = metadata.hasClickTrack ? metadata.sections(until: song.duration) : []
             #if !os(macOS)
@@ -5939,7 +5951,10 @@ struct TimelineDrawing: View, Equatable {
                     let selected = selectedClips.contains(clip.id)
                     let rect = CGRect(x: clip.startTime * scale + 1, y: y + rows.itemLaneOffset(clip.id, track: index) + GridSelectionItem.verticalInset, width: max(2, clip.duration * scale - 2), height: rows.itemLaneHeight(clip.id, track: index) - 2 * GridSelectionItem.verticalInset)
                     guard rect.intersects(tile.insetBy(dx: -6, dy: -6)) else { continue }
-                    drawTimelineItem(clip, track: track, title: metadata.itemTitle(for: clip, track: track), rect: rect, selected: selected, silenced: silenced, scale: scale, tile: tile, context: &context, mediaDirectory: mediaDirectory, tempoSegments: (metadata.affectsAudio || clip.elasticPoints?.isEmpty == false) && (!MetalWaveformRenderer.isSupported || clip.loopLength != nil) ? metadata.fragments(for: clip) : nil, missingAudio: (clip.audioFile ?? track.audioFile).map { missingAudioPaths.contains($0.path) } ?? false, waveformOwner: waveformOwner, drawWaveform: !MetalWaveformRenderer.isSupported, clickTiming: track.kind == .click ? clickTiming : [], invertWaveformColors: invertWaveformColors, stackedOverlap: rows.lanes[index].hasStackedOverlap(clip.id))
+                    if TimelineRenderDiagnostics.enabled, track.kind == .standard, (clip.audioFile ?? track.audioFile) != nil {
+                        hostedAudioBodies += 1
+                    }
+                    drawTimelineItem(clip, track: track, title: metadata.itemTitle(for: clip, track: track), rect: rect, selected: selected, silenced: silenced, scale: scale, tile: tile, context: &context, mediaDirectory: mediaDirectory, tempoSegments: (metadata.affectsAudio || clip.elasticPoints?.isEmpty == false) && (!usesMetalWaveforms || clip.loopLength != nil) ? metadata.fragments(for: clip) : nil, missingAudio: (clip.audioFile ?? track.audioFile).map { missingAudioPaths.contains($0.path) } ?? false, waveformOwner: waveformOwner, drawWaveform: !usesMetalWaveforms, clickTiming: track.kind == .click ? clickTiming : [], invertWaveformColors: invertWaveformColors, stackedOverlap: rows.lanes[index].hasStackedOverlap(clip.id))
                 }
             }
             // On macOS, marker flags and lines use a separate drag layer.
@@ -5955,9 +5970,13 @@ struct TimelineDrawing: View, Equatable {
                 line.addLine(to: CGPoint(x: x, y: size.height))
                 context.stroke(line, with: .color(color), style: StrokeStyle(lineWidth: TimelineVerticalInk.width(at: displayScale), dash: marker.isTempo ? [2, 3] : []))
             }
-            if !MetalWaveformRenderer.isSupported { itemPreview?.didPresent(song) }
+            if TimelineRenderDiagnostics.enabled {
+                NSLog("CatLive items Canvas song=%@ scale=%.6f metal=%d nativeItems=%ld hostedAudioBodies=%ld",
+                    song.id.uuidString, Double(scale), usesMetalWaveforms ? 1 : 0, nativeAudioItems.count, hostedAudioBodies)
+            }
+            if !usesMetalWaveforms { itemPreview?.didPresent(song) }
         }.overlay(alignment: .topLeading) {
-            if MetalWaveformRenderer.isSupported, hostedMetalRequired, let mediaDirectory {
+            if usesMetalWaveforms, hostedMetalRequired, let mediaDirectory {
                 TimelineMetalWaveformLayer(visibleRect: visibleRect, song: song, rows: rows, renderKey: renderKey,
                     rulerHeight: rulerHeight, extent: extent, selectedClips: selectedClips,
                     mediaDirectory: mediaDirectory, missingAudioPaths: missingAudioPaths, documentWidth: documentWidth,
@@ -8093,6 +8112,7 @@ private struct TimelineTileIdentity: Equatable {
     var trackHeights: [CGFloat] = []
     var rulerHeight: CGFloat = 0
     var selectedClips: Set<UUID> = []
+    var nativeAudioItems: Set<UUID> = []
     var waveformPreview: ItemWaveformPreview.State? = nil
     var waveformRevision: UInt64 = 0
     var missingAudioPaths: Set<String> = []

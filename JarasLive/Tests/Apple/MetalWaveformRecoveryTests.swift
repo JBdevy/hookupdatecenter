@@ -210,16 +210,26 @@ openingSurface.deferOpeningUntilVisible()
 openingWindow.contentView = openingSurface
 openingWindow.orderBack(nil)
 settle()
-let openingFrame = MetalWaveformFrame(size: size, strokes: [stroke])
+let firstOpeningFrame = MetalWaveformFrame(size: size, strokes: [stroke],
+    coordinateSpace: .init(documentOrigin: .zero, pixelsPerSecond: 100, contentRevision: 1))
+let openingFrame = MetalWaveformFrame(size: size, strokes: [stroke],
+    coordinateSpace: .init(documentOrigin: .zero, pixelsPerSecond: 100, contentRevision: 2))
 MetalDrawableRecoveryProbe.blocked = true
 let openingAttempts = MetalDrawableRecoveryProbe.attempts
+openingSurface.submit(firstOpeningFrame)
 openingSurface.submit(openingFrame)
+check(openingSurface.submittedFrameCount == 0 && openingSurface.subviews.first?.alphaValue == 1,
+    "Replacing a pending opening projection must leave the never-drawn Metal layer visible")
 awaitValue("first draw and next-turn retry must run") { MetalDrawableRecoveryProbe.attempts >= openingAttempts + 2 }
 settle(0.25)
 check(openingSurface.pendingForRecoveryTest)
+// Successful encoding can still lose its first presentation during the
+// opening transaction. The display callback is never delivered in this case.
+MetalDrawableRecoveryProbe.missingPresentations = 1
 MetalDrawableRecoveryProbe.blocked = false
 awaitValue("opening waveform must appear with no input or additional submit") {
-    openingSurface.presentedForRecoveryTest?.hasSameContent(as: openingFrame) == true
+    MetalDrawableRecoveryProbe.observedPresentations == 2 &&
+        openingSurface.presentedForRecoveryTest?.hasSameContent(as: openingFrame) == true
 }
 let openingSubmissions = openingSurface.submittedFrameCount
 settle(0.6)

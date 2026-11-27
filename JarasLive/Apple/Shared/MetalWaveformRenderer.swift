@@ -139,17 +139,17 @@ final class MetalWaveformSurface: MetalWaveformContainerBase {
     #endif
 
     func submit(_ frame: MetalWaveformFrame) {
-        // Clip at the compositor too. A drawable already queued by Metal can
-        // briefly outlive its projection; its old pixels must never escape
-        // the current item/channel rectangles while AppKit commits a zoom.
-        updateItemClip(frame)
         // Only source-detail replacements with identical geometry may wait for
         // a free slot. Zoom, pan and edits present their new vertices in the
         // same transaction as the items and ruler, without bitmap reprojection.
         let sameGeometry = presented.map {
             $0.coordinateSpace != nil && $0.coordinateSpace == frame.coordinateSpace && $0.size == frame.size
         } ?? false
-        renderer.submit(frame, allowCoalescing: sameGeometry)
+        renderer.submit(frame, allowCoalescing: sameGeometry) {
+            // A queued drawable can outlive its projection. Install the new
+            // clip before drawing, and retain it through duplicate submissions.
+            updateItemClip(frame)
+        }
     }
     #if os(macOS)
     func deferOpeningUntilVisible() { renderer.defersOpeningUntilVisible = true }
@@ -220,6 +220,9 @@ private final class MetalWaveformRenderView: MTKView, MTKViewDelegate {
     var defersOpeningUntilVisible = false
     private var openingPassScheduled = false
     private var openingLayoutSettled = false
+    private var openingFrameDisplayed = false
+    private var openingDisplayRetry: DispatchWorkItem?
+    private var openingDisplayAttempts = 0
     #endif
     private var drawableRetryUsed = false
     #if os(macOS)
@@ -331,7 +334,7 @@ private final class MetalWaveformRenderView: MTKView, MTKViewDelegate {
     }
     #endif
 
-    func submit(_ frame: MetalWaveformFrame, allowCoalescing: Bool) {
+    func submit(_ frame: MetalWaveformFrame, allowCoalescing: Bool, updateClip: () -> Void) {
         // Playback meters and unrelated controls can invalidate their SwiftUI
         // ancestors. Identical source/transforms must not cause another GPU pass.
         if let latestFrame, latestFrame.hasSameContent(as: frame) {
@@ -341,6 +344,7 @@ private final class MetalWaveformRenderView: MTKView, MTKViewDelegate {
             retryPendingContent()
             return
         }
+        updateClip()
         let replacesContent = latestFrame.map {
             !$0.isEmpty && ($0.coordinateSpace != frame.coordinateSpace || $0.size != frame.size)
         } ?? false
@@ -352,6 +356,10 @@ private final class MetalWaveformRenderView: MTKView, MTKViewDelegate {
             pending = nil
             #if os(macOS)
             finishDrawableRecovery()
+            openingDisplayRetry?.cancel()
+            openingDisplayRetry = nil
+            openingDisplayAttempts = 0
+            openingFrameDisplayed = false
             #endif
             visibleBuffers.removeAll(keepingCapacity: false)
             for presentation in scheduledPresentations.values { presentation.lease.finish(2) }
@@ -398,9 +406,10 @@ private final class MetalWaveformRenderView: MTKView, MTKViewDelegate {
             CATransaction.setDisableActions(disabled)
         }
         renderLatest()
-        if replacesContent && lastPresentedSequence == previousSequence {
+        if replacesContent && previousSequence > 0 && lastPresentedSequence == previousSequence {
             // The new viewport must never display the old viewport's pixels
             // if Metal could not present the replacement during this update.
+            // Before the first submission there are no old pixels to hide.
             setContentVisible(false)
         }
     }
@@ -441,7 +450,7 @@ private final class MetalWaveformRenderView: MTKView, MTKViewDelegate {
 
     #if os(macOS)
     private func canDrawOpeningFrame() -> Bool {
-        guard defersOpeningUntilVisible, submittedFrameCount == 0 else { return true }
+        guard defersOpeningUntilVisible, !openingFrameDisplayed else { return true }
         guard canRetryVisibleDrawable else { openingLayoutSettled = false; return false }
         if openingLayoutSettled { return true }
         if !openingPassScheduled {
@@ -479,6 +488,37 @@ private final class MetalWaveformRenderView: MTKView, MTKViewDelegate {
         visibleDrawableRetry?.cancel()
         visibleDrawableRetry = nil
         drawableRetryDelay = 1.0 / 30
+    }
+
+    private func watchOpeningDisplay(sequence: UInt64, lease: FrameLease) {
+        openingDisplayRetry?.cancel()
+        openingDisplayRetry = nil
+        guard openingDisplayAttempts < 2 else { return }
+        let retry = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.openingDisplayRetry = nil
+            guard !self.openingFrameDisplayed, self.lastPresentedSequence == sequence,
+                  self.pending == nil, let frame = self.latestFrame, !frame.isEmpty else { return }
+            // AppKit may replace the backing layer after Metal accepts an
+            // opening draw. Keep the scene available until a drawable is seen
+            // on screen, even if the user never changes the viewport again.
+            self.openingDisplayAttempts += 1
+            self.pending = frame
+            self.pendingRequestedAt = TimelineRenderDiagnostics.enabled ? CACurrentMediaTime() : 0
+            self.requiresImmediateSubmission = true
+            self.drawableRetryUsed = false
+            lease.finish(2)
+            self.renderLatest()
+        }
+        openingDisplayRetry = retry
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: retry)
+    }
+
+    private func confirmOpeningDisplay(_ sequence: UInt64) {
+        guard lastPresentedSequence == sequence, latestFrame?.isEmpty == false else { return }
+        openingFrameDisplayed = true
+        openingDisplayRetry?.cancel()
+        openingDisplayRetry = nil
     }
 
     #endif
@@ -627,27 +667,56 @@ private final class MetalWaveformRenderView: MTKView, MTKViewDelegate {
                          lease: FrameLease, requestedAt: Double) {
         guard sequence > lastPresentedSequence, let latestFrame, !latestFrame.isEmpty,
               frame.hasSameContent(as: latestFrame) else { lease.finish(2); return }
+        #if os(macOS)
+        let tracksOpeningDisplay = defersOpeningUntilVisible && !openingFrameDisplayed
+        if tracksOpeningDisplay { watchOpeningDisplay(sequence: sequence, lease: lease) }
+        #else
+        let tracksOpeningDisplay = false
+        #endif
         // Calling present only queues the drawable. Releasing the slot there
         // can exhaust the triple buffer before Core Animation displays it and
         // make nextDrawable block the UI thread for an entire timeout.
         #if !targetEnvironment(simulator)
         let pixelWidth = Double(drawable.texture.width), pixelHeight = Double(drawable.texture.height)
-        let firstWaveform = TimelineRenderDiagnostics.enabled && !reportedInitialWaveform && !frame.strokes.isEmpty
-        if firstWaveform { reportedInitialWaveform = true }
+        let diagnosticsEnabled = TimelineRenderDiagnostics.enabled
+        let reportsFirstWaveform = diagnosticsEnabled && !reportedInitialWaveform && !frame.strokes.isEmpty
         let strokeCount = frame.strokes.count
-        drawable.addPresentedHandler { presented in
-            let timestamp = TimelineRenderDiagnostics.enabled ? presented.presentedTime : 0
+        let onDisplayed: (Double) -> Void = { [weak self] timestamp in
             lease.finish(2)
-            if TimelineRenderDiagnostics.enabled, timestamp > 0, requestedAt > 0 {
-                if firstWaveform {
-                    NSLog("CatLive initial waveform presented, %ld strokes", strokeCount)
+            guard timestamp > 0 else { return }
+            if tracksOpeningDisplay || reportsFirstWaveform {
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    #if os(macOS)
+                    if tracksOpeningDisplay { self.confirmOpeningDisplay(sequence) }
+                    #endif
+                    if reportsFirstWaveform && !self.reportedInitialWaveform && self.lastPresentedSequence == sequence,
+                       let displayedFrame = self.latestFrame {
+                        #if os(macOS)
+                        let visible = self.visibleRect.intersection(self.bounds)
+                        #else
+                        let visible = self.bounds
+                        #endif
+                        // A centerline alone is not evidence of decoded audio.
+                        let visibleSources = displayedFrame.strokes.lazy.filter { stroke in
+                            (stroke.block.isPeakEnvelope || stroke.block.end - stroke.block.start > 1)
+                                && stroke.clip.intersection(stroke.itemRect).intersects(visible)
+                        }.count
+                        guard visibleSources > 0 else { return }
+                        self.reportedInitialWaveform = true
+                        NSLog("CatLive initial waveform presented, %ld strokes, %ld visible source strokes, %.0fx%.0f visible points",
+                            strokeCount, visibleSources, visible.width, visible.height)
+                    }
                 }
+            }
+            if diagnosticsEnabled, requestedAt > 0 {
                 // Read the display timestamp in this callback. Dispatching to
                 // the main queue would measure busy-run-loop delay instead.
                 TimelineRenderDiagnostics.record("metal.present", width: pixelWidth, height: pixelHeight,
                     milliseconds: max(0, timestamp - requestedAt) * 1000, eventTime: timestamp)
             }
         }
+        drawable.addPresentedHandler { onDisplayed($0.presentedTime) }
         #endif
         lastPresentedSequence = sequence
         // Join the run loop's implicit transaction. Starting and committing a
@@ -659,6 +728,16 @@ private final class MetalWaveformRenderView: MTKView, MTKViewDelegate {
         defer { CATransaction.setDisableActions(disabled) }
         didPresent?(frame)
         setContentVisible(true)
+        #if os(macOS)
+        if tracksOpeningDisplay && openingDisplayAttempts > 0 {
+            // The viewport has already committed by the retry. Let its first
+            // drawable reach the screen independently of the old transaction.
+            presentsWithTransaction = false
+            drawable.present()
+            presentsWithTransaction = true
+            return
+        }
+        #endif
         drawable.present()
         #if targetEnvironment(simulator)
         // Simulator Metal has no presented-handler API; retire on the next UI turn.

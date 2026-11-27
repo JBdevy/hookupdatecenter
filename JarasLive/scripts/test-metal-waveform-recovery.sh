@@ -15,14 +15,28 @@ source = Path('Apple/Shared/MetalWaveformRenderer.swift').read_text()
 target = 'guard let drawable = currentDrawable else { retryDrawableOnce(); return }'
 assert source.count(target) == 1
 source = source.replace(target, 'guard let drawable = MetalDrawableRecoveryProbe.acquire(self) else { retryDrawableOnce(); return }')
+target = 'drawable.addPresentedHandler { onDisplayed($0.presentedTime) }'
+assert source.count(target) == 1
+source = source.replace(target, 'MetalDrawableRecoveryProbe.watch(drawable, onDisplayed)')
 source += '''
-// Test-only acquisition failure: no production hooks or polling are needed.
+// Test-only acquisition and display failures.
 enum MetalDrawableRecoveryProbe {
     static var blocked = false
     static var attempts = 0
+    static var missingPresentations: Int?
+    static var observedPresentations = 0
     static func acquire(_ view: MTKView) -> CAMetalDrawable? {
         attempts += 1
         return blocked ? nil : view.currentDrawable
+    }
+    static func watch(_ drawable: CAMetalDrawable, _ handler: @escaping (Double) -> Void) {
+        guard let count = missingPresentations else {
+            drawable.addPresentedHandler { handler($0.presentedTime) }
+            return
+        }
+        observedPresentations += 1
+        if count > 0 { missingPresentations = count - 1 }
+        else { DispatchQueue.main.async { handler(CACurrentMediaTime()) } }
     }
 }
 extension MetalWaveformSurface {

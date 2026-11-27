@@ -604,6 +604,20 @@ surface.frame = NSRect(origin: .zero, size: size)
 testWindow.contentView = surface
 testWindow.orderBack(nil)
 let snapshot = MetalWaveformFrame(size: size, strokes: [waveform()])
+// Redundant model publications must leave Core Animation idle as well as Metal.
+let idleSurface = MetalWaveformSurface()
+let idleSnapshot = MetalWaveformFrame(size: size, strokes: (0..<800).map { index in
+    var stroke = waveform()
+    stroke.clip = CGRect(x: index % 64, y: index / 64, width: 32, height: 16)
+    return stroke
+})
+idleSurface.submit(idleSnapshot)
+let idleMask = idleSurface.layer?.mask as! CAShapeLayer
+let initialClipPath = idleMask.path!
+let idleStart = CACurrentMediaTime()
+for _ in 0..<100 { idleSurface.submit(idleSnapshot) }
+print(String(format: "METAL_DUPLICATE_800_STROKE_FRAME_MEAN_MS=%.4f", (CACurrentMediaTime() - idleStart) * 10))
+precondition(idleMask.path === initialClipPath, "Identical snapshots must preserve the compositor clip path")
 surface.submit(snapshot)
 let deadline = Date().addingTimeInterval(15)
 while surface.submittedFrameCount == 0 && Date() < deadline {
