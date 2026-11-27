@@ -6,6 +6,7 @@ MainActor.assumeIsolated {
     precondition(zip(initial.heights, [66.0, 184.8, 198]).allSatisfy { abs($0 - $1) < 1e-9 })
     precondition(zip(initial.offsets, [0.0, 66, 250.8]).allSatisfy { abs($0 - $1) < 1e-9 })
     precondition(initial.globalLimits == 132...160)
+    precondition(initial.uniformLimits == 66...240, "global controls must be usable even when an individual track reaches its limit")
     for frame in 0..<50 {
         let rows = cache.layout(tracks, height: CGFloat(24 + frame * 6), key: key)
         precondition(rows.lanes == initial.lanes && LaneBuildCounter.count == 3, "zoom shares expensive lane maps")
@@ -21,6 +22,13 @@ MainActor.assumeIsolated {
     precondition(zip(resized.heights, [66.0, 277.2, 198]).allSatisfy { abs($0 - $1) < 1e-9 })
     precondition(zip(resized.offsets, [0.0, 66, 343.2]).allSatisfy { abs($0 - $1) < 1e-9 })
     precondition(LaneBuildCounter.count == 3 && resized.lanes == initial.lanes, "individual preview does not rebuild lanes")
+    let uniformCache = TrackLayoutCache()
+    let pair = [Track(), Track()]
+    let uniform = uniformCache.layout(pair, height: 80, key: key)
+    let individual = uniformCache.layout(pair, height: 80, key: key, preview: [pair[0].id: 1.5])
+    precondition(uniform.heights == [80, 80] && individual.heights == [120, 80])
+    precondition(pair[0].heightScale == nil && individual.lanes == uniform.lanes)
+    precondition(uniformCache.layout(pair, height: 96, key: key).heights == [96, 96])
     tracks = [Track(heightScale: 1), Track(heightScale: 240.0 / 66)]
     let extreme = cache.layout(tracks, height: 64, key: TimelineRenderKey(revision: 2))
     precondition(extreme.heights[0] == 66 && abs(extreme.heights[1] - 240) < 1e-9 && extreme.globalLimits == 66...66)

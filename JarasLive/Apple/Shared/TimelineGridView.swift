@@ -251,7 +251,7 @@ struct TimelineGridView: View, Equatable {
     }
     var body: some View {
         let _ = itemEditors.update(openFX: openItemFX, editText: editItemText)
-        TimelineGridContent(show: show, documents: documents, itemEditors: itemEditors, presentation: updates.state, revision: show.projectRevision, mixerRevision: show.mixerPlaybackRevision, songID: show.current?.id, focusRequest: show.regionFocusRequest, selectedRegion: show.selectedTimelineRegion, remotePresentation: remotePresentation, toggleMixer: toggleMixer, isSetlistVisible: isSetlistVisible, visibility: remotePresentation ? TrackVisibilityState() : trackVisibility.state(for: show.snapshot.project.id)).equatable()
+        TimelineGridContent(show: show, documents: documents, itemEditors: itemEditors, presentation: updates.state, revision: show.timelineContentRevision, mixerRevision: show.mixerPlaybackRevision, songID: show.current?.id, focusRequest: show.regionFocusRequest, selectedRegion: show.selectedTimelineRegion, remotePresentation: remotePresentation, toggleMixer: toggleMixer, isSetlistVisible: isSetlistVisible, visibility: remotePresentation ? TrackVisibilityState() : trackVisibility.state(for: show.snapshot.project.id)).equatable()
     }
 }
 /// A project notification reaches every warm row, but only changed control
@@ -341,14 +341,21 @@ private struct TimelineLiveMixerRow<Content: View>: View {
 
 private final class TimelineRowHeight: ObservableObject {
     @Published private(set) var value = TimelineTrackHeightLimits.defaultHeight
+    @Published private(set) var preview: [UUID: Double] = [:]
+    func preview(_ track: UUID, scale: Double) {
+        if preview[track] != scale { preview = [track: scale] }
+    }
+    func clearPreview() {
+        if !preview.isEmpty { preview.removeAll() }
+    }
     func set(_ height: CGFloat) {
         if height != value { value = height }
     }
 }
 private struct TimelineRowHeightLayer<Content: View>: View {
     @ObservedObject var height: TimelineRowHeight
-    @ViewBuilder var content: (CGFloat) -> Content
-    var body: some View { content(height.value) }
+    @ViewBuilder var content: (CGFloat, [UUID: Double]) -> Content
+    var body: some View { content(height.value, height.preview) }
 }
 private struct TimelineGridContent: View, Equatable {
     @Environment(\.minimumTimelineBodyWidth) private var minimumTimelineBodyWidth
@@ -499,7 +506,6 @@ private struct TimelineGridContent: View, Equatable {
     @State private var mixerResizeState = SidebarResizeState()
     @AppStorage(TrackMixerVU.preferenceKey) private var showsTrackVU = false
     @State private var rowHeightState = TimelineRowHeight()
-    @State private var trackHeightPreview: [UUID: Double] = [:]
     #if os(macOS)
     #endif
     init(show: ShowController, documents: ProjectDocuments, itemEditors: TimelineItemEditors, presentation: ShowTimelinePresentationState, revision: UInt64, mixerRevision: UInt64, songID: UUID?, focusRequest: UUID, selectedRegion: UUID?, remotePresentation: Bool, toggleMixer: @escaping () -> Void, isSetlistVisible: @escaping () -> Bool, visibility: TrackVisibilityState) {
@@ -551,7 +557,7 @@ private struct TimelineGridContent: View, Equatable {
                     let projectID = show.snapshot.project.id
                     let extent = scrollEndCache.end(for: show.current ?? originalSong, project: projectID, revision: revision)
                     let renderKey = TimelineRenderKey(revision: revision, songID: songID, movingClip: movingClip, movingStart: movingStart, movingTrack: movingTrack, movingRegion: movingRegion, regionDelta: regionDelta, resizingRegion: resizingRegion, resizedStart: resizedStart, resizedEnd: resizedEnd, recordingRevision: recordingLayout.revision, resizingItem: resizingItem, itemStart: resizedItemStart, itemEnd: resizedItemEnd, projectID: projectID, hiddenTracks: visibility.trackMixer, sharedResizeRight: sharedBoundaryPreview?.right.id)
-                    let song = previewTrackHeights(previewItemEdit(previewClipMove(previewRegionResize(previewRegionMove(originalSong)))))
+                    let song = previewItemEdit(previewClipMove(previewRegionResize(previewRegionMove(originalSong))))
                     let controlsRevision = mixerContentRevision.update(tracks: song.tracks, project: projectID,
                         song: song.id, directory: mediaDirectory)
                     let renderMetadata = renderMetadataCache.metadata(song: song, key: renderKey,
@@ -569,8 +575,8 @@ private struct TimelineGridContent: View, Equatable {
                     // geometry should stay anchored until the item is dropped.
                     // Re-laning the whole project here made long sessions hitch.
                     let layoutTracks = itemDragLayoutTracks(originalSong: originalSong, previewSong: song)
-                    TimelineRowHeightLayer(height: rowHeightState) { trackHeight in
-                    let rows = rowLayoutCache.layout(layoutTracks, height: trackHeight, key: renderKey)
+                    TimelineRowHeightLayer(height: rowHeightState) { trackHeight, preview in
+                    let rows = rowLayoutCache.layout(layoutTracks, height: trackHeight, key: renderKey, preview: preview)
                     let row = rows.baseHeight
                     let contentHeight = max(geometry.size.height, rulerHeight + rows.totalHeight + row * 2)
                     #if os(macOS)
@@ -1109,12 +1115,12 @@ private struct TimelineGridContent: View, Equatable {
                                 change: { id, scale, ended in
                                     if ended {
                                         show.setTrackHeightScale(id, scale: scale, project: projectID, song: song.id)
-                                        trackHeightPreview.removeAll()
+                                        rowHeightState.clearPreview()
                                     } else {
-                                        if trackHeightPreview.isEmpty { trackHeightMotion.cancel(); rowHeightState.set(row) }
-                                        trackHeightPreview[id] = scale
+                                        if rowHeightState.preview.isEmpty { trackHeightMotion.cancel(); rowHeightState.set(row) }
+                                        rowHeightState.preview(id, scale: scale)
                                     }
-                                }, cancel: { trackHeightPreview.removeAll() })
+                                }, cancel: { rowHeightState.clearPreview() })
                             #endif
                         }
                         #if !os(macOS)
@@ -1130,7 +1136,7 @@ private struct TimelineGridContent: View, Equatable {
                                 let width = max(0, viewport.size.width - TimelineVerticalBar.width - labelWidth - dividerWidth)
                                 let limits = DesktopTimelineToolbar.Limits(
                                     zoom: TimelineZoomLimits.minimumZoom(viewportWidth: width)...TimelineZoomLimits.maximum,
-                                    tracks: Double(rows.globalLimits.lowerBound)...Double(rows.globalLimits.upperBound))
+                                    tracks: Double(rows.uniformLimits.lowerBound)...Double(rows.uniformLimits.upperBound))
                                 Color.clear.onAppear { updateToolbarLimits(limits) }
                                     .onChange(of: limits) { updateToolbarLimits($0) }
                             }.allowsHitTesting(false).accessibilityHidden(true)
@@ -1150,7 +1156,8 @@ private struct TimelineGridContent: View, Equatable {
             let heightState = rowHeightState
             let motion = trackHeightMotion
             toolbar.changeTrackHeight = { [weak toolbar] height in
-                guard let limits = toolbar?.limits.tracks else { return }
+                guard height.isFinite, let limits = toolbar?.limits.tracks, let song = show.current else { return }
+                show.resetTrackHeightScales(project: show.snapshot.project.id, song: song.id)
                 motion.cancel()
                 heightState.set(CGFloat(min(limits.upperBound, max(limits.lowerBound, height))))
             }
@@ -1211,14 +1218,14 @@ private struct TimelineGridContent: View, Equatable {
                 selectedTrack = nil; selectedTracks.removeAll()
             }
         }))
-        .onDisappear { trackHeightMotion.cancel(); trackHeightPreview.removeAll(); itemWaveformPreview.clear(); resizedItemFrames.removeAll(); cancelRegionDrag() }
+        .onDisappear { trackHeightMotion.cancel(); rowHeightState.clearPreview(); itemWaveformPreview.clear(); resizedItemFrames.removeAll(); cancelRegionDrag() }
         .onChange(of: presentation.projectSession) { session in
             selectionTempoRequest = nil
             trackHeightMotion.useProjectSession(session)
-            trackHeightPreview.removeAll()
+            rowHeightState.clearPreview()
         }
         .onChange(of: gridInteractionBlocked) { blocked in
-            if blocked { trackHeightMotion.cancel(); trackHeightPreview.removeAll(); resizedItemFrames.removeAll(); cancelRegionDrag() }
+            if blocked { trackHeightMotion.cancel(); rowHeightState.clearPreview(); resizedItemFrames.removeAll(); cancelRegionDrag() }
         }
         #endif
         .sheet(isPresented: $showingTrackVisibility) {
@@ -1230,7 +1237,7 @@ private struct TimelineGridContent: View, Equatable {
                 .environment(\.locale, locale)
         }
         .onChange(of: visibility.trackMixer) { _ in
-            clearClipDrag(); resizingItem = nil; trackHeightPreview.removeAll()
+            clearClipDrag(); resizingItem = nil; rowHeightState.clearPreview()
             let tracks = visibleSong?.tracks ?? []
             selectedTracks.formIntersection(tracks.map(\.id))
             if let id = selectedTrack, selectedTracks.contains(id) {} else { selectedTrack = selectedTracks.first }
@@ -1423,7 +1430,7 @@ private struct TimelineGridContent: View, Equatable {
             if !$0.isEmpty { show.selectProgramChange(nil) }
             AudioExportSelection.shared.setClips($0, song: show.current?.id)
         }
-        .onChange(of: show.current?.id) { _ in trackHeightPreview.removeAll(); itemWaveformPreview.clear(); insertionPreview.update(nil); selectedClip = nil; selectedClips.removeAll(); selectedTrack = nil; selectedTracks.removeAll(); cancelRegionDrag() }
+        .onChange(of: show.current?.id) { _ in rowHeightState.clearPreview(); itemWaveformPreview.clear(); insertionPreview.update(nil); selectedClip = nil; selectedClips.removeAll(); selectedTrack = nil; selectedTracks.removeAll(); cancelRegionDrag() }
         .onChange(of: regionTouchDragging) { if !$0 { cancelRegionDrag() } }
         .background(interfaceTheme.background).sheet(isPresented: $addingTrack) {
             CreateTrackEditor(show: show, afterTrack: selectedTrack, close: { addingTrack = false }, created: { ids in
@@ -1846,7 +1853,7 @@ private struct TimelineGridContent: View, Equatable {
         trackHeightMotion.useProjectSession(session)
         let currentRows: TrackRowLayout
         if session == presentation.projectSession {
-            guard trackHeightPreview.isEmpty else { return }
+            guard rowHeightState.preview.isEmpty else { return }
             currentRows = rows
         } else {
             // A native input monitor can run before the hosted view's next
@@ -1856,20 +1863,14 @@ private struct TimelineGridContent: View, Equatable {
             if !remotePresentation { song.tracks = visibility.visibleTracks(in: song.tracks, area: .trackMixer) }
             currentRows = TrackRowLayout(tracks: song.tracks, baseHeight: rowHeightState.value)
         }
+        guard factor.isFinite, factor > 0, factor != 1, let song = show.current else { return }
+        show.resetTrackHeightScales(project: show.snapshot.project.id, song: song.id)
         trackHeightMotion.change(factor: factor, current: currentRows.baseHeight, smoothWheel: smoothWheel,
-                                limits: currentRows.globalLimits) {
+                                limits: currentRows.uniformLimits) {
             if show.projectSessionID == session { rowHeightState.set($0) }
         }
     }
     #endif
-    private func previewTrackHeights(_ source: Song) -> Song {
-        guard !trackHeightPreview.isEmpty else { return source }
-        var song = source
-        for index in song.tracks.indices {
-            if let value = trackHeightPreview[song.tracks[index].id] { song.tracks[index].heightScale = value }
-        }
-        return song
-    }
     private func regionPopupAnchor(_ part: Part, index: Int, pixelsPerSecond: CGFloat,
                                    verticalOffset: CGFloat, lane: Int, isParent: Bool) -> some View {
         let padding: CGFloat = isParent ? 0 : 10
@@ -7534,11 +7535,34 @@ private extension GridSelectionItem {
     private var rows: TrackRowLayout?
     var trackContentHeight: CGFloat { rows?.totalHeight ?? 0 }
     private var leadingInset: CGFloat = 0
-    func layout(_ tracks: [Track], height: CGFloat, key: TimelineRenderKey, leadingInset: CGFloat = 0) -> TrackRowLayout {
-        let scales = tracks.map { TrackHeightGeometry.scale($0.heightScale) }
+    private var sourceTracks: [Track] = []
+    private var sourceScales: [Double] = []
+    private var sourceDefaultStack: Bool?
+    func layout(_ tracks: [Track], height: CGFloat, key: TimelineRenderKey, leadingInset: CGFloat = 0,
+                preview: [UUID: Double] = [:]) -> TrackRowLayout {
+        let defaultStack = StemLayoutPreferences.stacksByDefault
+        // Retaining the source array keeps this identity valid until a model edit
+        // changes its backing storage. A height gesture then only changes geometry.
+        let sameSource = sourceDefaultStack == defaultStack && self.key?.recordingRevision == key.recordingRevision &&
+            sourceTracks.withUnsafeBufferPointer { old in tracks.withUnsafeBufferPointer { new in
+                old.count == new.count && old.baseAddress == new.baseAddress
+            } }
+        if sameSource, let previous = rows {
+            var scales = sourceScales
+            for (track, scale) in preview {
+                if let row = trackIDs.firstIndex(of: track) { scales[row] = scale }
+            }
+            if self.height == height && self.leadingInset == leadingInset && self.scales == scales { return previous }
+            let next = TrackRowLayout(lanes: previous.lanes, baseHeight: height, scales: scales,
+                envelopeCounts: envelopeCounts, minimumHeights: programMinimumHeights, compact: compactRows, leadingInset: leadingInset)
+            self.height = height; self.scales = scales; self.leadingInset = leadingInset; rows = next
+            return next
+        }
+        sourceTracks = tracks; sourceDefaultStack = defaultStack
+        sourceScales = tracks.map { TrackHeightGeometry.scale($0.heightScale) }
+        let scales = preview.isEmpty ? sourceScales : tracks.map { TrackHeightGeometry.scale(preview[$0.id] ?? $0.heightScale) }
         let trackIDs = tracks.map(\.id)
         let trackClips = tracks.map(\.clips)
-        let defaultStack = StemLayoutPreferences.stacksByDefault
         let stackedRows = tracks.map { $0.stackedStems ?? defaultStack }
         let minimumHeights = tracks.map { $0.kind == .programChange ? CGFloat($0.programChangeLaneCount * 24 + 8) : 0 }
         let envelopeCounts = tracks.map { $0.automation?.visibleEnvelopes.count ?? 0 }
@@ -7554,7 +7578,7 @@ private extension GridSelectionItem {
         if sameTrackLayout, let previous = self.rows {
             rows = TrackRowLayout(lanes: previous.lanes, baseHeight: height, scales: scales, envelopeCounts: envelopeCounts, minimumHeights: minimumHeights, compact: tracks.map(\.allowsCompactMixerHeight), leadingInset: leadingInset)
         } else {
-            rows = TrackRowLayout(tracks: tracks, baseHeight: height, leadingInset: leadingInset)
+            rows = TrackRowLayout(tracks: tracks, baseHeight: height, leadingInset: leadingInset, preview: preview)
         }
         self.key = key; self.height = height; self.rows = rows; self.leadingInset = leadingInset
         self.scales = scales; self.trackIDs = trackIDs; self.envelopeCounts = envelopeCounts
@@ -7586,6 +7610,7 @@ private extension GridSelectionItem {
 
 @MainActor private struct TrackRowLayout {
     let baseHeight: CGFloat
+    let uniformLimits: ClosedRange<CGFloat>
     let globalLimits: ClosedRange<CGFloat>
     let scales: [Double]
     let lanes: [TrackLanes]
@@ -7596,7 +7621,7 @@ private extension GridSelectionItem {
     let heights: [CGFloat]
     let offsets: [CGFloat]
     let totalHeight: CGFloat
-    init(tracks: [Track], baseHeight: CGFloat, leadingInset: CGFloat = 0) {
+    init(tracks: [Track], baseHeight: CGFloat, leadingInset: CGFloat = 0, preview: [UUID: Double] = [:]) {
         let recordingTracks = Set(RecordingLaneLayout.shared.items.values.map(\.track))
         let lanes = tracks.map { track in
             var layout = TrackLanes(track: track)
@@ -7605,7 +7630,7 @@ private extension GridSelectionItem {
             }
             return layout
         }
-        self.init(lanes: lanes, baseHeight: baseHeight, scales: tracks.map { TrackHeightGeometry.scale($0.heightScale) }, envelopeCounts: tracks.map { $0.automation?.visibleEnvelopes.count ?? 0 }, minimumHeights: tracks.map { $0.kind == .programChange ? CGFloat($0.programChangeLaneCount * 24 + 8) : 0 }, compact: tracks.map(\.allowsCompactMixerHeight), leadingInset: leadingInset)
+        self.init(lanes: lanes, baseHeight: baseHeight, scales: tracks.map { TrackHeightGeometry.scale(preview[$0.id] ?? $0.heightScale) }, envelopeCounts: tracks.map { $0.automation?.visibleEnvelopes.count ?? 0 }, minimumHeights: tracks.map { $0.kind == .programChange ? CGFloat($0.programChangeLaneCount * 24 + 8) : 0 }, compact: tracks.map(\.allowsCompactMixerHeight), leadingInset: leadingInset)
     }
     init(lanes: [TrackLanes], baseHeight: CGFloat, scales: [Double], envelopeCounts: [Int] = [], minimumHeights: [CGFloat] = [], compact: [Bool] = [], leadingInset: CGFloat = 0) {
         precondition(lanes.count == scales.count, "Track row lanes and scales must come from the same track snapshot")
@@ -7614,6 +7639,11 @@ private extension GridSelectionItem {
         self.scales = scales
         let limits = TrackHeightGeometry.globalLimits(scales: scales, laneCounts: lanes.map(\.count), current: Double(baseHeight), compact: compact)
         globalLimits = CGFloat(limits.lowerBound)...CGFloat(limits.upperBound)
+        if scales.contains(where: { $0 != 1 }) {
+            let uniform = TrackHeightGeometry.globalLimits(scales: Array(repeating: 1, count: lanes.count),
+                laneCounts: lanes.map(\.count), current: Double(baseHeight), compact: compact)
+            uniformLimits = CGFloat(uniform.lowerBound)...CGFloat(uniform.upperBound)
+        } else { uniformLimits = globalLimits }
         let displayedHeight = min(globalLimits.upperBound, max(globalLimits.lowerBound, baseHeight))
         self.baseHeight = displayedHeight
         laneHeights = lanes.enumerated().map { index, lane in

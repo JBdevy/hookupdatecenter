@@ -831,6 +831,10 @@ static void report(NSError** error, const std::exception& e) { if (error) *error
         return YES;
     } catch (const std::exception& e) { report(error,e); return NO; }
 }
+- (BOOL)setTrackHeight:(NSString *)song track:(NSString *)track scale:(double)scale error:(NSError **)error {
+    try { _engine->setTrackHeight(str(song), track ? std::optional<ID>(str(track)) : std::nullopt, scale); return YES; }
+    catch (const std::exception& e) { report(error, e); return NO; }
+}
 - (BOOL)setTimelineLocks:(BOOL)locked options:(int)options error:(NSError**)error {
     try { _engine->setTimelineLocks(locked, options); return YES; }
     catch (const std::exception& e) { report(error,e); return NO; }

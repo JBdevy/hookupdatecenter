@@ -36,6 +36,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (BOOL)insertAudioTracks:(NSData *)data song:(NSString *)song error:(NSError **)error;
 - (BOOL)replaceAudioClip:(NSData *)data track:(NSString *)track error:(NSError **)error;
 - (BOOL)addRecordedClip:(NSData *)data track:(NSString *)track error:(NSError **)error;
+- (BOOL)setTrackHeight:(NSString *)song track:(NSString * _Nullable)track scale:(double)scale error:(NSError **)error;
 - (BOOL)setTimelineLocks:(BOOL)locked options:(int)options error:(NSError**)error;
 - (BOOL)editMasterColor:(unsigned int)color error:(NSError **)error;
 - (BOOL)setTrackMixerComponents:(NSString *)song masks:(NSDictionary<NSString *, NSNumber *> *)masks error:(NSError **)error;

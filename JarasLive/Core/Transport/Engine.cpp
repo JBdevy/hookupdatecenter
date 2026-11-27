@@ -951,6 +951,20 @@ void Engine::addRecordedClip(const ID& id, AudioClip clip, bool replacing) {
     }
     throw std::invalid_argument("Unknown recording track");
 }
+void Engine::setTrackHeight(const ID& songID, const std::optional<ID>& id, double scale) {
+    projectSync::requireWritable();
+    if (!std::isfinite(scale) || scale < 0.1 || scale > 10 || (!id && scale != 1))
+        throw std::invalid_argument("Invalid track height");
+    const auto song = std::find_if(project_.songs.begin(), project_.songs.end(), [&](const auto& entry) { return entry.id == songID; });
+    if (song == project_.songs.end()) throw std::invalid_argument("Unknown grid");
+    if (!id) {
+        for (auto& track : song->tracks) track.heightScale.reset();
+        return;
+    }
+    const auto row = std::find_if(song->tracks.begin(), song->tracks.end(), [&](const auto& track) { return track.id == *id; });
+    if (row == song->tracks.end()) throw std::invalid_argument("Unknown track");
+    row->heightScale = scale == 1 ? std::nullopt : std::optional<double>(scale);
+}
 void Engine::setTimelineLocks(bool locked, int options) {
     projectSync::requireWritable();
     project_.timelineMovementLocked = locked;

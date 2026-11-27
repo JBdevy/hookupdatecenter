@@ -2163,6 +2163,40 @@ void Session::edit(const std::function<void(jaras::Project &)> &change, bool reb
     }
     notify();
 }
+Session::TrackHeightHistory Session::applyTrackHeights(const TrackHeightHistory& entry) {
+    TrackHeightHistory inverse{entry.song, {}};
+    for (const auto& grid : project().songs) if (grid.id == entry.song) {
+        for (const auto& row : grid.tracks) {
+            const auto value = entry.scales.find(row.id);
+            if (value == entry.scales.end()) continue;
+            inverse.scales.emplace(row.id, row.heightScale.value_or(1.));
+            core.setTrackHeight(grid.id, row.id, value->second);
+        }
+        break;
+    }
+    return inverse;
+}
+void Session::notifyTrackHeight() {
+    dirty = true;
+    ++revision;
+    if (trackHeightChanged) trackHeightChanged();
+    else if (changed) changed();
+}
+void Session::setTrackHeight(const ID& songID, const std::optional<ID>& track, double scale) {
+    const auto* grid = song();
+    if (busy || jaras::projectSync::readOnly() || !grid || grid->id != songID) return;
+    TrackHeightHistory previous{songID, {}};
+    for (const auto& row : grid->tracks) {
+        if ((!track || row.id == *track) && row.heightScale != (scale == 1 ? std::nullopt : std::optional<double>(scale)))
+            previous.scales.emplace(row.id, row.heightScale.value_or(1.));
+    }
+    if (previous.scales.empty()) return;
+    core.setTrackHeight(songID, track, scale);
+    undoHistory.emplace_back(std::move(previous));
+    if (undoHistory.size() > 40) undoHistory.pop_front();
+    redoHistory.clear();
+    notifyTrackHeight();
+}
 Session::TrackMixerComponentsHistory Session::applyTrackMixerComponents(const TrackMixerComponentsHistory &entry) {
     return {entry.song, core.setTrackMixerComponents(entry.song, entry.masks)};
 }
@@ -2665,6 +2699,12 @@ void Session::undo() {
     if (audio.isRecording())
         throw std::runtime_error("Pare para desfazer alterações.");
     auto value = undoHistory.back();
+    if (value.heights) {
+        redoHistory.emplace_back(applyTrackHeights(*value.heights));
+        undoHistory.pop_back();
+        notifyTrackHeight();
+        return;
+    }
     if (value.components) {
         redoHistory.emplace_back(applyTrackMixerComponents(*value.components));
         undoHistory.pop_back();
@@ -2700,6 +2740,12 @@ void Session::redo() {
     if (audio.isRecording())
         throw std::runtime_error("Pare para refazer alterações.");
     auto value = redoHistory.back();
+    if (value.heights) {
+        undoHistory.emplace_back(applyTrackHeights(*value.heights));
+        redoHistory.pop_back();
+        notifyTrackHeight();
+        return;
+    }
     if (value.components) {
         undoHistory.emplace_back(applyTrackMixerComponents(*value.components));
         redoHistory.pop_back();

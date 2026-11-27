@@ -125,6 +125,8 @@ class Session final : private Timer {
     String insertLibraryEffect(const ID &destination, const String &identity, const String &presetID,
                                const String &before = {}, bool itemTarget = false);
     void edit(const std::function<void(jaras::Project &)> &, bool rebuild = true, bool allowTimingEdit = false, bool regionOperation = false);
+    void setTrackHeight(const ID& song, const std::optional<ID>& track, double scale);
+    std::function<void()> trackHeightChanged;
     void setTrackMixerComponents(const std::map<ID, int> &);
     std::function<void()> trackMixerComponentsChanged;
     void setTrackInstrumentIcon(const std::set<ID> &, std::optional<std::string>);
@@ -259,6 +261,9 @@ class Session final : private Timer {
     void applyTrackHierarchy(const TrackHierarchyHistory &, bool recordHistory);
     struct SetlistHistory { std::optional<jaras::RegionSetlist> state; };
     void applySetlistHistory(const SetlistHistory &, bool recordHistory);
+    struct TrackHeightHistory { ID song; std::map<ID, double> scales; };
+    TrackHeightHistory applyTrackHeights(const TrackHeightHistory&);
+    void notifyTrackHeight();
     struct TrackMixerComponentsHistory { ID song; std::map<ID, int> masks; };
     TrackMixerComponentsHistory applyTrackMixerComponents(const TrackMixerComponentsHistory &);
     void notifyTrackMixerComponents();
@@ -274,6 +279,8 @@ class Session final : private Timer {
         std::optional<ItemHistory> items;
         std::optional<TrackHierarchyHistory> hierarchy;
         std::optional<TrackMixerComponentsHistory> components;
+        std::optional<TrackHeightHistory> heights;
+        HistoryEntry(TrackHeightHistory value) : heights(std::move(value)) {}
         HistoryEntry(ItemPitchHistory value) : itemPitch(std::move(value)) {}
         HistoryEntry(PitchHistory value) : pitch(std::move(value)) {}
         HistoryEntry(TimelineHistory value) : timeline(std::move(value)) {}

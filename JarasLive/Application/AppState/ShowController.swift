@@ -1377,6 +1377,13 @@ public final class ShowTrackSelectionPresentation: ObservableObject {
     public var needsSave: Bool { hasUnsavedChanges || editingCursor != lastSavedCursor }
     @Published public private(set) var saving = false
     public private(set) var projectRevision: UInt64 = 0
+    // A row resize is a saved edit, but the media, labels and lane membership
+    // remain valid. All other project edits invalidate timeline content normally.
+    private var rowHeightEdit: (revision: UInt64, content: UInt64)?
+    public var timelineContentRevision: UInt64 {
+        if let rowHeightEdit, rowHeightEdit.revision == projectRevision { return rowHeightEdit.content }
+        return projectRevision
+    }
     /// Opening another saved copy may retain every model UUID. Async work is
     /// scoped to this loaded session, not just to the document's persistent ID.
     public private(set) var projectSessionID = UUID()
@@ -3992,13 +3999,31 @@ public final class ShowTrackSelectionPresentation: ObservableObject {
               snapshot.project.songs[location.song].id == song else { return }
         let value: Double? = abs(scale - 1) < 0.000001 ? nil : scale
         guard snapshot.project.songs[location.song].tracks[location.track].heightScale != value else { return }
-        var next = snapshot.project
-        next.songs[location.song].tracks[location.track].heightScale = value
         do {
-            tick(); try executor.applyProjectEdit(next)
-            snapshot = try executor.snapshot()
-            markChanged(refreshAudio: false, preservingMediaStorage: true); onProjectEdited()
+            try executor.setTrackHeight(song, track: id, scale: value ?? 1)
+            var next = snapshot.project
+            next.songs[location.song].tracks[location.track].heightScale = value
+            publishTrackHeights(next)
         } catch { message = error.localizedDescription }
+    }
+    public func resetTrackHeightScales(project: UUID, song: UUID) {
+        guard snapshot.project.id == project, current?.id == song, !finishing,
+              let index = snapshot.project.songs.firstIndex(where: { $0.id == song }),
+              snapshot.project.songs[index].tracks.contains(where: { $0.heightScale != nil }), canControl() else { return }
+        do {
+            try executor.setTrackHeight(song, track: nil, scale: 1)
+            var next = snapshot.project
+            for row in next.songs[index].tracks.indices where next.songs[index].tracks[row].heightScale != nil {
+                next.songs[index].tracks[row].heightScale = nil
+            }
+            publishTrackHeights(next)
+        } catch { message = error.localizedDescription }
+    }
+    private func publishTrackHeights(_ project: Project) {
+        rowHeightEdit = (projectRevision &+ 1, timelineContentRevision)
+        snapshot.project = project
+        markChanged(refreshAudio: false, preservingMediaStorage: true, updateAudio: false, knownChanged: true)
+        onProjectEdited()
     }
     /// Color-only batch: keep names and audio untouched and create one undo step.
     public func editTrackColors(_ ids: Set<UUID>, color: UInt32, project: UUID) {

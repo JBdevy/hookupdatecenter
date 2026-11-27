@@ -72,9 +72,10 @@ import Foundation
         next.audioUpdate = { _, revision in audioRevisions.append(revision) }
         next.preparePlayback()
         let initialAudioRevision = audioRevisions.last!, initialProjectRevision = next.projectRevision
+        let initialContentRevision = next.timelineContentRevision
         next.setTrackHeightScale(heightTrack, scale: 1.75, project: next.snapshot.project.id, song: heightSong)
         precondition(next.current!.tracks[0].heightScale == 1.75 && next.projectRevision == initialProjectRevision + 1)
-        precondition(audioRevisions.last == initialAudioRevision && next.canUndo)
+        precondition(audioRevisions.last == initialAudioRevision && next.canUndo && next.timelineContentRevision == initialContentRevision)
         precondition(next.snapshot.transport.playing && next.snapshot.transport.songId == heightTransport.songId &&
                      next.snapshot.transport.regionId == heightTransport.regionId && next.snapshot.transport.loop == heightTransport.loop,
                      "visual height metadata preserves active transport")
@@ -93,6 +94,15 @@ import Foundation
         let heightReopened = try ShowController(executor: LocalCommandExecutor(), persistence: store, initialProject: heightDocument)
         precondition(heightReopened.current!.tracks[0].heightScale == 1.75 && !heightReopened.needsSave)
         precondition(heightReopened.current!.tracks[0].clips == next.current!.tracks[0].clips)
+        let storedHeightRevision = heightReopened.projectRevision
+        heightReopened.resetTrackHeightScales(project: heightReopened.snapshot.project.id, song: UUID())
+        precondition(heightReopened.projectRevision == storedHeightRevision)
+        heightReopened.resetTrackHeightScales(project: heightReopened.snapshot.project.id, song: heightSong)
+        precondition(heightReopened.current!.tracks.allSatisfy { $0.heightScale == nil })
+        heightReopened.resetTrackHeightScales(project: heightReopened.snapshot.project.id, song: heightSong)
+        precondition(heightReopened.projectRevision == storedHeightRevision + 1)
+        heightReopened.undo()
+        precondition(heightReopened.current!.tracks[0].heightScale == 1.75)
         heightReopened.setTrackHeightScale(heightTrack, scale: 1, project: heightReopened.snapshot.project.id, song: heightSong)
         precondition(heightReopened.current!.tracks[0].heightScale == nil, "standard row heights keep legacy JSON compact")
         var legacy = Project.demo()

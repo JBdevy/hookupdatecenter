@@ -38,6 +38,7 @@ public protocol CommandExecutor {
     func insertAudioTracks(_ tracks: [Track], song: UUID) throws
     func replaceAudioClip(_ clip: AudioClip, track: UUID) throws
     func addRecordedClip(_ clip: AudioClip, track: UUID) throws
+    func setTrackHeight(_ song: UUID, track: UUID?, scale: Double) throws
     func setTimelineLocks(locked: Bool, options: Int) throws
     func editMasterColor(_ color: UInt32) throws
     func setTrackMixerComponents(_ song: UUID, masks: [UUID: Int]) throws
@@ -89,6 +90,23 @@ public extension CommandExecutor {
         try setTempoMarkers(markers)
     }
     func pasteItems(_ entries: [GridItemClipboard.Entry], song: UUID, moving: Bool) throws { throw BackendFailure.notConfigured }
+    /// A nil track restores every row in the song to the shared height.
+    func setTrackHeight(_ song: UUID, track: UUID?, scale: Double) throws {
+        var project = try snapshot().project
+        guard TrackHeightGeometry.isValidScale(scale), track != nil || scale == 1,
+              let index = project.songs.firstIndex(where: { $0.id == song }) else {
+            throw ProjectError.invalid("Invalid track height")
+        }
+        if let track {
+            guard let row = project.songs[index].tracks.firstIndex(where: { $0.id == track }) else {
+                throw ProjectError.invalid("Unknown track")
+            }
+            project.songs[index].tracks[row].heightScale = scale == 1 ? nil : scale
+        } else {
+            for row in project.songs[index].tracks.indices { project.songs[index].tracks[row].heightScale = nil }
+        }
+        try applyProjectEdit(project)
+    }
     func setTimelineLocks(locked: Bool, options: Int) throws {
         var project = try snapshot().project
         project.timelineMovementLocked = locked

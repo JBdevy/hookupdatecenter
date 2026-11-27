@@ -94,6 +94,9 @@ import Foundation
         try core.addRecordedClip(JSONEncoder().encode(clip), track: track.uuidString)
         waveforms[clip.id] = ClipWaveform(clip)
     }
+    func setTrackHeight(_ song: UUID, track: UUID?, scale: Double) throws {
+        try core.setTrackHeight(song.uuidString, track: track?.uuidString, scale: scale)
+    }
     func setTimelineLocks(locked: Bool, options: Int) throws {
         try core.setTimelineLocks(locked, options: Int32(options))
     }

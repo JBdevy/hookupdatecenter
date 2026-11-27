@@ -2730,7 +2730,10 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
             w.trackHeightMemory.reset();
             w.controls.at("trackHeightFit")->setToggleState(false, dontSendNotification);
         }
-        if (w.trackHeight == height) return;
+        const auto* grid = w.session.song();
+        const bool individual = grid && std::any_of(grid->tracks.begin(), grid->tracks.end(),
+            [](const auto& row) { return row.heightScale.has_value(); });
+        if (w.trackHeight == height && !individual) return;
         // Anchor the selected row, or the clipped point of the first visible
         // row. Capture before resized() lets JUCE clamp the old scroll range.
         int anchor = w.rowAt(w.verticalOffset);
@@ -2743,6 +2746,10 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
         const int oldTop = anchor < 0 ? 0 : w.rowTop(anchor), oldHeight = anchor < 0 ? 0 : w.rowHeight(anchor);
         const double fraction = oldHeight > 0 ? jlimit(0., 1., double(w.verticalOffset - oldTop) / oldHeight) : 0.;
         const double screenY = oldTop + fraction * oldHeight - w.verticalOffset;
+        if (individual) {
+            const ScopedValueSetter<bool> updating(w.adjustingTrackRowGeometry, true);
+            w.perform([&] { w.session.setTrackHeight(grid->id, std::nullopt, 1.); });
+        }
         w.trackHeight = height;
         w.trackHeightSlider.setValue(height, dontSendNotification);
         w.invalidateRowGeometry();
@@ -5471,7 +5478,10 @@ class Workspace::TrackHeightHandle final : public Component, private Timer {
         if(trackID.empty())return;mouseDrag(e);stopTimer();if(trackID.empty())return;
         const auto value=std::pair<ID,double>{trackID,pendingScale};pendingHeight=false;const auto song=songID;bool changed=std::abs(value.second-initialScale)>1e-8;
         trackID.clear();w.trackHeightPreview.reset();
-        if(changed)w.perform([&]{w.session.edit([&](jaras::Project &p){for(auto &s:p.songs)if(s.id==song)for(auto &t:s.tracks)if(t.id==value.first)t.heightScale=value.second;},false);});
+        if (changed) {
+            const ScopedValueSetter<bool> updating(w.adjustingTrackRowGeometry, true);
+            w.perform([&] { w.session.setTrackHeight(song, value.first, value.second); });
+        }
         w.invalidateRowGeometry();
         w.refreshTrackHeightGeometry();
         w.grabKeyboardFocus();
@@ -6781,6 +6791,13 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
         for(const auto& entry:floatingWindows)
             if(auto* mixer=dynamic_cast<MixerPanel*>(entry.second->getContentComponent()))mixer->refreshVisible();
         timeline->refreshMixer();caption->repaint();updateState();
+    };
+    session.trackHeightChanged = [this] {
+        if (itemLayoutRevision + 1 == session.revision) itemLayoutRevision = session.revision;
+        if (itemTitleRevision + 1 == session.revision) itemTitleRevision = session.revision;
+        invalidateRowGeometry();
+        if (!adjustingTrackRowGeometry) refreshTrackHeightGeometry();
+        caption->repaint();
     };
     session.trackMixerComponentsChanged = [this] {
         if (itemLayoutRevision + 1 == session.revision) itemLayoutRevision = session.revision;
@@ -8548,7 +8565,7 @@ int Workspace::minimumTrackHeight() const {
     int minimum = theme::trackMixerMinHeight;
     if (const auto *song = session.song()) {
         for (const auto &t : song->tracks) if (allowsCompactTrackHeight(t))
-            minimum = std::min(minimum, std::max(1, int(std::floor(compactTrackHeight / t.heightScale.value_or(1.)))));
+            minimum = std::min(minimum, int(compactTrackHeight));
     }
     return minimum;
 }

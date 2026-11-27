@@ -3966,7 +3966,7 @@ private struct TrackMixFeedbackPanel: View {
                 trackMixerRows(rows, heights: heights, sourceTracks: sourceTracks, ancestors: ancestors,
                                folders: folders, groupColors: groupColors, width: viewport.size.width, rowsHeight: rowsHeight)
                 #if os(iOS)
-                .background(RemoteTrackScrollProbe(controller: trackScrolling, tracks: rows,
+                .background(RemoteTrackScrollProbe(controller: trackScrolling, heightEditor: local ? localShow : nil, tracks: rows,
                     selectedTrack: localShow?.selectedTrackForActions.flatMap { selectedTracks.contains($0) ? $0 : nil }
                         ?? rows.first(where: { selectedTracks.contains($0.id) })?.id, usesNativeTrackHeight: local))
                 #endif
@@ -5647,7 +5647,7 @@ private struct RemoteNativeTimeline: View {
                         }
                     }
                     #if os(iOS)
-                    .background(RemoteTrackScrollProbe(controller: scrolling, tracks: tracks,
+                    .background(RemoteTrackScrollProbe(controller: scrolling, heightEditor: local ? localShow : nil, tracks: tracks,
                         selectedTrack: localShow?.selectedTrackForActions ?? scrolling.heightSelectedTrack, isGrid: true, twoFingerScroll: local, gridTap: { fraction in
                         guard local || (!state.playing && region != nil) else { return }
                         if local && proTool.appliesToTrack { return }
@@ -9193,6 +9193,7 @@ private struct IpadTimelineEditingBar: View {
     let zoomControl = IpadTimelineZoomControl()
     private var pinchStartScale: Double?
     private var pinchAnchorY: CGFloat?
+    weak var heightEditor: ShowController?
     var heightTracks: [DAWRemoteState.Track] = []
     var heightSelectedTrack: UUID?
     func revealTrack(_ id: UUID) {
@@ -9271,6 +9272,15 @@ private struct IpadTimelineEditingBar: View {
             #if os(iOS)
             let minimum = RemoteNativeGridMetrics.minimumTrackHeight(local: usesNativeTrackHeight)
             let heights = heightTracks.map { DAWRemoteItemLayout.rowHeight($0, scale: heightScale, minimum: minimum) + 1 }
+            if let show = heightEditor, let song = show.current,
+               song.tracks.contains(where: { $0.heightScale != nil }) {
+                show.resetTrackHeightScales(project: show.snapshot.project.id, song: song.id)
+                if show.current?.tracks.contains(where: { $0.heightScale != nil }) == false {
+                    for index in heightTracks.indices where heightTracks[index].heightScale != nil {
+                        heightTracks[index].heightScale = nil
+                    }
+                }
+            }
             let nextHeights = heightTracks.map { DAWRemoteItemLayout.rowHeight($0, scale: next, minimum: minimum) + 1 }
             if let scroll = scrollView ?? gridScrollView,
                let anchor = TrackHeightGeometry.ScrollAnchor(heights: heights,
@@ -9544,6 +9554,7 @@ private final class RemoteGridItemHoldArea: UIView {
 /// Find the containing native scroll view without replacing SwiftUI's delegate.
 private struct RemoteTrackScrollProbe: UIViewRepresentable {
     let controller: RemoteTrackScrollController
+    var heightEditor: ShowController?
     var tracks: [DAWRemoteState.Track]? = nil
     var selectedTrack: UUID? = nil
     var isGrid = false
@@ -9559,6 +9570,7 @@ private struct RemoteTrackScrollProbe: UIViewRepresentable {
     }
     func updateUIView(_ view: RemoteTrackScrollProbeView, context: Context) {
         view.controller = controller; view.isGrid = isGrid; view.twoFingerScroll = twoFingerScroll
+        controller.heightEditor = heightEditor
         if let tracks { controller.heightTracks = tracks; controller.heightSelectedTrack = selectedTrack }
         if isGrid { controller.gridTap = gridTap }
         else { controller.usesNativeTrackHeight = usesNativeTrackHeight }
