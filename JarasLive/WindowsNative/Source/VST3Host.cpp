@@ -1,5 +1,7 @@
 #include "VST3Host.h"
 #include "VST3ParameterSlots.h"
+#include "AudioFile.h"
+#include "../../Core/ThirdParty/ARA/ARAVST3.h"
 #include "../../Core/Audio/VST3ParameterRestore.hpp"
 #include <windows.h>
 #include "pluginterfaces/base/ipluginbase.h"
@@ -29,6 +31,9 @@
 #include <cmath>
 #include <stdexcept>
 #include <cctype>
+#include <cstdio>
+#include <limits>
+#include <set>
 using namespace Steinberg;
 using namespace Steinberg::Vst;
 namespace Steinberg {
@@ -39,6 +44,9 @@ DEF_CLASS_IID(IHostApplication) DEF_CLASS_IID(IComponentHandler) DEF_CLASS_IID(I
 DEF_CLASS_IID(IMessage) DEF_CLASS_IID(IAttributeList) DEF_CLASS_IID(IParameterChanges) DEF_CLASS_IID(IParamValueQueue)
 DEF_CLASS_IID(IEventList) DEF_CLASS_IID(IMidiMapping)
 }}
+namespace ARA {
+DEF_CLASS_IID(IPlugInEntryPoint) DEF_CLASS_IID(IPlugInEntryPoint2)
+}
 namespace catlive::native::vst3 {
 namespace {
 template<class T> bool iidIs(const TUID id) { return FUnknownPrivate::iidEqual(id,T::iid); }
@@ -273,7 +281,10 @@ public:
 };
 
 } // namespace
+#include "VST3ARAHost.inc"
+
 struct Processor::Impl final: IComponentHandler, IComponentHandler2 {
+    std::unique_ptr<araHost::Document> araDocument;
     std::shared_ptr<Module> module;
     Host host;
     IComponent *component=nullptr;
@@ -330,7 +341,7 @@ struct Processor::Impl final: IComponentHandler, IComponentHandler2 {
         edited=true;
         return kResultOk;
     }
-    Impl(const Description &description,const State &state,double sampleRate,int maxFrames)
+    Impl(const Description &description,const State &state,double sampleRate,int maxFrames,const ARATimeline *timeline)
         : maximumFrames(maxFrames),rate(sampleRate) {try {
         if(!std::isfinite(rate)||rate<8000||rate>384000||maxFrames<1||maxFrames>32768)
             throw std::runtime_error("Invalid VST3 audio format.");
@@ -342,6 +353,7 @@ struct Processor::Impl final: IComponentHandler, IComponentHandler2 {
             throw std::runtime_error("Could not create this VST3 processor.");
         if(component->initialize(&host)!=kResultOk)throw std::runtime_error("VST3 processor initialization failed.");
         initialized=true;
+        araDocument=araHost::bind(component,timeline,state.ara);
         processor=query<IAudioProcessor>(component);
         if(!processor||processor->canProcessSampleSize(kSample32)!=kResultOk)
             throw std::runtime_error("This VST3 processor does not support 32-bit audio.");
@@ -457,6 +469,7 @@ struct Processor::Impl final: IComponentHandler, IComponentHandler2 {
         if(source)source->release();if(destination)destination->release();
         if(controller){controller->setComponentHandler(nullptr);if(controllerInitialized)controller->terminate();controller->release();}
         if(processor)processor->release();if(component){if(initialized)component->terminate();component->release();}
+        araDocument.reset();
     }
     bool render(float *left,float *right,int count,const Transport &transport,const MIDIEvent *midi,int midiCount) {
         if(!left||!right||count<0||count>maximumFrames||midiCount<0||midiCount>18432||(!midi&&midiCount))return false;
@@ -531,9 +544,11 @@ struct Processor::Impl final: IComponentHandler, IComponentHandler2 {
         return true;
     }
 };
-Processor::Processor(const Description &d,const State &s,double rate,int frames):impl(std::make_unique<Impl>(d,s,rate,frames)){}
+Processor::Processor(const Description &d,const State &s,double rate,int frames,const ARATimeline *timeline)
+    :impl(std::make_unique<Impl>(d,s,rate,frames,timeline)){}
 Processor::~Processor()=default;
-bool Processor::process(float *l,float *r,int n,const Transport &t,const MIDIEvent *events,int count)noexcept {
+bool Processor::process(float *l,float *r,int n,const Transport &t,const MIDIEvent *events,int count,bool renderARA)noexcept {
+    if (impl->araDocument && (!renderARA || !impl->araDocument->coversTrack)) return true;
     impl->renderedSinceEditorIdle=true; impl->editorIdle=false;
     try{return impl->render(l,r,n,t,events,count);}catch(...){return false;}
 }
@@ -567,7 +582,8 @@ State Processor::state()const {
     if(componentResult!=kResultOk&&componentResult!=kNotImplemented)throw std::runtime_error("VST3 could not save its processor state.");
     if(impl->controller){const auto result=impl->controller->getState(&controller);
         if(result!=kResultOk&&result!=kNotImplemented)throw std::runtime_error("VST3 could not save its controller state.");}
-    return {std::move(component.bytes),std::move(controller.bytes)};
+    return {std::move(component.bytes),std::move(controller.bytes),
+        impl->araDocument ? impl->araDocument->state() : std::vector<std::uint8_t>{}};
 }
 bool Processor::consumeEdited()noexcept {
     const auto flags=impl->restartFlags.exchange(0);
@@ -578,10 +594,12 @@ bool Processor::consumeEdited()noexcept {
         // into CC7=0, CC10=0 or a spurious program change.
         if(impl->params[i].resyncFromController)
             impl->performEdit(impl->params[i].id,impl->controller->getParamNormalized(impl->params[i].id));
-    return impl->edited.exchange(false);
+    const bool edited = impl->edited.exchange(false);
+    return (impl->araDocument && impl->araDocument->poll()) || edited;
 }
 unsigned Processor::latency()const noexcept{return impl->latencySamples.load();}
 bool Processor::isInstrument()const noexcept{return impl->instrument;}
+bool Processor::hasARA()const noexcept{return impl->araDocument != nullptr;}
 
 struct Editor::Impl final: IPlugFrame {
     IPlugView *view=nullptr;
@@ -632,6 +650,7 @@ std::unique_ptr<Editor> Processor::openEditor(void *parent,std::function<void(in
     if(editor->view->getSize(&rect)==kResultOk&&rect.getWidth()>0&&rect.getHeight()>0){editor->w=rect.getWidth();editor->h=rect.getHeight();}
     editor->resizeOwner(editor->w,editor->h);
     editor->visibleEditors=&impl->visibleEditors;editor->setVisible(true);
+    if (impl->araDocument) impl->araDocument->selectTrack();
     return std::unique_ptr<Editor>(new Editor(std::move(editor)));
 }
 std::shared_ptr<void> retainModule(const std::filesystem::path &path){ return loadModule(path); }
@@ -643,10 +662,17 @@ std::vector<Description> scan(const std::filesystem::path &path){
     std::vector<Description> result;
     const auto count=module->factory->countClasses();
     if(count<0||count>65536)throw std::runtime_error("Invalid VST3 factory class count.");
+    std::set<std::string> araNames;
+    for (int index=0;index<count;++index) {
+        PClassInfo info{};
+        if (module->factory->getClassInfo(index,&info)==kResultOk &&
+            std::strcmp(info.category,kARAMainFactoryClass)==0) araNames.emplace(info.name);
+    }
     for(int index=0;index<count;++index){
         PClassInfo info{};
         if(module->factory->getClassInfo(index,&info)!=kResultOk||std::strcmp(info.category,kVstAudioEffectClass))continue;
         Description d;d.path=path;d.name=info.name;d.vendor=factory.vendor;
+        d.supportsARA=araNames.count(info.name)!=0;
         PClassInfo2 extra{};auto extended=f2?f2:static_cast<IPluginFactory2*>(f3);
         if(extended&&extended->getClassInfo2(index,&extra)==kResultOk){if(extra.vendor[0])d.vendor=extra.vendor;d.category=extra.subCategories;}
         PClassInfoW unicode{};

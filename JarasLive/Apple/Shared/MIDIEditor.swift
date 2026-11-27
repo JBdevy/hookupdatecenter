@@ -50,6 +50,13 @@ private struct ItemMIDIEditor: View {
 
 #endif
 
+struct MIDIPianoViewport {
+    var scale = 100.0
+    var keyHeight = 18.0
+    var zoomMemory: Double?
+    var heightMemory: Double?
+}
+
 struct RecordingPianoPreview: View {
     @ObservedObject private var recorder = TrackRecording.shared
     @ObservedObject private var selectionUpdates: ShowTrackSelectionPresentation
@@ -59,10 +66,17 @@ struct RecordingPianoPreview: View {
     @State private var toolbar = ToolbarState()
     let show: ShowController
     let active: Bool
+    let viewport: Binding<MIDIPianoViewport>?
+    let detached: Bool
+    let toggleDock: (() -> Void)?
 
-    init(show: ShowController, active: Bool = true) {
+    init(show: ShowController, active: Bool = true, viewport: Binding<MIDIPianoViewport>? = nil,
+         detached: Bool = false, toggleDock: (() -> Void)? = nil) {
         self.show = show
         self.active = active
+        self.viewport = viewport
+        self.detached = detached
+        self.toggleDock = toggleDock
         _selectionUpdates = ObservedObject(wrappedValue: show.trackSelectionPresentation)
     }
 
@@ -88,7 +102,8 @@ struct RecordingPianoPreview: View {
 
     var body: some View {
         MIDIEditor(show: show, project: show.snapshot.project.id, item: toolbar.item,
-            previewEditable: toolbar.editable, close: {}, preview: { controls in
+            previewEditable: toolbar.editable, close: {}, viewport: viewport, detached: detached,
+            toggleDock: toggleDock, preview: { controls in
                 active ? AnyView(playbackGrid(controls)) : AnyView(Color.clear)
             }).accessibilityLabel("MIDI Preview")
     }
@@ -562,9 +577,14 @@ private struct MIDIEditor: View {
     let cursor: Double
     let previewEditable: Bool
     let close: () -> Void
+    let detached: Bool
+    let toggleDock: (() -> Void)?
     let preview: ((MIDIPreviewEditorControls) -> AnyView)?
+    private let sharedViewport: Binding<MIDIPianoViewport>?
+    @State private var localViewport = MIDIPianoViewport()
     init(show: ShowController, project: UUID, item: UUID?, cursor: Double = 0,
          previewEditable: Bool = false, updateTitle: ((String) -> Void)? = nil, close: @escaping () -> Void,
+         viewport: Binding<MIDIPianoViewport>? = nil, detached: Bool = false, toggleDock: (() -> Void)? = nil,
          preview: ((MIDIPreviewEditorControls) -> AnyView)? = nil) {
         self.show = show
         _projectPresentation = ObservedObject(wrappedValue: show.projectPresentation)
@@ -574,6 +594,9 @@ private struct MIDIEditor: View {
         self.cursor = cursor
         self.previewEditable = previewEditable
         self.close = close
+        self.sharedViewport = viewport
+        self.detached = detached
+        self.toggleDock = toggleDock
         self.preview = preview
     }
     private var followsGrid: Bool { preview != nil }
@@ -586,10 +609,23 @@ private struct MIDIEditor: View {
         return !t.playing && t.paused != true && !t.subPlay.playing && row?.id == show.selectedTrackForActions && clip.startTime <= pos && pos < clip.startTime + clip.duration
     }
     @State private var selected = Set<UUID>()
-    @State private var scale = 100.0
-    @State private var keyHeight = 18.0
-    @State private var zoomMemory: Double?
-    @State private var heightMemory: Double?
+    private var viewport: Binding<MIDIPianoViewport> { sharedViewport ?? $localViewport }
+    private var scale: Double {
+        get { viewport.wrappedValue.scale }
+        nonmutating set { viewport.wrappedValue.scale = newValue }
+    }
+    private var keyHeight: Double {
+        get { viewport.wrappedValue.keyHeight }
+        nonmutating set { viewport.wrappedValue.keyHeight = newValue }
+    }
+    private var zoomMemory: Double? {
+        get { viewport.wrappedValue.zoomMemory }
+        nonmutating set { viewport.wrappedValue.zoomMemory = newValue }
+    }
+    private var heightMemory: Double? {
+        get { viewport.wrappedValue.heightMemory }
+        nonmutating set { viewport.wrappedValue.heightMemory = newValue }
+    }
     @State private var creationVelocity = 100
     @State private var strength = 1.0
     @State private var quantizeLengths = false
@@ -705,7 +741,21 @@ private struct MIDIEditor: View {
                             creationVelocityControl
                         }.fixedSize(horizontal: true, vertical: false)
                     }.fixedSize(horizontal: false, vertical: true)
-                    zoomControls.fixedSize(horizontal: true, vertical: false)
+                    HStack(spacing: 5) {
+                        if let toggleDock {
+                            Button(action: toggleDock) {
+                                Image(systemName: detached ? "arrow.down.to.line" : "arrow.up.right.square")
+                                    .font(.jarasSystem(size: 14, weight: .semibold))
+                                    .foregroundStyle(.white)
+                                    .frame(width: 32, height: 24)
+                                    .background(Color(hex: 0x454545), in: RoundedRectangle(cornerRadius: 4))
+                                    .contentShape(Rectangle())
+                            }.buttonStyle(.plain)
+                                .accessibilityLabel(detached ? "Indexar MIDI Preview" : "Desindexar MIDI Preview")
+                                .accessibilityIdentifier("native-midi-preview-dock")
+                        }
+                        zoomControls
+                    }.fixedSize(horizontal: true, vertical: false)
                 }.padding(.horizontal, 10).padding(.vertical, 6)
                 Divider()
                 if let preview {
@@ -746,7 +796,11 @@ private struct MIDIEditor: View {
                     } label: { Text(verbatim:JarasLocalization.string("Channel")) }
                         .frame(width:132).jarasHelp("Show notes from all channels or only the selected channel")
                     Text(channel == 0 ? "\(midi.notes.count) notas" : "\(visibleNotes.count)/\(midi.notes.count) notas").foregroundStyle(JarasTheme.secondary)
-                }.font(.jarasCaption).padding(10).disabled(!editable)
+                }.font(.jarasCaption)
+                    .controlSize(followsGrid ? .small : .regular)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, followsGrid ? 2 : 10)
+                    .disabled(!editable)
             } else { Text("O item MIDI foi removido.").padding(); Button("Fechar",action:close) }
         }.background(JarasTheme.background).foregroundStyle(JarasTheme.text)
             .onChange(of: updateTitle == nil ? nil : row?.name) { name in
@@ -1449,7 +1503,7 @@ private struct MIDIPreviewScrollBar: View {
 struct IpadWorkspaceFloatingPanel<Content: View>: View {
     let title: String
     var minimumHeight: CGFloat = 200
-    let dock: () -> Void
+    var dock: (() -> Void)? = nil
     let close: () -> Void
     @ViewBuilder let content: () -> Content
     @State private var position = CGPoint(x: 24, y: 82)
@@ -1467,7 +1521,9 @@ struct IpadWorkspaceFloatingPanel<Content: View>: View {
                 HStack {
                     Text(verbatim: title).font(.jarasHeadline)
                     Spacer()
-                    Button(action: dock) { Image(systemName: "pin.fill").frame(width: 36, height: 36) }.accessibilityLabel("Indexar")
+                    if let dock {
+                        Button(action: dock) { Image(systemName: "pin.fill").frame(width: 36, height: 36) }.accessibilityLabel("Indexar")
+                    }
                     Button(action: close) { Image(systemName: "xmark").frame(width: 36, height: 36) }.accessibilityLabel("Close")
                 }.padding(.horizontal, 10).contentShape(Rectangle())
                     .gesture(DragGesture(minimumDistance: 5, coordinateSpace: .global)

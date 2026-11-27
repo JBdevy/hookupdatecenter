@@ -60,7 +60,7 @@ for height: CGFloat in [84, 120, 160, 240] {
 }
 
 // Keep the group action and the full button row in reach at the mixer minimum.
-precondition(SidebarWidthLimits.trackMixer < SidebarWidthLimits.trackMixerDefault)
+precondition(SidebarWidthLimits.trackMixer <= SidebarWidthLimits.trackMixerDefault)
 for width: CGFloat in [SidebarWidthLimits.trackMixer, SidebarWidthLimits.trackMixerDefault, 400] {
     for meterWidth: CGFloat in [12, 40, 52] {
         for height: CGFloat in [64, 64.1, 80, 240] {
@@ -94,7 +94,7 @@ for hasPhase in [true, false] {
     }
     let wide = controls(width: SidebarWidthLimits.trackMixerDefault)
     // Deep groups and the color stripe reduce the width available inside a row.
-    let nestedWidth = narrowMixer - 53
+    let nestedWidth = narrowMixer - 59
     let middle = controls(width: nestedWidth + 12)
     let narrow = controls(width: nestedWidth)
     precondition(!wide.reclaimsPeakSpace && narrow.reclaimsPeakSpace)

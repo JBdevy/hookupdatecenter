@@ -337,6 +337,25 @@ final class NativeEffectsChain {
     var externalError: Error?
     private var failedExternalPlugins: [String: (ExternalPlugin, Error)] = [:]
     private var instrumentMIDIInput = false
+    private var araTimeline: NSDictionary?
+    private var appliedARATimeline: NSDictionary?
+    private var araPlaybackAllowed = false
+    var hasARATimeline: Bool { araTimeline != nil }
+
+    func configureARATimeline(_ timeline: NSDictionary?) {
+        if let timeline, timeline.isEqual(araTimeline) { return }
+        if timeline == nil && araTimeline == nil { return }
+        araTimeline = timeline
+        araPlaybackAllowed = false
+        failedExternalPlugins.removeAll()
+        for node in externalNodes.values { JarasVST3.araPlayback(node, allowed: false) }
+    }
+
+    func allowARAPlayback(_ allowed: Bool) {
+        guard araPlaybackAllowed != allowed else { return }
+        araPlaybackAllowed = allowed
+        for node in externalNodes.values { JarasVST3.araPlayback(node, allowed: allowed) }
+    }
     #endif
     private var externalTempoSections: [TimelineTempoSection]?
     private var externalTempoPoints: [[String: NSNumber]] = []
@@ -383,10 +402,11 @@ final class NativeEffectsChain {
               let index = settings?.externalPlugins?.firstIndex(where: { $0.id == plugin.id }) else { return }
         settings?.externalPlugins?[index].componentState = plugin.componentState
         settings?.externalPlugins?[index].controllerState = plugin.controllerState
+        settings?.externalPlugins?[index].araState = plugin.araState
         JarasVST3.rememberCapturedState(source, identifier: plugin.id,
-            component: plugin.componentState, controller: plugin.controllerState)
+            component: plugin.componentState, controller: plugin.controllerState, ara: plugin.araState)
     }
-    func prepareExternal(_ plugin: ExternalPlugin) throws -> AVAudioUnitEffect {
+    func prepareExternal(_ plugin: ExternalPlugin, timeline: NSDictionary? = nil) throws -> AVAudioUnitEffect {
         let node: AVAudioUnitEffect
         if let existing = externalNodes[plugin.id] { node = existing }
         else {
@@ -403,8 +423,11 @@ final class NativeEffectsChain {
         // so the processor must receive its owning graph's mode explicitly.
         let offline = engine?.isInManualRenderingMode == true && engine?.manualRenderingMode == .offline
         if node.auAudioUnit.isRenderingOffline != offline { node.auAudioUnit.isRenderingOffline = offline }
-        let data = try JSONEncoder().encode([plugin])
-        try JarasVST3.configure(node, plugins: JSONSerialization.jsonObject(with: data) as? [[String: Any]] ?? [])
+        let data = try JSONEncoder().encode(plugin)
+        var description = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
+        description["araTimeline"] = timeline
+        try JarasVST3.configure(node, plugins: [description])
+        JarasVST3.araPlayback(node, allowed: araPlaybackAllowed)
         JarasVST3.instrumentMIDIInput(node, enabled: instrumentMIDIInput)
         if externalTempoSections != nil { JarasVST3.setTempoMap(node, points: externalTempoPoints) }
         JarasVST3.setSequence(node, notes: !midiSequenceInstrumentsOnly || plugin.category.contains("Instrument") ? midiSequenceNotes : [])
@@ -670,7 +693,9 @@ final class NativeEffectsChain {
         let rate = max(8000, format?.sampleRate ?? equalizer.outputFormat(forBus: 0).sampleRate)
         #if os(macOS)
         let retained = Set((next.externalPlugins ?? []).filter { next.inserted.contains($0.effectKey) }.map(\.id))
-        guard next != settings || rate != sampleRate || Set(externalNodes.keys).union(failedExternalPlugins.keys) != retained else { return }
+        let araTimelineChanged = araTimeline !== appliedARATimeline
+        guard next != settings || rate != sampleRate || araTimelineChanged ||
+                Set(externalNodes.keys).union(failedExternalPlugins.keys) != retained else { return }
         #else
         guard next != settings || rate != sampleRate else { return }
         #endif
@@ -681,10 +706,13 @@ final class NativeEffectsChain {
         failedExternalPlugins = failedExternalPlugins.filter { retained.contains($0.key) }
         for plugin in next.externalPlugins ?? [] where next.inserted.contains(plugin.effectKey) {
             let failed = failedExternalPlugins[plugin.id]
+            let first = next.inserted.first == plugin.effectKey
+            let previouslyFirst = settings?.inserted.first == plugin.effectKey
             if plugin != settings?.externalPlugins?.first(where: { $0.id == plugin.id }) || rate != sampleRate ||
+                (first && araTimelineChanged) || (araTimeline != nil && first != previouslyFirst) ||
                 (externalNodes[plugin.id] == nil && failed?.0 != plugin) {
                 do {
-                    _ = try prepareExternal(plugin)
+                    _ = try prepareExternal(plugin, timeline: first ? araTimeline : nil)
                     failedExternalPlugins[plugin.id] = nil
                 } catch {
                     // One broken insert must never prevent a later instrument
@@ -694,6 +722,7 @@ final class NativeEffectsChain {
                 }
             }
         }
+        appliedARATimeline = araTimeline
         externalError = (next.externalPlugins ?? []).compactMap { failedExternalPlugins[$0.id]?.1 }.first
         #endif
         if next.inserted.contains("Pitch"), pitch == nil {

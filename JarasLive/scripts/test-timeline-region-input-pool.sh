@@ -14,6 +14,9 @@ root=Path.cwd()
 p=Path(sys.argv[1])
 s=(root/'Apple/Shared/TimelineGridView.swift').read_text()
 grid=s[s.index('@MainActor private struct NativeTimelineRegionTarget {'):s.index('@MainActor private struct NativeTimelineBaseStyle')]
+marker_height=next(line for line in s.splitlines() if line.startswith('private let markerLaneHeight:'))
+region_height=next(line for line in s.splitlines() if line.strip().startswith('static let regionRowHeight ='))
+bands=marker_height+'\nprivate enum TimelineHeaderBands {\n'+region_height+'\n}\n'
 e=(root/'Apple/Shared/RegionEditor.swift').read_text()
 editor=e[e.index('struct RegionRightClick: NSViewRepresentable'):e.index('struct MarkerEditAnchor:')]
 editor=editor.replace('final class RegionRightClickView: NSView, NativeTimelineInputObserver {','''final class RegionRightClickView: NSView, NativeTimelineInputObserver {
@@ -34,7 +37,7 @@ private extension NativeTimelineRegionTargetsView {
     var selectionForTest: [UUID: CAShapeLayer] { mounted.mapValues { $0.selection } }
 }
 '''
-(p/'main.swift').write_text('import AppKit\nimport SwiftUI\nprivate enum JarasLocalization { static func string(_ s: String) -> String { s } }\n'+gate+'\n'+editor+'\n'+grid+'\n'+probes+'\n'+(root/'Tests/Apple/TimelineRegionInputPoolTests.swift').read_text())
+(p/'main.swift').write_text('import AppKit\nimport SwiftUI\nprivate enum JarasLocalization { static func string(_ s: String) -> String { s } }\n'+bands+gate+'\n'+editor+'\n'+grid+'\n'+probes+'\n'+(root/'Tests/Apple/TimelineRegionInputPoolTests.swift').read_text())
 
 PY
 swiftc -O -swift-version 5 -target "$(uname -m)-apple-macos12.0" Apple/Shared/TimelineVisibleClipIndex.swift "$test_dir/main.swift" -o "$test_dir/test"

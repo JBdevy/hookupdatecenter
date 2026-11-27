@@ -43,6 +43,7 @@ class Host final : private Timer, private AsyncUpdater {
     std::function<var(int)> presentation;
     std::function<bool(const Command &)> perform;
     std::function<Bytes(const Command &)> image;
+    std::function<std::function<var()>(const var &)> prepareWaveforms;
     std::function<void(bool)> streamMainAudio;
     std::function<Bytes()> takeMainAudio;
     String error;
@@ -133,8 +134,13 @@ class Host final : private Timer, private AsyncUpdater {
         receiveCommands();
         publishState();
         publishMainAudio();
+        publishWaveforms();
     }
   private:
+    struct PendingWaveformPage {
+        std::atomic<bool> ready{false};
+        Bytes packet;
+    };
     void publishMainAudio() {
         if (!streamMainAudio || !takeMainAudio) return;
         std::vector<ID> subscribers;
@@ -193,11 +199,14 @@ class Host final : private Timer, private AsyncUpdater {
                             transport.disconnect(event.client);
                         continue;
                     }
+                    client.waveforms.reset();
                     client.mode = mode.toString();
                     client.panel = 0;
                     client.ack.reset();
                     client.failures = 0;
                     accessStatus(event.client, client);
+                } else if (event.kind == 11) {
+                    requestWaveforms(client, event.body);
                 } else if (event.kind == 9) {
                     client.mainAudio = (client.mode == "director" || client.mode == "observer") && (bool)event.body;
                 } else if (event.kind == 3) {
@@ -268,6 +277,7 @@ class Host final : private Timer, private AsyncUpdater {
                 if (streamMainAudio && takeMainAudio && (client.mode == "director" || client.mode == "observer"))
                     put(value, "mainAudioAvailable", true);
                 if (client.mode != "director") {
+                    put(value, "waveformRevision", var());
                     put(value, "projectTabs", var()); put(value, "projects", var()); put(value,"vinhetas",var());
                 }
                 const auto current = ++sequence;
@@ -292,11 +302,36 @@ class Host final : private Timer, private AsyncUpdater {
         double sentAt = 0;
         int panel = 0, failures = 0;
         bool mainAudio = false;
+        std::shared_ptr<PendingWaveformPage> waveforms;
     };
+    void requestWaveforms(Client &client, const var &request) {
+        if (client.mode != "director" || client.waveforms || !prepareWaveforms) return;
+        if (auto prepare = prepareWaveforms(request)) {
+            auto page = std::make_shared<PendingWaveformPage>();
+            client.waveforms = page;
+            waveformWorker.addJob([prepare = std::move(prepare), page] {
+                if (page.use_count() > 1) {
+                    try { page->packet = packet(12, prepare()); } catch (const std::exception &) {}
+                }
+                page->ready.store(true, std::memory_order_release);
+            });
+        }
+    }
+    void publishWaveforms() {
+        for (auto &entry : clients) {
+            auto &client = entry.second;
+            if (client.waveforms && client.waveforms->ready.load(std::memory_order_acquire)) {
+                if (client.mode == "director" && !client.waveforms->packet.empty())
+                    transport.send(entry.first, client.waveforms->packet);
+                client.waveforms.reset();
+            }
+        }
+    }
     void releaseVinhetas(Client &client) {
         auto held=std::move(client.heldVinhetas);client.heldVinhetas.clear();
         for(auto &entry:held){auto command=entry.second;command.action="vinhetasUp";command.pad=-1;command.preset=-1;command.value=0;if(perform)perform(command);}
     }
+    ThreadPool waveformWorker{1};
     Appearance &preferences;
     String hostName;
     Transport transport;

@@ -308,8 +308,10 @@ void addPartsPanelTests(const File &directory, Register &&test) {
                     const auto bounds = workspace.getLocalArea(panel, panel->getLocalBounds());
                     const auto sidebar = panel == right
                         ? workspace.getLocalArea(setlist, setlist->getLocalBounds()) : grid;
+                    const bool fullSidebar = panel == right ? bounds.getHeight() == sidebar.getHeight()
+                                                            : bounds.getHeight() >= sidebar.getHeight();
                     require(bounds.getWidth()>0 && workspace.getLocalBounds().contains(bounds) &&
-                            bounds.getY()==sidebar.getY() && bounds.getHeight()==sidebar.getHeight() && !bounds.intersects(grid),
+                            bounds.getY()==sidebar.getY() && fullSidebar && !bounds.intersects(grid),
                             "Parts dock overlaps the timeline, clips, or uses a footer-sized layout");
                     require(bounds.getX()<grid.getX() || bounds.getX()>=grid.getRight(),
                             "Parts dock is not beside the timeline");

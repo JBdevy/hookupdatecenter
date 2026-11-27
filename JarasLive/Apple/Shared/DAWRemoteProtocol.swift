@@ -11,6 +11,7 @@ enum DAWRemoteWire {
         case noticeReceipt(DAWRemoteNoticeReceipt), imageAsset(DAWRemoteImageAsset)
         case accessRequest(DAWRemoteAccessRequest), accessStatus(DAWRemoteAccessStatus)
         case mainAudioSubscription(Bool), mainAudio(Data)
+        case waveformRequest(DAWRemoteWaveformRequest), waveformPage(DAWRemoteWaveformPage)
     }
     enum Failure: Error { case invalid }
     private static func encode<T: Encodable>(_ value: T, kind: UInt8) throws -> Data {
@@ -29,6 +30,8 @@ enum DAWRemoteWire {
     static func mainAudio(_ payload: Data) -> Data {
         Data([0x4a, 0x4c, version, 10]) + payload
     }
+    static func waveformRequest(_ value: DAWRemoteWaveformRequest) throws -> Data { try encode(value, kind: 11) }
+    static func waveformPage(_ value: DAWRemoteWaveformPage) throws -> Data { try encode(value, kind: 12) }
     static func command(_ value: DAWRemoteCommand) throws -> Data {
         guard value.valid else { throw Failure.invalid }
         return try encode(value, kind: 1)
@@ -93,10 +96,83 @@ enum DAWRemoteWire {
         case 10:
             guard (8...8200).contains(payload.count), payload.count.isMultiple(of: 4) else { throw Failure.invalid }
             return .mainAudio(Data(payload))
+        case 11:
+            guard payload.count <= 256 else { throw Failure.invalid }
+            let request = try decoder.decode(DAWRemoteWaveformRequest.self, from: payload)
+            guard request.valid else { throw Failure.invalid }
+            return .waveformRequest(request)
+        case 12:
+            guard payload.count <= 32_768 else { throw Failure.invalid }
+            let page = try decoder.decode(DAWRemoteWaveformPage.self, from: payload)
+            guard page.valid else { throw Failure.invalid }
+            return .waveformPage(page)
         default: throw Failure.invalid
         }
     }
 }
+struct DAWRemoteWaveformRequest: Codable {
+    static let pageSize = 32
+    static let maximumItems = 65_536
+    var revision: UUID
+    var offset: Int
+    var valid: Bool {
+        (0..<Self.maximumItems).contains(offset) && offset.isMultiple(of: Self.pageSize)
+    }
+}
+
+struct DAWRemoteWaveformPage: Codable {
+    static let bins = 256
+    struct Entry: Codable {
+        var id: UUID
+        var peaks: Data
+    }
+    var revision: UUID
+    var offset: Int
+    var finished: Bool
+    var entries: [Entry]
+    var valid: Bool {
+        DAWRemoteWaveformRequest(revision: revision, offset: offset).valid &&
+            entries.count <= DAWRemoteWaveformRequest.pageSize &&
+            entries.allSatisfy { $0.peaks.count == Self.bins }
+    }
+    static func amplitude(_ peaks: Data, fraction: Double, span: Double) -> Double {
+        guard !peaks.isEmpty, fraction.isFinite, span.isFinite else { return 0 }
+        let count = Double(peaks.count)
+        let first = Int(min(count - 1, max(0, fraction * count)))
+        let last = Int(min(count, max(Double(first + 1), ceil((fraction + span) * count))))
+        return Double(peaks[(peaks.startIndex + first)..<(peaks.startIndex + last)].max() ?? 0) / 255
+    }
+}
+
+struct DAWRemoteWaveformTransfer {
+    private(set) var revision: UUID?
+    private var offset = 0
+    private var staged: [UUID: Data] = [:]
+    private(set) var complete = false
+
+    mutating func reset(_ revision: UUID?) {
+        self = Self()
+        self.revision = revision
+    }
+    var request: DAWRemoteWaveformRequest? {
+        guard !complete, let revision else { return nil }
+        let request = DAWRemoteWaveformRequest(revision: revision, offset: offset)
+        return request.valid ? request : nil
+    }
+    mutating func receive(_ page: DAWRemoteWaveformPage) -> [UUID: Data]? {
+        guard let request, request.revision == page.revision, request.offset == page.offset, page.valid else { return nil }
+        for entry in page.entries { staged[entry.id] = entry.peaks }
+        if page.finished || offset + DAWRemoteWaveformRequest.pageSize >= DAWRemoteWaveformRequest.maximumItems {
+            complete = true
+            let result = staged
+            staged.removeAll()
+            return result
+        }
+        offset += DAWRemoteWaveformRequest.pageSize
+        return nil
+    }
+}
+
 enum DAWRemoteAccess: String, Codable { case director, observer, notices }
 
 struct DAWRemoteBatteryWarning {
@@ -476,6 +552,7 @@ struct DAWRemoteState: Codable, Equatable {
     var smkLoopColor: UInt32? = nil
     var trackMixerStripeOnly: Bool? = nil
     var gridInvertsWaveforms: Bool? = nil
+    var waveformRevision: UUID? = nil
     /// Original unified songs keep their active child; only aliases replace the displayed row ID.
     var setlistCurrentEntryId: UUID? {
         if let id = currentPlaylistEntryId, regions.contains(where: { $0.id == id && $0.sourceRegionId != nil }) { return id }

@@ -45,6 +45,9 @@ final class TrackLocalLaneTests: XCTestCase {
         let stacked = TrackLanes(track: track)
         XCTAssertEqual(stacked.count, 1)
         for item in [long, inner, later] { XCTAssertTrue(stacked.hasStackedOverlap(item.id)) }
+        XCTAssertEqual(stacked.stackDepth(for: long.id), 0)
+        XCTAssertEqual(stacked.stackDepth(for: later.id), 1)
+        XCTAssertEqual(stacked.stackDepth(for: inner.id), 2)
         XCTAssertFalse(stacked.hasStackedOverlap(touching.id))
         track.stackedStems = false
         XCTAssertFalse(TrackLanes(track: track).hasStackedOverlap(long.id))

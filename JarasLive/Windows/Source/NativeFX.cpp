@@ -52,6 +52,7 @@ struct NativeFX::Effect {
     String key, externalConfiguration, pluginID;
     bool bypassed = false, retiredStem=false;
     std::shared_ptr<native::vst3::Processor> plugin;
+    std::shared_ptr<const native::vst3::ARATimeline> araTimeline;
     std::shared_ptr<native::stem::Processor> stem;
     native::stem::Mix stemMix;
     std::array<native::vst3::MIDIEvent,4096> midi{};
@@ -236,7 +237,8 @@ static std::shared_ptr<const jaras::audio::DrumSample> loadDrumPCM(const File &f
     return pcm;
 }
 void NativeFX::prepare(const var &settings, double sampleRate, const NativeFX *previous,bool offline,bool prewarm,
-                       const Dispatcher &pluginDispatcher, const File &mediaDirectory) {
+                       const Dispatcher &pluginDispatcher, const File &mediaDirectory,
+                       std::shared_ptr<const native::vst3::ARATimeline> araTimeline) {
     effects.clear();
     unsupported.clear();
     hasDynamicsMeter = false;
@@ -452,7 +454,8 @@ void NativeFX::prepare(const var &settings, double sampleRate, const NativeFX *p
         }
         effects.push_back(std::move(e));
     };
-    for (auto raw : list(get(settings, "inserted"))) {
+    const auto inserted = list(get(settings, "inserted"));
+    for (auto raw : inserted) {
         auto key = raw.toString();
         if (key.startsWith("External:")) {
             try {
@@ -465,10 +468,11 @@ void NativeFX::prepare(const var &settings, double sampleRate, const NativeFX *p
                     break;
                 }
                 auto e=std::make_unique<Effect>();e->kind="External";e->key=key;e->pluginID=str(plugin,"id");e->bypassed=flag(plugin,"bypassed");
+                if (!inserted.isEmpty() && raw == inserted[0]) e->araTimeline = araTimeline;
                 auto configuration=plugin.clone();configuration.getDynamicObject()->removeProperty("bypassed");
                 e->externalConfiguration=JSON::toString(configuration,true);
                 if(previous)for(const auto &old:previous->effects)
-                    if(old->key==key&&old->externalConfiguration==e->externalConfiguration)e->plugin=old->plugin;
+                    if(old->key==key&&old->externalConfiguration==e->externalConfiguration&&old->araTimeline==e->araTimeline)e->plugin=old->plugin;
                 if(!e->plugin) {
                     native::vst3::Description description;
                     description.path=std::filesystem::u8path(utf8(str(plugin,"path")));
@@ -482,13 +486,14 @@ void NativeFX::prepare(const var &settings, double sampleRate, const NativeFX *p
                         if(stream.getDataSize())bytes.assign(data,data+stream.getDataSize());
                     };
                     decode("componentState",state.component);decode("controllerState",state.controller);
+                    if (e->araTimeline) decode("araState",state.ara);
                     // A queued constructor may finish after its load was
                     // cancelled. Own its result independently of this Effect.
                     auto result=std::make_shared<std::shared_ptr<native::vst3::Processor>>();
                     const auto *manager=MessageManager::getInstanceWithoutCreating();
                     const bool affine=bool(pluginDispatcher)||(manager&&manager->isThisTheMessageThread());
-                    auto create=[result,description=std::move(description),state=std::move(state),sampleRate,affine] {
-                        auto *processor=new native::vst3::Processor(description,state,sampleRate,4096);
+                    auto create=[result,description=std::move(description),state=std::move(state),sampleRate,affine,timeline=e->araTimeline] {
+                        auto *processor=new native::vst3::Processor(description,state,sampleRate,4096,timeline.get());
                         *result=std::shared_ptr<native::vst3::Processor>(processor,[affine](auto *value) {
                             auto *manager=MessageManager::getInstanceWithoutCreating();
                             if(affine&&manager&&!manager->isThisTheMessageThread()) {
@@ -535,6 +540,7 @@ void NativeFX::captureExternalState(var &settings) const {
         const auto state=processor->state();
         put(plugin,"componentState",Base64::toBase64(state.component.data(),state.component.size()));
         put(plugin,"controllerState",Base64::toBase64(state.controller.data(),state.controller.size()));
+        if (!state.ara.empty()) put(plugin,"araState",Base64::toBase64(state.ara.data(),state.ara.size()));
         auto configuration=plugin.clone();configuration.getDynamicObject()->removeProperty("bypassed");
         for(const auto &effect:effects)if(effect->plugin==processor)effect->externalConfiguration=JSON::toString(configuration,true);
     }
@@ -595,6 +601,9 @@ void NativeFX::previewStemMix(const String &key,const native::stem::Mix &mix){fo
 void NativeFX::waitForStems(){for(auto &e:effects)if(e->stem&&e->stemMix.enabled)e->stem->waitReady();}
 void NativeFX::checkStemErrors()const {for(const auto &e:effects)if(e->stem&&e->stemMix.enabled){const auto s=e->stem->status();if(s.state=="fault")throw std::runtime_error(s.error);}}
 bool NativeFX::hasExternal() const {for(const auto &effect:effects)if(effect->plugin)return true;return false;}
+bool NativeFX::hasARA() const {
+    return std::any_of(effects.begin(),effects.end(),[](const auto &effect){return effect->plugin&&effect->plugin->hasARA();});
+}
 void NativeFX::applyAutomation(const AutomationProgram &program, double time) {
     if (effects.empty()) return;
     for (const auto &curve : program.curves) if (curve.target == AutomationCurve::externalFX)
@@ -614,7 +623,7 @@ void NativeFX::processIdleEditors(int samples,double seconds,bool playing,const 
     const auto transport = tempoMap ? tempoMap->at(seconds,playing) : jaras::PluginTempoMap{}.at(seconds,playing);
     for(auto &effect:effects)if(effect->plugin)effect->plugin->processEditorSilence(samples,transport);
 }
-void NativeFX::process(AudioBuffer<float> &buffer, int samples,double seconds,bool playing,const MidiBuffer *midi,double stemSeconds,const jaras::PluginTempoMap *tempoMap) {
+void NativeFX::process(AudioBuffer<float> &buffer, int samples,double seconds,bool playing,const MidiBuffer *midi,double stemSeconds,const jaras::PluginTempoMap *tempoMap,bool renderARA) {
     reductionDB = hasDynamicsMeter ? 0.f : -1.f;
     if (effects.empty()) return;
     ScopedNoDenormals noDenormals;
@@ -651,7 +660,7 @@ void NativeFX::process(AudioBuffer<float> &buffer, int samples,double seconds,bo
             const auto transport = tempoMap ? tempoMap->at(seconds, playing) : jaras::PluginTempoMap{}.at(seconds, playing);
             const auto &v = e->parameters.values;
             e->creative->process(buffer.getWritePointer(0), buffer.getNumChannels() > 1 ? buffer.getWritePointer(1) : nullptr,
-                unsigned(samples), {v[0], v[1], v[2], v[3]}, transport);
+                unsigned(samples), v, transport);
             if (e->kind == "Soft Clipper") reductionDB = std::max(reductionDB, e->creative->gainReductionDB());
             continue;
         }
@@ -671,7 +680,7 @@ void NativeFX::process(AudioBuffer<float> &buffer, int samples,double seconds,bo
                 auto &event=e->midi[(size_t)count++];event.offset=metadata.samplePosition;event.status=metadata.data[0];
                 event.data1=metadata.numBytes>1?metadata.data[1]:0;event.data2=metadata.numBytes>2?metadata.data[2]:0;
             }
-            e->plugin->process(buffer.getWritePointer(0),buffer.getWritePointer(1),samples,transport,e->midi.data(),count);
+            e->plugin->process(buffer.getWritePointer(0),buffer.getWritePointer(1),samples,transport,e->midi.data(),count,renderARA);
         }
         if (e->plugin) {
             const auto reduction = e->plugin->gainReduction();

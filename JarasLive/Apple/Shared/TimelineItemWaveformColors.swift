@@ -5,6 +5,14 @@ enum TimelineItemWaveformColors {
     static let normal = Color(hex: 0x202020)
     static let invertedBackground = Color(hex: 0x202020)
     static let invertedBackgroundRGB = SIMD4<Float>(32.0 / 255, 32.0 / 255, 32.0 / 255, 1)
+    static func stackedInk(rgb: SIMD4<Float>, inverted: Bool, silenced: Bool, depth: Int?) -> SIMD4<Float>? {
+        let alpha: Float = (depth ?? 0) > 0 ? 0.6 : 1
+        if inverted && !silenced {
+            return SIMD4(rgb.x, rgb.y, rgb.z, alpha)
+        }
+        if alpha < 1 { return SIMD4(normalGray, normalGray, normalGray, alpha) }
+        return nil
+    }
     static func usesBlackTitle(trackColor: UInt32, selected: Bool = false, silenced: Bool, inverted: Bool) -> Bool {
         let surface = silenced ? (selected ? UInt32(0xb3b3b3) : 0x8c8c8c) : inverted ? 0x202020 : trackColor
         return TrackNameContrast.foreground(surface, opacity: 1, background: 0,

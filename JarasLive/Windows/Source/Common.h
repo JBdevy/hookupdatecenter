@@ -143,7 +143,7 @@ inline Colour trackStripeSurface(bool selected) {
     return selected ? mixerStripeSurface.interpolatedWith(Colours::white, .11f) : mixerStripeSurface;
 }
 inline constexpr int trackMixerMinHeight = 66, trackMixerStripeWidth = 5, hozMixerStripeHeight = 2;
-inline constexpr int trackMixerMinWidth = 278, trackMixerMaxWidth = 486;
+inline constexpr int trackMixerMinWidth = 283, trackMixerMaxWidth = 486;
 inline constexpr auto trackMixerStyleKey = "jaras.trackMixer.trackStyle";
 inline constexpr auto hozMixerStyleKey = "jaras.hozMixer.trackStyle";
 inline constexpr auto interfaceThemeKey = "jaras.interface.theme";

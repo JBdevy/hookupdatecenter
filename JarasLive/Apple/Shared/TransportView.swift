@@ -117,6 +117,7 @@ struct TransportView: View {
     var toggleProNotes: () -> Void = {}
     var toggleProSamplers: () -> Void = {}
     var masterWorkspaceButtons: AnyView?
+    var masterFooterButtons: AnyView?
     var timerReadout: AnyView?
     var statusControls: AnyView?
     init(show: ShowController, documents: ProjectDocuments? = nil, remotePresentation: Bool = false,
@@ -126,7 +127,8 @@ struct TransportView: View {
          setlistPlacement: SetlistPlacement = .right, placeSetlist: @escaping (SetlistPlacement) -> Void = { _ in },
          shareProject: (() -> Void)? = nil, proNotesOpen: Bool = false, proSamplersOpen: Bool = false,
          toggleProNotes: @escaping () -> Void = {}, toggleProSamplers: @escaping () -> Void = {},
-         masterWorkspaceButtons: AnyView? = nil, timerReadout: AnyView? = nil, statusControls: AnyView? = nil) {
+         masterWorkspaceButtons: AnyView? = nil, masterFooterButtons: AnyView? = nil,
+         timerReadout: AnyView? = nil, statusControls: AnyView? = nil) {
         self.show = show; self.documents = documents; self.remotePresentation = remotePresentation
         self.mediaDirectory = mediaDirectory; self.toggleNavigation = toggleNavigation
         self.mixerCollapsed = mixerCollapsed; self.setlistCollapsed = setlistCollapsed
@@ -136,6 +138,7 @@ struct TransportView: View {
         self.proNotesOpen = proNotesOpen; self.proSamplersOpen = proSamplersOpen
         self.toggleProNotes = toggleProNotes; self.toggleProSamplers = toggleProSamplers
         self.masterWorkspaceButtons = masterWorkspaceButtons
+        self.masterFooterButtons = masterFooterButtons
         self.timerReadout = timerReadout; self.statusControls = statusControls
         _updates = StateObject(wrappedValue: show.presentationObserver)
     }
@@ -221,7 +224,8 @@ struct TransportView: View {
                     tooltip: "Track Mixer", cornerRadius: 4, action: toggleMixer).frame(width: buttonWidth)
             }
             #endif
-            MasterStrip(show: show, workspaceButtons: masterWorkspaceButtons).frame(width: mainWidth)
+            MasterStrip(show: show, workspaceButtons: masterWorkspaceButtons, footerButtons: masterFooterButtons)
+                .frame(width: mainWidth)
                 .overlay(alignment: .trailing) {
                     if activeProMode {
                         Rectangle().fill(.white.opacity(0.15)).frame(width: 1)
@@ -274,7 +278,7 @@ struct TransportView: View {
         #if os(macOS)
         .background {
             if activeProMode {
-                LinearGradient(gradient: TransportPanelColor(rawValue: panelColor)?.gradient ?? JarasTheme.proTransportGradient, startPoint: .top, endPoint: .bottom)
+                LinearGradient(gradient: TransportPanelColor.resolved(panelColor).gradient, startPoint: .top, endPoint: .bottom)
             }
         }
         #endif
@@ -883,17 +887,27 @@ struct ProGridToolPicker: View {
 
 struct ProTransportButtons: View {
     static let controlCount: CGFloat = 9
+    static let playbackOrder: [IpadTransportControl] = [.play, .pause, .fadeout, .record, .repeatPlayback]
+    static let playbackControlCount = CGFloat(playbackOrder.count)
     static let horizontalInset: CGFloat = 4
     static let navigationGap: CGFloat = 10
     static let splitHorizontalInset: CGFloat = 2 * horizontalInset + navigationGap
     let show: ShowController
     let configureFadeout: () -> Void
     var buttonWidth: CGFloat = 31
+    var controlHeight = TransportControlMetrics.proHeight
     var splitNavigation = false
+    enum Section { case all, navigation, playback }
+    var section: Section = .all
+    var visiblePlayback = Self.playbackOrder
     @ObservedObject private var recorder = TrackRecording.shared
 
     var body: some View {
-        if splitNavigation {
+        if section == .navigation {
+            controlGroup { navigationControls }
+        } else if section == .playback {
+            controlGroup { playbackControls }
+        } else if splitNavigation {
             HStack(spacing: Self.navigationGap) {
                 controlGroup { navigationControls }
                     .overlay(alignment: .trailing) {
@@ -920,21 +934,32 @@ struct ProTransportButtons: View {
         let transport = show.snapshot.transport
         let running = transport.playing || show.preparingAudio
         let recording = recorder.recording || recorder.countingIn
-        control(running ? "Stop" : "Play", icon: running ? "stopall" : "play",
-            tint: running ? .white : JarasTheme.green, selectedColor: running ? JarasTheme.liveOffRed : nil) {
-            show.send(running ? .stop : .play)
-        }
-        control("Pause", icon: "pause", selectedColor: transport.paused == true ? JarasTheme.yellow : nil,
-            enabled: transport.playing || transport.paused == true) { show.send(.pause) }
-        control("Fadeout", icon: "fadeout", tint: JarasTheme.yellow) { show.triggerTransportFadeout() }
-            .immediateRightClick { configureFadeout() }
-        control("Record", icon: "record", tint: recording ? .white : JarasTheme.liveOffRed,
-            selectedColor: recording ? JarasTheme.liveOffRed : nil, enabled: !recorder.busy || recorder.countingIn) {
-            recorder.toggle(show: show)
-        }
-        control("Repeat", icon: "loop", tint: transport.loop.enabled ? .black : .white,
-            selectedColor: transport.loop.enabled ? JarasTheme.yellow : nil) {
-            show.send(.toggleLoop)
+        ForEach(visiblePlayback) { command in
+            switch command {
+            case .play:
+                control(running ? "Stop" : "Play", icon: running ? "stopall" : "play",
+                    tint: running ? .white : JarasTheme.green, selectedColor: running ? JarasTheme.liveOffRed : nil) {
+                    show.send(running ? .stop : .play)
+                }
+            case .pause:
+                control("Pause", icon: "pause", selectedColor: transport.paused == true ? JarasTheme.yellow : nil,
+                    enabled: transport.playing || transport.paused == true) { show.send(.pause) }
+            case .fadeout:
+                control("Fadeout", icon: "fadeout", tint: JarasTheme.yellow) { show.triggerTransportFadeout() }
+                    .immediateRightClick { configureFadeout() }
+            case .record:
+                control("Record", icon: "record", tint: recording ? .white : JarasTheme.liveOffRed,
+                    selectedColor: recording ? JarasTheme.liveOffRed : nil, enabled: !recorder.busy || recorder.countingIn) {
+                    recorder.toggle(show: show)
+                }.contextMenu { StopPlaybackOnRecordDisarm() }
+            case .repeatPlayback:
+                control("Repeat", icon: "loop", tint: transport.loop.enabled ? .black : .white,
+                    selectedColor: transport.loop.enabled ? JarasTheme.yellow : nil) {
+                    show.send(.toggleLoop)
+                }
+            case .metronome, .bpm, .tuner:
+                EmptyView()
+            }
         }
     }
 
@@ -959,7 +984,7 @@ struct ProTransportButtons: View {
                          selectedColor: Color? = nil, enabled: Bool = true, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             TransportControlIcon(name: icon, size: 18, color: tint)
-                .frame(width: buttonWidth, height: TransportControlMetrics.proHeight).contentShape(Rectangle())
+                .frame(width: buttonWidth, height: controlHeight).contentShape(Rectangle())
                 .background(selectedColor ?? .clear, in: RoundedRectangle(cornerRadius: 4))
         }.buttonStyle(.plain).disabled(!enabled).opacity(enabled ? 1 : 0.36)
             .accessibilityLabel(LocalizedStringKey(title)).jarasHelp(title)
@@ -1012,6 +1037,24 @@ private struct DesktopTimelineEditingControls: View {
 }
 #endif
 
+enum DesktopEditingStripDensity {
+    case full, remoteIcon, videoIcon, lockIcon
+    var showsRemoteTitle: Bool { self == .full }
+    var showsVideoTitle: Bool { self == .full || self == .remoteIcon }
+    var showsLockTitle: Bool { self != .lockIcon }
+}
+
+private struct DesktopEditingStripDensityKey: EnvironmentKey {
+    static let defaultValue: DesktopEditingStripDensity = .full
+}
+
+extension EnvironmentValues {
+    var desktopEditingStripDensity: DesktopEditingStripDensity {
+        get { self[DesktopEditingStripDensityKey.self] }
+        set { self[DesktopEditingStripDensityKey.self] = newValue }
+    }
+}
+
 struct TimelineEditingBar<Zoom: View>: View {
     let show: ShowController
     let editKey: String
@@ -1020,6 +1063,7 @@ struct TimelineEditingBar<Zoom: View>: View {
     let mixerButtons: AnyView
     let workspaceButtons: AnyView?
     let liveButtons: AnyView?
+    let nativeUtilityButtons: AnyView?
     @ViewBuilder let zoom: (Bool) -> Zoom
     @ObservedObject private var updates: ShowProjectPresentation
     @AppStorage(TimelineSnapPreference.key) private var snapEnabled = true
@@ -1028,12 +1072,13 @@ struct TimelineEditingBar<Zoom: View>: View {
 
     init(show: ShowController, editKey: String, tool: Binding<ProGridTool>, movingRegion: Bool,
          mixerButtons: AnyView, workspaceButtons: AnyView? = nil, liveButtons: AnyView? = nil,
-         @ViewBuilder zoom: @escaping (Bool) -> Zoom) {
+         nativeUtilityButtons: AnyView? = nil, @ViewBuilder zoom: @escaping (Bool) -> Zoom) {
         self.show = show
         self.editKey = editKey
         self.movingRegion = movingRegion
         self.mixerButtons = mixerButtons
         self.workspaceButtons = workspaceButtons; self.liveButtons = liveButtons
+        self.nativeUtilityButtons = nativeUtilityButtons
         self.zoom = zoom
         _tool = tool
         _updates = ObservedObject(wrappedValue: show.projectPresentation)
@@ -1047,29 +1092,38 @@ struct TimelineEditingBar<Zoom: View>: View {
                         ViewThatFits(in: .horizontal) {
                             desktopStrip(width: geometry.size.width, workspace: workspaceButtons, live: liveButtons) { zoom(true) }
                             desktopStrip(width: geometry.size.width, workspace: workspaceButtons, live: liveButtons) { zoom(false) }
-                            desktopStrip(width: geometry.size.width, workspace: workspaceButtons, live: liveButtons) { EmptyView() }
+                            desktopStrip(width: geometry.size.width, workspace: workspaceButtons, live: liveButtons, density: .remoteIcon) { zoom(false) }
+                            desktopStrip(width: geometry.size.width, workspace: workspaceButtons, live: liveButtons, density: .videoIcon) { zoom(false) }
+                            desktopStrip(width: geometry.size.width, workspace: workspaceButtons, live: liveButtons, density: .lockIcon) { zoom(false) }
                             ScrollView(.horizontal, showsIndicators: false) {
                                 desktopStrip(width: geometry.size.width, workspace: workspaceButtons, live: liveButtons,
-                                             showsTiming: false) { EmptyView() }
+                                             density: .lockIcon) { zoom(false) }
                             }
                         }
                     } else {
+                        let width = geometry.size.width
+                        let density: DesktopEditingStripDensity = width >= 1325 ? .full
+                            : width >= 1275 ? .remoteIcon : width >= 1235 ? .videoIcon : .lockIcon
                         ScrollView(.horizontal, showsIndicators: false) {
-                            desktopStrip(width: geometry.size.width, workspace: workspaceButtons, live: liveButtons,
-                                         showsTiming: geometry.size.width >= 1340) {
-                                if geometry.size.width >= 1415 { zoom(geometry.size.width >= 1590) }
+                            desktopStrip(width: width, workspace: workspaceButtons, live: liveButtons, density: density) {
+                                zoom(width >= 1530)
                             }
                         }
                     }
                 } else {
-                    if #available(macOS 13, iOS 16, *) {
-                        ViewThatFits(in: .horizontal) {
-                            nativeStrip(live: liveButtons)
-                            ScrollView(.horizontal, showsIndicators: false) { nativeStrip(live: liveButtons) }
-                        }
-                    } else {
-                        ScrollView(.horizontal, showsIndicators: false) { nativeStrip(live: liveButtons) }
+                    #if os(iOS)
+                    ViewThatFits(in: .horizontal) {
+                        nativeStrip(width: geometry.size.width).fixedSize(horizontal: true, vertical: false)
+                        ScrollView(.horizontal, showsIndicators: false) { nativeStrip(width: geometry.size.width) }
                     }
+                    #else
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 10) {
+                            nativeStripControls(live: liveButtons)
+                            zoom(true).fixedSize(horizontal: true, vertical: false)
+                        }.frame(minWidth: geometry.size.width, alignment: .leading)
+                    }
+                    #endif
                 }
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
         }
@@ -1089,30 +1143,45 @@ struct TimelineEditingBar<Zoom: View>: View {
         }
     }
 
-    private func nativeStrip(live: AnyView?) -> some View {
+    #if os(iOS)
+    private func nativeStrip(width: CGFloat) -> some View {
+        NativeTimelineStripLayout(viewportWidth: width) {
+            nativeStripControls(live: nil).fixedSize()
+            desktopStripGroup {
+                HStack(spacing: 0) { nativeUtilityButtons }
+            }
+            HStack(spacing: 10) {
+                if let liveButtons { desktopStripGroup { liveButtons.fixedSize() } }
+                zoom(true)
+            }.fixedSize()
+        }
+    }
+    #endif
+
+    private func nativeStripControls(live: AnyView?) -> some View {
         HStack(spacing: 10) {
             desktopStripGroup { mixerButtons.fixedSize() }
             desktopStripGroup { timelineToggles.fixedSize() }
             desktopStripGroup { editTools }
-            if let live { live.fixedSize() }
-            Spacer(minLength: 4)
-            zoom(true).fixedSize(horizontal: true, vertical: false)
+            if let live { desktopStripGroup { live.fixedSize() } }
         }
     }
 
     private func desktopStrip<ZoomTools: View>(width: CGFloat, workspace: AnyView, live: AnyView,
-                                              showsTiming: Bool = true,
+                                              density: DesktopEditingStripDensity = .full,
                                               @ViewBuilder zoomTools: () -> ZoomTools) -> some View {
         HStack(spacing: 8) {
-            desktopStripGroup { leftControls(showsTiming: showsTiming) }
+            desktopStripGroup { leftControls(showsTiming: true) }
             desktopStripGroup { editTools }
             desktopStripGroup { workspace.fixedSize() }
             HStack(spacing: 8) {
                 desktopStripGroup { live.fixedSize() }
+                    .overlay(alignment: .leading) { desktopStripDivider.offset(x: -4) }
                 zoomTools()
             }.fixedSize(horizontal: true, vertical: false)
                 .frame(maxWidth: .infinity, alignment: .trailing)
         }.frame(minWidth: width)
+            .environment(\.desktopEditingStripDensity, density)
         #if os(macOS)
         .environment(\.desktopEditingStripChrome, true)
         #endif
@@ -1120,10 +1189,12 @@ struct TimelineEditingBar<Zoom: View>: View {
 
     private func desktopStripGroup<Content: View>(@ViewBuilder content: () -> Content) -> some View {
         content().overlay(alignment: .trailing) {
-            Rectangle().fill(.white.opacity(0.17)).frame(width: 1, height: 22)
-                .offset(x: 4)
-                .allowsHitTesting(false)
+            desktopStripDivider.offset(x: 4)
         }
+    }
+
+    private var desktopStripDivider: some View {
+        Rectangle().fill(.white.opacity(0.17)).frame(width: 1, height: 22).allowsHitTesting(false)
     }
 
     private var editTools: some View {
@@ -1198,11 +1269,39 @@ struct TimelineEditingBar<Zoom: View>: View {
             let shape = RoundedRectangle(cornerRadius: 4)
             configuration.label
                 .background(Color(hex: configuration.isPressed ? 0x525252 : 0x454545), in: shape)
-                .overlay { shape.strokeBorder(Color.white.opacity(0.23)) }
+                .overlay { shape.strokeBorder(Color.white.opacity(0.23)).allowsHitTesting(false) }
+                .contentShape(Rectangle())
         }
     }
 
 }
+
+#if os(iOS)
+private struct NativeTimelineStripLayout: Layout {
+    var viewportWidth: CGFloat
+    private let spacing: CGFloat = 10
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let controls = subviews[0].sizeThatFits(.unspecified)
+        let utilities = subviews[1].sizeThatFits(.unspecified)
+        let right = subviews[2].sizeThatFits(.unspecified)
+        return CGSize(width: max(viewportWidth, controls.width + utilities.width + right.width + spacing * 2),
+                      height: max(controls.height, utilities.height, right.height))
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let controls = subviews[0].sizeThatFits(.unspecified)
+        let right = subviews[2].sizeThatFits(.unspecified)
+        let utilityWidth = max(0, bounds.width - controls.width - right.width - spacing * 2)
+        subviews[0].place(at: CGPoint(x: bounds.minX, y: bounds.midY), anchor: .leading,
+                          proposal: ProposedViewSize(controls))
+        subviews[1].place(at: CGPoint(x: bounds.minX + controls.width + spacing, y: bounds.midY), anchor: .leading,
+                          proposal: ProposedViewSize(width: utilityWidth, height: bounds.height))
+        subviews[2].place(at: CGPoint(x: bounds.maxX, y: bounds.midY), anchor: .trailing,
+                          proposal: ProposedViewSize(right))
+    }
+}
+#endif
 
 struct DesktopZoomControls: View {
     static let defaultSliderWidth: CGFloat = 68
@@ -1224,19 +1323,22 @@ struct DesktopZoomControls: View {
     var largerSliders = false
     var memoryButtonWidth: CGFloat = 24
     var showsSliders = true
+    var showsMemories = true
     var groupSpacing: CGFloat = 5
 
     var body: some View {
         HStack(spacing: groupSpacing) {
-            HStack(spacing: 0) {
-                ZoomButton(symbol: "fitTracks", label: height.toggleLabel, id: height.id + "-memory",
-                           active: height.active, controlHeight: controlHeight, width: memoryButtonWidth, action: height.toggle)
-                Rectangle().fill(Color(hex: 0x393939)).frame(width: 1)
-                ZoomButton(symbol: "fitTime", label: time.toggleLabel, id: time.id + "-memory",
-                           active: time.active, controlHeight: controlHeight, width: memoryButtonWidth, action: time.toggle)
-            }.frame(height: controlHeight)
-                .background(Color(hex: 0x454545), in: RoundedRectangle(cornerRadius: 6))
-                .clipShape(RoundedRectangle(cornerRadius: 4))
+            if showsMemories {
+                HStack(spacing: 0) {
+                    ZoomButton(symbol: "fitTracks", label: height.toggleLabel, id: height.id + "-memory",
+                               active: height.active, controlHeight: controlHeight, width: memoryButtonWidth, action: height.toggle)
+                    Rectangle().fill(Color(hex: 0x393939)).frame(width: 1)
+                    ZoomButton(symbol: "fitTime", label: time.toggleLabel, id: time.id + "-memory",
+                               active: time.active, controlHeight: controlHeight, width: memoryButtonWidth, action: time.toggle)
+                }.frame(height: controlHeight)
+                    .background(Color(hex: 0x454545), in: RoundedRectangle(cornerRadius: 6))
+                    .clipShape(RoundedRectangle(cornerRadius: 4))
+            }
             if showsSliders {
                 HStack(spacing: 0) {
                     ZoomSlider(symbol: "trackHeightAxis", label: height.label, id: height.id + "-slider",
@@ -2057,6 +2159,9 @@ struct TimelineEditButton: View {
 
     @AppStorage private var enabled: Bool
     @AppStorage private var seek: TimelineEditPreferences.Seek
+    #if os(iOS)
+    @State private var showingSeekOptions = false
+    #endif
     let show: ShowController?
     let width: CGFloat
     let height: CGFloat
@@ -2070,6 +2175,7 @@ struct TimelineEditButton: View {
     }
 
     var body: some View {
+        let foreground = enabled ? Color.black : JarasTheme.text
         HStack(spacing: 0) {
             Button {
                 enabled.toggle()
@@ -2077,30 +2183,59 @@ struct TimelineEditButton: View {
             } label: {
                 HStack(spacing: 5) {
                     TransportControlIcon(name: "editCursor", size: 17)
-                    if showsTitle { Text(verbatim: "Edit").font(.jarasSystem(size: 12, weight: .semibold)) }
-                }.frame(maxWidth: .infinity, maxHeight: .infinity).contentShape(Rectangle())
+                    if showsTitle { Text(verbatim: "Edit").font(.jarasSystem(size: TimelineEditingBarMetrics.labelSize, weight: .semibold)) }
+                }.lineLimit(1)
+                    .foregroundStyle(foreground)
+                    .frame(maxWidth: .infinity, minHeight: height).contentShape(Rectangle())
             }.buttonStyle(.plain)
                 .accessibilityLabel("Edit").accessibilityIdentifier("editMode")
                 .accessibilityAddTraits(enabled ? .isSelected : [])
+            #if os(iOS)
+            Button { showingSeekOptions = true } label: {
+                seekArrow(width: showsTitle ? 20 : 14, color: foreground)
+            }.buttonStyle(.plain)
+                .accessibilityLabel("Edit seek mode").accessibilityIdentifier("editSeekMode")
+                .accessibilityValue(Text(verbatim: seek.label))
+                .popover(isPresented: $showingSeekOptions, arrowEdge: .bottom) {
+                    let options = VStack(spacing: 0) {
+                        ForEach(TimelineEditPreferences.Seek.allCases, id: \.self) { mode in
+                            Button {
+                                seek = mode
+                                showingSeekOptions = false
+                            } label: {
+                                HStack {
+                                    Text(verbatim: mode.label)
+                                    Spacer(minLength: 12)
+                                    if seek == mode { Image(systemName: "checkmark") }
+                                }.font(.jarasSystem(size: 13, weight: .semibold))
+                                    .frame(height: 36).contentShape(Rectangle())
+                            }.buttonStyle(.plain).accessibilityAddTraits(seek == mode ? .isSelected : [])
+                        }
+                    }.frame(width: 168).padding(10)
+                    if #available(iOS 16.4, *) { options.presentationCompactAdaptation(.popover) }
+                    else { options }
+                }
+            #else
             Menu {
                 Picker("Edit seek mode", selection: $seek) {
                     ForEach(TimelineEditPreferences.Seek.allCases, id: \.self) { mode in
                         Text(verbatim: mode.label).tag(mode)
                     }
                 }.pickerStyle(.inline)
-                 .onChange(of: seek) { _ in clearPendingSeek() }
             } label: {
-                Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold))
-                    .frame(width: showsTitle ? 14 : 11, height: height).contentShape(Rectangle())
-            }.buttonStyle(.plain)
-            #if os(macOS)
-            .menuStyle(.borderlessButton).menuIndicator(.hidden)
+                seekArrow(width: showsTitle ? 14 : 11, color: foreground)
+            }.buttonStyle(.plain).menuStyle(.borderlessButton).menuIndicator(.hidden)
+                .accessibilityLabel("Edit seek mode")
             #endif
-            .accessibilityLabel("Edit seek mode")
         }
-        .foregroundStyle(enabled ? Color.black : JarasTheme.text)
         .frame(width: width, height: height)
-        .background(enabled ? JarasTheme.green : Color(hex: 0x454545), in: RoundedRectangle(cornerRadius: 6))
+        .background(enabled ? JarasTheme.yellow : Color(hex: 0x454545), in: RoundedRectangle(cornerRadius: 6))
+        .onChange(of: seek) { _ in clearPendingSeek() }
+    }
+
+    private func seekArrow(width: CGFloat, color: Color) -> some View {
+        Image(systemName: "chevron.down").font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(color).frame(width: width, height: height).contentShape(Rectangle())
     }
 
     private func clearPendingSeek() {
@@ -2136,7 +2271,7 @@ struct TransportButtonStyle: ButtonStyle {
             #endif
             .clipShape(RoundedRectangle(cornerRadius: 6))
             .overlay {
-                if bordered { RoundedRectangle(cornerRadius: 6).stroke(active ? color : Color.white.opacity(0.45)) }
+                if bordered { RoundedRectangle(cornerRadius: 6).stroke(active ? color : Color.white.opacity(0.45)).allowsHitTesting(false) }
             }
             .contentShape(Rectangle())
     }
@@ -2144,6 +2279,7 @@ struct TransportButtonStyle: ButtonStyle {
 struct TransportPreview: PreviewProvider { static var previews: some View { TransportView(show: try! AppContainer(preview: true).show).frame(width: 980, height: 118) } }
 
 struct MetronomeModeButton: View {
+    var controlHeight = TransportControlMetrics.proHeight
     @ObservedObject private var settings = MetronomeSettings.shared
     private var mode: Int { min(2, max(0, settings.mode)) }
     private var label: String { ["A-B", "A", "B"][mode] }
@@ -2151,7 +2287,7 @@ struct MetronomeModeButton: View {
     var body: some View {
         Button { settings.mode = (mode + 1) % 3 } label: { Text(verbatim: label) }
             .buttonStyle(TransportButtonStyle(color: Color(hex: 0x454545), inactiveOpacity: 1,
-                fontSize: 10, width: TransportControlMetrics.iconWidth, height: TransportControlMetrics.proHeight, bordered: false))
+                fontSize: 10, width: TransportControlMetrics.iconWidth, height: controlHeight, bordered: false))
             .accessibilityLabel("Click mode").accessibilityValue(label)
     }
 }
@@ -2264,9 +2400,10 @@ private struct RepeatControl: View {
 #if os(macOS)
 struct VideoToggleButton: View {
     @ObservedObject private var video = VideoPlayback.shared
+    @Environment(\.desktopEditingStripDensity) private var density
     var body: some View {
         Button { video.toggle() } label: {
-            DesktopToolbarLabel(title: "Video", systemImage: "video", tone: video.visible ? .live : .neutral, showsTitle: true)
+            DesktopToolbarLabel(title: "Video", systemImage: "video", tone: video.visible ? .live : .neutral, showsTitle: density.showsVideoTitle)
         }
             .buttonStyle(.plain)
             .overlay(VideoOptionsInput(controller: video))
@@ -2298,6 +2435,7 @@ private final class VideoOptionsTarget: RightClickTargetView {
 #if os(macOS)
 struct RemoteToggleButton: View {
     let show: ShowController
+    @Environment(\.desktopEditingStripDensity) private var density
     private let remote = DAWRemoteSession.shared
     @State private var enabled = DAWRemoteSession.shared.enabled
     @State private var settings = false
@@ -2306,7 +2444,8 @@ struct RemoteToggleButton: View {
             if remote.enabled { remote.setHostEnabled(false); settings = false }
             else { DAWRemoteHostBridge.bind(show); remote.setHostEnabled(true) }
         } label: {
-            DesktopToolbarLabel(title: "Remote", systemImage: "dot.radiowaves.left.and.right", tone: enabled ? .live : .neutral)
+            DesktopToolbarLabel(title: "Remote", systemImage: "dot.radiowaves.left.and.right", tone: enabled ? .live : .neutral,
+                                showsTitle: density.showsRemoteTitle)
         }.buttonStyle(.plain)
             .accessibilityLabel("Remote").accessibilityValue(enabled ? "On" : "Off").help(Text("Remote"))
             .popover(isPresented: $settings) { DAWRemoteHostView() }

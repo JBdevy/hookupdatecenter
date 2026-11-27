@@ -120,6 +120,7 @@ class Session final : private Timer {
     std::optional<int> firstAvailableMIDIInputSlot();
     void configureEffects(const ID &, const var &);
     void configureEffects(const std::map<ID, var> &);
+    bool applyExternalEffectPreset(const ID &, const String &effect, const var &preset);
     String copyEffect(const ID &source, const String &effect, const ID &destination, const String &before = {});
     String insertLibraryEffect(const ID &destination, const String &identity, const String &presetID,
                                const String &before = {}, bool itemTarget = false);
@@ -141,7 +142,8 @@ class Session final : private Timer {
     bool canRedo() const { return !redoHistory.empty(); }
     void importAudio(const Array<File> &, double at = 0);
     void importMedia(const Array<File> &, double at, ID targetTrack, MediaDropLayout layout, double gap,
-                     std::function<void(String)> completion = {}, bool deferWaveform = false);
+                     std::function<void(String)> completion = {}, bool deferWaveform = false,
+                     std::vector<ID> gridTracks = {});
     void exportMix(const File &, int bits = 24);
     void exportAudio(ExportRequest);
     void exportMultitrack(std::vector<MultitrackExportProject>, std::function<void()> onCompleted);

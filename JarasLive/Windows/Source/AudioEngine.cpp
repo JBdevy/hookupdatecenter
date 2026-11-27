@@ -10,8 +10,64 @@
 #include "ClipAudio.h"
 #include "WaveformCache.h"
 #include "../../WindowsNative/Source/AudioFile.h"
+#include "../../Core/Project/MatrixPatch.hpp"
 #include <BinaryData.h>
 namespace catlive {
+namespace {
+bool firstEffectUsesARA(const var &settings) {
+    const auto inserted = list(get(settings, "inserted"));
+    if (inserted.isEmpty() || !inserted[0].toString().startsWith("External:")) return false;
+    for (const auto &plugin : list(get(settings, "externalPlugins"))) {
+        if (inserted[0].toString() == "External:" + str(plugin, "id"))
+            return flag(plugin, "supportsARA") || str(plugin, "name").containsIgnoreCase("Melodyne") ||
+                   str(plugin, "araState").isNotEmpty();
+    }
+    return false;
+}
+std::shared_ptr<const native::vst3::ARATimeline> trackARATimeline(
+    const jaras::Track &track, const jaras::Song &song, const File &directory) {
+    auto timeline = std::make_shared<native::vst3::ARATimeline>();
+    timeline->name = track.name;
+    timeline->tempo = jaras::pluginTempoPoints(song);
+    const bool receivesAudio = std::any_of(song.tracks.begin(), song.tracks.end(), [&](const auto &source) {
+        return source.id != track.id && jaras::matrixPatch::connection(source, track);
+    });
+    timeline->rendersTrack = !track.receivesMain() && !receivesAudio && track.role.id != "vinhetas";
+    jaras::TempoEditMap::PlaybackRates rates(song);
+    for (const auto &clip : track.clips) {
+        if (clip.muted) continue;
+        if (!clip.audioFile || (clip.midi && !clip.frozenMIDI.value_or(false)) || projectionMedia(clip) || clip.text) {
+            timeline->rendersTrack = false;
+            continue;
+        }
+        const auto source = existingMediaPath(ProjectCodec::resolveMedia(directory, clip.audioFile->path, false));
+        const auto rate = rates.playbackRate(clip, clip.startTime);
+        timeline->clips.push_back({std::filesystem::u8path(utf8(source.getFullPathName())),
+            clip.id, clip.name, clip.audioFile->path, clip.startTime, clip.duration, clip.sourceOffset, rate});
+        if (clip.gain.value_or(1) != 1 || clip.normalizationGain.value_or(1) != 1 ||
+            clip.pan.value_or(0) != 0 || clip.pitchSemitones.value_or(0) != 0 ||
+            clip.fadeIn.value_or(0) != 0 || clip.fadeOut.value_or(0) != 0 || clip.phaseInverted.value_or(false) ||
+            clip.channelMode.value_or(0) != 0 || clip.loopLength || !clip.elasticPoints.empty() ||
+            clip.automationJSON || (clip.fxJSON && !clip.fxBypassed.value_or(false)) ||
+            rates.playbackRate(clip, clip.startTime + clip.duration) != rate) timeline->rendersTrack = false;
+    }
+    std::sort(timeline->clips.begin(), timeline->clips.end(), [](const auto &a,const auto &b){return a.start<b.start;});
+    for (std::size_t i=1;i<timeline->clips.size();++i)
+        if (timeline->clips[i].start < timeline->clips[i-1].start + timeline->clips[i-1].duration)
+            timeline->rendersTrack = false;
+    return timeline;
+}
+bool sameARATimeline(const native::vst3::ARATimeline &a, const native::vst3::ARATimeline &b) {
+    if (a.name!=b.name || a.rendersTrack!=b.rendersTrack || a.tempo.size()!=b.tempo.size() ||
+        a.clips.size()!=b.clips.size()) return false;
+    return std::equal(a.clips.begin(),a.clips.end(),b.clips.begin(),[](const auto &x,const auto &y) {
+        return std::tie(x.file,x.id,x.name,x.sourcePath,x.start,x.duration,x.offset,x.rate) ==
+               std::tie(y.file,y.id,y.name,y.sourcePath,y.start,y.duration,y.offset,y.rate);
+    }) && std::equal(a.tempo.begin(),a.tempo.end(),b.tempo.begin(),[](const auto &x,const auto &y) {
+        return std::tie(x.seconds,x.bpm,x.beats,x.unit) == std::tie(y.seconds,y.bpm,y.beats,y.unit);
+    });
+}
+}
 struct AudioEngine::ReaderContext {
     AudioFormatManager formats;
     TimeSliceThread thread{"CatLive media read-ahead"};
@@ -1033,11 +1089,23 @@ std::shared_ptr<native::vst3::Processor> AudioEngine::externalEffect(const ID &i
 void AudioEngine::captureExternalEffects(const ID &id,var &settings) const {
     if(auto *chain=effects(id))chain->captureExternalState(settings);
 }
-void AudioEngine::setEffects(const ID &id, const var &settings) {
+void AudioEngine::setEffects(const ID &id, const var &settings, const jaras::Song *song) {
     NativeFX prepared[2];
     auto saved = settings.clone();
     const auto sampleRate = rate.load();
-    prepared[0].prepare(saved, sampleRate, effects(id),offlineMode,true,{},instrumentDirectory);
+    auto bus = std::find_if(buses.begin(),buses.end(),[&](const auto &row){return row->id==id;});
+    std::shared_ptr<const native::vst3::ARATimeline> timeline;
+    if (bus != buses.end() && firstEffectUsesARA(saved)) {
+        timeline = (*bus)->araTimeline;
+        if (song) {
+            const auto track = std::find_if(song->tracks.begin(),song->tracks.end(),[&](const auto &row){return row.id==id;});
+            if (track != song->tracks.end()) {
+                auto proposed = trackARATimeline(*track,*song,instrumentDirectory);
+                if (!timeline || !sameARATimeline(*timeline,*proposed)) timeline = std::move(proposed);
+            }
+        }
+    }
+    prepared[0].prepare(saved, sampleRate, effects(id),offlineMode,true,{},instrumentDirectory,timeline);
     if (!id.empty())
         prepared[1].prepare(saved, sampleRate, effects(id,1),offlineMode,false,{},instrumentDirectory);
     if (recordingSession) recordingSession->capture->updateEffects(id, saved);
@@ -1131,6 +1199,7 @@ void AudioEngine::setEffects(const ID &id, const var &settings) {
             prepared[0].adoptDynamicsState(target->fx[0]); prepared[1].adoptDynamicsState(target->fx[1]);
             target->fx[0].swap(prepared[0]);
             target->fx[1].swap(prepared[1]);
+            target->araTimeline.swap(timeline);
             for(auto &expected:target->externalExpected)expected=-1;
             if (liveArpeggiator) target->liveArpeggiator.swap(liveArpeggiator);
             target->arpeggio = arpeggio;
@@ -1139,6 +1208,19 @@ void AudioEngine::setEffects(const ID &id, const var &settings) {
         }
         stemLatencyFingerprint=stemFingerprint();
     });
+}
+void AudioEngine::refreshARATimelines(const jaras::Song &song) {
+    for (const auto &bus : buses) {
+        if (!bus->araTimeline) continue;
+        const auto track = std::find_if(song.tracks.begin(), song.tracks.end(),
+            [&](const auto &row) { return row.id == bus->id; });
+        if (track == song.tracks.end()) continue;
+        const auto proposed = trackARATimeline(*track, song, instrumentDirectory);
+        if (sameARATimeline(*bus->araTimeline, *proposed)) continue;
+        auto settings = bus->settings.clone();
+        captureExternalEffects(bus->id, settings);
+        setEffects(bus->id, settings, &song);
+    }
 }
 void AudioEngine::refreshMIDIArpeggiators(const jaras::Song &song, const std::set<ID> &changed) {
     std::vector<std::pair<size_t, SharedMIDIUpdate>> tracks;
@@ -1297,6 +1379,7 @@ void AudioEngine::prepareSong(const jaras::Song &song, const File &directory,
             bus->inputMonitoring = monitorMode(track);
             bus->outputs = track.outputPatches();
             bus->settings = track.fxJSON ? JSON::parse(text(*track.fxJSON)) : var();
+            if (firstEffectUsesARA(bus->settings)) bus->araTimeline = trackARATimeline(track,song,directory);
             bus->arpeggio = midiArpeggio(bus->settings);
             if (bus->arpeggio) bus->liveArpeggiator = std::make_unique<LiveArpeggiator>();
             bus->externalSequence = MIDIPlayback::sequence(playbackNotes(track, &song, false, true, &playbackRates));
@@ -1311,7 +1394,8 @@ void AudioEngine::prepareSong(const jaras::Song &song, const File &directory,
                 missingFiles.addIfNotAlreadyThere(String::fromUTF8(e.what()));
             }
             for (int h=0;h<2;h++)
-                bus->fx[h].prepare(bus->settings,rate.load(),nullptr,offlineMode,h==0,pluginDispatcher,directory);
+                bus->fx[h].prepare(bus->settings,rate.load(),nullptr,offlineMode,h==0,pluginDispatcher,directory,
+                    h==0 ? bus->araTimeline : nullptr);
             bus->fx[1].shareStems(bus->fx[0]);
             bus->automation.prepare(track.automationJSON ? JSON::parse(text(*track.automationJSON))
                                                          : var());
@@ -1652,7 +1736,7 @@ void AudioEngine::adoptPreparedSong(AudioEngine &prepared, bool preservePlayback
                 entry.next->keyboardRoute=entry.old->keyboardRoute;
                 entry.next->meters->peak.store(entry.old->meters->peak.load());entry.next->meters->held.record(entry.old->meters->held.amplitude());
                 for(int h=0;h<2;++h)entry.next->meters->levels[h].store(entry.old->meters->levels[h].load());
-                entry.next->meters->rms.store(entry.old->meters->rms.load(std::memory_order_relaxed), std::memory_order_relaxed);
+                entry.next->meters->vuMean.store(entry.old->meters->vuMean.load(std::memory_order_relaxed), std::memory_order_relaxed);
             }
             for(auto &entry:voiceMigrations) {
                 if(entry.effects)for(int h=0;h<2;++h)entry.old->fx[h].swap(entry.next->fx[h]);
@@ -1701,7 +1785,7 @@ void AudioEngine::adoptPreparedSong(AudioEngine &prepared, bool preservePlayback
         } else {
             readerHeads[0]=0;readerHeads[1]=1;publishedPromotion=0;
             current={};position=0;subPosition=0;playing=false;subPlaying=false;elapsedSamples=0;
-            meter=0;masterPeakHold.clear();masterFXInput=0;masterFXOutput=0;masterRMS=0;
+            meter=0;masterPeakHold.clear();masterFXInput=0;masterFXOutput=0;masterVUMean=0;
             presentationTailing=false;presentationDelay=latencyPlan?latencyPlan->total:0;
             for(int h=0;h<2;++h) {
                 masterLevels[h]=0;presentedPosition[h]=0;presentedPlaying[h]=false;
@@ -1833,7 +1917,7 @@ void AudioEngine::promotePlaybackHeads() {
         std::swap(voice->midiExpected[0],voice->midiExpected[1]);std::swap(voice->midiScopes[0],voice->midiScopes[1]);
     }
     for(auto &bus:buses) {
-        if(!bus->fx[0].hasActiveStem())bus->fx[0].swap(bus->fx[1]);
+        if(!bus->fx[0].hasActiveStem() && !bus->fx[0].hasARA())bus->fx[0].swap(bus->fx[1]);
         if(bus->midi)bus->midi->swapPlaybackHeads();
         std::swap(bus->externalExpected[0],bus->externalExpected[1]);std::swap(bus->externalScopes[0],bus->externalScopes[1]);
     }
@@ -2860,7 +2944,7 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
             const float peak = bus.mute ? 0.f : bus.buffer.getMagnitude(0, samples);
             bus.meters->held.record(peak);
             bus.meters->peak.store(peak, std::memory_order_relaxed);
-            bus.meters->rms.store(peak > 0 ? bus.buffer.getRMSLevel(0, 0, samples) : 0.f, std::memory_order_relaxed);
+            bus.meters->vuMean.store(peak > 0 ? audio::meanMagnitude(bus.buffer.getReadPointer(0), samples) : 0.f, std::memory_order_relaxed);
             for (int ch = 0; ch < 2; ++ch)
                 bus.meters->levels[(size_t)ch].store(bus.mute ? 0.f : bus.buffer.getMagnitude(ch, 0, samples));
             if(latencyPlan) {
@@ -2915,7 +2999,7 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
         for (int ch = 0; ch < 2; ++ch)
             bus.buffer.addFrom(ch, 0, liveRecordBuffer, ch, 0, samples);
         float peak=0,fxInput=0,fxOutput=0,gainReduction=-1.f;std::array<float,2> stereoPeak{};
-        float rms=0;
+        float vuMean=0;
         auto *compensation=latencyPlan?&latencyPlan->buses[size_t(index)]:nullptr;
         const bool combined=bus.fx[0].hasActiveStem();
         const bool perHeadAutomation=combined&&!bus.automation.curves.empty();
@@ -3009,7 +3093,10 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
             const bool moving=combined?active:renderingHead[head];
             fxInput=std::max(fxInput,buffer.getMagnitude(0,samples));
             bus.fx[combined?0:head].applyAutomation(bus.automation,automationTime(head,0,compensation?compensation->input:0));
-            bus.fx[combined?0:head].process(buffer,samples,timelinePositions[size_t(head)][0],moving,&bus.externalMIDI[head].buffer(),blockClock/sr,&pluginTempo);
+            const bool monitorsLine = bus.inputFirst > 0 && (bus.inputMonitoring == MonitorMode::on ||
+                (bus.inputMonitoring == MonitorMode::followArm && bus.armed.load(std::memory_order_relaxed)));
+            const bool renderARA = head == 0 && moving && !renderingHead[1] && !monitorsLine;
+            bus.fx[combined?0:head].process(buffer,samples,timelinePositions[size_t(head)][0],moving,&bus.externalMIDI[head].buffer(),blockClock/sr,&pluginTempo,renderARA);
             gainReduction = std::max(gainReduction, bus.fx[combined ? 0 : head].gainReduction());
             send(buffer, head, moving, jaras::TrackSendTap::postFX);
             for(int ch=0;ch<2;ch++)buffer.addFrom(ch,0,bus.frozen[head],ch,0,samples);
@@ -3038,7 +3125,7 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
             if (!silent) for (int ch = 0; ch < 2; ++ch) {
                 const auto channelPeak=buffer.getMagnitude(ch, 0, samples);
                 stereoPeak[(size_t)ch] = std::max(stereoPeak[(size_t)ch], channelPeak);
-                if (channelPeak > .0001f) rms=std::max(rms,buffer.getRMSLevel(ch,0,samples));
+                if (channelPeak > .0001f) vuMean=std::max(vuMean,audio::meanMagnitude(buffer.getReadPointer(ch),samples));
             }
             if(silent)buffer.clear(0,samples);
             send(buffer, head, moving, jaras::TrackSendTap::postFader);
@@ -3074,7 +3161,7 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
         bus.meters->fxOutput.store(std::max(fxOutput, bus.meters->fxOutput.load() * .85f));
         const double elapsed = samples / rate.load();
         bus.meters->held.record(peak);
-        bus.meters->rms.store(rms, std::memory_order_relaxed);
+        bus.meters->vuMean.store(vuMean, std::memory_order_relaxed);
         bus.meters->peak.store(meterDisplay::envelope(bus.meters->peak.load(), peak, elapsed), std::memory_order_relaxed);
         for (int ch = 0; ch < 2; ++ch)
             bus.meters->levels[(size_t)ch].store(meterDisplay::envelope(bus.meters->levels[(size_t)ch].load(), stereoPeak[(size_t)ch], elapsed), std::memory_order_relaxed);
@@ -3176,7 +3263,7 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
                 std::max(maxPeak, std::max(std::abs(range.getStart()), std::abs(range.getEnd())));
         }
     masterPeakHold.record(masterBuffer.getMagnitude(0,samples));
-    masterRMS.store(std::max(masterBuffer.getRMSLevel(0,0,samples), masterBuffer.getRMSLevel(1,0,samples)), std::memory_order_relaxed);
+    masterVUMean.store(std::max(audio::meanMagnitude(masterBuffer.getReadPointer(0), samples), audio::meanMagnitude(masterBuffer.getReadPointer(1), samples)), std::memory_order_relaxed);
     meter.store(meterDisplay::envelope(meter.load(), maxPeak, samples / rate.load()), std::memory_order_relaxed);
     for (int ch = 0; ch < 2; ++ch)
         masterLevels[(size_t)ch].store(meterDisplay::envelope(masterLevels[(size_t)ch].load(),
@@ -3381,7 +3468,8 @@ void AudioEngine::audioDeviceAboutToStart(AudioIODevice *d) {
         if (bus->midi)
             bus->midi->prepare(rate.load());
         for(int h=0;h<2;h++)
-            bus->fx[h].prepare(bus->settings,rate.load(),nullptr,offlineMode,h==0,{},instrumentDirectory);
+            bus->fx[h].prepare(bus->settings,rate.load(),nullptr,offlineMode,h==0,{},instrumentDirectory,
+                h==0 ? bus->araTimeline : nullptr);
         bus->fx[1].shareStems(bus->fx[0]);
     }
     for (auto &voice : voices) {

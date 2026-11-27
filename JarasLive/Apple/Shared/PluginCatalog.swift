@@ -8,6 +8,10 @@ struct RecognizedPlugin: Codable, Identifiable, Sendable {
     let classID: String, name: String, path: String, vendor: String, category: String
     var id: String { path + "|" + classID }
     var isInstrument: Bool { category.contains("Instrument") }
+    var formatBadge: String {
+        if classID.hasPrefix("AU-") { return "AU" }
+        return name.localizedCaseInsensitiveContains("Melodyne") ? "ARA2" : "VST3"
+    }
     var types: [String] {
         let values = category.split(separator: "|").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
         return values.isEmpty ? ["Uncategorized"] : values

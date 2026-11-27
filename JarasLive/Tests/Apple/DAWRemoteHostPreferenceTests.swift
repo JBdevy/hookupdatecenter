@@ -10,6 +10,10 @@ let firstLaunchHost = preferenceHost()
 firstLaunchHost.restoreHostPreference()
 require(!firstLaunchHost.enabled && hostPreferences.object(forKey: "catlive.remote.enabled") == nil,
         "a fresh installation starts Remote off without inventing a saved preference")
+firstLaunchHost.restoreHostPreference(defaultEnabled: true)
+require(firstLaunchHost.enabled && hostPreferences.object(forKey: "catlive.remote.enabled") == nil,
+        "Native starts Remote on by default without writing a saved preference")
+firstLaunchHost.stop()
 require(firstLaunchHost.setDirectorPIN("0742"), "existing director password can be set before enabling Remote")
 let preferenceCredential = hostPreferences.data(forKey: "catlive.remote.directorPIN")
 firstLaunchHost.setHostEnabled(true)
@@ -57,7 +61,7 @@ nextLaunchHost.setHostEnabled(false)
 require(!nextLaunchHost.enabled && hostPreferences.object(forKey: "catlive.remote.enabled") as? Bool == false,
         "explicit disable stops the host and saves Off")
 let disabledLaunchHost = preferenceHost()
-disabledLaunchHost.restoreHostPreference()
+disabledLaunchHost.restoreHostPreference(defaultEnabled: true)
 require(!disabledLaunchHost.enabled && disabledLaunchHost.directorRequiresPIN,
         "the next launch stays off while preserving its password configuration")
 disabledLaunchHost.stop()
@@ -76,9 +80,13 @@ let chosenName = "PC do palco - " + String(repeating: "A", count: 42)
 namedHost.setHostName(chosenName)
 require(namedHost.testAdvertisedName == chosenName, "Bonjour uses the full chosen name, including more than 40 characters")
 require(namedClient.connected && namedClient.accessMode == .observer, "naming the host preserves existing remote clients")
+var noRegionState = preferenceFixture
+noRegionState.regions = []; noRegionState.timelineRegions = []
+noRegionState.currentRegion = nil; noRegionState.focusedRegion = nil; noRegionState.queuedRegion = nil
+namedHost.stateProvider = { noRegionState }
 let renamedClient = DAWRemoteSession(role: .client, name: "Second phone")
 renamedClient.testConnect(namedEndpoint, access: .observer)
-waitFor("chosen name handshake") { renamedClient.remoteState != nil }
+waitFor("chosen name handshake with a project without regions") { renamedClient.remoteState?.regions.isEmpty == true }
 require(renamedClient.peerName == chosenName, "connected PC name matches the device list and discovery")
 renamedClient.stop(); namedClient.stop(); namedHost.stop()
 print("REMOTE_CHOSEN_DEVICE_NAME_DISCOVERY_HANDSHAKE_AND_CONNECTION_PRESERVATION_OK")

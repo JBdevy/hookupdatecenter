@@ -65,7 +65,7 @@ int wmain(int argc, wchar_t **argv) {
         stage("scan");
         const auto descriptions=vst3::scan(argv[1]);
         report["plugins"]=nlohmann::json::array();
-        for(const auto &d:descriptions)report["plugins"].push_back({{"classID",d.classID},{"name",d.name},{"vendor",d.vendor},{"category",d.category}});
+        for(const auto &d:descriptions)report["plugins"].push_back({{"classID",d.classID},{"name",d.name},{"vendor",d.vendor},{"category",d.category},{"supportsARA",d.supportsARA}});
         if(argc>4 && std::wstring(argv[3])==L"--import") {
             stage("restore-imported-state");
             std::ifstream input{std::filesystem::path(argv[4])};const auto request=nlohmann::json::parse(input);
@@ -83,11 +83,13 @@ int wmain(int argc, wchar_t **argv) {
             const bool validate=std::wstring(argv[3])==L"--validate";
             if(descriptions.empty())throw std::runtime_error("No VST3 audio classes.");
             auto selected=descriptions.begin();bool showEditor=false,freshEditor=false,editorSilence=false;
+            std::filesystem::path araFile;
             for(int arg=4;arg<argc;++arg){
                 const std::wstring option=argv[arg];
                 if(option==L"--editor")showEditor=true;
                 if(option==L"--editor-silence")editorSilence=showEditor=true;
                 if(option==L"--fresh-editor")freshEditor=showEditor=true;
+                if(option.rfind(L"--ara-file=",0)==0)araFile=option.substr(11);
                 if(option.rfind(L"--class-id=",0)==0){
                     const auto value=option.substr(11);const std::string id(value.begin(),value.end());
                     selected=std::find_if(descriptions.begin(),descriptions.end(),[&](const auto &d){return d.classID==id;});
@@ -95,9 +97,18 @@ int wmain(int argc, wchar_t **argv) {
                 }
             }
             report["validatedClass"]=selected->name;
+            vst3::ARATimeline araTimeline;
+            const auto *document=araFile.empty()?nullptr:&araTimeline;
+            if(document) {
+                araTimeline.name="ARA playback test";
+                araTimeline.rendersTrack=true;
+                araTimeline.clips.push_back({araFile,"test-source","Test tone","test.wav",0,.3,0,1});
+            }
             stage("create-processor");
-            auto plugin=std::make_unique<vst3::Processor>(*selected,vst3::State{},48000,512);
+            auto plugin=std::make_unique<vst3::Processor>(*selected,vst3::State{},48000,512,document);
+            if(document&&!plugin->hasARA())throw std::runtime_error("The processor did not bind the ARA document.");
             std::array<float,512> left{},right{};
+            float peak=0;
             vst3::Transport transport;transport.playing=true;
             stage("process");
             for(int n=0;n<30;++n){
@@ -106,11 +117,16 @@ int wmain(int argc, wchar_t **argv) {
                 if(!plugin->process(left.data(),right.data(),512,transport))throw std::runtime_error("VST3 process failed.");
                 for(int i=0;i<512;++i){
                     if(!std::isfinite(left[i])||!std::isfinite(right[i]))throw std::runtime_error("Non-finite PCM.");
+                    peak=(std::max)(peak,std::abs(left[i]));
                     // An empty instrument may generate silence; it must not
                     // erase audio already playing on the track.
                     if(!validate&&plugin->isInstrument()&&std::abs(left[i]-float(.1*std::sin((n*512+i)*.02)))>.000001f)
                         throw std::runtime_error("Empty instrument changed the track's existing PCM.");
                 }
+            }
+            if(document) {
+                report["araBound"]=true;
+                report["araPeak"]=peak;
             }
             stage("capture-state");
             const auto state=plugin->state();
@@ -119,7 +135,7 @@ int wmain(int argc, wchar_t **argv) {
             if(!freshEditor){
             stage("release-processor");plugin.reset();
             stage("restore-processor");
-            plugin=std::make_unique<vst3::Processor>(*selected,state,48000,512);
+            plugin=std::make_unique<vst3::Processor>(*selected,state,48000,512,document);
             left.fill(.05f);right.fill(.05f);
             if(!plugin->process(left.data(),right.data(),512,transport))throw std::runtime_error("Restored VST3 process failed.");
             report["restored"]=true;

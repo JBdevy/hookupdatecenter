@@ -118,7 +118,10 @@ class ActionsPage final : public Component, private ChangeListener {
             for (auto *component : std::initializer_list<Component *>{&name, &reset, &input,
                                                                       &remove, &track, &target})
                 addAndMakeVisible(component);
-            name.setText(localization::translate(action.title) + (action.track && !numberedEditor ? " · " + (number > 0 ? "#" + String(number) : localization::translate("Selected track")) : String()), dontSendNotification);
+            auto title = localization::translate(action.title);
+            if (action.track && !numberedEditor)
+                title += number > 0 ? " #" + String(number) : String::fromUTF8(" · ") + localization::translate("Selected track");
+            name.setText(title, dontSendNotification);
             name.setFont(theme::semiboldFont(13));
             reset.getProperties().set("flat", true);
             reset.getProperties().set("fontSize", 12);

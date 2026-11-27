@@ -263,14 +263,9 @@ class CatLiveApplication final : public JUCEApplication {
             const int appearanceArgument = args.indexOf("--appearance-file");
             if ((visualTest || previewHome) && appearanceArgument >= 0 && appearanceArgument + 1 < args.size())
                 appearanceFile = File(args[appearanceArgument + 1]);
-            auto &desktop = Desktop::getInstance();
-            if (const auto *screen = desktop.getDisplays().getPrimaryDisplay()) {
-                const auto area = screen->userArea;
-                if (!area.isEmpty()) {
-                    const auto scale = std::min(area.getWidth() / 1600.f, area.getHeight() / 850.f);
-                    desktop.setGlobalScaleFactor(jlimit(.8f, 1.f, scale));
-                }
-            }
+            // Fit the window to the monitor without rescaling the interface.
+            // Windows still controls the monitor's native DPI.
+            Desktop::getInstance().setGlobalScaleFactor(1.f);
             if (!visualTest && !args.contains("--imgui-ui"))
                 splash = std::make_unique<StartupSplash>();
             session = std::make_unique<Session>();

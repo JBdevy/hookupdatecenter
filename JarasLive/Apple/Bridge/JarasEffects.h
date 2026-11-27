@@ -136,7 +136,7 @@ FOUNDATION_EXPORT int64_t JarasAudioDiskOccupiedNanoseconds(void);
 + (void)setInputChannelMode:(AVAudioUnitEffect *)node mode:(int)mode;
 + (void)setOutputMeteringEnabled:(AVAudioUnitEffect *)node enabled:(BOOL)enabled;
 + (float)takeOutputPeak:(AVAudioUnitEffect *)node channel:(NSUInteger)channel;
-+ (float)takeOutputRMS:(AVAudioUnitEffect *)node;
++ (float)takeOutputMeanMagnitude:(AVAudioUnitEffect *)node;
 + (void)setAnalysisEnabled:(AVAudioUnitEffect *)node enabled:(BOOL)enabled;
 + (nullable NSData *)analysisFrame:(AVAudioUnitEffect *)node input:(BOOL)input;
 @end
@@ -181,7 +181,7 @@ NS_ASSUME_NONNULL_BEGIN
 + (void)beginStopFade:(AVAudioUnitEffect *)node;
 + (void)setInputMeteringEnabled:(AVAudioUnitEffect *)node enabled:(BOOL)enabled;
 + (float)takeInputPeak:(AVAudioUnitEffect *)node channel:(NSUInteger)channel;
-+ (float)takeInputRMS:(AVAudioUnitEffect *)node;
++ (float)takeInputMeanMagnitude:(AVAudioUnitEffect *)node;
 + (void)configure:(AVAudioUnitEffect *)node first:(NSInteger)first count:(NSInteger)count;
 + (void)configurePatches:(AVAudioUnitEffect *)node firsts:(NSArray<NSNumber *> *)firsts counts:(NSArray<NSNumber *> *)counts;
 /// Use the graph's prepared format during live Patch edits; avoid querying an

@@ -97,6 +97,7 @@ get_target_property(catlive_info_file CatLive JUCE_INFO_FILE)
 add_custom_command(OUTPUT "${catlive_generated_sources}/CatLive_resources.rc" APPEND
     DEPENDS "${catlive_info_file}")
 add_library(CatLiveVST3 STATIC "${CATLIVEROOT}/WindowsNative/Source/VST3Host.cpp"
+    "${CATLIVEROOT}/WindowsNative/Source/AudioFile.cpp"
     "${CATLIVEROOT}/Core/ThirdParty/VST3/pluginterfaces/base/funknown.cpp"
     "${CATLIVEROOT}/Core/ThirdParty/VST3/pluginterfaces/base/ustring.cpp"
     "${CATLIVEROOT}/Core/ThirdParty/VST3/pluginterfaces/base/coreiids.cpp")
@@ -122,7 +123,6 @@ target_sources(CatLive PRIVATE Source/Main.cpp Source/Session.cpp Source/Project
     Source/NativeAudioDeviceHost.cpp
     Source/ProjectMigration.cpp Source/LogicProjectImporter.cpp Source/Typography.cpp Source/AdvancedPanel.cpp
     Source/AudioEngine.cpp Source/Instrument.cpp Source/Projection.cpp Source/native_video_decoder_ffmpeg.cpp Source/NativeFX.cpp Source/Lighting.cpp Source/Auth.cpp Source/Workspace.cpp Source/Tests.cpp Source/MP3Writer.cpp Source/AudioFormats.cpp Source/MediaSource.cpp
-    "${CATLIVEROOT}/WindowsNative/Source/AudioFile.cpp"
     "${CATLIVEROOT}/WindowsNative/Source/StemSeparator.cpp"
     ThirdParty/QRCode/qrcodegen.cpp
     ThirdParty/Monocypher/monocypher.c ThirdParty/Monocypher/monocypher-ed25519.c)

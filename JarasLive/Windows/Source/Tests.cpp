@@ -2239,6 +2239,23 @@ int runTests(const File &directory) {
         expect(rejected,"Cross-plugin load rejected");
         rejected=false;try{fxpresets::Store::save(library,preset);}catch(...){rejected=true;}
         expect(rejected,"Duplicate names rejected");
+        auto plugin = object();
+        put(plugin, "classID", "abc123");
+        put(plugin, "componentState", "AQID");
+        put(plugin, "controllerState", "BAUG");
+        const auto external = fxpresets::capture("External", plugin, "Studio");
+        expect(str(external, "plugin") == "vst3:ABC123", "Plugin preset identity must match the Library");
+        fxpresets::Store::save(library, external);
+        fxpresets::Store::setDefault(library, str(external, "plugin"), str(external, "id"));
+        store.write(library);
+        put(plugin, "id", "slot-instance");
+        put(plugin, "bypassed", true);
+        put(plugin, "araState", "project-specific");
+        put(plugin, "componentState", "Bw==");
+        store.applyDefault("External", plugin);
+        expect(fxpresets::matches("External", plugin, external) && flag(plugin, "bypassed") &&
+            str(plugin, "id") == "slot-instance" && str(plugin, "araState") == "project-specific",
+            "External presets must restore parameters without changing instance data");
     });
     test("Live tempo edits preserve following songs and undo", [&] {
         const auto media = directory.getNonexistentChildFile("live-tempo", "");
@@ -7194,6 +7211,20 @@ int runTests(const File &directory) {
             ++invoked;
             return true;
         };
+        const auto waveformRevision = wireID(uuid());
+        int waveformRequests = 0;
+        host.prepareWaveforms = [&](const var &request) -> std::function<var()> {
+            ++waveformRequests;
+            if (str(request, "revision") != waveformRevision || (int)get(request, "offset") != 0) return {};
+            return [waveformRevision] {
+                auto response = object();
+                put(response, "revision", waveformRevision);
+                put(response, "offset", 0);
+                put(response, "finished", true);
+                put(response, "entries", Array<var>());
+                return response;
+            };
+        };
         host.start(false);
         StreamingSocket socket;
         expect(socket.connect("127.0.0.1", host.port, 2000), "Remote host failed");
@@ -7256,6 +7287,10 @@ int runTests(const File &directory) {
         put(command, "project", text(uuid()));
         put(command, "action", "play");
         put(command, "value", 0);
+        auto waveformRequest = object();
+        put(waveformRequest, "revision", waveformRevision);
+        put(waveformRequest, "offset", 0);
+        send(11, waveformRequest);
         send(1, command);
         const auto waitUntil = Time::getMillisecondCounterHiRes() + 150;
         while (Time::getMillisecondCounterHiRes() < waitUntil) {
@@ -7263,9 +7298,14 @@ int runTests(const File &directory) {
             Thread::sleep(5);
         }
         expect(invoked == 0, "Observer changed transport");
+        expect(waveformRequests == 0, "Observer requested the Director grid waveforms");
         expect(get(access("director", "9999"), "mode").isVoid(),
                "Incorrect PIN gained director access");
         expect(str(access("director", "1234"), "mode") == "director", "Correct PIN rejected");
+        send(11, waveformRequest);
+        const auto waveformPage = receive(12);
+        expect(waveformRequests == 1 && str(waveformPage, "revision") == waveformRevision &&
+               flag(waveformPage, "finished"), "Director waveform page was not returned");
         send(1, command);
         const auto commandDeadline = Time::getMillisecondCounterHiRes() + 2000;
         while (!invoked && Time::getMillisecondCounterHiRes() < commandDeadline) {

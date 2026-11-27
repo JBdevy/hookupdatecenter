@@ -682,26 +682,45 @@ private struct LocalizedTeleprompterConfig: View {
     }
 }
 
-struct TeleprompterToggleButton: View {
+struct DesktopTeleprompterSelector: View {
     let show: ShowController
-    var directory: URL? = nil
-    let index: Int
-    @ObservedObject private var controller: TeleprompterWindow
-    init(show: ShowController, directory: URL? = nil, index: Int) {
-        self.show = show
-        self.directory = directory
-        self.index = index
-        self.controller = index == 1 ? .shared : .second
-    }
+    let directory: URL?
+    @ObservedObject private var first = TeleprompterWindow.shared
+    @ObservedObject private var second = TeleprompterWindow.second
+    @ObservedObject private var messages = TPNoticeController.shared.editorPresentation
+    @ObservedObject private var timer = TeleprompterTimerController.shared
+
+    private var timerActive: Bool { timer.configurationOpen || timer.running }
+    private var active: Bool { first.visible || second.visible || messages.isOpen || timerActive }
+
     var body: some View {
-        Button { controller.toggle(show: show) } label: {
-            DesktopToolbarLabel(title: "TP-\(index)", systemImage: "teleprompter\(index)", tone: controller.visible ? .live : .neutral, showsTitle: true)
-        }.buttonStyle(.plain)
-            .contextMenu {
-                Button("Configurações") { controller.showSettings() }
-                Button("TP Remoto") { controller.showRemote(show: show, directory: directory) }
+        Menu {
+            Button { first.toggle(show: show) } label: { menuItem("Teleprompter 1", active: first.visible) }
+            Button { second.toggle(show: show) } label: { menuItem("Teleprompter 2", active: second.visible) }
+            Button { TPNoticeController.shared.open() } label: { menuItem("Messages", active: messages.isOpen) }
+            Button { timer.showConfiguration() } label: { menuItem("Timer", active: timerActive) }
+            Divider()
+            Menu("Configurações") {
+                Button("Teleprompter 1") { first.showSettings() }
+                Button("Teleprompter 2") { second.showSettings() }
             }
-            .accessibilityLabel("Teleprompter \(index)").help(Text(verbatim: "TP\(index)"))
+            Menu("TP Remoto") {
+                Button("Teleprompter 1") { first.showRemote(show: show, directory: directory) }
+                Button("Teleprompter 2") { second.showRemote(show: show, directory: directory) }
+            }
+        } label: {
+            HStack(spacing: 5) {
+                Text("Teleprompter").font(.jarasSystem(size: TimelineEditingBarMetrics.labelSize, weight: .semibold))
+                Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold))
+            }.modifier(DesktopToolbarChrome(tone: active ? .selected : .neutral))
+        }.menuStyle(.borderlessButton).menuIndicator(.hidden)
+            .accessibilityLabel("Teleprompter")
+            .accessibilityIdentifier("workspace-teleprompter-selector")
+    }
+
+    @ViewBuilder private func menuItem(_ title: LocalizedStringKey, active: Bool) -> some View {
+        if active { Label(title, systemImage: "checkmark") }
+        else { Text(title) }
     }
 }
 struct TeleprompterPreviewButton: View {
@@ -710,6 +729,7 @@ struct TeleprompterPreviewButton: View {
     var body: some View {
         Button { controller.togglePreview() } label: {
             Text(verbatim: "PRW")
+                .font(.jarasSystem(size: TimelineEditingBarMetrics.labelSize, weight: .semibold))
                 .foregroundStyle(controller.previewActive ? JarasTheme.green : JarasTheme.liveOffRed)
                 .modifier(DesktopToolbarChrome(tone: controller.previewActive ? .live : .neutral))
                 .accessibilityLabel("Preview")

@@ -427,7 +427,7 @@ class ActionBindings final : public ChangeBroadcaster,
                 if (!input.isVoid() && input.toString().isNotEmpty() && same && !replaceMIDIConflicts) {
                     auto title = localization::translate(definition.title);
                     if (definition.track)
-                        title += number > 0 ? " #" + String(number) : " · " + localization::translate("Selected track");
+                        title += number > 0 ? " #" + String(number) : String::fromUTF8(" · ") + localization::translate("Selected track");
                     error = String::fromUTF8("Já está atribuído a ") + title;
                     sendChangeMessage();
                     return false;

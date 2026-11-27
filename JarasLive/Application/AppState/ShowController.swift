@@ -3398,7 +3398,7 @@ public final class ShowTrackSelectionPresentation: ObservableObject {
     /// FX edit: replaying the captured preset or publishing an old transport
     /// sample to audio here can interrupt playback during Save.
     @discardableResult public func storeCapturedPluginState(_ track: UUID?, clip: UUID? = nil, identifier: String,
-                                                            componentState: String?, controllerState: String?) throws -> Bool {
+                                                           componentState: String?, controllerState: String?, araState: String? = nil) throws -> Bool {
         let location: (song: Int, track: Int, clip: Int)?
         if let clip {
             location = snapshot.project.songs.indices.lazy.compactMap { song in
@@ -3415,9 +3415,11 @@ public final class ShowTrackSelectionPresentation: ObservableObject {
         var settings = clip.map(clipFXSettings) ?? fxSettings(track)
         guard let index = settings.externalPlugins?.firstIndex(where: { $0.id == identifier }) else { return false }
         guard settings.externalPlugins?[index].componentState != componentState ||
-                settings.externalPlugins?[index].controllerState != controllerState else { return false }
+                settings.externalPlugins?[index].controllerState != controllerState ||
+                (araState != nil && settings.externalPlugins?[index].araState != araState) else { return false }
         settings.externalPlugins?[index].componentState = componentState
         settings.externalPlugins?[index].controllerState = controllerState
+        if let araState { settings.externalPlugins?[index].araState = araState }
         do {
             if let clip, let location {
                 try settings.validateForClip(); try executor.setClipFX(clip, settings: settings)

@@ -181,9 +181,9 @@ class MIDIEditorPanel final : public Component, public DragAndDropTarget, privat
         editTools.setSize(x - 6, 24);
         editToolsViewport.setBounds(10, top, std::max(0, rightTools - 18), 30);
         const int gridTop = top + editToolsViewport.getHeight() + 3;
-        const int footer = compact ? 25 : 63;
+        const int footer = (followGrid ? 28 : 38) + (clip && clip->frozenMIDI.value_or(false) ? 22 : 0);
         canvas.setBounds(0, gridTop, getWidth(), std::max(0, getHeight() - gridTop - footer));
-        const int y = std::max(0, getHeight() - (compact ? 24 : 53));
+        const int y = std::max(0, getHeight() - footer + (followGrid ? 2 : 4));
         channel.setBounds(getWidth() - 226, y, 132, 24);
         velocity.setBounds(channel.getX() - 88, y, 78, 24);
     }

@@ -861,6 +861,13 @@ func testSpectrumWorker(rate: Double) {
             draft.setCreativeParameters(["drive": 18], for: .softClipper)
             settings = settings.merging(effect: key, from: draft)
         }
+        if effect == .graphicEQ, let key = settings.effectKeys.first {
+            let flat = try render(settings, rate: rate, duration: 0.5, analysis: false, creativeTempo: 120)
+            precondition(flat == dry, "A flat graphic EQ must preserve the input")
+            var draft = settings.settings(for: key)
+            draft.setCreativeParameters(["band17": 6, "output": -3], for: effect)
+            settings = settings.merging(effect: key, from: draft)
+        }
         let output = try render(settings, rate: rate, duration: 0.5, analysis: false, creativeTempo: 120,
                                 minimumReduction: effect == .softClipper ? 6 : nil)
         precondition(output[0] != dry[0] && output[1] != dry[1], "\(effect.rawValue) did not affect stereo PCM")

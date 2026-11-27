@@ -1184,7 +1184,7 @@ void Session::command(jaras::CommandKind kind, const ID &target, double value) {
               kind == jaras::CommandKind::subStop || kind == jaras::CommandKind::subSeek ||
               kind == jaras::CommandKind::seek || kind == jaras::CommandKind::editSeek ||
               jaras::queuesTimelineSeek(kind) || kind == jaras::CommandKind::cancelBeatSeek ||
-              kind == jaras::CommandKind::ignoreNext)) {
+              kind == jaras::CommandKind::ignoreNext || kind == jaras::CommandKind::toggleLoop)) {
         ++revision;transportChanged();
     }
     else
@@ -1955,6 +1955,7 @@ void Session::commitItemTiming(jaras::Project project, const ID &id, bool record
         redoHistory.clear();
     }
     dirty = true;
+    if (song()) audio.refreshARATimelines(*song());
     notify();
 }
 Session::TrackHierarchyHistory Session::trackHierarchyHistory(const ID &id) const {
@@ -2121,7 +2122,9 @@ void Session::applyTimelineHistory(const TimelineHistory &state, bool recordHist
         if (undoHistory.size() > 40) undoHistory.erase(undoHistory.begin());
         redoHistory.clear();
     }
-    dirty = true; if (state.mixerControls) notifyMixer(); else notify();
+    dirty = true;
+    if (song()) audio.refreshARATimelines(*song());
+    if (state.mixerControls) notifyMixer(); else notify();
 }
 void Session::edit(const std::function<void(jaras::Project &)> &change, bool rebuild, bool allowTimingEdit, bool regionOperation) {
     if (jaras::projectSync::readOnly()) return;
@@ -2252,6 +2255,19 @@ void Session::configureEffects(const std::map<ID, var> &changes) {
     for(auto &[id,settings]:live){settings=settings.clone();fxchain::maintainStripBypass(settings);audio.captureExternalEffects(id,settings);}
     applyEffects(live, true);
 }
+bool Session::applyExternalEffectPreset(const ID &id, const String &effect, const var &preset) {
+    if (busy || jaras::projectSync::readOnly() || !effect.startsWith("External:")) return false;
+    auto captured = currentEffects({{id, var()}});
+    const auto target = captured.find(id);
+    if (target == captured.end() || !list(get(target->second, "inserted")).contains(var(effect))) return false;
+    for (auto plugin : list(get(target->second, "externalPlugins"))) {
+        if (effect != "External:" + str(plugin, "id")) continue;
+        fxpresets::apply("External", plugin, preset);
+        applyEffects(captured, true);
+        return true;
+    }
+    return false;
+}
 String Session::copyEffect(const ID &source, const String &effect, const ID &destination, const String &before) {
     if (busy || !song()) return {};
     const auto valid = [&](const ID &id) {
@@ -2340,8 +2356,7 @@ String Session::insertLibraryEffect(const ID &destination, const String &identit
         if (str(plugin, "category").containsIgnoreCase("Instrument") && vinhetas) return {};
         put(plugin, "id", text(uuid()));
         put(plugin, "bypassed", false);
-        for (const auto *state : {"componentState", "controllerState"})
-            if (!get(preset, state).isVoid()) put(plugin, state, get(preset, state));
+        if (!preset.isVoid()) fxpresets::apply("External", plugin, preset);
         auto plugins = list(get(result, "externalPlugins"));
         plugins.add(plugin); put(result, "externalPlugins", plugins);
         key = "External:" + str(plugin, "id");
@@ -2426,8 +2441,10 @@ void Session::applyEffects(const std::map<ID, var> &changes, bool recordHistory)
             arpeggios.insert(id);
     }
     const auto activeSong = song() ? song()->id : ID{};
+    const auto updatedSong = std::find_if(p.songs.begin(),p.songs.end(),[&](const auto &row){return row.id==activeSong;});
     try {
-        for (const auto &[id, settings] : canonical) audio.setEffects(id, settings);
+        for (const auto &[id, settings] : canonical)
+            audio.setEffects(id, settings, updatedSong==p.songs.end() ? nullptr : &*updatedSong);
         if (!arpeggios.empty()) for (const auto &updated : p.songs)
             if (updated.id == activeSong) audio.refreshMIDIArpeggiators(updated, arpeggios);
     } catch (...) {
@@ -2436,7 +2453,7 @@ void Session::applyEffects(const std::map<ID, var> &changes, bool recordHistory)
         // Preparation may reuse a live processor. Restore every destination,
         // including the one that failed, before keeping the old project/Undo.
         for (const auto &[id, settings] : before)
-            try { audio.setEffects(id, settings); } catch (...) { restored = false; }
+            try { audio.setEffects(id, settings, song()); } catch (...) { restored = false; }
         if (!arpeggios.empty() && song())
             try { audio.refreshMIDIArpeggiators(*song(), arpeggios); } catch (...) { restored = false; }
         if (!restored) {
@@ -2713,7 +2730,7 @@ void Session::redo() {
 }
 void Session::importAudio(const Array<File> &files, double at) { importMedia(files,at,{},MediaDropLayout::separateTracks,0); }
 void Session::importMedia(const Array<File> &files,double at,ID targetTrack,MediaDropLayout layout,double gap,
-                          std::function<void(String)> completion, bool deferWaveform) {
+                          std::function<void(String)> completion, bool deferWaveform, std::vector<ID> gridTracks) {
     if(busy||files.isEmpty())return;
     if(audio.isRecording())throw std::runtime_error("Conclua a gravação antes de importar mídia.");
     if(!song()||!std::isfinite(at)||at<0||!std::isfinite(gap)||gap<0||gap>60)throw std::runtime_error("Posição ou intervalo de importação inválido.");
@@ -2723,7 +2740,8 @@ void Session::importMedia(const Array<File> &files,double at,ID targetTrack,Medi
     const auto targetRole=target==song()->tracks.end()?jaras::TrackRole{}:target->role;
     if(targetRole.id=="programChange")throw std::runtime_error("A pista Program Change aceita apenas comandos MIDI Program Change.");
     auto weak=std::weak_ptr<int>(alive);busy=true;importProgress=0;message=String::fromUTF8("Importando mídia…");notify();
-    worker.addJob([this,weak,files,at,targetTrack,layout,gap,songID,projectID,directory,targetRole,completion,deferWaveform]{
+    worker.addJob([this,weak,files,at,targetTrack,layout,gap,songID,projectID,directory,targetRole,completion,deferWaveform,
+                   gridTracks=std::move(gridTracks)]{
         struct Source {File file;double duration;bool projection;};
         std::vector<Source> sources;std::vector<jaras::Track> tracks;Array<File> copied;String error;
         try {
@@ -2758,12 +2776,20 @@ void Session::importMedia(const Array<File> &files,double at,ID targetTrack,Medi
                 if(!source.file.copyFileTo(destination))throw std::runtime_error("Não foi possível copiar a mídia para o projeto.");
                 clip.audioFile=jaras::AudioFile{utf8(relative),{}};
                 if(!source.projection&&!deferWaveform){std::unique_ptr<AudioFormatReader> reader(formats.createReaderFor(source.file));if(!reader)throw std::runtime_error("Não foi possível ler o áudio.");clip.waveform=waveform(*reader);}
-                if(layout==MediaDropLayout::separateTracks||tracks.empty()){jaras::Track track;track.id=i==0&&!targetTrack.empty()?targetTrack:uuid();track.name=clip.name;track.role.id=i==0&&!targetTrack.empty()?targetRole.id:"other";track.color=0x828282;tracks.push_back(std::move(track));}
+                if (layout == MediaDropLayout::separateTracks || tracks.empty()) {
+                    jaras::Track track;
+                    track.id = i < gridTracks.size() ? gridTracks[i]
+                        : i == 0 && !targetTrack.empty() ? targetTrack : uuid();
+                    track.name = clip.name;
+                    track.role.id = i == 0 && !targetTrack.empty() ? targetRole.id : "other";
+                    track.color = 0x828282;
+                    tracks.push_back(std::move(track));
+                }
                 tracks.back().clips.push_back(std::move(clip));cursor+=source.duration+gap;
                 MessageManager::callAsync([this,weak,i,total=sources.size()]{if(!weak.expired()){importProgress=double(i+1)/total;if(changed)changed();}});
             }
         }catch(const std::exception &e){error=String::fromUTF8(e.what());}
-        MessageManager::callAsync([this,weak,tracks=std::move(tracks),copied,songID,projectID,targetTrack,layout,error,completion]()mutable{
+        MessageManager::callAsync([this,weak,tracks=std::move(tracks),copied,songID,projectID,targetTrack,layout,error,completion,gridTracks]()mutable{
             if(weak.expired()){for(auto &f:copied)f.deleteFile();return;}
             busy=false;
             try {
@@ -2773,6 +2799,9 @@ void Session::importMedia(const Array<File> &files,double at,ID targetTrack,Medi
                     auto song=std::find_if(project.songs.begin(),project.songs.end(),[&](auto &s){return s.id==songID;});
                     if(song==project.songs.end())throw std::runtime_error("O grid de destino não existe mais.");
                     if(!targetTrack.empty()&&std::none_of(song->tracks.begin(),song->tracks.end(),[&](auto &t){return t.id==targetTrack;}))throw std::runtime_error("A pista de destino não existe mais.");
+                    for (auto i = size_t{1}; i < std::min(gridTracks.size(), tracks.size()); ++i)
+                        if (std::none_of(song->tracks.begin(), song->tracks.end(), [&](const auto &track) { return track.id == gridTracks[i]; }))
+                            throw std::runtime_error("Uma das pistas de destino não existe mais.");
                     for(auto &imported:tracks){
                         auto found=std::find_if(song->tracks.begin(),song->tracks.end(),[&](auto &t){return t.id==imported.id;});
                         if(found==song->tracks.end()){song->tracks.push_back(std::move(imported));found=std::prev(song->tracks.end());}
@@ -2780,7 +2809,7 @@ void Session::importMedia(const Array<File> &files,double at,ID targetTrack,Medi
                             // Move the batch as a unit past existing material, preserving
                             // the user's sequence and interval. Stacked import explicitly keeps
                             // simultaneous items in separate visual lanes on the same track.
-                            double shift=0;bool collision=layout!=MediaDropLayout::stacked;
+                            double shift=0;bool collision=gridTracks.empty()&&layout!=MediaDropLayout::stacked;
                             while(collision){collision=false;for(const auto &clip:imported.clips)for(const auto &existing:found->clips){
                                 const bool sameLayer=!jaras::isTeleprompterRole(found->role)||bool(clip.audioFile)==bool(existing.audioFile);
                                 if(sameLayer&&clip.startTime+shift<existing.startTime+existing.duration-1e-8&&clip.startTime+shift+clip.duration>existing.startTime+1e-8){shift=existing.startTime+existing.duration-clip.startTime;collision=true;}

@@ -156,7 +156,7 @@ class Transport final : private Thread {
         require(plain.size() >= 6 && plain[0] == 1 && plain[1] == 0x4a && plain[2] == 0x4c &&
                 plain[3] == 2);
         const uint8_t kind = plain[4];
-        require(kind == 1 || kind == 3 || kind == 5 || kind == 8 || kind == 9);
+        require(kind == 1 || kind == 3 || kind == 5 || kind == 8 || kind == 9 || kind == 11);
         const size_t maximum = kind == 8 ? 524292 : kind == 1 ? 8192 : kind == 3 ? 64 : kind == 9 ? 9 : 256;
         require(plain.size() - 1 <= maximum);
         const auto now = Time::getMillisecondCounterHiRes();

@@ -258,7 +258,6 @@ void Projection::toggleFullScreen() {
             // Preserve the native peer and decoded video surface across the
             // transition. Changing resize/shadow/button flags recreates the HWND.
             window->setTitleBarHeight(0);
-            window->setAlwaysOnTop(false);
             window->setBounds(screen);
         }
         for (auto *button : {window->getCloseButton(), window->getMinimiseButton(), window->getMaximiseButton()})

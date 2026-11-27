@@ -428,6 +428,8 @@ typealias ProjectionPlatformView = UIView
 #endif
 #if os(iOS)
 struct IpadNativeVideoButton: View {
+    var showsTitle = true
+    var height: CGFloat = 32
     private let video = VideoPlayback.shared
     @State private var visible = false
     @State private var stretch = false
@@ -435,9 +437,11 @@ struct IpadNativeVideoButton: View {
         Button { video.toggle() } label: {
             HStack(spacing: 3) {
                 ControlIcon(name: "video", active: visible, size: 16)
-                Text("Video").font(.jarasSystem(size: 11, weight: .semibold))
+                if showsTitle {
+                    Text("Video").font(.jarasSystem(size: TimelineEditingBarMetrics.labelSize, weight: .semibold))
+                }
             }.lineLimit(1)
-                .frame(width: 62, height: 32).foregroundStyle(JarasTheme.toolbarTint(active: visible))
+                .frame(width: showsTitle ? 62 : 34, height: height).foregroundStyle(JarasTheme.toolbarTint(active: visible))
                 .background { RemoteSurface.panel.clipShape(RoundedRectangle(cornerRadius: 5)) }
                 .contentShape(Rectangle())
         }.buttonStyle(.plain).accessibilityLabel("Video")
@@ -463,6 +467,7 @@ struct IpadNativeVideoButton: View {
 struct IpadNativeVideoPanel: View {
     let leading: CGFloat
     let trailing: CGFloat
+    let onOpen: () -> Void
     let dockedChanged: (Bool) -> Void
     private let video = VideoPlayback.shared
     @State private var visible = false
@@ -508,7 +513,8 @@ struct IpadNativeVideoPanel: View {
         }.clipped().allowsHitTesting(visible)
             .onReceive(video.$visible.removeDuplicates()) { value in
                 visible = value
-                if !value { fullscreen = false }
+                if value { onOpen() }
+                else { fullscreen = false }
             }
             .onChange(of: visible && !floating, perform: dockedChanged)
     }

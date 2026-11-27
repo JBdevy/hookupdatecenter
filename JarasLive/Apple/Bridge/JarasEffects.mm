@@ -156,7 +156,7 @@ static void updateEffectSilenceFlag(AudioUnitRenderActionFlags* flags,
 struct StereoLevelPeaks {
     std::atomic<bool> enabled{false};
     std::array<std::atomic<float>,2> peaks{};
-    std::atomic<float> rms{0};
+    std::atomic<float> meanMagnitude{0};
     StereoLevelPeaks() { for(auto& peak:peaks) peak.store(0,std::memory_order_relaxed); }
     void capture(const AudioBufferList *buffers,unsigned frames) {
         if(!enabled.load(std::memory_order_relaxed) || !frames || !buffers->mNumberBuffers) return;
@@ -172,18 +172,18 @@ struct StereoLevelPeaks {
             float old=peaks[ch].load(std::memory_order_relaxed);
             while(peak>old && !peaks[ch].compare_exchange_weak(old,peak,std::memory_order_relaxed)) {}
             if (peak > 0.0001f) {
-                float channelRMS=0;
-                vDSP_rmsqv(data,stride,&channelRMS,frames);
-                level=std::max(level,channelRMS);
+                float channelMean=0;
+                vDSP_meamgv(data,stride,&channelMean,frames);
+                level=std::max(level,channelMean);
             }
         }
-        float old=rms.load(std::memory_order_relaxed);
-        while(level>old && !rms.compare_exchange_weak(old,level,std::memory_order_relaxed)) {}
+        float old=meanMagnitude.load(std::memory_order_relaxed);
+        while(level>old && !meanMagnitude.compare_exchange_weak(old,level,std::memory_order_relaxed)) {}
     }
     float take(NSUInteger channel) {
         return channel<peaks.size() ? peaks[channel].exchange(0,std::memory_order_relaxed) : 0;
     }
-    float takeRMS() { return rms.exchange(0,std::memory_order_relaxed); }
+    float takeMeanMagnitude() { return meanMagnitude.exchange(0,std::memory_order_relaxed); }
 };
 // Storage is prepared on the control thread. The render block uses only
 // bounded arithmetic and atomic snapshots, never locks, files or allocations.
@@ -689,13 +689,13 @@ struct EQKernel {
 + (void)setOutputMeteringEnabled:(AVAudioUnitEffect *)node enabled:(BOOL)enabled {
     auto &peaks=((JarasEQAudioUnit *)node.AUAudioUnit)->kernel.outputPeaks;
     peaks.enabled.store(enabled,std::memory_order_relaxed);
-    if(!enabled) { peaks.take(0); peaks.take(1); peaks.takeRMS(); }
+    if(!enabled) { peaks.take(0); peaks.take(1); peaks.takeMeanMagnitude(); }
 }
 + (float)takeOutputPeak:(AVAudioUnitEffect *)node channel:(NSUInteger)channel {
     return ((JarasEQAudioUnit *)node.AUAudioUnit)->kernel.outputPeaks.take(channel);
 }
-+ (float)takeOutputRMS:(AVAudioUnitEffect *)node {
-    return ((JarasEQAudioUnit *)node.AUAudioUnit)->kernel.outputPeaks.takeRMS();
++ (float)takeOutputMeanMagnitude:(AVAudioUnitEffect *)node {
+    return ((JarasEQAudioUnit *)node.AUAudioUnit)->kernel.outputPeaks.takeMeanMagnitude();
 }
 + (AVAudioUnitEffect *)makeNode {
     static dispatch_once_t once;
@@ -1461,13 +1461,13 @@ struct ChannelRouteKernel {
 + (void)setInputMeteringEnabled:(AVAudioUnitEffect *)node enabled:(BOOL)enabled {
     auto &peaks=((JarasChannelRouteUnit *)node.AUAudioUnit)->route.inputPeaks;
     peaks.enabled.store(enabled,std::memory_order_relaxed);
-    if(!enabled) { peaks.take(0); peaks.take(1); peaks.takeRMS(); }
+    if(!enabled) { peaks.take(0); peaks.take(1); peaks.takeMeanMagnitude(); }
 }
 + (float)takeInputPeak:(AVAudioUnitEffect *)node channel:(NSUInteger)channel {
     return ((JarasChannelRouteUnit *)node.AUAudioUnit)->route.inputPeaks.take(channel);
 }
-+ (float)takeInputRMS:(AVAudioUnitEffect *)node {
-    return ((JarasChannelRouteUnit *)node.AUAudioUnit)->route.inputPeaks.takeRMS();
++ (float)takeInputMeanMagnitude:(AVAudioUnitEffect *)node {
+    return ((JarasChannelRouteUnit *)node.AUAudioUnit)->route.inputPeaks.takeMeanMagnitude();
 }
 + (AVAudioUnitEffect *)makeNode {
     static dispatch_once_t once;
@@ -1585,8 +1585,8 @@ namespace {
 struct CreativeKernel {
     std::atomic<float> reductionDB{0};
     std::unique_ptr<jaras::audio::CreativeEffectDSP> dsp;
-    std::array<std::atomic<double>,4> pending{};
-    std::array<double,4> values{};
+    std::array<std::atomic<double>,jaras::audio::graphicEQParameterCount> pending{};
+    std::array<double,jaras::audio::graphicEQParameterCount> values{};
     std::atomic<unsigned> revision{0};
     unsigned consumed=0;
     std::atomic<bool> enabled{false}, resetRequested{false};
@@ -1601,7 +1601,7 @@ struct CreativeKernel {
         if(!enabled.load(std::memory_order_relaxed) || buffers->mNumberBuffers < 1) return;
         auto serial=revision.load(std::memory_order_acquire);
         if (!(serial&1u) && serial!=consumed) {
-            std::array<double,4> next{};
+            decltype(values) next{};
             for(unsigned n=0;n<next.size();++n) next[n]=pending[n].load(std::memory_order_relaxed);
             if(serial==revision.load(std::memory_order_acquire)) { values=next; consumed=serial; }
         }

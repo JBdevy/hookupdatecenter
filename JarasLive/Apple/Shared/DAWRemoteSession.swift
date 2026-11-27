@@ -561,8 +561,20 @@ final class DAWRemoteSession: NSObject, ObservableObject {
     static let shared = DAWRemoteSession(role: .host, name: Host.current().localizedName ?? "CatLive PC", policy: DAWRemoteAccessPolicy(preferences: .standard), hostPreferences: .standard)
     #else
     static let shared = DAWRemoteSession(role: .client, name: UIDevice.current.name)
-    static let nativeHost = DAWRemoteSession(role: .host, name: UIDevice.current.name,
+    private static let nativeHostNameKey = "catlive.remote.nativeHostName"
+    static var nativeHostName: String {
+        UserDefaults.standard.string(forKey: nativeHostNameKey) ?? remoteName(UIDevice.current.name)
+    }
+    static let nativeHost = DAWRemoteSession(role: .host, name: nativeHostName,
         policy: DAWRemoteAccessPolicy(preferences: .standard), hostPreferences: .standard)
+
+    static func renameNativeHost(_ value: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let updated = remoteName(trimmed.isEmpty ? UIDevice.current.name : trimmed)
+        UserDefaults.standard.set(updated, forKey: nativeHostNameKey)
+        nativeHost.setHostName(updated)
+        return updated
+    }
     #endif
     @Published private(set) var enabled = false
     @Published private(set) var connected = false
@@ -634,6 +646,7 @@ final class DAWRemoteSession: NSObject, ObservableObject {
         blockPresentation = nil
         publishControlFeedback()
         confirmedState = nil
+        resetGridWaveforms(nil)
     }
 
     private var blockFeedback = DAWRemoteBlockFeedback()
@@ -708,6 +721,33 @@ final class DAWRemoteSession: NSObject, ObservableObject {
     }
     #endif
     private(set) var requestedPanel = 0
+    @Published private(set) var gridWaveforms: [UUID: Data] = [:]
+    private var gridWaveformTransfer = DAWRemoteWaveformTransfer()
+    private var gridWaveformRetry: DispatchWorkItem?
+    private var generatingWaveformPage = false
+    private let waveformWorker = DispatchQueue(label: "com.jaras.remote.waveform", qos: .utility)
+    var waveformPageProvider: ((DAWRemoteWaveformRequest) -> (() -> DAWRemoteWaveformPage)?)?
+
+    private func resetGridWaveforms(_ revision: UUID?) {
+        gridWaveformRetry?.cancel()
+        gridWaveformRetry = nil
+        gridWaveformTransfer.reset(revision)
+        if !gridWaveforms.isEmpty { gridWaveforms = [:] }
+    }
+
+    private func requestGridWaveforms(from channel: DAWRemoteChannel) {
+        gridWaveformRetry?.cancel()
+        guard let request = gridWaveformTransfer.request,
+              let packet = try? DAWRemoteWire.waveformRequest(request) else { return }
+        channel.send(packet)
+        let retry = DispatchWorkItem { [weak self, weak channel] in
+            guard let self, let channel, self.channel === channel, self.connected else { return }
+            self.requestGridWaveforms(from: channel)
+        }
+        gridWaveformRetry = retry
+        DispatchQueue.main.asyncAfter(deadline: .now() + 12, execute: retry)
+    }
+
     var stateProviderForSession: ((DAWRemoteSession) -> DAWRemoteState?)?
     @Published private(set) var imageRevision: UInt64 = 0
     private let worker = DispatchQueue(label: "com.jaras.remote.state", qos: .userInitiated)
@@ -929,9 +969,9 @@ final class DAWRemoteSession: NSObject, ObservableObject {
             if !self.enabled { startHost() }
         } else { stop() }
     }
-    func restoreHostPreference() {
+    func restoreHostPreference(defaultEnabled: Bool = false) {
         guard role == .host, parentHost == nil, !enabled,
-              hostPreferences?.bool(forKey: "catlive.remote.enabled") == true else { return }
+              (hostPreferences?.object(forKey: "catlive.remote.enabled") as? Bool ?? defaultEnabled) else { return }
         startHost()
     }
     func stop() {
@@ -1055,6 +1095,7 @@ final class DAWRemoteSession: NSObject, ObservableObject {
             // here can strand a client on the startup/previous project's provider.
             child.stateProvider = { [weak self] in self?.stateProvider?() }
             child.stateProviderForSession = { [weak self] client in self?.stateProviderForSession?(client) }
+            child.waveformPageProvider = { [weak self] request in self?.waveformPageProvider?(request) }
             child.commandHandler = { [weak self] command in self?.commandHandler?(command) }
             child.noticeSendHandler = { [weak self] command in self?.noticeSendHandler?(command) ?? false }
             clients[id] = child; child.attach(connection)
@@ -1372,6 +1413,26 @@ final class DAWRemoteSession: NSObject, ObservableObject {
             (parentHost ?? self).updateMainAudioHost()
             #endif
         case .mainAudio: return
+        case .waveformRequest(let request):
+            guard role == .host, accessMode == .director, !generatingWaveformPage,
+                  let prepare = waveformPageProvider?(request) else { return }
+            generatingWaveformPage = true
+            waveformWorker.async { [weak self, weak source] in
+                let data = try? DAWRemoteWire.waveformPage(prepare())
+                remoteMain {
+                    guard let self else { return }
+                    self.generatingWaveformPage = false
+                    guard let source, self.channel === source, self.connected, self.accessMode == .director,
+                          let data else { return }
+                    source.send(data)
+                }
+            }
+        case .waveformPage(let page):
+            guard role == .client, accessMode == .director, let request = gridWaveformTransfer.request,
+                  request.revision == page.revision, request.offset == page.offset else { return }
+            gridWaveformRetry?.cancel()
+            if let complete = gridWaveformTransfer.receive(page) { gridWaveforms = complete }
+            else { requestGridWaveforms(from: source) }
         case .command(let command):
             guard role == .host, DAWRemoteAccessRules.allows(command, mode: accessMode) else { return }
             if handledCommands.contains(command.id) {
@@ -1406,6 +1467,14 @@ final class DAWRemoteSession: NSObject, ObservableObject {
                 } else if mainAudioAvailable { resetMainAudioClient() }
                 #endif
                 setImageProject(state.project)
+                #if os(iOS)
+                let revision = UIDevice.current.userInterfaceIdiom == .pad && accessMode == .director
+                    ? state.waveformRevision : nil
+                if revision != gridWaveformTransfer.revision || (reconnecting && !gridWaveformTransfer.complete) {
+                    resetGridWaveforms(revision)
+                    requestGridWaveforms(from: source)
+                }
+                #endif
                 let now = ProcessInfo.processInfo.systemUptime
                 confirmedState = state
                 controlFeedback.receive(state, now: now)

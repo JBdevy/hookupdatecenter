@@ -3,14 +3,16 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <memory>
 #include <string_view>
 #include <vector>
 
 #include "../Transport/PluginTransport.hpp"
+#include "GraphicEQ31.hpp"
 
 namespace jaras::audio {
 
-enum class CreativeEffect { chorus = 1, phaser, amp, divisionGate, softClipper };
+enum class CreativeEffect { chorus = 1, phaser, amp, divisionGate, softClipper, graphicEQ };
 
 struct CreativeParameter {
     const char* key;
@@ -24,8 +26,26 @@ struct CreativeEffectInfo {
     std::string_view name;
     const char* field;
     const char* enabledField;
-    std::array<CreativeParameter, 4> parameters;
+    std::array<CreativeParameter, graphicEQParameterCount> parameters;
 };
+
+inline constexpr auto graphicEQParameters = [] {
+    constexpr const char* labels[] = {
+        "20", "25", "31.5", "40", "50", "63", "80", "100", "125", "160", "200", "250", "315", "400",
+        "500", "630", "800", "1k", "1.25k", "1.6k", "2k", "2.5k", "3.15k", "4k", "5k", "6.3k",
+        "8k", "10k", "12.5k", "16k", "20k"
+    };
+    constexpr const char* keys[] = {
+        "band0", "band1", "band2", "band3", "band4", "band5", "band6", "band7", "band8", "band9",
+        "band10", "band11", "band12", "band13", "band14", "band15", "band16", "band17", "band18", "band19",
+        "band20", "band21", "band22", "band23", "band24", "band25", "band26", "band27", "band28", "band29", "band30"
+    };
+    std::array<CreativeParameter, graphicEQParameterCount> result{};
+    for (std::size_t i = 0; i < graphicEQFrequencies.size(); ++i)
+        result[i] = {keys[i], labels[i], 0, -12, 12, .1, " dB"};
+    result.back() = {"output", "Output", 0, -12, 12, .1, " dB"};
+    return result;
+}();
 
 inline constexpr CreativeEffectInfo creativeEffects[] = {
     {CreativeEffect::chorus, "Chorus", "chorus", "chorusEnabled", {{
@@ -50,7 +70,8 @@ inline constexpr CreativeEffectInfo creativeEffects[] = {
     {CreativeEffect::softClipper, "Soft Clipper", "softClipper", "softClipperEnabled", {{
         {"drive", "Drive", 0, 0, 24, .1, " dB"},
         {"ceiling", "Ceiling", -.1, -24, 0, .1, " dB"},
-        {"softness", "Softness", 40, 1, 100, 1, " %"}, {}}}}
+        {"softness", "Softness", 40, 1, 100, 1, " %"}, {}}}},
+    {CreativeEffect::graphicEQ, "EQ - 31 Band", "graphicEQ", "graphicEQEnabled", graphicEQParameters}
 };
 
 inline const CreativeEffectInfo* creativeEffect(std::string_view name) noexcept {
@@ -61,9 +82,12 @@ inline const CreativeEffectInfo* creativeEffect(std::string_view name) noexcept 
 
 class CreativeEffectDSP {
 public:
-    explicit CreativeEffectDSP(CreativeEffect kind) : kind(kind) {}
+    explicit CreativeEffectDSP(CreativeEffect kind) : kind(kind) {
+        if (kind == CreativeEffect::graphicEQ) graphicEQ = std::make_unique<GraphicEQ31>();
+    }
     void prepare(double sampleRate) {
         rate = sampleRate;
+        if (graphicEQ) graphicEQ->prepare(rate);
         if (kind == CreativeEffect::chorus)
             for (auto& channel : channels) channel.delay.assign(static_cast<size_t>(rate * .04) + 2, 0);
         reset();
@@ -71,6 +95,7 @@ public:
 
     float gainReductionDB() const noexcept { return lastReductionDB; }
     void reset() noexcept {
+        if (graphicEQ) graphicEQ->reset();
         lastReductionDB = 0;
         writeIndex = 0;
         phase = 0;
@@ -82,11 +107,16 @@ public:
         }
     }
 
+    template <class T>
     void process(float* left, float* right, unsigned frames,
-                 const std::array<double, 4>& values, const PluginTransport& transport) noexcept {
+                 const std::array<T, graphicEQParameterCount>& values, const PluginTransport& transport) noexcept {
         if (!left) return;
+        if (graphicEQ) {
+            graphicEQ->process(left, right, frames, values);
+            return;
+        }
         const auto& specs = creativeEffects[static_cast<int>(kind) - 1].parameters;
-        auto settings = values;
+        std::array<double, 4> settings{values[0], values[1], values[2], values[3]};
         for (size_t i = 0; i < settings.size() && specs[i].key; ++i)
             settings[i] = std::clamp(std::isfinite(settings[i]) ? settings[i] : specs[i].initial, specs[i].minimum, specs[i].maximum);
         if (kind == CreativeEffect::softClipper) {
@@ -165,6 +195,7 @@ public:
     }
 
 private:
+    std::unique_ptr<GraphicEQ31> graphicEQ;
     float lastReductionDB = 0;
     struct Channel {
         std::vector<float> delay;

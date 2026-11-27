@@ -30,6 +30,18 @@ import Foundation
                  "after an explicit reset a lower peak starts a new maximum")
     withExtendedLifetime(peakSubscription) {}
     print("PEAK_HOLD_MINUS24_THRESHOLD_HIGHER_ONLY_NO_TIMED_RESET_OK")
+    let vu = TrackMeterLevel()
+    let peak = pow(10.0, -18.0 / 20)
+    let tone = (0..<4800).reduce(0.0) { $0 + abs(peak * sin(Double($1) * 2 * .pi / 48)) } / 4800
+    vu.updateVU(meanMagnitude: tone, elapsed: 0.01)
+    precondition(vu.vuLevel == -20, "A brief transient does not deflect the VU like a peak meter")
+    for _ in 0..<29 { vu.updateVU(meanMagnitude: tone, elapsed: 0.01) }
+    precondition(abs(vu.vuLevel) <= 0.2, "The -18 dBFS reference reaches 0 VU in about 300 ms")
+    for _ in 0..<70 { vu.updateVU(meanMagnitude: tone, elapsed: 0.01) }
+    precondition(vu.vuLevel == 0, "The synthetic reference tone settles on 0 VU")
+    vu.updateVU(meanMagnitude: 0, elapsed: 0.3)
+    precondition(vu.vuLevel == -20, "The pointer returns to the bottom of the scale")
+    print("ANALOG_VU_REFERENCE_TONE_AND_BALLISTICS_OK")
     let measuredMeter = TrackMeterLevel()
     for frequency in [30.0, 60.0, 120.0] {
         measuredMeter.reset()

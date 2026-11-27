@@ -452,6 +452,37 @@ final class StemImportTests: XCTestCase {
         XCTAssertFalse(overview.waveform.isEmpty)
         XCTAssertTrue(clip.waveform.isEmpty, "Cache analysis must not mutate a previously inserted or undone item")
     }
+
+    func testDroppedAudioRemainsReadableAfterSavingAndReopening() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let name = "Vinheta - ensaio #2 (100%).wav"
+        let source = try fixture(root, folder: "Áudios", file: name).appendingPathComponent(name)
+        let document = root.appendingPathComponent("Sessão/Show.jl")
+        let store = DocumentProjectStore()
+        var project = Project.empty(name: "Show")
+        await store.select(url: document, id: project.id)
+        let drop = try StemProjectImporter.prepareDroppedAudio([source], start: 0, destinationTracks: [],
+                                                              destination: document, deferWaveform: true)
+        project.songs[0].tracks = drop.tracks
+        // The desktop bridge omits empty channel overviews when it saves an item.
+        project.songs[0].tracks[0].clips[0].waveformChannels = nil
+        try await store.save(project)
+        await store.deselect()
+        let loaded = try await ProjectStore(url: document).load()
+        let reopened = try XCTUnwrap(loaded)
+        let folder = document.deletingLastPathComponent()
+        XCTAssertEqual(reopened.mediaPaths, ["Stems/" + name])
+        XCTAssertTrue(ProjectAudioRecovery.missingPaths(in: reopened, directory: folder).isEmpty)
+        var unreadable: [String] = []
+        let enriched = try StemProjectImporter.populateChannelOverviews(reopened, directory: folder) { path, _ in unreadable.append(path) }
+        XCTAssertTrue(unreadable.isEmpty)
+        XCTAssertFalse(enriched.songs[0].tracks[0].clips[0].waveformChannels?.isEmpty ?? true)
+        let copy = folder.appendingPathComponent("Stems").appendingPathComponent(name)
+        XCTAssertEqual(try Data(contentsOf: source), try Data(contentsOf: copy))
+        XCTAssertGreaterThan(try AVAudioFile(forReading: copy).length, 0)
+    }
+
     func testGridDropReusesOnlyMatchingNameAndContents() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -687,6 +718,32 @@ final class StemImportTests: XCTestCase {
         XCTAssertThrowsError(try StemProjectImporter.prepareDroppedAudio([one, bad], start: 0, destinationTracks: [], destination: destination))
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.appendingPathComponent("Project/Stems").path), existing)
     }
+    func testGridBatchDropRoutesDownFromHoveredTrackAndCreatesOnlyOverflow() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let names = ["Take A", "Take B", "Take C"]
+        let urls = try names.map { name in
+            let file = name + ".wav"
+            return try fixture(root, folder: "Source", file: file, seconds: 0.2).appendingPathComponent(file)
+        }
+        let tracks = [
+            Track(id: UUID(), name: "Selected", role: .other),
+            Track(id: UUID(), name: "Drop here", role: .other),
+            Track(id: UUID(), name: "Program Change", role: TrackRole(rawValue: "programChange")),
+            Track(id: UUID(), name: "Next visible audio", role: .other)
+        ]
+        let rows = StemProjectImporter.gridDropRows(in: tracks, startingAt: 1, limit: urls.count)
+        XCTAssertEqual(rows, [1, 3])
+        let destinations = rows.map { tracks[$0].id }
+        let result = try StemProjectImporter.prepareDroppedAudio(urls, start: 12, destinationTracks: destinations,
+            destination: root.appendingPathComponent("Project/Show.jl"))
+        XCTAssertEqual(Array(result.tracks.prefix(2).map(\.id)), destinations)
+        XCTAssertFalse(tracks.map(\.id).contains(result.tracks[2].id))
+        XCTAssertEqual(result.tracks[2].name, "Take C")
+        XCTAssertEqual(result.tracks.flatMap(\.clips).map(\.name), names)
+        XCTAssertEqual(result.tracks.flatMap(\.clips).map(\.startTime), [12, 12, 12])
+    }
+
     func testSameTrackDropUsesGapAndExtensionFreeNames() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

@@ -252,6 +252,17 @@ enum AudioDropLayout: String, CaseIterable, Sendable { case separateTracks, same
 
 enum StemProjectImporter {
     struct DroppedAudio: Sendable { let tracks: [Track]; let folders: [URL]; var folder: URL { folders[0] } }
+
+    static func gridDropRows(in tracks: [Track], startingAt index: Int, limit: Int) -> [Int] {
+        guard tracks.indices.contains(index), limit > 0 else { return [] }
+        var rows = [index]
+        for next in (index + 1)..<tracks.count {
+            guard rows.count < limit else { break }
+            if tracks[next].kind == .standard { rows.append(next) }
+        }
+        return rows
+    }
+
     private struct DroppedSource {
         let url: URL
         let kind: TrackKind
@@ -345,7 +356,10 @@ enum StemProjectImporter {
                 if layout != .separateTracks, !tracks.isEmpty { tracks[0].clips.append(clip) }
                 else {
                     let trackID = tracks.count < destinationTracks.count ? destinationTracks[tracks.count] : UUID()
-                    var track = Track(id: trackID, name: isVideo && destinationKind?.isText == true ? destinationKind!.title : itemName, role: TrackRole(rawValue: isVideo && !destinationTracks.isEmpty && destinationKind != .video ? (destinationKind?.rawValue ?? "other") : "other"), color: Track.defaultStandardColor)
+                    let kind = index == 0 ? destinationKind : nil
+                    var track = Track(id: trackID, name: isVideo && kind?.isText == true ? (kind?.title ?? itemName) : itemName,
+                                      role: TrackRole(rawValue: isVideo && kind != .video ? (kind?.rawValue ?? "other") : "other"),
+                                      color: Track.defaultStandardColor)
                     track.clips = [clip]; tracks.append(track)
                 }
                 cursor += source.duration + gap

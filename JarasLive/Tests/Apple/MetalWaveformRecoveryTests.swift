@@ -44,9 +44,10 @@ let cases: [(String, MetalWaveformFrame, MetalWaveformFrame?)] = [
         MetalWaveformFrame(size: size, strokes: [], items: [firstItem]))
 ]
 for (name, scene, previous) in cases {
+    let emptyOpacity: CGFloat = surface.submittedFrameCount == 0 ? 1 : 0
     surface.submit(MetalWaveformFrame(size: size, strokes: []))
     settle()
-    check(surface.subviews.first?.alphaValue == 0)
+    check(surface.subviews.first?.alphaValue == emptyOpacity, "The first empty scene must leave Metal able to draw")
     if let previous {
         surface.submit(previous)
         awaitValue("initial partial scene must present") { surface.presentedForRecoveryTest?.hasSameContent(as: previous) == true }
@@ -59,7 +60,7 @@ for (name, scene, previous) in cases {
     awaitValue("initial acquisition and bounded retry must both run") { MetalDrawableRecoveryProbe.attempts >= firstAttempt + 2 }
     settle()
     check(surface.pendingForRecoveryTest && surface.submittedFrameCount == before)
-    check(surface.subviews.first?.alphaValue == (previous == nil ? 0 : 1), "failed acquisition must preserve the prior surface visibility")
+    check(surface.subviews.first?.alphaValue == (previous == nil ? emptyOpacity : 1), "failed acquisition must preserve the prior surface visibility")
     if let previous {
         check(surface.presentedForRecoveryTest?.hasSameContent(as: previous) == true,
             "a failed update can leave only the earlier subset of items visible")
@@ -205,6 +206,7 @@ let openingWindow = OpeningProjectWindow(contentRect: NSRect(x: -10000, y: -1000
     styleMask: [.borderless], backing: .buffered, defer: false)
 openingWindow.isReleasedWhenClosed = false
 let openingSurface = MetalWaveformSurface()
+openingSurface.deferOpeningUntilVisible()
 openingWindow.contentView = openingSurface
 openingWindow.orderBack(nil)
 settle()

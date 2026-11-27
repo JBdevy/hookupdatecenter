@@ -38,15 +38,6 @@ inline bool drawInterfaceIcon(Graphics &g, const String &name, juce::Rectangle<f
         g.fillEllipse(bounds.withSizeKeepingCentre(5.f, 5.f));
         return true;
     }
-    if (name == "vuMeter") {
-        const auto area=bounds.withSizeKeepingCentre(std::min(bounds.getWidth(), 15.f), std::min(bounds.getHeight(), 14.f));
-        g.drawRoundedRectangle(area.withHeight(area.getHeight()*.7f),2,1);
-        g.drawLine(area.getCentreX(),area.getY()+area.getHeight()*.56f,
-                   area.getX()+area.getWidth()*.72f,area.getY()+area.getHeight()*.20f,1.2f);
-        g.setFont(theme::semiboldFont(5));
-        g.drawText("VU",area,Justification::centredBottom,false);
-        return true;
-    }
     if (name == "toolSelect" || name == "toolCut" || name == "toolMute" || name == "toolSolo" || name == "toolExclusiveSolo") {
         const auto b=bounds.withSizeKeepingCentre(15.f,15.f);
         const auto at=[&](float x,float y){return Point<float>(b.getX()+x,b.getY()+y);};

@@ -1283,12 +1283,7 @@ struct TrackMixerVUButton: View {
 
     var body: some View {
         Button { visible.toggle() } label: {
-            ZStack(alignment: .bottom) {
-                Image(systemName: "speedometer")
-                    .font(.system(size: 13, weight: .medium))
-                    .offset(y: -2)
-                Text(verbatim: "VU").font(.jarasSystem(size: 5, weight: .bold))
-            }.frame(width: 17, height: 16)
+            TransportControlIcon(name: "vuMeter", size: 16)
                 .frame(width: size, height: size).contentShape(Rectangle())
                 .foregroundStyle(visible ? JarasTheme.green : JarasTheme.secondary)
         }.buttonStyle(.plain)
@@ -2058,10 +2053,12 @@ struct MasterStrip: View {
     @Environment(\.openFX) private var openFX
     let show: ShowController
     let workspaceButtons: AnyView?
+    let footerButtons: AnyView?
     @ObservedObject private var updates: ShowProjectPresentation
-    init(show: ShowController, workspaceButtons: AnyView? = nil) {
+    init(show: ShowController, workspaceButtons: AnyView? = nil, footerButtons: AnyView? = nil) {
         self.show = show
         self.workspaceButtons = workspaceButtons
+        self.footerButtons = footerButtons
         _updates = ObservedObject(wrappedValue: show.projectPresentation)
     }
     private var foreground: Color { workspaceButtons == nil ? MixerTrackStyle.surfaceText : JarasTheme.text }
@@ -2083,18 +2080,19 @@ struct MasterStrip: View {
                 }.font(.jarasSystem(size: 10, weight: .semibold)).buttonStyle(.bordered).controlSize(.small).frame(height: 24)
                     .frame(maxWidth: .infinity, alignment: workspaceButtons == nil ? .center : .leading)
                 if workspaceButtons != nil {
-                    Spacer(minLength: 0)
                     HStack(spacing: 4) {
                         mainLabel.frame(width: 40, alignment: .leading)
                         volumeFader
-                    }
+                    }.padding(.top, 12)
+                    Spacer(minLength: 0)
+                    footerButtons?.frame(maxWidth: .infinity, alignment: .leading)
                 } else {
                     mainLabel.frame(maxWidth: .infinity, maxHeight: .infinity)
                         .overlay(alignment: .trailing) { peakReadout.padding(.trailing, 4) }
                     volumeFader
                 }
             }.padding(.top, workspaceButtons == nil ? 4 : 1)
-                .padding(.bottom, workspaceButtons == nil ? 4 : 11)
+                .padding(.bottom, workspaceButtons == nil ? 4 : 9)
         }.padding(.horizontal, workspaceButtons == nil ? 6 : 2)
             .frame(maxWidth: .infinity).frame(height: workspaceButtons == nil ? 70 : nil)
             .background {
@@ -4349,9 +4347,6 @@ struct FooterHorizontalMixer: View {
     @AppStorage("catlive.barMixer.signalFilters") private var signalFilters = 0
     @AppStorage(HozMixerComponent.globalKey) private var hiddenComponents = 0
     @AppStorage(HozMixerComponent.tracksKey) private var componentOverrides = Data()
-    #if os(macOS)
-    @State private var showingLayoutOptions = false
-    #endif
     static let minimumDockHeight: CGFloat = 303
     static func focusWidth(hasSelectedTrack: Bool) -> CGFloat {
         FooterMixerMetrics.masterWidth * (hasSelectedTrack ? 2 : 1) + 12
@@ -4433,33 +4428,15 @@ struct FooterHorizontalMixer: View {
         let buttonBackground = Color(hex: interfaceTheme == .dark ? 0x292929 : 0x393939)
         let toolbarBackground = interfaceTheme.panel.opacity(0.65)
         return HStack(spacing: 6) {
+            #if os(iOS)
+            componentsSelector(background: buttonBackground).padding(.trailing, 14)
+            #endif
             GeometryReader { geometry in
                 ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 0) {
-                    HStack(spacing: 2) {
-                        #if os(iOS)
-                        IpadHozMixerComponentsButton(mask: $hiddenComponents).frame(width: 104, height: 23)
-                        #else
-                        Button { showingLayoutOptions.toggle() } label: {
-                            HStack(spacing: 4) {
-                                Text(verbatim: "Components")
-                                Image(systemName: "chevron.down").font(.jarasSystem(size: 9, weight: .semibold))
-                            }.padding(.horizontal, 8).frame(height: 23).contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .popover(isPresented: $showingLayoutOptions, arrowEdge: .bottom) {
-                            VStack(alignment: .leading, spacing: 0) {
-                                ForEach(HozMixerComponent.allCases, id: \.self) { component in
-                                    layoutOption(LocalizedStringKey(component.title), selected: hiddenComponents & component.bit == 0) {
-                                        hiddenComponents ^= component.bit
-                                    }
-                                }
-                            }.font(.jarasSystem(size: 12)).padding(6).frame(width: 164)
-                        }
-                        .fixedSize()
-                        #endif
-                    }.padding(2).background(buttonBackground, in: RoundedRectangle(cornerRadius: 6))
-                        .padding(.trailing, 20)
+                    #if os(macOS)
+                    componentsSelector(background: buttonBackground).padding(.trailing, 20)
+                    #endif
                     HStack(spacing: 2) {
                         ForEach(HozMixerTrackScope.allCases, id: \.self) { value in
                             toolbarButton(selected: scope == value, action: { scope = value }) {
@@ -4492,15 +4469,9 @@ struct FooterHorizontalMixer: View {
             #endif
     }
 
-    private func layoutOption(_ name: LocalizedStringKey, selected: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 6) {
-                Image(systemName: "checkmark").opacity(selected ? 1 : 0).frame(width: 13)
-                    .foregroundStyle(JarasTheme.green)
-                Text(name)
-                Spacer()
-            }.padding(5).contentShape(Rectangle())
-        }.buttonStyle(.plain)
+    private func componentsSelector(background: Color) -> some View {
+        HozMixerComponentsPicker(hiddenComponents: $hiddenComponents)
+            .padding(2).background(background, in: RoundedRectangle(cornerRadius: 6))
     }
 
     private func toolbarButton<Label: View>(selected: Bool, action: @escaping () -> Void, @ViewBuilder label: () -> Label) -> some View {
@@ -4530,56 +4501,93 @@ struct FooterHorizontalMixer: View {
     }
 }
 
-#if os(iOS)
-private struct IpadHozMixerComponentsButton: UIViewRepresentable {
-    @Binding var mask: Int
+private struct HozMixerComponentsPicker: View {
+    @Binding var hiddenComponents: Int
+    #if os(macOS)
+    @State private var presented = false
+    #endif
 
-    final class Coordinator {
-        var mask: Binding<Int>
-        var actions: [HozMixerComponent: UIAction] = [:]
-
-        init(mask: Binding<Int>) { self.mask = mask }
-
-        func syncChecks() {
-            for (component, action) in actions {
-                action.state = mask.wrappedValue & component.bit == 0 ? .on : .off
-            }
-        }
+    var body: some View {
+        #if os(iOS)
+        label.frame(width: 104).accessibilityHidden(true)
+            .overlay { HozMixerNativeComponentsButton(hiddenComponents: $hiddenComponents) }
+        #else
+        Button { presented.toggle() } label: { label }
+            .buttonStyle(.plain)
+            .popover(isPresented: $presented, arrowEdge: .bottom) { componentOptions }
+            .fixedSize()
+        #endif
     }
 
-    func makeCoordinator() -> Coordinator { Coordinator(mask: $mask) }
+    private var label: some View {
+        HStack(spacing: 4) {
+            Text(verbatim: "Components")
+            Image(systemName: "chevron.down").font(.jarasSystem(size: 9, weight: .semibold))
+        }
+        .padding(.horizontal, 8).frame(height: 23).contentShape(Rectangle())
+    }
+
+    #if os(macOS)
+    private var componentOptions: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(HozMixerComponent.allCases, id: \.self) { component in
+                let visible = hiddenComponents & component.bit == 0
+                Button { hiddenComponents ^= component.bit } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "checkmark").opacity(visible ? 1 : 0).frame(width: 13)
+                            .foregroundStyle(JarasTheme.green)
+                            .accessibilityHidden(true)
+                        Text(LocalizedStringKey(component.title))
+                        Spacer()
+                    }.padding(5)
+                    .contentShape(Rectangle())
+                }.buttonStyle(.plain).accessibilityAddTraits(visible ? .isSelected : [])
+            }
+        }.font(.jarasSystem(size: 12)).padding(6).frame(width: 164)
+    }
+    #endif
+}
+
+#if os(iOS)
+private struct HozMixerNativeComponentsButton: UIViewRepresentable {
+    @Binding var hiddenComponents: Int
+
+    func makeCoordinator() -> Coordinator { Coordinator(mask: $hiddenComponents) }
 
     func makeUIView(context: Context) -> UIButton {
-        var appearance = UIButton.Configuration.plain()
-        appearance.attributedTitle = AttributedString("Components", attributes: AttributeContainer([
-            .font: UIFont.systemFont(ofSize: 11, weight: .semibold)
-        ]))
-        appearance.baseForegroundColor = .white
-        appearance.image = UIImage(systemName: "chevron.down", withConfiguration: UIImage.SymbolConfiguration(pointSize: 9, weight: .semibold))
-        appearance.imagePlacement = .trailing
-        appearance.imagePadding = 4
-        appearance.contentInsets = .zero
-        let button = UIButton(configuration: appearance)
+        let button = UIButton(type: .system)
         button.accessibilityLabel = "Components"
-        let coordinator = context.coordinator
-        let items = HozMixerComponent.allCases.map { component in
-            let action = UIAction(title: JarasLocalization.string(component.title), attributes: .keepsMenuPresented) { [weak coordinator] _ in
-                guard let coordinator else { return }
-                coordinator.mask.wrappedValue ^= component.bit
-                coordinator.syncChecks()
-            }
-            coordinator.actions[component] = action
-            return action
-        }
-        coordinator.syncChecks()
-        button.menu = UIMenu(children: items)
+        button.accessibilityIdentifier = "hoz-mixer-components"
         button.showsMenuAsPrimaryAction = true
+        button.preferredMenuElementOrder = .fixed
+        let coordinator = context.coordinator
+        button.menu = UIMenu(children: [UIDeferredMenuElement.uncached { [weak button, weak coordinator] completion in
+            guard let button, let coordinator else { completion([]); return }
+            completion(coordinator.actions(for: button))
+        }])
         return button
     }
 
     func updateUIView(_ button: UIButton, context: Context) {
-        context.coordinator.mask = $mask
-        context.coordinator.syncChecks()
+        context.coordinator.mask = $hiddenComponents
+    }
+
+    @MainActor final class Coordinator {
+        var mask: Binding<Int>
+        init(mask: Binding<Int>) { self.mask = mask }
+
+        func actions(for button: UIButton) -> [UIAction] {
+            HozMixerComponent.allCases.map { component in
+                UIAction(title: JarasLocalization.string(component.title), attributes: .keepsMenuPresented,
+                         state: mask.wrappedValue & component.bit == 0 ? .on : .off) { [weak self, weak button] _ in
+                    guard let self, let button else { return }
+                    self.mask.wrappedValue ^= component.bit
+                    button.contextMenuInteraction?.updateVisibleMenu { menu in
+                        menu.replacingChildren(self.actions(for: button))
+                    }
+                }
+            }
+        }
     }
 }
 #endif
@@ -4891,9 +4899,11 @@ private struct FooterMixerStripGeometry: NSViewRepresentable {
     var footerStripe: NSColor? = nil
     let slots: AnyView
     var contentKey: FooterMixerStripContentKey? = nil
+    let libraryDrop: NativeLibraryTrackDrop?
     let footer: (CGFloat) -> AnyView
     func makeNSView(context: Context) -> FooterMixerStripGeometryView { FooterMixerStripGeometryView() }
     func updateNSView(_ view: FooterMixerStripGeometryView, context: Context) {
+        view.libraryDrop = libraryDrop
         view.update(iconHeight: iconHeight, slots: slots, selected: selected, footerStripe: footerStripe,
                     contentKey: contentKey, footer: footer)
     }
@@ -4913,6 +4923,7 @@ private final class FooterMixerStripGeometryView: NSView {
     private var contentKey: FooterMixerStripContentKey?
     private let footerBand = CALayer()
     private let bottomSelection = CALayer()
+    var libraryDrop: NativeLibraryTrackDrop?
     func setViewportHeight(_ height: CGFloat) {
         guard viewportHeight != height else { return }
         viewportHeight = height; needsLayout = true
@@ -4921,6 +4932,7 @@ private final class FooterMixerStripGeometryView: NSView {
     override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric) }
     override init(frame: NSRect) {
         super.init(frame: frame)
+        registerForDraggedTypes([NativeLibraryTrackDrop.type])
         wantsLayer = true
         footerBand.name = "track-color-footer"
         footerBand.cornerRadius = 5
@@ -4937,6 +4949,13 @@ private final class FooterMixerStripGeometryView: NSView {
         }
     }
     required init?(coder: NSCoder) { fatalError() }
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation { draggingUpdated(sender) }
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        libraryDrop?.operation(for: sender, in: self) ?? []
+    }
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        libraryDrop?.perform(sender, in: self) ?? false
+    }
     private func registerWithChannelHost() {
         var ancestor = superview
         while let view = ancestor {
@@ -6151,6 +6170,7 @@ private struct FooterMixerStrip: View, Equatable {
                     session: show.projectSessionID, track: $0, number: number, active: active, focused: focused,
                     includesIcon: showsInstrumentIcons, stripe: usesStripe, locale: locale, colorScheme: colorScheme,
                     componentMask: componentMask, busSources: busSources, sendTargets: sendTargets) },
+                libraryDrop: hasStandardControls ? NativeLibraryTrackDrop(show: show, track: id) : nil,
                 footer: { AnyView(fixedFooter(controlsHeight: $0)
                     .environment(\.openFX, openFX).environment(\.editTrackDetails, editTrackDetails)
                     .environment(\.locale, locale).environment(\.colorScheme, colorScheme)) })
@@ -6206,6 +6226,7 @@ private struct FooterMixerStrip: View, Equatable {
             }
             #else
             .onTapGesture(perform: select)
+            .modifier(LibraryTrackEffectDrop(show: hasStandardControls ? show : nil, track: id, acceptsMaster: true))
             #endif
             .modifier(FooterTrackInsertion(show: show, track: id))
             .contextMenu {
@@ -6402,7 +6423,12 @@ struct FooterEffectTransfer: Codable {
     @MainActor func apply(to track: UUID?, before target: String?, show: ShowController) -> Bool {
         guard project == show.snapshot.project.id else { return false }
         if library { return LibraryEffectInsertion.apply(identity: effect, presetID: presetID, to: track, before: target, show: show) != nil }
-        return track != nil && show.copyFX(from: source, effect: effect, to: track, before: target) != nil
+        if source == track {
+            guard show.canControl(), show.fxSettings(track).inserted.contains(effect) else { return false }
+            show.reorderFX(track, effect: effect, before: target)
+            return true
+        }
+        return show.copyFX(from: source, effect: effect, to: track, before: target) != nil
     }
 }
 #if os(macOS)
@@ -6443,9 +6469,10 @@ struct FooterEffectTransfer: Codable {
 struct LibraryTrackEffectDrop: ViewModifier {
     let show: ShowController?
     let track: UUID?
+    var acceptsMaster = false
     @State private var targeted = false
     @ViewBuilder func body(content: Content) -> some View {
-        if let show, track != nil {
+        if let show, track != nil || acceptsMaster {
             content
                 .contentShape(Rectangle())
                 .overlay { if targeted { Rectangle().fill(JarasTheme.green.opacity(0.18)).allowsHitTesting(false) } }
@@ -6661,7 +6688,7 @@ private struct FooterEffectSlot: View {
                 remove: { if let effect { show.removeFX(track, effect: effect) } },
                 open: { openFX(track, effect ?? "Library") },
                 transfer: effect.map { FooterEffectTransfer(project: show.snapshot.project.id, source: track, effect: $0) },
-                title: title, project: show.snapshot.project.id, dragEnabled: track != nil, choose: insertPlugin, drop: { transfer in
+                title: title, project: show.snapshot.project.id, dragEnabled: true, choose: insertPlugin, drop: { transfer in
                     transfer.apply(to: track, before: effect, show: show)
                 }))
             #else
@@ -6679,7 +6706,7 @@ private struct FooterEffectDrop: DropDelegate {
     @Binding var targeted: Bool
     var libraryOnly = false
     private var acceptedTypes: [UTType] {
-        libraryOnly || track == nil ? [FooterEffectTransfer.libraryType] : [FooterEffectTransfer.libraryType, FooterEffectTransfer.type]
+        libraryOnly ? [FooterEffectTransfer.libraryType] : [FooterEffectTransfer.libraryType, FooterEffectTransfer.type]
     }
     func validateDrop(info: DropInfo) -> Bool { !TrackReorderState.shared.active && info.hasItemsConforming(to: acceptedTypes) }
     func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: .copy) }
@@ -6820,7 +6847,7 @@ private struct FooterMixerControl: View {
                     .position(x: geometry.size.width / 2, y: thumbY)
             }.frame(maxWidth: .infinity, maxHeight: .infinity).contentShape(Rectangle())
                 .overlay(RemoteSliderTouchInput(locksScrolling: true, trackID: track, axis: .vertical,
-                    selectionScope: show.current?.id, thumbPosition: thumbY, selectionChanged: { faderSelected = $0 },
+                    selectionScope: show.current?.id, nativeFader: true, thumbPosition: thumbY, selectionChanged: { faderSelected = $0 },
                     changed: { y in
                         let next = positionAt(y)
                         pointerPosition = next

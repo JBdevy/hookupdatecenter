@@ -90,7 +90,8 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     String openDevice();
     void configureDeviceChannels(const BigInteger &inputs, const BigInteger &outputs);
     void configureMetronome(const var &, std::function<void(String)> completed = {});
-    void setEffects(const ID &, const var &);
+    void setEffects(const ID &, const var &, const jaras::Song *song = nullptr);
+    void refreshARATimelines(const jaras::Song &);
     void refreshMIDIArpeggiators(const jaras::Song &, const std::set<ID> &);
     std::shared_ptr<native::vst3::Processor> externalEffect(const ID &, const String &) const;
     void captureExternalEffects(const ID &, var &) const;
@@ -254,9 +255,9 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
             return {found->second->levels[0].load(), found->second->levels[1].load()};
         return {};
     }
-    float meterRMS(const ID &id = {}) const {
-        if (id.empty()) return masterRMS.load(std::memory_order_relaxed);
-        if (auto state = trackMeterState(id)) return state->rms.load(std::memory_order_relaxed);
+    float meterVUMean(const ID &id = {}) const {
+        if (id.empty()) return masterVUMean.load(std::memory_order_relaxed);
+        if (auto state = trackMeterState(id)) return state->vuMean.load(std::memory_order_relaxed);
         return 0.f;
     }
     bool midiRecentlyActive() const {
@@ -497,6 +498,7 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
         NativeFX fx[2];
         AutomationProgram automation;
         var settings;
+        std::shared_ptr<const native::vst3::ARATimeline> araTimeline;
         std::unique_ptr<ClickProgram> click;
         bool timecode = false, vinhetasBus = false, subplayExclusive = false;
         MIDIPlayback::Sequence externalSequence;
@@ -625,7 +627,7 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     meterDisplay::PeakHold masterPeakHold;
     ID peakProject;
     std::array<std::atomic<float>, 2> masterLevels{};
-    std::atomic<float> masterRMS{0};
+    std::atomic<float> masterVUMean{0};
     std::atomic<uint32> lastMIDIActivity{uint32(-1000)};
     std::atomic<float> masterFXInput{0}, masterFXOutput{0}, masterGainReduction{-1};
     // The control side owns and recycles command blocks. Overflow never makes

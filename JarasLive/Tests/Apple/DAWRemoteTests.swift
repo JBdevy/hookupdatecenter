@@ -30,6 +30,31 @@ if case .mainAudio(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.mainAud
     require(decoded == stereoAudio, "Main audio preserves the sample rate and signed stereo PCM")
 } else { fatalError("Invalid Main audio packet kind") }
 require((try? DAWRemoteWire.decode(DAWRemoteWire.mainAudio(stereoAudio.dropLast()))) == nil, "Reject partial stereo frames")
+// The tablet publishes the loaded waveforms together, even when a page is delayed.
+do {
+    let revision = UUID(), first = UUID(), second = UUID()
+    let peakData = Data(repeating: 190, count: DAWRemoteWaveformPage.bins)
+    var transfer = DAWRemoteWaveformTransfer()
+    transfer.reset(revision)
+    let request = transfer.request!
+    if case .waveformRequest(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.waveformRequest(request)) {
+        require(decoded.revision == revision && decoded.offset == 0, "Waveform request identifies the first page")
+    } else { fatalError("Invalid waveform request kind") }
+    let leading = DAWRemoteWaveformPage(revision: revision, offset: 0, finished: false, entries: [.init(id: first, peaks: peakData)])
+    let trailing = DAWRemoteWaveformPage(revision: revision, offset: 32, finished: true, entries: [.init(id: second, peaks: peakData)])
+    require(transfer.receive(trailing) == nil && transfer.request?.offset == 0, "An out-of-order page cannot advance the transfer")
+    require(transfer.receive(leading) == nil && transfer.request?.offset == 32, "A partial waveform page cannot replace placeholders")
+    if case .waveformPage(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.waveformPage(trailing)) {
+        require(transfer.receive(decoded) == [first: peakData, second: peakData], "The last page publishes both clips")
+    } else { fatalError("Invalid waveform page kind") }
+    transfer.reset(UUID())
+    require(transfer.receive(leading) == nil && transfer.request?.offset == 0, "Old-project pages cannot update the new grid")
+    var invalid = leading
+    invalid.entries[0].peaks = Data([4])
+    require((try? DAWRemoteWire.decode(DAWRemoteWire.waveformPage(invalid))) == nil, "Malformed peak blocks are rejected")
+    require(DAWRemoteWaveformPage.amplitude(peakData, fraction: 0.8, span: 0.1) == 190.0 / 255, "The preview reflects the transmitted peak level")
+    print("REMOTE_TABLET_WAVEFORMS_PAGE_ORDER_ATOMIC_SWAP_AND_PROJECT_RESET_OK")
+}
 var fixture = DAWRemoteState(project: project, projectName: "Remote native test", song: song, songName: "Test",
     songs: [.init(id: song, name: "Test")],
     tracks: [.init(id: trackID, name: "Track", color: 0x828282, volume: 1, pan: 0, mute: false, solo: false,

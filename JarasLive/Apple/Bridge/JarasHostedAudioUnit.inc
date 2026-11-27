@@ -93,15 +93,15 @@ public:
         const auto kind = midi.status & 0xf0;
         schedule(AUEventSampleTimeImmediate + offset, 0, kind == 0xc0 || kind == 0xd0 ? 2 : 3, bytes);
     }
-    void process(AudioBufferList *buffer, unsigned count, const jaras::PluginTransport &position) {
+    void process(AudioBufferList *buffer, unsigned count, const jaras::PluginTransport &position, bool replaceInput = false) {
         if (count > capacity || !count) return;
         transport = position;
         for (unsigned c = 0; c < inputChannels; ++c) {
-            const auto data = c < buffer->mNumberBuffers ? static_cast<const float *>(buffer->mBuffers[c].mData) : nullptr;
+            const auto data = !replaceInput && c < buffer->mNumberBuffers ? static_cast<const float *>(buffer->mBuffers[c].mData) : nullptr;
             if (data) std::copy_n(data, count, input[c].data());
             else std::fill_n(input[c].data(), count, 0.f);
         }
-        if (inputChannels == 1 && buffer->mNumberBuffers > 1) {
+        if (!replaceInput && inputChannels == 1 && buffer->mNumberBuffers > 1) {
             const auto right = static_cast<const float *>(buffer->mBuffers[1].mData);
             if (right) for (unsigned f = 0; f < count; ++f) input[0][f] = (input[0][f] + right[f]) * .5f;
         }

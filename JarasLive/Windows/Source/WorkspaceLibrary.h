@@ -11,12 +11,19 @@
 #include "InlineMixerTrackName.h"
 #include "LibraryNoteEditor.h"
 #include "LibraryMIDIChords.h"
+#include "MixerPanel.h"
 #include "TimelineRegionLabels.h"
 #include "VinhetasPanel.h"
 #include "VST3Catalog.h"
 #include <iterator>
 
 namespace catlive {
+inline void styleLibraryScrollbar(Viewport &viewport) {
+    static MixerScrollLook look;
+    viewport.setScrollBarThickness(10);
+    viewport.getVerticalScrollBar().setLookAndFeel(&look);
+}
+
 class WorkspaceFilesPane final : public Component {
     struct Entry { File file; String name; bool folder, volume; };
     using Path = std::vector<File>;
@@ -37,18 +44,17 @@ class WorkspaceFilesPane final : public Component {
                 g.setColour(highlighted ? theme::green.withAlpha(.26f) : theme::display);
                 g.fillRoundedRectangle(1.f, 1.f, float(width - 2), float(height - 2), 4.f);
             }
+            const float middle = height * .5f;
             g.setColour(entry->folder ? theme::green : theme::secondary);
-            if (entry->folder && !entry->volume) {
-                g.fillRoundedRectangle(7, 8, 9, 5, 1);
-                g.fillRoundedRectangle(7, 11, 15, 9, 1);
-            } else {
-                g.drawRoundedRectangle(8.f, entry->volume ? 11.f : 7.f, entry->volume ? 14.f : 11.f,
-                                       entry->volume ? 9.f : 13.f, 1.5f, 1.f);
-            }
+            drawDesktopToolbarSymbol(g, entry->volume ? "externaldrive" : entry->folder ? "library.file-folder" : "doc",
+                                     {8.f, middle - 7.f, 14.f, 14.f});
             g.setColour(Colours::white);
             g.setFont(theme::font(12));
             g.drawText(entry->name, 28, 0, std::max(0, width - 43), height, Justification::centredLeft, true);
-            if (entry->folder) g.drawText(String::fromUTF8("›"), width - 14, 0, 10, height, Justification::centred);
+            if (entry->folder) {
+                g.setColour(theme::secondary);
+                drawDesktopToolbarSymbol(g, "chevron.right", {float(width - 15), middle - 5.f, 10.f, 10.f});
+            }
         }
         void listBoxItemClicked(int row, const MouseEvent &event) override {
             if (owner.columns && !event.mods.isPopupMenu()) open(row);
@@ -87,17 +93,17 @@ class WorkspaceFilesPane final : public Component {
 
 public:
     WorkspaceFilesPane() {
-        configure(back, "Back", String::fromUTF8("‹"), [this] { goBack(); });
-        configure(forward, "Forward", String::fromUTF8("›"), [this] { goForward(); });
-        configure(locations, "Locations", String::fromUTF8("▣"), [this] { navigate({}); });
-        configure(home, "Home folder", String::fromUTF8("⌂"),
+        configure(back, "Back", "chevron.left", [this] { goBack(); });
+        configure(forward, "Forward", "chevron.right", [this] { goForward(); });
+        configure(locations, "Locations", "externaldrive", [this] { navigate({}); });
+        configure(home, "Home folder", "house",
                   [this] { navigate({File::getSpecialLocation(File::userHomeDirectory)}); });
-        configure(documents, "Documents folder", String::fromUTF8("▤"),
+        configure(documents, "Documents folder", "doc",
                   [this] { navigate({File::getSpecialLocation(File::userDocumentsDirectory)}); });
-        configure(listView, "List view", String::fromUTF8("☰"), [this] { setColumns(false); });
-        configure(columnView, "Column view", String::fromUTF8("▥"), [this] { setColumns(true); });
-        configure(refreshButton, "Refresh folders", String::fromUTF8("↻"), [this] { refresh(); });
-        configure(choose, "Choose folder", "+", [this] { chooseFolder(); });
+        configure(listView, "List view", "setlist", [this] { setColumns(false); });
+        configure(columnView, "Column view", "rectangle.split.2x1", [this] { setColumns(true); });
+        configure(refreshButton, "Refresh folders", "refresh", [this] { refresh(); });
+        configure(choose, "Choose folder", "folder.badge.plus", [this] { chooseFolder(); });
         for (auto *button : {&listView, &columnView}) {
             button->setColour(TextButton::buttonOnColourId, theme::green);
             button->setColour(TextButton::textColourOnId, Colours::black);
@@ -109,6 +115,10 @@ public:
         addAndMakeVisible(search);
         search.setTitle(localization::translate("Search files"));
         search.setTextToShowWhenEmpty(search.getTitle(), theme::secondary);
+        search.setIndents(22, 4);
+        search.setBorder(BorderSize<int>(1, 2, 1, 22));
+        configure(clearSearch, "Clear search", "xmark.circle.fill", [this] { search.clear(); });
+        clearSearch.setVisible(false);
         search.onTextChange = [this] { applySearch(); };
         addAndMakeVisible(list);
         addAndMakeVisible(parentList);
@@ -118,6 +128,7 @@ public:
         for (auto *box : {&list, &parentList}) {
             box->setRowHeight(25);
             box->setColour(ListBox::backgroundColourId, Colours::transparentBlack);
+            styleLibraryScrollbar(*box->getViewport());
         }
         setColumns(true);
         updatePath();
@@ -179,6 +190,7 @@ public:
         refreshButton.setBounds(find.removeFromRight(25));
         find.removeFromRight(3);
         search.setBounds(find);
+        clearSearch.setBounds(find.removeFromRight(22));
         area.reduce(5, 1);
         const bool showParent = columns && !path.empty();
         parentList.setVisible(showParent);
@@ -193,10 +205,18 @@ public:
     void paint(Graphics &g) override {
         g.setColour(theme::display);
         g.fillRoundedRectangle(breadcrumb.getBounds().toFloat(), 5.f);
+        g.fillRoundedRectangle(back.getBounds().getUnion(forward.getBounds()).toFloat(), 5.f);
+        g.fillRoundedRectangle(listView.getBounds().getUnion(columnView.getBounds()).toFloat(), 5.f);
         if (parentList.isVisible()) {
             g.setColour(theme::line);
             g.drawVerticalLine(parentList.getRight() + 1, float(parentList.getY()), float(parentList.getBottom()));
         }
+    }
+
+    void paintOverChildren(Graphics &g) override {
+        const auto area = search.getBounds().toFloat().removeFromLeft(22.f);
+        g.setColour(theme::secondary);
+        drawDesktopToolbarSymbol(g, "search", area.withSizeKeepingCentre(13.f, 13.f));
     }
 
 private:
@@ -205,7 +225,7 @@ private:
     std::vector<Path> past, future;
     uint64 revision = 0;
     bool columns = true, loading = false, unavailable = false;
-    TextButton back, forward, locations, home, documents, listView, columnView, refreshButton, choose;
+    TextButton back, forward, locations, home, documents, listView, columnView, refreshButton, choose, clearSearch;
     Viewport breadcrumb;
     Component pathContent;
     OwnedArray<TextButton> crumbs;
@@ -215,11 +235,14 @@ private:
     ListBox list{"Files", &currentRows}, parentList{"Folders", &parentRows};
     std::unique_ptr<FileChooser> picker;
 
-    void configure(TextButton &button, const char *title, const String &symbol, std::function<void()> action) {
+    void configure(TextButton &button, const char *title, const char *symbol, std::function<void()> action) {
         addAndMakeVisible(button);
         button.setTitle(localization::translate(title));
         button.setTooltip(button.getTitle());
-        button.setButtonText(symbol);
+        button.getProperties().set("icon", symbol);
+        button.getProperties().set("iconSize", 14.f);
+        button.getProperties().set("transportDrawing", true);
+        button.getProperties().set("plain", true);
         button.onClick = std::move(action);
     }
     void setColumns(bool enabled) {
@@ -278,7 +301,10 @@ private:
         // Keep the pressed breadcrumb alive until its callback has returned.
         while (crumbs.size() < count) {
             auto *button = crumbs.add(new TextButton());
-            button->getProperties().set("flat", true);
+            button->getProperties().set("plain", true);
+            button->getProperties().set("centredIconLabel", true);
+            button->getProperties().set("transportDrawing", true);
+            button->getProperties().set("fontSize", 11.f);
             pathContent.addAndMakeVisible(*button);
             const int index = crumbs.size() - 1;
             button->onClick = [this, index] {
@@ -292,10 +318,10 @@ private:
             button.setVisible(index < count);
             if (!button.isVisible()) continue;
             const auto title = index == 0 ? localization::translate("Locations") : displayName(path[size_t(index - 1)]);
-            const auto label = index == 0 ? title : String::fromUTF8("›  ") + title;
-            button.setButtonText(label);
+            button.getProperties().set("leadingIcon", index == 0 ? "externaldrive" : "chevron.right");
+            button.setButtonText(title);
             button.setTooltip(index == 0 ? title : path[size_t(index - 1)].getFullPathName());
-            const auto width = int(std::ceil(GlyphArrangement::getStringWidth(font, label))) + 14;
+            const auto width = int(std::ceil(GlyphArrangement::getStringWidth(font, title))) + 24;
             button.setBounds(x, 0, width, 24);
             x += width;
         }
@@ -305,6 +331,7 @@ private:
     }
     void applySearch() {
         const auto term = search.getText().trim();
+        clearSearch.setVisible(search.getText().isNotEmpty());
         filtered.clear();
         std::copy_if(entries.begin(), entries.end(), std::back_inserter(filtered), [&](const Entry &entry) {
             return term.isEmpty() || entry.name.containsIgnoreCase(term);
@@ -363,6 +390,8 @@ class WorkspaceLibrary final : public Component, public FileDragAndDropTarget, p
     };
   public:
     enum class Presentation { library, notes, samplers };
+    static constexpr int minimumDetailsWidth = 140;
+    static constexpr int minimumPanelWidth = 90 + 1 + minimumDetailsWidth;
     std::function<void()> openPluginSettings;
     explicit WorkspaceLibrary(Session &owner, WorkspaceLibrary *source = nullptr)
         : session(owner), store(source ? source->store : std::make_shared<SharedSettings>()), settings(store->value) {
@@ -379,6 +408,7 @@ class WorkspaceLibrary final : public Component, public FileDragAndDropTarget, p
         picker.setTitle("Library categories");
         picker.setTooltip("Library categories");
         picker.getProperties().set("icon", "setlist");
+        picker.getProperties().set("transportDrawing", true);
         picker.getProperties().set("flat", true);
         picker.onClick = [this] { openPicker(); };
         addChildComponent(pickerTitle);
@@ -451,9 +481,11 @@ class WorkspaceLibrary final : public Component, public FileDragAndDropTarget, p
         addChildComponent(previewVolume);
         previewVolume.setComponentID("library-sampler-preview-volume");
         previewVolume.setTitle(localization::translate("Sample preview volume"));
-        previewVolume.setSliderStyle(Slider::LinearHorizontal);
+        previewVolume.setSliderStyle(Slider::RotaryVerticalDrag);
         previewVolume.setTextBoxStyle(Slider::NoTextBox, true, 0, 0);
         previewVolume.setRange(-60, 0, 1);
+        previewVolume.setDoubleClickReturnValue(true, 0);
+        previewVolume.setMouseDragSensitivity(120);
         previewVolume.textFromValueFunction = [](double db) {
             return db <= -60 ? String::fromUTF8("−∞ dB") : String(db, 0) + " dB";
         };
@@ -462,17 +494,21 @@ class WorkspaceLibrary final : public Component, public FileDragAndDropTarget, p
             put(settings, "samplerPreviewDB", previewVolume.getValue());
             if (!previewingInstrument) session.audio.setLibrarySampleGain(previewGain());
             if (!previewVolume.isMouseButtonDown()) persist();
+            repaint(previewDBBounds);
         };
         contents.setColour(ListBox::backgroundColourId, Colours::transparentBlack);
         contents.setOpaque(false);
         contents.setRowHeight(28);
         contents.setRowSelectedOnMouseDown(false);
+        styleLibraryScrollbar(*contents.getViewport());
+        styleLibraryScrollbar(*folders.getViewport());
         previewVolume.onDragEnd = [this] { persist(); };
         divider.setThinRail(true);
         divider.setScrollRailVisible(false);
         divider.started = [this] { resizeStart = folders.getWidth(); };
         divider.moved = [this](int dx) {
-            const auto next = jlimit(90, std::max(90, getWidth() - 99), resizeStart + dx);
+            const int maximum = std::max(0, getWidth() - 1 - minimumDetailsWidth);
+            const auto next = jlimit(std::min(90, maximum), maximum, resizeStart + dx);
             if (folderWidth == next) return;
             folderWidth = next;
             resized();
@@ -578,8 +614,8 @@ class WorkspaceLibrary final : public Component, public FileDragAndDropTarget, p
     void resized() override {
         auto area = getLocalBounds();
         if (presentation == Presentation::library) {
-            const int minimum = std::min(getWidth() / 2, 90);
-            const int width = jlimit(minimum, std::max(minimum, getWidth() - 99), folderWidth);
+            const int maximum = std::max(0, getWidth() - 1 - minimumDetailsWidth);
+            const int width = jlimit(std::min(90, maximum), maximum, folderWidth);
             auto folderArea = area.removeFromLeft(width);
             area.removeFromLeft(1);
             auto toolbar = folderArea.removeFromTop(32).reduced(6, 4);
@@ -611,7 +647,13 @@ class WorkspaceLibrary final : public Component, public FileDragAndDropTarget, p
             }
         }
         if (search.isVisible()) search.setBounds(area.removeFromTop(32).reduced(6, 4));
-        if (previewVolume.isVisible()) previewVolume.setBounds(area.removeFromTop(32).reduced(6, 0));
+        if (previewVolume.isVisible()) {
+            auto preview = area.removeFromTop(32).reduced(6, 0);
+            previewSpeakerBounds = preview.removeFromLeft(14);
+            previewDBBounds = preview.removeFromRight(36);
+            preview.removeFromRight(3);
+            previewVolume.setBounds(preview.removeFromRight(24).reduced(0, 2));
+        }
         contents.setBounds(area);
         if (noteEditor) noteEditor->setBounds(area.reduced(4));
         layoutTimelineName();
@@ -623,6 +665,15 @@ class WorkspaceLibrary final : public Component, public FileDragAndDropTarget, p
         g.fillRect(getLocalBounds().withTrimmedLeft(presentation == Presentation::library ? folders.getWidth() : 0));
         g.setColour(theme::line);
         g.drawHorizontalLine(31, 0, float(folders.getWidth()));
+        if (previewVolume.isVisible()) {
+            g.setColour(theme::secondary);
+            if (!drawControlIcon(g, "speaker.wave.2", false, previewSpeakerBounds.toFloat(), 1.f))
+                drawDesktopToolbarSymbol(g, "speaker.wave.2", previewSpeakerBounds.toFloat());
+            g.setColour(Colours::white);
+            g.setFont(theme::font(10));
+            g.drawText(previewVolume.getTextFromValue(previewVolume.getValue()), previewDBBounds,
+                       Justification::centredLeft, false);
+        }
     }
 
   private:
@@ -656,7 +707,10 @@ class WorkspaceLibrary final : public Component, public FileDragAndDropTarget, p
                 setColour(colour, Colours::transparentBlack);
             getViewport()->setScrollBarsShown(true, false);
         }
-        ~FolderList() override { setRootItem(nullptr); }
+        ~FolderList() override {
+            if (root) root->clearSubItems();
+            setRootItem(nullptr);
+        }
 
         void replaceRows(std::vector<Row> rows) {
             const auto position = getViewport()->getViewPosition();
@@ -668,6 +722,9 @@ class WorkspaceLibrary final : public Component, public FileDragAndDropTarget, p
                     item->setSelected(true, false, dontSendNotification);
                 next->addSubItem(item.release());
             }
+            // Delete the rows while still attached so JUCE removes their view
+            // components, including the row that still has mouse capture.
+            if (root) root->clearSubItems();
             setRootItem(next.get());
             root = std::move(next);
             getViewport()->setViewPosition(position);
@@ -775,11 +832,32 @@ class WorkspaceLibrary final : public Component, public FileDragAndDropTarget, p
     bool editingNote = false;
     class SearchField final : public TextEditor {
       public:
+        ~SearchField() override { Desktop::getInstance().removeGlobalMouseListener(&outsideClick); }
         std::function<bool(const KeyPress &)> onKey;
         bool keyPressed(const KeyPress &key) override {
             if (onKey && onKey(key)) return true;
             return TextEditor::keyPressed(key);
         }
+
+        void focusGained(FocusChangeType cause) override {
+            TextEditor::focusGained(cause);
+            Desktop::getInstance().addGlobalMouseListener(&outsideClick);
+        }
+        void focusLost(FocusChangeType cause) override {
+            Desktop::getInstance().removeGlobalMouseListener(&outsideClick);
+            TextEditor::focusLost(cause);
+        }
+
+      private:
+        struct OutsideClick final : MouseListener {
+            explicit OutsideClick(SearchField &field) : search(field) {}
+            void mouseDown(const MouseEvent &event) override {
+                auto *target = event.eventComponent;
+                if (target != &search && !search.isParentOf(target) && search.hasKeyboardFocus(true))
+                    search.giveAwayKeyboardFocus();
+            }
+            SearchField &search;
+        } outsideClick{*this};
     };
     SearchField search;
     InlineMixerTrackName timelineName;
@@ -789,6 +867,7 @@ class WorkspaceLibrary final : public Component, public FileDragAndDropTarget, p
     uint64 timelineRevision = 0;
     std::vector<Row> categoryEntries;
     Slider previewVolume;
+    juce::Rectangle<int> previewSpeakerBounds, previewDBBounds;
     DragDivider divider;
     int folderWidth = 146, resizeStart = 0;
     std::set<String> expanded;
@@ -1328,19 +1407,34 @@ class WorkspaceLibrary final : public Component, public FileDragAndDropTarget, p
             start = 39;
         } else if (row.kind == "sample" || row.kind == "native" || row.kind == "external") {
             const float y = height * .5f;
-            g.setColour(favorited(row) ? theme::yellow : theme::secondary);
-            Path star;
-            star.addStar({float(width - starOffset + 8), y}, 5, 2.5f, 5.4f);
-            if (favorited(row)) g.fillPath(star);
-            else g.strokePath(star, PathStrokeType(1.f));
+            const bool favorite = favorited(row);
+            g.setColour(favorite ? theme::yellow : theme::secondary);
+            drawDesktopToolbarSymbol(g, favorite ? "star.fill" : "star",
+                                     {float(width - starOffset + 4), y - 5.5f, 11.f, 11.f});
             trailing = starOffset;
+            if (row.kind != "sample") {
+                const bool native = row.kind == "native";
+                const bool ara = !native && (flag(row.payload,"supportsARA") || str(row.payload,"name").containsIgnoreCase("Melodyne"));
+                const int badgeWidth = native ? 43 : 38;
+                constexpr int badgeGap = 5;
+                const auto badge = juce::Rectangle<int>{width - starOffset - badgeWidth - badgeGap,
+                    (height - 16) / 2, badgeWidth, 16};
+                g.setColour(ara ? theme::green.withAlpha(.19f) : Colours::white.withAlpha(.15f));
+                g.fillRoundedRectangle(badge.toFloat(), 3.f);
+                g.setColour(ara ? theme::green : Colours::white);
+                g.setFont(theme::semiboldFont(10));
+                g.drawText(native ? "Native" : ara ? "ARA2" : "VST3", badge, Justification::centred, false);
+                trailing += badgeWidth + badgeGap * 2;
+            }
             if (row.kind == "sample") {
-                const float x = float(width - playOffset + 9);
                 const bool playing = previewFile == row.file;
                 g.setColour(playing ? theme::green : theme::secondary);
-                if (playing) g.fillRect(x - 4, y - 4, 8.f, 8.f);
-                else { Path play; play.addTriangle(x - 3, y - 4, x + 4, y, x - 3, y + 4); g.fillPath(play); }
-                trailing = playOffset;
+                drawDesktopToolbarSymbol(g, playing ? "stopall" : "play",
+                                         {float(width - playOffset + 3), y - 5.5f, 11.f, 11.f});
+                g.setColour(theme::secondary);
+                drawDesktopToolbarSymbol(g, "waveform", {10.f, y - 6.f, 12.f, 12.f});
+                start = 27;
+                trailing = playOffset + 2;
             }
         } else if (row.kind == "instrument") {
             const auto file = instrumentAssets::resolve(row.key, session.mediaDirectory);

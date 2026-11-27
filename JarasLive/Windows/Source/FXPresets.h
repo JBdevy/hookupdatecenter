@@ -20,6 +20,7 @@ inline const StringArray &fields(const String &kind) {
         {"CatLive Trigger", {"triggerEnabled", "trigger"}},
         {"Cat Gate", {"gateEnabled", "gate"}},
         {"EQ", {"eqEnabled", "bands", "eqChannels"}},
+        {"EQ - 31 Band", {"graphicEQEnabled", "graphicEQ"}},
         {"Compressor", {"compressorEnabled", "threshold", "ratio", "attack", "release", "makeup", "compressorChannels"}},
         {"Limiter", {"limiterEnabled", "limiter"}}, {"Pitch", {"pitchEnabled", "pitchSemitones", "pitchFormant"}},
         {"Delay", {"delayEnabled", "delayTime", "feedback", "delayMix", "delayChannels"}},
@@ -28,14 +29,19 @@ inline const StringArray &fields(const String &kind) {
         {"Drummer Pad 16", {"drummer16Enabled", "drummer16"}}, {"Drummer Pad 48", {"drummer48Enabled", "drummer48"}},
         {"CatSynth", {"catSynthEnabled", "catSynth"}},
         {"Arpeggiator", {"arpeggiatorEnabled", "arpeggiator"}}, {"Amp", {"ampEnabled", "amp"}}, {"Soft Clipper", {"softClipperEnabled", "softClipper"}}, {"Gate Divisor", {"divisionGateEnabled", "divisionGate"}},
-        {"Instruments", {"instrumentID", "instrumentParameters", "instrumentBypassed"}}};
+        {"Instruments", {"instrumentID", "instrumentParameters", "instrumentBypassed"}},
+        {"External", {"componentState", "controllerState"}}};
     static const StringArray empty;
     const auto found = values.find(kind);
     return found == values.end() ? empty : found->second;
 }
 inline bool parameter(const String &key) { return !key.endsWith("Enabled") && key != "instrumentBypassed"; }
 inline String identity(const String &kind, const var &settings) {
+    if (kind == "External") return "vst3:" + str(settings, "classID").toUpperCase();
     return "native:" + kind + (kind == "Instruments" ? ":" + str(settings, "instrumentID") : String());
+}
+inline bool hasExternalState(const var &value) {
+    return str(value, "componentState").isNotEmpty() || str(value, "controllerState").isNotEmpty();
 }
 inline var parameters(const String &kind, const var &settings) {
     auto value = object();
@@ -45,7 +51,18 @@ inline var parameters(const String &kind, const var &settings) {
     return value;
 }
 inline void apply(const String &kind, var &settings, const var &preset) {
-    if (str(preset, "plugin") != identity(kind, settings) || !get(preset, "native").isObject())
+    if (str(preset, "plugin") != identity(kind, settings))
+        throw std::runtime_error("This preset belongs to another plugin.");
+    if (kind == "External") {
+        if (!hasExternalState(preset)) throw std::runtime_error("Empty plugin preset.");
+        for (const auto &key : fields(kind)) {
+            const Identifier field(key);
+            erase(settings, field);
+            if (!get(preset, field).isVoid()) put(settings, field, get(preset, field));
+        }
+        return;
+    }
+    if (!get(preset, "native").isObject())
         throw std::runtime_error("This preset belongs to another plugin.");
     const auto samplePath = str(get(settings, "trigger"), "samplePath");
     auto value = get(preset, "native");
@@ -62,6 +79,10 @@ inline void apply(const String &kind, var &settings, const var &preset) {
 }
 inline bool matches(const String &kind, const var &settings, const var &preset) {
     if (str(preset, "plugin") != identity(kind, settings)) return false;
+    if (kind == "External") {
+        return hasExternalState(preset) && str(settings, "componentState") == str(preset, "componentState") &&
+            str(settings, "controllerState") == str(preset, "controllerState");
+    }
     auto a = parameters(kind, settings), b = parameters(kind, get(preset, "native"));
     for (auto *value : {&a, &b}) for (auto band : list(get(*value, "bands"))) erase(band, "id");
     return JSON::toString(a, true) == JSON::toString(b, true);
@@ -71,7 +92,14 @@ inline var capture(const String &kind, const var &settings, String name) {
     if (name.isEmpty() || name.length() > 80 || name.equalsIgnoreCase("Default"))
         throw std::runtime_error("Choose a preset name other than Default (1-80 characters).");
     auto preset = object(); put(preset, "id", text(uuid())); put(preset, "name", name);
-    put(preset, "plugin", identity(kind, settings)); put(preset, "native", parameters(kind, settings));
+    put(preset, "plugin", identity(kind, settings));
+    if (kind == "External") {
+        if (!hasExternalState(settings)) throw std::runtime_error("Could not read the plugin state.");
+        for (const auto &key : fields(kind)) {
+            const Identifier field(key);
+            if (str(settings, field).isNotEmpty()) put(preset, field, get(settings, field));
+        }
+    } else put(preset, "native", parameters(kind, settings));
     return preset;
 }
 class Store {

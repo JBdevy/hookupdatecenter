@@ -5,10 +5,13 @@ import UniformTypeIdentifiers
 /// File drags update this small overlay without invalidating timeline tiles or track layout.
 @MainActor final class GridInsertionPreview: ObservableObject {
     @Published private(set) var time: Double?
-    struct ExternalTarget: Equatable {
+    struct ExternalRow: Equatable {
         let y: CGFloat
         let height: CGFloat
         let color: UInt32
+    }
+    struct ExternalTarget: Equatable {
+        let rows: [ExternalRow]
         let newTracksY: CGFloat
         let newTrackHeight: CGFloat
     }
@@ -102,13 +105,14 @@ struct GridExternalFilePreviewOverlay: View {
             Canvas { context, size in
                 context.clip(to: Path(CGRect(x: 0, y: rulerHeight, width: size.width, height: max(0, size.height - rulerHeight))))
                 for (index, file) in preview.externalFiles.enumerated() {
-                    let y = index == 0 ? target.y : target.newTracksY + CGFloat(index - 1) * target.newTrackHeight
-                    let height = index == 0 ? target.height : target.newTrackHeight
-                    let rect = CGRect(x: time * scale - viewport.minX, y: y + 3 - viewport.minY,
-                                      width: max(1, file.duration.map { $0 * scale } ?? 100), height: max(12, height - 6))
+                    let row = index < target.rows.count ? target.rows[index] : GridInsertionPreview.ExternalRow(
+                        y: target.newTracksY + CGFloat(index - target.rows.count) * target.newTrackHeight,
+                        height: target.newTrackHeight, color: Track.defaultStandardColor)
+                    let rect = CGRect(x: time * scale - viewport.minX, y: row.y + 3 - viewport.minY,
+                                      width: max(1, file.duration.map { $0 * scale } ?? 100), height: max(12, row.height - 6))
                     guard rect.intersects(CGRect(origin: .zero, size: size)) else { continue }
-                    let color = Color(red: Double((target.color >> 16) & 255) / 255,
-                                      green: Double((target.color >> 8) & 255) / 255, blue: Double(target.color & 255) / 255)
+                    let color = Color(red: Double((row.color >> 16) & 255) / 255,
+                                      green: Double((row.color >> 8) & 255) / 255, blue: Double(row.color & 255) / 255)
                     context.fill(Path(rect), with: .color(color.opacity(0.32)))
                     let bar = CGRect(x: rect.minX, y: rect.minY, width: rect.width, height: min(15, rect.height))
                     context.fill(Path(bar), with: .color(color.opacity(0.9)))

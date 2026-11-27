@@ -152,6 +152,8 @@ final class MetalWaveformSurface: MetalWaveformContainerBase {
         renderer.submit(frame, allowCoalescing: sameGeometry)
     }
     #if os(macOS)
+    func deferOpeningUntilVisible() { renderer.defersOpeningUntilVisible = true }
+
     /// AppKit can request a draw while the parent tile moves. Leave the previous
     /// drawable alone until its replacement is submitted at the new origin.
     func placeForProjection(_ placement: () -> Void) {
@@ -215,6 +217,9 @@ private final class MetalWaveformRenderView: MTKView, MTKViewDelegate {
     private var rendering = false
     #if os(macOS)
     var isPlacingProjection = false
+    var defersOpeningUntilVisible = false
+    private var openingPassScheduled = false
+    private var openingLayoutSettled = false
     #endif
     private var drawableRetryUsed = false
     #if os(macOS)
@@ -352,7 +357,14 @@ private final class MetalWaveformRenderView: MTKView, MTKViewDelegate {
             for presentation in scheduledPresentations.values { presentation.lease.finish(2) }
             scheduledPresentations.removeAll(keepingCapacity: true)
             lastPresentedSequence = submittedFrameCount
+            #if os(macOS)
+            // Before any submission the backing layer is already empty.
+            // AppKit may skip drawing a zero-alpha MTKView, which would
+            // otherwise prevent the first waveform from ever becoming visible.
+            if submittedFrameCount > 0 { setContentVisible(false) }
+            #else
             setContentVisible(false)
+            #endif
             didPresent?(frame)
             return
         }
@@ -399,6 +411,9 @@ private final class MetalWaveformRenderView: MTKView, MTKViewDelegate {
         #endif
         guard !rendering, window != nil, bounds.width > 0, bounds.height > 0,
               (requiresImmediateSubmission || flights.hasCapacity), let frame = pending, !frame.isEmpty, engine.isReady else { return }
+        #if os(macOS)
+        guard canDrawOpeningFrame() else { return }
+        #endif
         // MTKView acquires its drawable before invoking draw(in:). Resizing in
         // that delegate mixes the new viewport/scissor with the old texture and
         // can erase most of a waveform when a prepared viewport shrinks.
@@ -425,6 +440,24 @@ private final class MetalWaveformRenderView: MTKView, MTKViewDelegate {
     }
 
     #if os(macOS)
+    private func canDrawOpeningFrame() -> Bool {
+        guard defersOpeningUntilVisible, submittedFrameCount == 0 else { return true }
+        guard canRetryVisibleDrawable else { openingLayoutSettled = false; return false }
+        if openingLayoutSettled { return true }
+        if !openingPassScheduled {
+            openingPassScheduled = true
+            // The initial clip view and its CAMetalLayer may still be moving
+            // into the window even after the visibility notification.
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.openingPassScheduled = false
+                self.openingLayoutSettled = self.canRetryVisibleDrawable
+                if self.openingLayoutSettled { self.renderLatest() }
+            }
+        }
+        return false
+    }
+
     private var canRetryVisibleDrawable: Bool {
         pending != nil && window?.isVisible == true && window?.occlusionState.contains(.visible) == true &&
             !isHiddenOrHasHiddenAncestor && !visibleRect.isEmpty
@@ -447,6 +480,7 @@ private final class MetalWaveformRenderView: MTKView, MTKViewDelegate {
         visibleDrawableRetry = nil
         drawableRetryDelay = 1.0 / 30
     }
+
     #endif
 
     /// Projection caches may not submit again when a hidden window becomes
@@ -508,6 +542,9 @@ private final class MetalWaveformRenderView: MTKView, MTKViewDelegate {
             rendering = false
             if !committed { flights.end() }
         }
+        #if os(macOS)
+        guard canDrawOpeningFrame() else { return }
+        #endif
         let density = backingDensity
         let pixels = drawablePixels(for: frame, density: density)
         if drawableSize != pixels { drawableSize = pixels }

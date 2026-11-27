@@ -13,6 +13,10 @@ enum ProgramChangeHeadAnchorView {
     var editing: Int?
     var transferRequest: Int?
 }
+@MainActor enum LibraryKeyboardTarget {
+    static func pointer(at point: CGPoint) {}
+    static func finishHardwareArrow(commit: Bool) {}
+}
 final class PointerTouch: UITouch {
     let target: UIView
     var point: CGPoint
@@ -36,6 +40,12 @@ final class PointerEvent: UIEvent {
     }
     override var modifierFlags: UIKeyModifierFlags { flags }
     override var buttonMask: UIEvent.ButtonMask { buttons }
+}
+final class MarqueeRecognizer: UILongPressGestureRecognizer {
+    var sampleState: UIGestureRecognizer.State = .possible
+    var samplePoint = CGPoint.zero
+    override var state: UIGestureRecognizer.State { get { sampleState } set { sampleState = newValue } }
+    override func location(in view: UIView?) -> CGPoint { samplePoint }
 }
 final class WheelRecognizer: UIPanGestureRecognizer {
     var sampleState: UIGestureRecognizer.State = .changed
@@ -91,9 +101,10 @@ final class Scene: UIResponder, UIWindowSceneDelegate {
         expect(Bundle.main.object(forInfoDictionaryKey: "UIApplicationSupportsIndirectInputEvents") as? Bool == true,
                "Bundle must opt into real indirect pointer events on iPadOS 16")
         let attached = recognizers()
-        expect(attached.count == 3, "Pointer, wheel and touch drag must attach once to the UIWindow")
+        expect(attached.count == 5, "Grid input recognizers must attach once to the UIWindow")
         guard let pointer = attached.first(where: { $0 is IpadGridPointerRecognizer }) as? IpadGridPointerRecognizer,
               let scroll = attached.first(where: { $0 is UIPanGestureRecognizer && $0.allowedTouchTypes.isEmpty }) as? UIPanGestureRecognizer,
+              let marquee = attached.first(where: { $0 is UILongPressGestureRecognizer }) as? UILongPressGestureRecognizer,
               let touchDrag = attached.first(where: { $0 is UIPanGestureRecognizer && !$0.allowedTouchTypes.isEmpty }) as? UIPanGestureRecognizer else {
             write("FAIL: missing attached recognizers"); return
         }
@@ -154,6 +165,26 @@ final class Scene: UIResponder, UIWindowSceneDelegate {
         capture.acceptsTouch = nil
         capture.setEnabled(true, reset: rulerReset)
         expect(!touchDrag.isEnabled, "Disabling Track Mixer Edit left touch dragging enabled")
+        let fingerOnEmpty = PointerTouch(target: surface, point: elsewhere, kind: .direct)
+        expect(!marquee.isEnabled, "The ruler must be able to opt out of item marquee selection")
+        capture.acceptsMarqueeTouch = { $0.x >= 300 }
+        capture.setEnabled(true, reset: rulerReset)
+        expect(marquee.isEnabled && marquee.numberOfTouchesRequired == 1 && marquee.allowableMovement == 8,
+               "A stationary one-finger hold must be recognised with Track Mixer Edit off")
+        expect(!capture.gestureRecognizer(marquee, shouldReceive: fingerOnItem), "Marquee intercepted the item menu")
+        expect(!capture.gestureRecognizer(marquee, shouldReceive: touch), "Marquee intercepted a mouse click")
+        expect(capture.gestureRecognizer(marquee, shouldReceive: fingerOnEmpty), "Empty grid hold was rejected")
+        let hold = MarqueeRecognizer()
+        hold.state = .began
+        capture.perform(NSSelectorFromString("marqueeChanged:"), with: hold)
+        hold.samplePoint = CGPoint(x: 210, y: 159); hold.state = .changed
+        capture.perform(NSSelectorFromString("marqueeChanged:"), with: hold)
+        hold.state = .ended
+        capture.perform(NSSelectorFromString("marqueeChanged:"), with: hold)
+        expect(events.map(\.phase) == [.began, .moved, .ended] &&
+               events.allSatisfy { $0.source == .touchMarquee && !$0.secondary && $0.origin == CGPoint(x: 380, y: 350) } &&
+               events.last?.position == hold.samplePoint, "Long press did not preserve the green selection drag")
+        events.removeAll()
         // UIKit's internal touch bookkeeping is unavailable for synthetic public
         // UITouch instances. Test the real delegate separately above, then deliver
         // recognizer transitions directly without a fake zero-location delegate veto.
@@ -231,7 +262,7 @@ final class Scene: UIResponder, UIWindowSceneDelegate {
         let workspace = UIViewController(); workspace.modalPresentationStyle = .fullScreen
         await withCheckedContinuation { continuation in root.present(workspace, animated: false) { continuation.resume() } }
         surface.removeFromSuperview(); workspace.view.addSubview(surface); await wait()
-        expect(recognizers().count == 3, "Reattaching duplicated window recognizers")
+        expect(recognizers().count == 5, "Reattaching duplicated window recognizers")
         expect(capture.gestureRecognizer(pointer, shouldReceive: touch), "Presented fullscreen workspace was incorrectly blocked")
         capture.setEnabled(false, reset: UUID())
         expect(!pointer.isEnabled && !scroll.isEnabled, "Disabling did not disable recognizers")
@@ -301,7 +332,10 @@ final class Scene: UIResponder, UIWindowSceneDelegate {
         let rulerTouch = IpadRulerTouchView(frame: CGRect(x: 0, y: 0, width: 400, height: 24))
         expect(rulerTouch.gestureRecognizers?.count == 3, "Ruler has separate direct-touch pan, tap and held selection")
         let rulerHold = rulerTouch.gestureRecognizers?.compactMap { $0 as? UILongPressGestureRecognizer }.first
-        expect(rulerHold?.minimumPressDuration == 1.5, "Ruler touch selection starts only after 1.5 seconds")
+        expect(rulerHold?.isEnabled == false, "A ruler without loop selection must not intercept long presses")
+        rulerTouch.selection = { _, _, _, _ in }
+        expect(rulerHold?.isEnabled == true && rulerHold?.minimumPressDuration == marquee.minimumPressDuration,
+               "Ruler loop selection must start after the same hold as grid marquee selection")
         for recognizer in rulerTouch.gestureRecognizers ?? [] {
             expect(recognizer.allowedTouchTypes == [NSNumber(value: UITouch.TouchType.direct.rawValue)],
                 "Direct-touch ruler gestures must not consume right-button mouse selection")

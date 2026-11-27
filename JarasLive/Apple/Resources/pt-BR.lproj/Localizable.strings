@@ -1556,6 +1556,9 @@
 
 "Arm an audio track before recording." = "Arme uma pista de áudio antes de gravar.";
 "Arm at least one track before recording." = "Arme pelo menos uma pista antes de gravar.";
+"Stop playback when disarming REC" = "Parar reprodução ao desarmar REC";
+"Fader with secondary touch" = "Fader com toque secundário";
+"No tracks" = "Nenhuma pista";
 "The region and its contents will be deleted." = "A região e seu conteúdo serão excluídos.";
 
 "Open Remote on another device and choose this iPad." = "Abra o Remote em outro dispositivo e escolha este iPad.";
@@ -2355,7 +2358,7 @@
 "Bluetooth microphone" = "Microfone Bluetooth";
 "Using the Bluetooth microphone may reduce headset playback quality." = "Usar o microfone Bluetooth pode reduzir a qualidade da saída do fone.";
 
-"Preview on/off" = "Preview — ativar/desativar";
+"Preview on/off" = "Mostrar/Ocultar Preview";
 
 "Insert media" = "Inserir mídia";
 
@@ -2877,3 +2880,9 @@
 "Forward" = "Avançar";
 "Loading" = "Carregando…";
 "Browse in Files" = "Explorar no app Arquivos";
+"Create folder" = "Criar pasta";
+"Folder name" = "Nome da pasta";
+"Invalid folder name" = "Nome de pasta inválido";
+"Enable Remote" = "Ativar Remote";
+"Remote device name" = "Nome no Remote";
+"Choose the project folder in Home before saving this session." = "Escolha a pasta dos projetos no Início antes de salvar esta sessão.";

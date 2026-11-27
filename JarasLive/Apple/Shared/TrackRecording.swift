@@ -898,19 +898,19 @@ private final class CaptureWriter: @unchecked Sendable {
         return pendingCountIn == id ? schedule.host : nil
     }
 
+    static let stopPlaybackOnDisarmKey = "jaras.record.stopPlaybackOnDisarm"
+
     func toggle(show: ShowController) {
         if countingIn { cancelCountIn(); return }
         if recording {
             finish()
+            if UserDefaults.standard.bool(forKey: Self.stopPlaybackOnDisarmKey) {
+                show.send(.stop)
+            }
             return
         }
         guard !busy, show.canControl(), let directory, project == show.snapshot.project.id else { return }
         let tracks = show.current?.tracks.filter { $0.kind == .standard && armed.contains($0.id) } ?? []
-        #if os(iOS)
-        guard !tracks.isEmpty else {
-            error = JarasLocalization.string("Arm at least one track before recording."); return
-        }
-        #endif
         let audioTracks = tracks.filter { $0.recordingMode != .midi }
         let checksDestination = audioTracks.contains { $0.recordsOutput || hasRecordingInput($0) }
         let transport = show.snapshot.transport
@@ -1306,6 +1306,14 @@ private final class CaptureWriter: @unchecked Sendable {
         desktopInput.setCapture(nil); tapInstalled = false
         #endif
         captureRing = nil
+    }
+}
+
+@MainActor struct StopPlaybackOnRecordDisarm: View {
+    @AppStorage(TrackRecording.stopPlaybackOnDisarmKey) private var stopPlayback = false
+
+    var body: some View {
+        Toggle("Stop playback when disarming REC", isOn: $stopPlayback)
     }
 }
 

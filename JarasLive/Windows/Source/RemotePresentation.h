@@ -8,6 +8,9 @@
 #include "TempoEditing.h"
 #include "RegionPitch.h"
 #include "PartsPresentation.h"
+#include "ClipTempo.h"
+#include "WaveformCache.h"
+#include "ProjectCodec.h"
 namespace catlive::remote {
 class Presentation final {
   public:
@@ -53,6 +56,109 @@ class Presentation final {
         }
         return result;
     }
+    std::function<var()> prepareWaveformPage(const var &request) {
+        const auto revision = str(request, "revision");
+        const auto offsetField = get(request, "offset");
+        const auto *song = session.song();
+        if (revision.isEmpty() || revision.compareIgnoreCase(waveformRevision) != 0 || !song ||
+            session.revision != waveformSessionRevision || song->id != waveformSong ||
+            (!offsetField.isInt() && !offsetField.isInt64())) return {};
+        constexpr int pageSize = 32, maximumItems = 65536;
+        const auto offset = (int64)offsetField;
+        if (offset < 0 || offset >= maximumItems || offset % pageSize != 0) return {};
+        struct Item { jaras::AudioClip clip; std::string path; };
+        std::vector<Item> items;
+        size_t count = 0;
+        for (const auto &track : song->tracks) {
+            if (!jaras::fixedTrackName(track.role).empty()) continue;
+            const size_t beginning = (size_t)offset > count ? (size_t)offset - count : 0;
+            const size_t limit = (size_t)offset + pageSize;
+            const size_t end = count < limit ? std::min(track.clips.size(), limit - count) : 0;
+            for (size_t i = beginning; i < end; ++i) {
+                const auto &clip = track.clips[i];
+                if (clip.duration <= 0 || !std::isfinite(clip.duration) || clip.midi || clip.text) continue;
+                const auto &audio = clip.audioFile ? clip.audioFile : track.audioFile;
+                if (audio || !clip.waveform.empty()) items.push_back({clip, audio ? audio->path : std::string()});
+            }
+            count += track.clips.size();
+        }
+        jaras::Song timing;
+        timing.id = song->id; timing.bpm = song->bpm; timing.duration = song->duration;
+        timing.parts = song->parts; timing.markers = song->markers; timing.timeSettings = song->timeSettings;
+        timing.beatsPerBar = song->beatsPerBar; timing.beatUnit = song->beatUnit;
+        timing.regionOwnershipInitialized = song->regionOwnershipInitialized;
+        timing.regionOwnershipVersion = song->regionOwnershipVersion;
+        return [items = std::move(items), timing = std::move(timing), directory = session.mediaDirectory, revision, offset,
+                finished = count <= (size_t)offset + pageSize] {
+            constexpr int bins = 256;
+            Array<var> entries;
+            std::map<std::string, std::shared_ptr<const WaveformCache::Data>> sources;
+            for (const auto &item : items) {
+                const auto &clip = item.clip;
+                auto insertion = sources.try_emplace(item.path);
+                auto &source = insertion.first->second;
+                if (!item.path.empty() && insertion.second) {
+                    const auto file = ProjectCodec::resolveMedia(directory, item.path);
+                    source = WaveformCache::cachedMetadata(file);
+                    if (!source && file.existsAsFile()) {
+                        WaveformCache::preload(file);
+                        source = WaveformCache::cachedMetadata(file);
+                    }
+                }
+                if (!source && clip.waveform.empty()) continue;
+                std::array<uint8_t, bins> peaks{};
+                if (source) {
+                    const auto peak = [&](double start, double end) {
+                        float amplitude = 0;
+                        for (int channel = 0; channel < source->storedChannels; ++channel) {
+                            const auto range = source->range(channel, start, end);
+                            amplitude = std::max({amplitude, std::abs(range.first), std::abs(range.second)});
+                        }
+                        return amplitude;
+                    };
+                    for (const auto &span : ClipTempo(clip, &timing).spans) {
+                        const double seconds = clip.duration / bins;
+                        const int first = (int)jlimit(0., (double)bins, std::floor((span.start - clip.startTime) / seconds));
+                        const int last = (int)jlimit(0., (double)bins, std::ceil((span.end - clip.startTime) / seconds));
+                        for (int i = first; i < last; ++i) {
+                            const double start = std::max(span.start, clip.startTime + i * seconds);
+                            const double end = std::min(span.end, clip.startTime + (i + 1) * seconds);
+                            const double length = (end - start) * span.rate;
+                            if (length <= 0 || !std::isfinite(length)) continue;
+                            const double position = span.source + (start - span.start) * span.rate;
+                            float amplitude;
+                            if (const auto loop = clip.loopLength.value_or(0.); loop > 0) {
+                                const auto origin = clip.loopStart.value_or(0.);
+                                const auto remainder = std::fmod(position - origin, loop);
+                                const auto phase = remainder < 0 ? remainder + loop : remainder;
+                                const auto tail = std::min(length, loop - phase);
+                                amplitude = length >= loop ? peak(origin, origin + loop) :
+                                    std::max(peak(origin + phase, origin + phase + tail), peak(origin, origin + length - tail));
+                            } else amplitude = peak(position, position + length);
+                            peaks[(size_t)i] = std::max(peaks[(size_t)i], (uint8_t)std::lround(jlimit(0.f, 1.f, amplitude) * 255));
+                        }
+                    }
+                } else {
+                    for (size_t i = 0; i < peaks.size(); ++i) {
+                        const auto first = i * clip.waveform.size() / peaks.size();
+                        const auto last = std::max(first + 1, (i + 1) * clip.waveform.size() / peaks.size());
+                        double maximum = 0;
+                        for (size_t j = first; j < last; ++j)
+                            if (std::isfinite(clip.waveform[j])) maximum = std::max(maximum, clip.waveform[j]);
+                        peaks[i] = (uint8_t)std::lround(jlimit(0., 1., maximum) * 255);
+                    }
+                }
+                auto entry = object();
+                put(entry, "id", wireID(clip.id));
+                put(entry, "peaks", Base64::toBase64(peaks.data(), peaks.size()));
+                entries.add(entry);
+            }
+            auto page = object();
+            put(page, "revision", revision); put(page, "offset", offset);
+            put(page, "finished", finished); put(page, "entries", entries);
+            return page;
+        };
+    }
     var snapshot(int panel) {
         const auto &p = session.project();
         const auto *song = session.song();
@@ -64,8 +170,19 @@ class Presentation final {
         if (const auto battery = desktopBatteryPercent()) put(result, "desktopBatteryPercent", *battery);
         if (const auto notice = session.liveCapacityWarning(); notice.isNotEmpty()) put(result, "footerInformation", notice);
         else if(t.automaticSectionNotice) put(result, "footerInformation", text(*t.automaticSectionNotice));
-        if (song)
+        if (song) {
             put(result, "song", wireID(song->id));
+            if (waveformRevision.isEmpty() || waveformSessionRevision != session.revision || waveformSong != song->id) {
+                waveformSessionRevision = session.revision;
+                waveformSong = song->id;
+                const auto fingerprint = waveformFingerprint(p.id, *song);
+                if (waveformRevision.isEmpty() || waveformContent != fingerprint) {
+                    waveformRevision = Uuid().toDashedString().toUpperCase();
+                    waveformContent = fingerprint;
+                }
+            }
+            put(result, "waveformRevision", waveformRevision);
+        }
         put(result, "songName", song ? text(song->name) : String());
         Array<var> songs, tracks, regions, allRegions, playlists, markers;
         for (const auto &item : p.songs) {
@@ -624,6 +741,43 @@ class Presentation final {
     }
 
   private:
+    size_t waveformFingerprint(const ID &project, const jaras::Song &song) const {
+        size_t hash = 0;
+        auto add = [&](const auto &value) {
+            hash ^= std::hash<std::decay_t<decltype(value)>>{}(value) + 0x9e3779b9 + (hash << 6) + (hash >> 2);
+        };
+        add(project); add(song.id); add(utf8(session.mediaDirectory.getFullPathName())); add(song.bpm);
+        add(song.regionOwnershipVersion);
+        add(song.timeSettings && song.timeSettings->timebase == jaras::ProjectTimebase::relative);
+        for (const auto &part : song.parts) {
+            add(part.id); add(part.startTime); add(part.endTime); add(part.parentRegionID);
+        }
+        if (song.markers) for (const auto &marker : *song.markers) if (marker.tempoBPM) {
+            add(marker.id); add(marker.position); add(marker.tempoBPM); add(marker.regionOwnerID);
+            add(marker.tempoTimebase); add(marker.tempoReferenceBPM); add(marker.tempoPlaybackRate);
+        }
+        for (const auto &track : song.tracks) {
+            if (!jaras::fixedTrackName(track.role).empty()) continue;
+            for (const auto &clip : track.clips) {
+                add(clip.id); add(clip.startTime); add(clip.duration); add(clip.sourceOffset); add(clip.playbackRate);
+                add(clip.loopStart); add(clip.loopLength); add(clip.regionOwnerID); add(clip.midi.has_value());
+                add(clip.renderedTempo); add(clip.renderedTiming); add(clip.frozenMIDI);
+                const auto &audio = clip.audioFile ? clip.audioFile : track.audioFile;
+                if (audio) { add(audio->path); add(audio->sha256); }
+                else for (double peak : clip.waveform) add(peak);
+                for (const auto &ref : clip.tempoRateReferences) { add(ref.markerID); add(ref.rate); }
+                for (const auto &point : clip.elasticPoints) {
+                    add(point.position); add(point.source); add(point.slopeBefore); add(point.slopeAfter);
+                }
+                add(clip.elasticSourceScale);
+            }
+        }
+        return hash;
+    }
+    size_t waveformContent = 0;
+    uint64 waveformSessionRevision = 0;
+    ID waveformSong;
+    String waveformRevision;
     Session &session;
     StageState &stage;
     uint64_t tempoRevision = ~uint64_t{0};

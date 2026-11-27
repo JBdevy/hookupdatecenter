@@ -379,12 +379,23 @@ private final class SourcePlayer: @unchecked Sendable {
     var vuChanges: AnyPublisher<Double, Never> { vuSignal.eraseToAnyPublisher() }
     private(set) var vuLevel = -20.0
     private var vuAmplitude = 0.0
+    private var vuVelocity = 0.0
 
-    func updateVU(rms: Double, elapsed: Double) {
-        let input = rms.isFinite ? max(0, rms) : 0
-        let coefficient = 1 - exp(-max(0, elapsed) / (input > vuAmplitude ? 0.10 : 0.24))
-        vuAmplitude += (input - vuAmplitude) * coefficient
-        let next = (min(3, max(-20, 20 * log10(max(0.000001, vuAmplitude)) + 18)) * 10).rounded() / 10
+    func updateVU(meanMagnitude: Double, elapsed: Double) {
+        guard elapsed.isFinite, elapsed > 0 else { return }
+        let input = meanMagnitude.isFinite ? max(0, meanMagnitude) : 0
+        // The rectified 1 kHz reference is -18 dBFS. The damped pointer reaches
+        // 99% in 300 ms with 1.25% overshoot; the same movement applies on decay.
+        let damping = 10.981360858709374, frequency = 7.872832704200884
+        let phase = frequency * elapsed
+        let cosine = cos(phase), sine = sin(phase) / frequency
+        let decay = exp(-damping * elapsed)
+        let error = vuAmplitude - input
+        vuAmplitude = input + decay * (error * (cosine + damping * sine) + vuVelocity * sine)
+        vuVelocity = decay * (vuVelocity * (cosine - damping * sine)
+            - error * (damping * damping + frequency * frequency) * sine)
+        let reference = 0.08014568090841664
+        let next = (min(3, max(-20, 20 * log10(max(0.000001, vuAmplitude) / reference))) * 10).rounded() / 10
         if next != vuLevel { vuLevel = next; vuSignal.send(next) }
     }
     @Published private(set) var levels = SIMD2<Double>(repeating: 0)
@@ -399,7 +410,7 @@ private final class SourcePlayer: @unchecked Sendable {
     private var envelope = SIMD2<Double>(repeating: 0)
     func reset() {
         envelope = .zero; if levels != .zero { levels = .zero }
-        vuAmplitude = 0
+        vuAmplitude = 0; vuVelocity = 0
         if vuLevel != -20 { vuLevel = -20; vuSignal.send(vuLevel) }
     }
     func update(peak: Double, elapsed: Double) { update(left: peak, right: peak, elapsed: elapsed) }
@@ -1749,6 +1760,51 @@ struct TimecodePlaybackSpan {
     private var pluginBaseTempo: Double?
     private var pluginBaseMeter: (Int, Int) = (4, 4)
     private var pluginTempoSections: [TimelineTempoSection] = []
+    #if os(macOS)
+    private var araPlaybackBlocked = Set<UUID>()
+
+    private func configureTrackARA(_ id: UUID, settings: NativeFXSettings, effects: NativeEffectsChain) {
+        guard let track = tracks[id], track.kind == .standard, let directory,
+              let key = settings.inserted.first,
+              let plugin = settings.externalPlugins?.first(where: { $0.effectKey == key }),
+              plugin.araState != nil || plugin.name.localizedCaseInsensitiveContains("Melodyne") else {
+            effects.configureARATimeline(nil)
+            return
+        }
+        let sources = track.clips.filter { $0.muted != true && !$0.isImage && $0.text == nil }
+        let receivesTrackAudio = tracks.values.contains {
+            ($0.parentTrackID == id && $0.outputPatches.contains(.masterGroup)) ||
+                $0.routing?.transmitters.contains(id) == true
+        }
+        // A track renderer replaces its input with the ARA document. When the
+        // document cannot represent another source or an item treatment, keep
+        // the mixed input intact while leaving the ARA editor available.
+        let trackCompatible = !track.receivesMain && !receivesTrackAudio &&
+            track.role.rawValue != "vinhetas" && settings.instrumentKeys.isEmpty &&
+            !(settings.externalPlugins ?? []).contains { $0.category.contains("Instrument") && settings.inserted.contains($0.effectKey) }
+        let mediaCompatible = sources.allSatisfy {
+            $0.audioFile != nil && $0.midi == nil && !$0.isProjectionMedia &&
+                ($0.gain ?? 1) == 1 && ($0.normalizationGain ?? 1) == 1 &&
+                ($0.pan ?? 0) == 0 && ($0.pitchSemitones ?? 0) == 0 &&
+                ($0.fadeIn ?? 0) == 0 && ($0.fadeOut ?? 0) == 0 &&
+                ($0.channelMode ?? 0) == 0 && $0.phaseInverted != true &&
+                $0.loopLength == nil && $0.elasticPoints?.isEmpty != false &&
+                $0.automation?.enabled != true && ($0.fxBypassed == true || $0.fx?.inserted.isEmpty != false)
+        }
+        let media: [[String: Any]] = sources.compactMap { item in
+            guard let file = item.audioFile, !item.isProjectionMedia, item.midi == nil else { return nil }
+            return ["id": item.id.uuidString, "name": item.name, "path": file.path,
+                    "file": directory.appendingPathComponent(file.path).path, "start": item.startTime,
+                    "duration": item.duration, "offset": item.sourceOffset, "rate": item.audioRate]
+        }
+        let activeSong = latestPlayback?.snapshot.project.songs.first { $0.id == latestPlayback?.snapshot.transport.songId }
+        let timing = activeSong?.tempoSections(until: max(1, activeSong?.duration ?? 1)).map {
+            ["start": $0.start, "bpm": $0.bpm, "beats": Double($0.beats), "unit": Double($0.unit)]
+        } ?? []
+        effects.configureARATimeline(["name": track.name, "clips": media, "tempo": timing,
+                                      "playbackCompatible": trackCompatible && mediaCompatible] as NSDictionary)
+    }
+    #endif
     private func updateExternalTransports(song: Song, transport: TransportState, revision: UInt64) {
         if pluginTempoRevision != revision || pluginTempoSong != song.id || pluginBaseTempo != song.bpm ||
             pluginBaseMeter.0 != song.meterBeats || pluginBaseMeter.1 != song.meterUnit {
@@ -1772,7 +1828,18 @@ struct TimecodePlaybackSpan {
                 loopEnd: head == 0 && transport.loop.enabled ? transport.loop.end ?? 0 : 0)
         }
         publish(masterEffects, head: mainHead)
-        for bus in trackBuses.values { publish(bus.effects, head: mainHead) }
+        for (id, bus) in trackBuses {
+            publish(bus.effects, head: mainHead)
+            #if os(macOS)
+            if bus.effects.hasARATimeline {
+                let scoped = song.playbackScope(transport, head: mainHead) != PlaybackScope() ||
+                    transport.exclusivePlaybackRegionId != nil || transport.subExclusivePlaybackRegionId != nil
+                let singleHead = !(transport.playing && transport.subPlay.playing) && !scoped
+                let monitored = inputMonitors[id] != nil && tracks[id]?.inputMonitoring != false
+                bus.effects.allowARAPlayback(singleHead && !monitored && !araPlaybackBlocked.contains(id))
+            }
+            #endif
+        }
         for (key, voice) in voices { if let effects = voice.effects { publish(effects, head: key.head) } }
         for (key, voice) in midiTakeVoices { publish(voice.effects, head: key.head) }
     }
@@ -2366,7 +2433,11 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         for route in bus.hardware { connectTrackBusInput(route, to: engine.mainMixerNode, format: hardwareFormat) }
         connectTrackBusInput(bus.masterSend, to: masterBus, format: format)
         #endif
-        bus.effects.apply(tracks[id]?.fx ?? NativeFXSettings())
+        let effects = tracks[id]?.fx ?? NativeFXSettings()
+        #if os(macOS)
+        configureTrackARA(id, settings: effects, effects: bus.effects)
+        #endif
+        bus.effects.apply(effects)
         configureTransportFade(bus, id: id)
         #if os(macOS)
         bus.effects.enableInstrumentMIDI(armedInstrumentTracks.contains(id))
@@ -4087,6 +4158,9 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
             if previous.arpeggiatesMIDI != settings.arpeggiatesMIDI { releaseTrackMIDI(track) }
             if previous.midiArpeggio != settings.midiArpeggio { midiPlanRevision = nil }
             tracks[track]?.fx = settings
+            #if os(macOS)
+            if let effects = trackBuses[track]?.effects { configureTrackARA(track, settings: settings, effects: effects) }
+            #endif
             trackBuses[track]?.effects.apply(settings)
             if instrumentsChanged {
                 syncInstruments(only: track)
@@ -4112,6 +4186,7 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
             guard let index = settings.externalPlugins?.firstIndex(where: { $0.id == plugin.id }) else { return }
             settings.externalPlugins?[index].componentState = plugin.componentState
             settings.externalPlugins?[index].controllerState = plugin.controllerState
+            settings.externalPlugins?[index].araState = plugin.araState
         }
         func remember(_ settings: inout NativeFXSettings?) {
             guard var value = settings else { return }; remember(&value); settings = value
@@ -4445,7 +4520,11 @@ for (key, sampler) in samplers where key.track == id {
                 continue
             }
             retiredTrackEffects.remove(id)
-            bus.effects.apply(track.fx ?? NativeFXSettings())
+            let effects = track.fx ?? NativeFXSettings()
+            #if os(macOS)
+            configureTrackARA(id, settings: effects, effects: bus.effects)
+            #endif
+            bus.effects.apply(effects)
             applyTrackGate(id)
             JarasEqualizer.setInputPan(bus.controls, pan: track.pan)
             applyTrackRoutes(track, bus: bus)
@@ -5761,6 +5840,14 @@ for sampler in samplers.values { sampler.sequenceHead(Int32(head), position: 0, 
                     (clip.frozenMIDI == true || clip.renderedTiming == true ? 0 : Double(song.pitch(for: track, region: region)))
                 return (clip.id, Float(semitones * 100))
             })
+            #if os(macOS)
+            araPlaybackBlocked = Set(clips.compactMap { track, clip in
+                (clipPitches[clip.id] ?? 0) != 0 || overlapEnvelopes[clip.id] != nil ? track : nil
+            })
+            for track in song.tracks where track.clips.contains(where: { (clipFragments[$0.id]?.count ?? 1) > 1 }) {
+                araPlaybackBlocked.insert(track.id)
+            }
+            #endif
         }
         #if os(iOS)
         try prepareChangedMobileTrackGraph()
@@ -6422,12 +6509,12 @@ for sampler in samplers.values { sampler.sequenceHead(Int32(head), position: 0, 
         for route in masterRoutes {
             _ = JarasChannelRouter.takeInputPeak(route, channel: 0)
             _ = JarasChannelRouter.takeInputPeak(route, channel: 1)
-            _ = JarasChannelRouter.takeInputRMS(route)
+            _ = JarasChannelRouter.takeInputMeanMagnitude(route)
         }
         for bus in trackBuses.values {
             _ = JarasEqualizer.takeOutputPeak(bus.controls, channel: 0)
             _ = JarasEqualizer.takeOutputPeak(bus.controls, channel: 1)
-            _ = JarasEqualizer.takeOutputRMS(bus.controls)
+            _ = JarasEqualizer.takeOutputMeanMagnitude(bus.controls)
         }
     }
     private func drainNativeMeterPeaks() {
@@ -6448,11 +6535,11 @@ for sampler in samplers.values { sampler.sequenceHead(Int32(head), position: 0, 
         lastMeterUpdate = now
         for (id, meter) in meters {
             meter.update(peak: 0, elapsed: elapsed)
-            meter.updateVU(rms: 0, elapsed: elapsed)
+            meter.updateVU(meanMagnitude: 0, elapsed: elapsed)
             meter.updateGainReduction(trackBuses[id]?.effects.gainReduction(silent: true))
         }
         masterMeter.update(peak: 0, elapsed: elapsed)
-        masterMeter.updateVU(rms: 0, elapsed: elapsed)
+        masterMeter.updateVU(meanMagnitude: 0, elapsed: elapsed)
         masterMeter.updateGainReduction(masterEffects.gainReduction(silent: true))
         for bank in trackPeaks.values { _ = bank.takePeak(0); _ = bank.takePeak(1) }
         _ = peaks.takePeak(masterSlot); _ = peaks.takePeak(masterSlot + 1)
@@ -6474,8 +6561,8 @@ for sampler in samplers.values { sampler.sequenceHead(Int32(head), position: 0, 
             lastMeterUpdate = now
             drainNativeMeterPeaks()
             masterMeter.update(left: Double(peaks.takePeak(masterSlot)), right: Double(peaks.takePeak(masterSlot + 1)), elapsed: elapsed)
-            let masterRMS = masterRoutes.first.map { JarasChannelRouter.takeInputRMS($0) } ?? 0
-            masterMeter.updateVU(rms: Double(masterRMS), elapsed: elapsed)
+            let masterMean = masterRoutes.first.map { JarasChannelRouter.takeInputMeanMagnitude($0) } ?? 0
+            masterMeter.updateVU(meanMagnitude: Double(masterMean), elapsed: elapsed)
             masterMeter.updateGainReduction(masterEffects.gainReduction(silent: false))
             for (id, bank) in trackPeaks {
                 var left = Double(bank.takePeak(0)), right = Double(bank.takePeak(1))
@@ -6485,9 +6572,9 @@ for sampler in samplers.values { sampler.sequenceHead(Int32(head), position: 0, 
                     left = max(left, rawLeft); right = max(right, rawRight)
                 }
                 observeTrackPeak(id, left: left, right: right, elapsed: elapsed)
-                let rms = trackBuses[id].map { Double(JarasEqualizer.takeOutputRMS($0.controls)) }
-                    ?? (id == timecodeTrackID ? max(left, right) / sqrt(3) : 0)
-                meters[id]?.updateVU(rms: rms, elapsed: elapsed)
+                let mean = trackBuses[id].map { Double(JarasEqualizer.takeOutputMeanMagnitude($0.controls)) }
+                    ?? (id == timecodeTrackID ? max(left, right) * 0.5 : 0)
+                meters[id]?.updateVU(meanMagnitude: mean, elapsed: elapsed)
                 meters[id]?.updateGainReduction(trackBuses[id]?.effects.gainReduction(silent: false))
             }
         }

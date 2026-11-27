@@ -269,8 +269,9 @@ class Workspace final : public Component,
     std::unique_ptr<FooterKeyboard> keyboard;
     std::unique_ptr<VinhetasPanel> vinhetasPanel;
     bool vinhetasVisible = false, vinhetasDetached = false;
+    enum class PerformancePanel { parts, mixer, pads, midiPreview, keyboard };
+    void activatePerformancePanel(PerformancePanel);
     void closePads();
-    void closePanelsForPads();
     void toggleVinhetasDock();
     void toggleMIDIPreviewDock();
     std::unique_ptr<Component> midiPreviewPanel;
@@ -337,7 +338,7 @@ class Workspace final : public Component,
          footerMixerVisible = false, focusVisible = false, partsLeftVisible = false, partsRightVisible = false, partsLeftHorizontal = false;
     bool laidOutFocusWithSelection = false;
     std::optional<bool> lastEditorVisible;
-    int mixerWidth = 281, setlistWidth = 336, trackHeight = theme::trackMixerMinHeight, verticalOffset = 0;
+    int mixerWidth = theme::trackMixerMinWidth, setlistWidth = 336, trackHeight = theme::trackMixerMinHeight, verticalOffset = 0;
     int horizontalPartsHeight = PartsPanel::defaultHorizontalHeight;
     int partsLeftWidth = 260, partsRightWidth = 0; // Zero keeps the original automatic right width until resized.
     double pixelsPerSecond = 20;
@@ -351,7 +352,8 @@ class Workspace final : public Component,
     void pasteProgramMarker();
     void copyGridItems(bool moving = false);
     void pasteGridItems(bool duplicate = false);
-    void importMediaAt(const Array<File> &, double at, ID target);
+    std::vector<int> gridMediaDropRows(int row, size_t limit) const;
+    void importMediaAt(const Array<File> &, double at, ID target, std::vector<ID> gridTracks = {});
     std::set<ID> selectedTracks;
     ID trackSelectionAnchor;
     bool trackSelected(const ID &id) const { return selectedTracks.empty() ? selectedTrack == id : selectedTracks.count(id) != 0; }

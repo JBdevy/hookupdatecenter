@@ -8,7 +8,7 @@ enum NativeFXAppearance {
     static let plum = [Color(red: 0.18, green: 0.12, blue: 0.23), Color(red: 0.09, green: 0.06, blue: 0.13)]
     static func accent(_ effect: String) -> Color {
         switch effect {
-        case "EQ", "Arpeggiator", "Pitch": return violet
+        case "EQ", "EQ - 31 Band", "Arpeggiator", "Pitch": return violet
         case "Compressor", "Limiter", "Cat Gate", "CatLive Trigger", "Amp":
             return Color(red: 0.93, green: 0.72, blue: 0.41)
         case "Phaser", "Chorus": return Color(red: 0.48, green: 0.78, blue: 0.93)

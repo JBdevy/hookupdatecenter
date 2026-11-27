@@ -493,7 +493,6 @@ struct RegionRightClick: NSViewRepresentable {
 }
 final class RegionRightClickView: NSView, NativeTimelineInputObserver {
     var edit: (() -> Void)?
-    var rename: (() -> Void)?
     var detectBPM: (() -> Void)?
     var unify: (() -> Void)?
     var disunify: (() -> Void)?
@@ -740,11 +739,6 @@ final class RegionRightClickView: NSView, NativeTimelineInputObserver {
     @objc private func disunifySelected() { disunify?() }
     override func mouseDown(with event: NSEvent) {
         guard inputAvailable else { timelineInputGateChanged(blocked: true); return }
-        if event.clickCount == 2, event.modifierFlags.intersection([.option, .control, .shift, .command]).isEmpty,
-           regionRect.contains(convert(event.locationInWindow, from: nil)), let rename {
-            rename()
-            return
-        }
         // Apply Shift/Command selection on mouse-up only if this remained a
         // click. The same press can begin a free region move or edge resize.
         if event.modifierFlags.contains(.control) { startX = nil; activeDrag = nil; activeSeek = nil; activeDelete = nil; rightMouseDown(with: event) }

@@ -4,9 +4,9 @@ import ImageIO
 enum TimelineEditingBarMetrics {
     static let controlHeight: CGFloat = 28
     static let height: CGFloat = 36
+    static let labelSize: CGFloat = 11
     static let sliderWidth: CGFloat = 96
     static let groupSpacing: CGFloat = 14
-    static let nativeMemoryButtonWidth: CGFloat = 38
 }
 
 private struct JarasNativePaletteKey: EnvironmentKey {
@@ -253,7 +253,7 @@ struct DesktopToolbarLabel: View {
         HStack(spacing: 4) {
             ControlIcon(name: systemImage, active: style != .neutral, size: iconSize, toolbar: true)
                 .frame(width: iconSize, height: iconSize)
-            if showsTitle { Text(verbatim: title).font(.jarasSystem(size: 11, weight: .semibold)) }
+            if showsTitle { Text(verbatim: title).font(.jarasSystem(size: TimelineEditingBarMetrics.labelSize, weight: .semibold)) }
         }
         .accessibilityElement(children: .ignore)
         .modifier(DesktopToolbarChrome(tone: style))

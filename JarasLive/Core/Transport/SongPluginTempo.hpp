@@ -3,7 +3,7 @@
 #include "../Project/Models.hpp"
 
 namespace jaras {
-inline PluginTempoMap pluginTempoMap(const Song& song) {
+inline std::vector<PluginTempoMap::Point> pluginTempoPoints(const Song& song) {
     std::vector<PluginTempoMap::Point> points{{0, song.bpm, song.beatsPerBar, song.beatUnit}};
     auto markers = song.markers.value_or(std::vector<TimelineMarker>{});
     std::stable_sort(markers.begin(), markers.end(), [](const auto& a, const auto& b) {
@@ -11,6 +11,7 @@ inline PluginTempoMap pluginTempoMap(const Song& song) {
     });
     for (const auto& marker : markers) if (marker.tempoBPM)
         points.push_back({marker.position, *marker.tempoBPM, marker.tempoBeats.value_or(4), marker.tempoUnit.value_or(4)});
-    return PluginTempoMap(std::move(points));
+    return points;
 }
+inline PluginTempoMap pluginTempoMap(const Song& song) { return PluginTempoMap(pluginTempoPoints(song)); }
 }

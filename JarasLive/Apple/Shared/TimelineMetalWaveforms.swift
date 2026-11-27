@@ -492,7 +492,7 @@ enum TimelineMetalWaveformFrameBuilder {
                             let localClip = channelRect.offsetBy(dx: -viewport.minX, dy: -viewport.minY)
                             strokes.append(MetalWaveformStroke(block: unitLine, channel: 0,
                                 scale: SIMD2(Float(localClip.width), 1), translation: SIMD2(Float(localClip.minX), Float(middle)),
-                                clip: localClip, color: item.ink.withAlpha(0.5), itemRect: localItem,
+                                clip: localClip, color: item.ink.withAlpha(item.ink.w * 0.5), itemRect: localItem,
                                 firstSeamX: firstSeam, repeatSpacing: seamSpacing, lineWidth: 0.5))
                             for sourceBlock in blocks where sourceChannel < sourceBlock.channels.count {
                                 let block = sourceBlock.step > 1 && !sourceBlock.isPeakEnvelope ? sourceBlock.rasterEnvelope : sourceBlock

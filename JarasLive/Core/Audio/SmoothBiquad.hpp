@@ -22,6 +22,7 @@ public:
         for(unsigned i=0;i<5;++i){target[i]=double(values[i]);moving|=target[i]!=current[i];}
     }
     void reset() noexcept { x1=x2=y1=y2=0; }
+    bool isSettling() const noexcept { return moving; }
     float processSample(float input) noexcept {
         if(moving){
             moving=false;

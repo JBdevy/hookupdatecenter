@@ -1297,7 +1297,7 @@ public struct TrackLanes: Equatable {
     private var localCounts: [UUID: Int] = [:]
     private var localLanes: [UUID: Int] = [:]
     private var stacked = false
-    private var stackedOverlaps: Set<UUID> = []
+    private var stackDepths: [UUID: Int] = [:]
     public init(track: Track) {
         stacked = track.usesStackedStems
         if stacked && track.clips.count < 2 { return }
@@ -1306,32 +1306,38 @@ public struct TrackLanes: Equatable {
             // Equal-position lyrics keep their imported top-to-bottom order.
             if track.kind.isTeleprompter { return $0.offset < $1.offset }
             return $0.element.id.uuidString < $1.element.id.uuidString
-        }.map(\.element)
+        }
         if stacked {
-            // A clip is in an overlap if it starts before the furthest
-            // earlier end, or the next start falls inside its own interval.
-            var previousEnd = -Double.infinity
-            for (index, clip) in ordered.enumerated() {
-                let end = clip.startTime + clip.duration
-                if clip.startTime < previousEnd - Self.edgeTolerance ||
-                    (index + 1 < ordered.count && ordered[index + 1].startTime < end - Self.edgeTolerance) {
-                    stackedOverlaps.insert(clip.id)
+            var first = 0
+            while first < ordered.count {
+                let clip = ordered[first].element
+                var end = clip.startTime + clip.duration
+                var last = first + 1
+                while last < ordered.count && ordered[last].element.startTime < end - Self.edgeTolerance {
+                    let next = ordered[last].element
+                    end = max(end, next.startTime + next.duration)
+                    last += 1
                 }
-                previousEnd = max(previousEnd, end)
+                if last - first > 1 {
+                    let frontToBack = ordered[first..<last].sorted { $0.offset > $1.offset }
+                    for (depth, item) in frontToBack.enumerated() { stackDepths[item.element.id] = depth }
+                }
+                first = last
             }
             return
         }
+        let orderedClips = ordered.map(\.element)
         var ends: [Double] = []
         // Lay out existing material first. A new take stays below the material
         // it overlaps, even if recording starts before that material begins.
-        for clip in ordered where clip.recordingLane == nil {
+        for clip in orderedClips where clip.recordingLane == nil {
             let lane = ends.firstIndex(where: { $0 <= clip.startTime + Self.edgeTolerance }) ?? ends.count
             if lane == ends.count { ends.append(0) }
             ends[lane] = clip.startTime + clip.duration
             lanes[clip.id] = lane
         }
-        var placed = ordered.filter { $0.recordingLane == nil }
-        let takes = ordered.filter { $0.recordingLane != nil }.sorted {
+        var placed = orderedClips.filter { $0.recordingLane == nil }
+        let takes = orderedClips.filter { $0.recordingLane != nil }.sorted {
             if $0.recordingLane != $1.recordingLane { return ($0.recordingLane ?? 0) < ($1.recordingLane ?? 0) }
             if $0.startTime != $1.startTime { return $0.startTime < $1.startTime }
             return $0.id.uuidString < $1.id.uuidString
@@ -1357,7 +1363,7 @@ public struct TrackLanes: Equatable {
             }
             component.removeAll(keepingCapacity: true)
         }
-        for clip in ordered {
+        for clip in orderedClips {
             if clip.startTime >= componentEnd - Self.edgeTolerance { finishComponent() }
             if component.isEmpty { componentEnd = clip.startTime + clip.duration }
             else { componentEnd = max(componentEnd, clip.startTime + clip.duration) }
@@ -1365,7 +1371,8 @@ public struct TrackLanes: Equatable {
         }
         finishComponent()
     }
-    public func hasStackedOverlap(_ clipID: UUID) -> Bool { stackedOverlaps.contains(clipID) }
+    public func hasStackedOverlap(_ clipID: UUID) -> Bool { stackDepth(for: clipID) != nil }
+    public func stackDepth(for clipID: UUID) -> Int? { stackDepths[clipID] }
     public func localCount(for clipID: UUID) -> Int { localCounts[clipID] ?? count }
     public func localLane(for clipID: UUID) -> Int { localLanes[clipID] ?? lanes[clipID] ?? 0 }
     /// An active take grows independently of the project snapshot. Reserve the

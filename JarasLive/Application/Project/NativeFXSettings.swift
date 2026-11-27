@@ -98,6 +98,7 @@ public struct ExternalPlugin: Codable, Equatable, Identifiable, Sendable {
     public var category = ""
     public var bypassed = false
     public var componentState: String?, controllerState: String?
+    public var araState: String?
     public var effectKey: String { "External:" + id }
     fileprivate var hasValidClassID: Bool {
         if classID.count == 32 && classID.allSatisfy(\.isHexDigit) { return true }
@@ -180,6 +181,13 @@ public struct NativeGateSettings: Codable, Equatable, Sendable {
 }
 public enum NativeCreativeEffect: String, CaseIterable, Sendable {
     case chorus = "Chorus", phaser = "Phaser", amp = "Amp", divisionGate = "Gate Divisor", softClipper = "Soft Clipper"
+    case graphicEQ = "EQ - 31 Band"
+
+    private static let graphicEQLabels = [
+        "20", "25", "31.5", "40", "50", "63", "80", "100", "125", "160", "200", "250", "315", "400",
+        "500", "630", "800", "1k", "1.25k", "1.6k", "2k", "2.5k", "3.15k", "4k", "5k", "6.3k",
+        "8k", "10k", "12.5k", "16k", "20k"
+    ]
 
     public struct Parameter: Sendable {
         public let key: String
@@ -209,6 +217,9 @@ public enum NativeCreativeEffect: String, CaseIterable, Sendable {
         case .divisionGate: return [
             .init("division", "Division", 2...32, 16, ""), .init("depth", "Depth", 0...100, 100, "%"),
             .init("smoothing", "Smoothing", 0.2...30, 4, "ms"), .init("steps", "Steps", 0...65535, 0x5b5b, "")]
+        case .graphicEQ: return Self.graphicEQLabels.enumerated().map { index, title in
+            .init("band\(index)", title, -12...12, 0, "dB")
+        } + [.init("output", "Output", -12...12, 0, "dB")]
         }
     }
 }
@@ -324,6 +335,8 @@ public struct NativeFXSettings: Codable, Equatable, Sendable {
     public var ampEnabled: Bool?
     public var softClipperEnabled: Bool?
     public var softClipper: [String: Double]?
+    public var graphicEQEnabled: Bool?
+    public var graphicEQ: [String: Double]?
     public var divisionGateEnabled: Bool?
     public var chorus: [String: Double]?
     public var phaser: [String: Double]?
@@ -341,6 +354,7 @@ public struct NativeFXSettings: Codable, Equatable, Sendable {
         case .phaser: return phaser
         case .amp: return amp
         case .softClipper: return softClipper
+        case .graphicEQ: return graphicEQ
         case .divisionGate: return divisionGate
         }
     }
@@ -350,6 +364,7 @@ public struct NativeFXSettings: Codable, Equatable, Sendable {
         case .phaser: phaser = values
         case .amp: amp = values
         case .softClipper: softClipper = values
+        case .graphicEQ: graphicEQ = values
         case .divisionGate: divisionGate = values
         }
     }
@@ -429,8 +444,9 @@ public struct NativeFXSettings: Codable, Equatable, Sendable {
     public func validate() throws {
         for effect in NativeCreativeEffect.allCases {
             guard let values = creativeParameters(effect) else { continue }
+            let parameters = effect.parameters
             for (key, value) in values {
-                guard effect.parameters.first(where: { $0.key == key })?.range.contains(value) == true else {
+                guard parameters.first(where: { $0.key == key })?.range.contains(value) == true else {
                     throw ProjectError.invalid("Invalid FX settings")
                 }
             }
@@ -579,11 +595,13 @@ extension NativeFXSettings {
     public func isEnabled(_ effect: String) -> Bool {
         if let instance = instances?.first(where: { $0.effectKey == effect }) { return instance.settings.isEnabled(instance.kind) }
         if let plugin = externalPlugins?.first(where: { $0.effectKey == effect }) { return !plugin.bypassed }
+        if effect == NativeCreativeEffect.graphicEQ.rawValue { return graphicEQEnabled == true }
         switch effect { case "CatSynth": return catSynthEnabled == true; case "Drummer Pad 16": return drummer16Enabled == true; case "Drummer Pad 48": return drummer48Enabled == true; case "Arpeggiator": return arpeggiatorEnabled == true; case "Chorus": return chorusEnabled == true; case "Phaser": return phaserEnabled == true; case "Amp": return ampEnabled == true; case "Soft Clipper": return softClipperEnabled == true; case "Gate Divisor": return divisionGateEnabled == true; case "CatLive Trigger": return triggerEnabled == true; case "Cat Gate": return gateEnabled == true; case Self.stemSeparator: return false; case "Instruments": return instrumentID != nil && instrumentBypassed != true; case "EQ": return eqEnabled; case "Compressor": return compressorEnabled; case "Limiter": return limiterEnabled == true; case "Pitch": return pitchEnabled == true; case "Delay": return delayEnabled; case "Reverb": return reverbEnabled; default: return false }
     }
     public mutating func setEnabled(_ effect: String, enabled: Bool) {
         if let index = instances?.firstIndex(where: { $0.effectKey == effect }), let kind = instances?[index].kind { instances?[index].settings.setEnabled(kind, enabled: enabled); return }
         if let index = externalPlugins?.firstIndex(where: { $0.effectKey == effect }) { externalPlugins?[index].bypassed = !enabled; return }
+        if effect == NativeCreativeEffect.graphicEQ.rawValue { graphicEQEnabled = enabled; return }
         switch effect { case "CatSynth": catSynthEnabled = enabled; case "Drummer Pad 16": drummer16Enabled = enabled; case "Drummer Pad 48": drummer48Enabled = enabled; case "Arpeggiator": arpeggiatorEnabled = enabled; case "Chorus": chorusEnabled = enabled; case "Phaser": phaserEnabled = enabled; case "Amp": ampEnabled = enabled; case "Soft Clipper": softClipperEnabled = enabled; case "Gate Divisor": divisionGateEnabled = enabled; case "CatLive Trigger": triggerEnabled = enabled; case "Cat Gate": gateEnabled = enabled; case Self.stemSeparator:
             stemSeparatorEnabled = enabled
             // Older projects used CatStem only as an offline editor. Opening

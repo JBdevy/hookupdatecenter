@@ -4,7 +4,117 @@ import SwiftUI
 import UniformTypeIdentifiers
 #if os(macOS)
 import AppKit
+#elseif os(iOS)
+import UIKit
 #endif
+
+private struct LibraryScrollView<Content: View>: View {
+    let axes: Axis.Set
+    @ViewBuilder let content: () -> Content
+    @AppStorage(JarasInterfaceTheme.preferenceKey) private var theme = JarasInterfaceTheme.defaultTheme
+
+    init(_ axes: Axis.Set = .vertical, @ViewBuilder content: @escaping () -> Content) {
+        self.axes = axes
+        self.content = content
+    }
+
+    var body: some View {
+        ScrollView(axes) {
+            content()
+                #if os(macOS)
+                .background(LibraryScrollerSetup(axes: axes, rail: NSColor(Color(hex: theme.scrollRailHex))))
+                #endif
+        }
+    }
+}
+
+#if os(macOS)
+private struct LibraryScrollerSetup: NSViewRepresentable {
+    let axes: Axis.Set
+    let rail: NSColor
+
+    func makeNSView(context: Context) -> Probe { Probe() }
+
+    func updateNSView(_ view: Probe, context: Context) {
+        view.axes = axes
+        view.rail = rail
+        view.configure()
+    }
+
+    final class Probe: NSView {
+        var axes: Axis.Set = .vertical
+        var rail = NSColor.clear
+
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            configure()
+            DispatchQueue.main.async { [weak self] in self?.configure() }
+        }
+
+        override func layout() {
+            super.layout()
+            configure()
+        }
+
+        func configure() {
+            guard let scroll = enclosingScrollView else { return }
+            if scroll.scrollerStyle != .legacy { scroll.scrollerStyle = .legacy }
+            if !scroll.autohidesScrollers { scroll.autohidesScrollers = true }
+            if axes.contains(.vertical) {
+                if !(scroll.verticalScroller is GridNativeScrollView.GreenScroller) {
+                    let bar = GridNativeScrollView.GreenScroller(frame: NSRect(x: 0, y: 0, width: 11, height: 100))
+                    bar.controlSize = .small
+                    scroll.verticalScroller = bar
+                }
+                (scroll.verticalScroller as? GridNativeScrollView.GreenScroller)?.slotColor = rail
+            }
+            if axes.contains(.horizontal) {
+                if !(scroll.horizontalScroller is GridNativeScrollView.GreenScroller) {
+                    let bar = GridNativeScrollView.GreenScroller(frame: NSRect(x: 0, y: 0, width: 100, height: 11))
+                    bar.controlSize = .small
+                    scroll.horizontalScroller = bar
+                }
+                (scroll.horizontalScroller as? GridNativeScrollView.GreenScroller)?.slotColor = rail
+            }
+        }
+    }
+}
+#endif
+
+private struct LibraryPreviewGainKnob: View {
+    @Binding var value: Double
+    @State private var origin: Double?
+
+    var body: some View {
+        Canvas { context, size in
+            context.withCGContext {
+                MixerPanFace.draw(value: 1 + value / 30, in: CGRect(origin: .zero, size: size), context: $0)
+            }
+        }
+        .frame(width: 24, height: 28)
+        .contentShape(Rectangle())
+        .gesture(DragGesture(minimumDistance: 3)
+            .onChanged { drag in
+                if origin == nil { origin = value }
+                setGain((origin ?? value) + Double(drag.translation.width - drag.translation.height) * 0.5)
+            }
+            .onEnded { _ in origin = nil })
+        .onTapGesture(count: 2) { setGain(0) }
+        .accessibilityLabel("Sample preview volume")
+        .accessibilityValue(value <= -60 ? "−∞ dB" : String(format: "%.0f dB", value))
+        .accessibilityAdjustableAction { direction in
+            switch direction {
+            case .increment: setGain(value + 1)
+            case .decrement: setGain(value - 1)
+            @unknown default: break
+            }
+        }
+    }
+
+    private func setGain(_ next: Double) { value = min(0, max(-60, next.rounded())) }
+}
 
 private struct LibraryRowDrag: ViewModifier {
     let title: String
@@ -213,6 +323,27 @@ enum WorkspaceBrowserFileTransfer {
     }
 
     #if os(iOS)
+    func createFolder(named name: String, in parent: URL) async throws {
+        guard !name.isEmpty, name != ".", name != "..", !name.contains("/"), !name.contains("\0") else {
+            throw ProjectError.invalid(JarasLocalization.string("Invalid folder name"))
+        }
+        try await Task.detached(priority: .userInitiated) {
+            var coordinationError: NSError?
+            var result: Result<Void, Error>?
+            NSFileCoordinator().coordinate(writingItemAt: parent, options: [], error: &coordinationError) { directory in
+                result = Result {
+                    try FileManager.default.createDirectory(at: directory.appendingPathComponent(name, isDirectory: true),
+                                                            withIntermediateDirectories: false)
+                }
+            }
+            if let coordinationError { throw coordinationError }
+            guard let result else { throw ProjectError.invalid("Could not access the selected folder.") }
+            try result.get()
+        }.value
+        folders = folders.filter { $0.key.last != parent }
+        if path.last == parent { refresh() }
+    }
+
     private static func resolveBookmark(_ bookmark: Data) -> URL? {
         var stale = false
         return try? URL(resolvingBookmarkData: bookmark, bookmarkDataIsStale: &stale)
@@ -322,6 +453,11 @@ private struct WorkspaceFilesPane: View {
     @State private var query = ""
     @State private var choosingFolder = false
     @State private var selectionError: String?
+    #if os(iOS)
+    @State private var creatingFolder = false
+    @State private var folderName = ""
+    @State private var folderError: String?
+    #endif
 
     var body: some View {
         VStack(spacing: 0) {
@@ -348,13 +484,35 @@ private struct WorkspaceFilesPane: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear { files.refresh() }
         .onChange(of: files.path) { _ in query = ""; selectionError = nil }
+        #if os(iOS)
+        .sheet(isPresented: $choosingFolder) {
+            WorkspaceFilesFolderPicker(directory: files.path.last) { folder in
+                if let folder { selectionError = nil; files.addFolder(folder) }
+                choosingFolder = false
+            }
+        }
+        .alert("Create folder", isPresented: $creatingFolder) {
+            TextField("Folder name", text: $folderName)
+            Button("Cancel", role: .cancel) {}
+            Button("Create") {
+                guard let parent = files.path.last else { return }
+                let name = folderName.trimmingCharacters(in: .whitespacesAndNewlines)
+                Task {
+                    do { try await files.createFolder(named: name, in: parent) }
+                    catch { folderError = error.localizedDescription }
+                }
+            }.disabled(folderName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        }
+        .alert("Create folder", isPresented: Binding(get: { folderError != nil }, set: { if !$0 { folderError = nil } })) {
+            Button("OK") { folderError = nil }
+        } message: { Text(verbatim: folderError ?? "") }
+        #else
         .fileImporter(isPresented: $choosingFolder, allowedContentTypes: [.folder]) { result in
             switch result {
             case .success(let url): selectionError = nil; files.addFolder(url)
             case .failure(let error): selectionError = error.localizedDescription
             }
         }
-        #if os(macOS)
         .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didMountNotification)) { _ in files.mountsChanged() }
         .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didUnmountNotification)) { _ in files.mountsChanged() }
         #endif
@@ -377,7 +535,7 @@ private struct WorkspaceFilesPane: View {
             }
             Spacer(minLength: 0)
             HStack(spacing: 1) {
-                button("list.bullet", "List view", active: !columns) { columns = false }
+                button("setlist", "List view", active: !columns) { columns = false }
                 button("rectangle.split.2x1", "Column view", active: columns) { columns = true }
             }.background(theme.panel, in: RoundedRectangle(cornerRadius: 5))
         }.padding(.horizontal, 7).frame(height: 33)
@@ -388,10 +546,10 @@ private struct WorkspaceFilesPane: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 5) {
                     Button { files.navigate(to: []) } label: {
-                        Label("Locations", systemImage: "externaldrive")
+                        Label { Text("Locations") } icon: { TransportControlIcon(name: "externaldrive", size: 12) }
                     }.buttonStyle(.plain)
                     ForEach(Array(files.path.enumerated()), id: \.offset) { depth, url in
-                        Image(systemName: "chevron.right").font(.jarasSystem(size: 7)).foregroundStyle(theme.secondary)
+                        TransportControlIcon(name: "chevron.right", size: 10, color: theme.secondary)
                         Button {
                             files.navigate(to: Array(files.path.prefix(depth + 1)))
                         } label: {
@@ -409,23 +567,31 @@ private struct WorkspaceFilesPane: View {
     private var search: some View {
         HStack(spacing: 4) {
             HStack(spacing: 5) {
-                Image(systemName: "magnifyingglass").foregroundStyle(theme.secondary)
+                TransportControlIcon(name: "search", size: 13, color: theme.secondary)
                 TextField("Search files", text: $query).textFieldStyle(.plain)
                 if !query.isEmpty {
-                    Button { query = "" } label: { Image(systemName: "xmark.circle.fill") }
+                    Button { query = "" } label: { TransportControlIcon(name: "xmark.circle.fill", size: 14) }
                         .buttonStyle(.plain).accessibilityLabel(Text("Clear search"))
                 }
             }.padding(.horizontal, 7).frame(height: 25)
                 .background(theme.display, in: RoundedRectangle(cornerRadius: 5))
-            button("arrow.clockwise", "Refresh folders", action: files.refresh)
+            button("refresh", "Refresh folders", action: files.refresh)
+            #if os(iOS)
+            button("externaldrive", "Browse in Files") { choosingFolder = true }
+            button("folder.badge.plus", "Create folder") {
+                folderName = ""
+                creatingFolder = true
+            }.disabled(files.path.isEmpty)
+            #else
             button("folder.badge.plus", "Choose folder") { choosingFolder = true }
+            #endif
         }.padding(.horizontal, 7).padding(.vertical, 5)
     }
 
     private func button(_ symbol: String, _ label: LocalizedStringKey,
                         active: Bool = false, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Image(systemName: symbol)
+            TransportControlIcon(name: symbol, size: 14)
                 .frame(width: 24, height: 24)
                 .foregroundStyle(active ? Color.black : Color.primary)
                 .background(active ? JarasTheme.green : Color.clear, in: RoundedRectangle(cornerRadius: 4))
@@ -437,7 +603,7 @@ private struct WorkspaceFilesPane: View {
     private var columnBrowser: some View {
         GeometryReader { geometry in
             ScrollViewReader { scroll in
-                ScrollView(.horizontal) {
+                LibraryScrollView(.horizontal) {
                     HStack(spacing: 0) {
                         if files.path.isEmpty {
                             fileList(depth: 0).frame(width: geometry.size.width)
@@ -472,7 +638,7 @@ private struct WorkspaceFilesPane: View {
             Text(LocalizedStringKey(query.isEmpty || !current ? "Empty folder" : "No matching files"))
                 .foregroundStyle(theme.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
-            ScrollView(.vertical) {
+            LibraryScrollView {
                 LazyVStack(spacing: 1) {
                     ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
                         let selected = files.path.indices.contains(depth) && files.path[depth] == entry.url
@@ -488,12 +654,11 @@ private struct WorkspaceFilesPane: View {
 
     @ViewBuilder private func fileRow(_ entry: WorkspaceFiles.Entry, depth: Int) -> some View {
         let label = HStack(spacing: 6) {
-            Image(systemName: entry.volume ? "externaldrive" : entry.folder ? "folder.fill" : "doc")
-                .foregroundStyle(entry.folder ? JarasTheme.green : theme.secondary)
-                .frame(width: 14)
+            TransportControlIcon(name: entry.volume ? "externaldrive" : entry.folder ? "library.file-folder" : "doc",
+                                 size: 14, color: entry.folder ? JarasTheme.green : theme.secondary)
             Text(verbatim: entry.name).lineLimit(1).truncationMode(.middle)
             Spacer(minLength: 0)
-            if entry.folder { Image(systemName: "chevron.right").font(.jarasSystem(size: 7)) }
+            if entry.folder { TransportControlIcon(name: "chevron.right", size: 10, color: theme.secondary) }
         }.frame(maxWidth: .infinity, minHeight: 24).contentShape(Rectangle())
         if entry.folder {
             Button { files.openFolder(entry.url, from: depth) } label: { label }.buttonStyle(.plain)
@@ -509,6 +674,37 @@ private struct WorkspaceFilesPane: View {
         }
     }
 }
+
+#if os(iOS)
+private struct WorkspaceFilesFolderPicker: UIViewControllerRepresentable {
+    let directory: URL?
+    let finished: (URL?) -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(finished: finished) }
+
+    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.folder], asCopy: false)
+        picker.directoryURL = directory
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ picker: UIDocumentPickerViewController, context: Context) {}
+
+    final class Coordinator: NSObject, UIDocumentPickerDelegate {
+        let finished: (URL?) -> Void
+        init(finished: @escaping (URL?) -> Void) { self.finished = finished }
+
+        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+            finished(urls.first)
+        }
+
+        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+            finished(nil)
+        }
+    }
+}
+#endif
 
 #if os(macOS)
 struct DesktopLibraryDock: View {
@@ -541,7 +737,7 @@ struct DesktopLibraryPane: View {
     @State private var visibilityChanges = PassthroughSubject<Bool, Never>()
     var body: some View {
         let maximum = WorkspaceLibrary.maximumWidth(folders: folders, available: available)
-        let width = min(maximum, liveWidth ?? saved)
+        let width = min(maximum, max(WorkspaceLibrary.minimumPanelWidth, liveWidth ?? saved))
         let layout = Layout(controller: ObjectIdentifier(show), theme: theme, width: width, maximum: maximum)
         RetainedWorkspacePane(width: width, visible: visible, identity: AnyHashable(layout)) {
             ResizableWorkspaceLibrary(theme: theme, show: show, width: width, maximumWidth: maximum,
@@ -582,8 +778,10 @@ struct DesktopSamplerPane: View {
 #endif
 
 private func clampedFolderWidth(_ requested: CGFloat, panel: CGFloat) -> CGFloat {
-    let minimum = min(90, panel / 2)
-    return min(max(minimum, requested), max(minimum, panel - 99))
+    let available = max(0, panel - 1)
+    let minimum = min(90, max(0, available - WorkspaceLibrary.minimumDetailsWidth))
+    let maximum = max(minimum, available - WorkspaceLibrary.minimumDetailsWidth)
+    return min(maximum, max(minimum, requested))
 }
 
 private func libraryResizeEdge(theme: JarasInterfaceTheme, label: LocalizedStringKey, value: CGFloat,
@@ -648,7 +846,8 @@ struct ResizableWorkspaceLibrary: View {
                 libraryResizeEdge(theme: theme, label: "Resize Library", value: width, maximum: maximumWidth,
                                   affectsTimeline: true, start: $dragStart,
                                   ended: { finishOuterResize?() }) {
-                    let minimum = min(maximumWidth, clampedFolderWidth(folderWidth, panel: width) + 99)
+                    let minimum = min(maximumWidth,
+                        max(90, clampedFolderWidth(folderWidth, panel: width)) + 1 + WorkspaceLibrary.minimumDetailsWidth)
                     let next = min(maximumWidth, max(minimum, $0))
                     if next != preferredWidth { preferredWidth = next }
                 }
@@ -792,7 +991,7 @@ private struct LibraryNoteReadingView: View {
     }
 
     var body: some View {
-        ScrollView {
+        LibraryScrollView {
             Text(styledText)
                 .font(.jarasSystem(size: 14))
                 .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -903,7 +1102,7 @@ private struct LibraryDockPickerList<Content: View>: View {
     }
 
     var body: some View {
-        ScrollView {
+        LibraryScrollView {
             VStack(alignment: .leading, spacing: 0, content: content)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -1022,6 +1221,8 @@ private struct LibraryDockPickerList<Content: View>: View {
 struct WorkspaceLibrary: View {
     static let folderWidthKey = "jaras.library.foldersWidth"
     static let defaultFolderWidth = 146.0
+    static let minimumDetailsWidth: CGFloat = 140
+    static let minimumPanelWidth: CGFloat = 90 + 1 + minimumDetailsWidth
     @MainActor private static var categoriesImporting = Set<UUID>()
     private static let maximumDetailsWidth: CGFloat = 364.4921875
     static func maximumWidth(folders: Double, available: CGFloat) -> CGFloat {
@@ -1062,7 +1263,7 @@ struct WorkspaceLibrary: View {
     private static let nativeTypes: [String: String] = [
         "EQ": "EQ", "Compressor": "Dynamics", "Pitch": "Pitch Shift", "Delay": "Delay",
         "Reverb": "Reverb", "Limiter": "Dynamics", "CatLive Trigger": "Trigger", "Cat Gate": "Dynamics",
-        "Chorus": "Modulation", "Phaser": "Modulation", "Amp": "Distortion", "Soft Clipper": "Dynamics", "Gate Divisor": "Dynamics", "Arpeggiator": "MIDI", "Drummer Pad 16": "Instrument", "Drummer Pad 48": "Instrument", "CatSynth": "Instrument"
+        "Chorus": "Modulation", "Phaser": "Modulation", "Amp": "Distortion", "Soft Clipper": "Dynamics", "Gate Divisor": "Dynamics", "Arpeggiator": "MIDI", "Drummer Pad 16": "Instrument", "Drummer Pad 48": "Instrument", "CatSynth": "Instrument", "EQ - 31 Band": "EQ"
     ]
 
     let theme: JarasInterfaceTheme
@@ -1115,6 +1316,7 @@ struct WorkspaceLibrary: View {
     #endif
     @State private var selection: Selection?
     @State private var searchText = ""
+    @FocusState private var categorySearchFocused: Bool
     @State private var presets: [FXPreset] = []
 
     private static func pluginTypes(externalTypes: [String]) -> [String] {
@@ -1183,7 +1385,7 @@ struct WorkspaceLibrary: View {
     private var folders: some View {
         VStack(spacing: 0) {
             folderToolbar
-            ScrollView {
+            LibraryScrollView {
                 VStack(spacing: 2) {
                     folder("Instruments", expanded: $instrumentsExpanded, shaded: false, icon: "library.instruments")
                         .contextMenu {
@@ -1524,11 +1726,17 @@ struct WorkspaceLibrary: View {
             TextField("Search", text: $searchText)
                 .textFieldStyle(.plain)
                 .font(.jarasSystem(size: 12))
+                .focused($categorySearchFocused)
                 .accessibilityIdentifier("library-category-search")
         }
         .padding(.horizontal, 7)
         .frame(height: 24)
         .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 4))
+        #if os(macOS)
+        .background(FieldOutsideClick(active: categorySearchFocused, includesOtherWindows: true) {
+            categorySearchFocused = false
+        })
+        #endif
         .padding(.horizontal, 6)
         .frame(height: 32)
     }
@@ -1549,7 +1757,7 @@ struct WorkspaceLibrary: View {
         case .midiCategory(let id):
             midiList(id)
         case .midiChords(let category):
-            ScrollView {
+            LibraryScrollView {
                 LazyVStack(spacing: 2) {
                     ForEach(LibraryMIDIChord.catalog.filter { $0.category == category && matchesSearch($0.name) }, id: \.name) { chord in
                         HStack(spacing: 6) {
@@ -1609,7 +1817,7 @@ struct WorkspaceLibrary: View {
     private func instrumentList(_ category: InstrumentCategory) -> some View {
         let entries = instruments.entries.filter { $0.category == category && matchesSearch($0.name) }
         return VStack(alignment: .leading, spacing: 0) {
-            ScrollView {
+            LibraryScrollView {
                 LazyVStack(spacing: 2) {
                     ForEach(Array(entries.enumerated()), id: \.element.id) { index, instrument in
                         instrumentRow(instrument, shaded: index.isMultiple(of: 2))
@@ -1693,7 +1901,8 @@ struct WorkspaceLibrary: View {
 
     private func entryName(_ name: String, icon: String) -> some View {
         HStack(spacing: 6) {
-            Image(systemName: icon).font(.jarasSystem(size: 11, weight: .medium)).foregroundStyle(theme.secondary)
+            if icon == "waveform" { TransportControlIcon(name: icon, size: 12, color: theme.secondary) }
+            else { Image(systemName: icon).font(.jarasSystem(size: 11, weight: .medium)).foregroundStyle(theme.secondary) }
             Text(verbatim: name).font(.jarasSystem(size: 12, weight: .medium)).lineLimit(1)
             Spacer(minLength: 0)
         }
@@ -1709,17 +1918,17 @@ struct WorkspaceLibrary: View {
             if favoritesOnly { return favoriteKeys.contains("native:" + $0) }
             return type == nil || type == "Native" || category == type
         }
-        return ScrollView {
+        return LibraryScrollView {
             LazyVStack(spacing: 2) {
                 ForEach(Array(native.enumerated()), id: \.element) { index, name in
                     let key = "native:" + name
                     pluginRow(pluginName(key), identity: key, shaded: index.isMultiple(of: 2),
-                              favorite: favoriteKeys.contains(key)) { toggleFavorite(key) }
+                              favorite: favoriteKeys.contains(key), format: "Native") { toggleFavorite(key) }
                 }
                 #if os(macOS)
                 ForEach(Array(external.enumerated()), id: \.element.id) { index, plugin in
                     pluginRow(plugin.name, identity: "vst3:" + plugin.classID, shaded: (native.count + index).isMultiple(of: 2),
-                              favorite: plugins.isFavorite(plugin)) { plugins.toggleFavorite(plugin) }
+                              favorite: plugins.isFavorite(plugin), format: plugin.formatBadge) { plugins.toggleFavorite(plugin) }
                 }
                 #endif
             }
@@ -1727,11 +1936,17 @@ struct WorkspaceLibrary: View {
         }
     }
 
-    private func pluginRow(_ name: String, identity: String, shaded: Bool, favorite: Bool, toggle: @escaping () -> Void) -> some View {
+    private func pluginRow(_ name: String, identity: String, shaded: Bool, favorite: Bool,
+                           format: String, toggle: @escaping () -> Void) -> some View {
         HStack(spacing: 5) {
             entryName(name, icon: "puzzlepiece.extension")
                 .contentShape(Rectangle())
                 .modifier(effectDrag(name, identity: identity))
+            Text(verbatim: format)
+                .font(.jarasSystem(size: 9, weight: .semibold))
+                .foregroundStyle(format == "ARA2" ? JarasTheme.green : theme.secondary)
+                .fixedSize().padding(.horizontal, 4).padding(.vertical, 2)
+                .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 3))
             favoriteButton(favorite, action: toggle)
         }
             .padding(.horizontal, 6).frame(height: 27)
@@ -1748,9 +1963,8 @@ struct WorkspaceLibrary: View {
 
     private func favoriteButton(_ favorite: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Image(systemName: favorite ? "star.fill" : "star")
-                .font(.jarasSystem(size: 10, weight: .medium))
-                .foregroundStyle(favorite ? JarasTheme.yellow : theme.secondary)
+            TransportControlIcon(name: favorite ? "star.fill" : "star", size: 11,
+                                 color: favorite ? JarasTheme.yellow : theme.secondary)
                 .frame(width: 19, height: 20).contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -1787,7 +2001,7 @@ struct WorkspaceLibrary: View {
     private func presetList(_ plugin: String) -> some View {
         let name = pluginName(plugin)
         let entries = presets.filter { $0.plugin == plugin && matchesSearch("\(name) - \($0.name)") }
-        return ScrollView {
+        return LibraryScrollView {
             LazyVStack(spacing: 2) {
                 ForEach(Array(entries.enumerated()), id: \.element.id) { index, preset in
                     entryName("\(name) - \(preset.name)", icon: "slider.horizontal.3")
@@ -1918,7 +2132,7 @@ struct WorkspaceLibrary: View {
 
     private func midiList(_ id: UUID) -> some View {
         VStack(spacing: 0) {
-            ScrollView {
+            LibraryScrollView {
                 LazyVStack(spacing: 2) {
                     ForEach(midiFiles.filter { matchesSearch($0.deletingPathExtension().lastPathComponent) }, id: \.self) { url in
                         HStack(spacing: 6) {
@@ -2135,15 +2349,17 @@ struct WorkspaceLibrary: View {
     private var samplerList: some View {
         let favorites = favoriteKeys
         return VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 5) {
+            HStack(spacing: 0) {
                 ControlIcon(name: "speaker.wave.2", size: 14)
-                Slider(value: $samplerPreviewDB, in: -60...0, step: 1)
-                    .tint(JarasTheme.green)
-                    .accessibilityLabel("Sample preview volume")
-                Text(verbatim: samplerPreviewDB <= -60 ? "−∞ dB" : String(format: "%.0f dB", samplerPreviewDB))
-                    .font(.jarasSystem(size: 10)).monospacedDigit().lineLimit(1).frame(width: 37, alignment: .trailing)
+                Spacer(minLength: 0)
+                HStack(spacing: 3) {
+                    LibraryPreviewGainKnob(value: $samplerPreviewDB)
+                    Text(verbatim: samplerPreviewDB <= -60 ? "−∞ dB" : String(format: "%.0f dB", samplerPreviewDB))
+                        .font(.jarasSystem(size: 10)).monospacedDigit().lineLimit(1)
+                        .frame(width: 36, alignment: .leading)
+                }
             }.padding(.horizontal, 6).frame(height: 32)
-            ScrollView {
+            LibraryScrollView {
                 LazyVStack(spacing: 2) {
                     ForEach(Array(samplerFiles.filter { matchesSearch($0.name) }.enumerated()), id: \.element.id) { index, sampler in
                         let playing = preview?.url == sampler.url
@@ -2152,9 +2368,8 @@ struct WorkspaceLibrary: View {
                                 HStack(spacing: 0) {
                                     entryName(sampler.name, icon: "waveform").padding(.leading, 6)
                                         .frame(maxWidth: .infinity, alignment: .leading)
-                                    Image(systemName: playing ? "stop.fill" : "play.fill")
-                                        .font(.jarasSystem(size: 9, weight: .semibold))
-                                        .foregroundStyle(playing ? JarasTheme.green : theme.secondary)
+                                    TransportControlIcon(name: playing ? "stopall" : "play", size: 11,
+                                                         color: playing ? JarasTheme.green : theme.secondary)
                                         .frame(width: 24)
                                 }.frame(maxWidth: .infinity, maxHeight: .infinity).contentShape(Rectangle())
                             }.buttonStyle(.plain)
@@ -2473,7 +2688,7 @@ struct WorkspaceLibrary: View {
 
     private func timelineRows(_ rows: [Entry]) -> some View {
         ScrollViewReader { scroll in
-            ScrollView {
+            LibraryScrollView {
                 LazyVStack(spacing: Self.rowSpacing) {
                     ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
                         Group {

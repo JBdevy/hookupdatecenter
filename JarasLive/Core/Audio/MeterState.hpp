@@ -1,4 +1,5 @@
 #pragma once
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cmath>
@@ -20,9 +21,37 @@ public:
     float amplitude() const noexcept { return maximum.load(std::memory_order_relaxed); }
     void clear() noexcept { maximum.store(0, std::memory_order_relaxed); }
 };
+// Full-wave rectifier used only by the VU display, independent of peak metering.
+inline float meanMagnitude(const float *samples, int count) noexcept {
+    if (count <= 0) return 0;
+    float sum = 0;
+    for (int i = 0; i < count; ++i) sum += std::abs(samples[i]);
+    return sum / count;
+}
+
+class AnalogVU {
+    double displacement = 0, velocity = 0;
+public:
+    float update(double mean, double elapsed) noexcept {
+        if (std::isfinite(elapsed) && elapsed > 0) {
+            const auto input = std::isfinite(mean) ? std::max(0., mean) : 0.;
+            // 99% step response in 300 ms, 1.25% overshoot of the pointer.
+            constexpr double damping = 10.981360858709374, frequency = 7.872832704200884;
+            const auto phase = frequency * elapsed;
+            const auto cosine = std::cos(phase), sine = std::sin(phase) / frequency;
+            const auto decay = std::exp(-damping * elapsed), error = displacement - input;
+            displacement = input + decay * (error * (cosine + damping * sine) + velocity * sine);
+            velocity = decay * (velocity * (cosine - damping * sine)
+                - error * (damping * damping + frequency * frequency) * sine);
+        }
+        // Mean absolute level of a sine whose peak is -18 dBFS.
+        constexpr double reference = 0.08014568090841664;
+        return float(std::round(std::clamp(20 * std::log10(std::max(.000001, displacement) / reference), -20., 3.) * 10) / 10);
+    }
+};
 struct TrackMeterState {
     std::atomic<float> peak{0};
-    std::atomic<float> rms{0};
+    std::atomic<float> vuMean{0};
     PeakHold held;
     std::array<std::atomic<float>, 2> levels{};
     std::atomic<float> fxInput{0}, fxOutput{0}, gainReduction{-1};

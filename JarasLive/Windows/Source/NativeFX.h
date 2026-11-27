@@ -31,16 +31,18 @@ public:
         unsigned eqCount = 0;
         unsigned channels = 3;
         double sampleRate = 48000;
-        std::array<float, 16> values{};
+        std::array<float, 32> values{};
         std::array<float, 5> highPass{}, lowPass{};
     };
     static ParameterPreview parameterPreview(const String &kind, const var &, double sampleRate);
     void previewParameters(const String &key, const ParameterPreview &) noexcept;
     void prepare(const var& settings,double sampleRate,const NativeFX *previous=nullptr,bool offline=false,bool prewarm=true,
-                 const Dispatcher &pluginDispatcher = {}, const File &mediaDirectory = {});
-    void process(AudioBuffer<float>&,int samples,double seconds=0,bool playing=true,const MidiBuffer *midi=nullptr,double stemSeconds=std::numeric_limits<double>::quiet_NaN(),const jaras::PluginTempoMap *tempoMap=nullptr);
+                 const Dispatcher &pluginDispatcher = {}, const File &mediaDirectory = {},
+                 std::shared_ptr<const native::vst3::ARATimeline> araTimeline = {});
+    void process(AudioBuffer<float>&,int samples,double seconds=0,bool playing=true,const MidiBuffer *midi=nullptr,double stemSeconds=std::numeric_limits<double>::quiet_NaN(),const jaras::PluginTempoMap *tempoMap=nullptr,bool renderARA=true);
     void processIdleEditors(int samples, double seconds, bool playing,const jaras::PluginTempoMap *tempoMap=nullptr);
     bool hasExternal() const;
+    bool hasARA() const;
     // Left/right input peaks and pre-makeup gain reduction for one insert.
     std::array<float, 3> takeDynamicsLevels(const String &key) const;
     float gainReduction() const noexcept { return reductionDB; }

@@ -104,13 +104,19 @@ inline bool drawDesktopToolbarSymbol(Graphics &g, const String &name, juce::Rect
     };
     const auto icon = symbols.find(name);
     if (icon == symbols.end()) return false;
-    const float scale = std::min(bounds.getWidth(), bounds.getHeight()) / 24.f;
+    const float density = std::max(.25f, g.getInternalContext().getPhysicalPixelScaleFactor());
+    const float side = std::round(std::min(bounds.getWidth(), bounds.getHeight()) * density) / density;
+    if (side <= 0) return true;
+    const float scale = side / 24.f;
+    const auto pin = [density](float point) { return std::round(point * density) / density; };
     const auto transform = AffineTransform::scale(scale)
-        .translated(bounds.getCentreX() - 12 * scale, bounds.getCentreY() - 12 * scale);
+        .translated(pin(bounds.getCentreX() - side * .5f), pin(bounds.getCentreY() - side * .5f));
     g.fillPath(icon->second.interior, transform);
     auto outline = icon->second.outline;
     outline.applyTransform(transform);
-    g.strokePath(outline, PathStrokeType(1.7f * scale, PathStrokeType::curved, PathStrokeType::rounded));
+    // A small symbol must still resolve a complete physical pixel at compact scale.
+    g.strokePath(outline, PathStrokeType(std::max(1.7f * scale, 1.f / density),
+                                        PathStrokeType::curved, PathStrokeType::rounded));
     return true;
 }
 }

@@ -236,6 +236,39 @@ void Workspace::runMediaImportRegression(const File &results, std::function<void
         undo();
         checks.add("native_peer_single_drop_and_ctrl_z");
 
+        const auto third = source(results.getChildFile("sources"), "Audio 03.wav", 12000);
+        const std::array<ID, 3> existingIDs{uuid(), uuid(), uuid()};
+        session.edit([&](auto &project) {
+            for (size_t i = 0; i < existingIDs.size(); ++i) {
+                jaras::Track track;
+                track.id = existingIDs[i]; track.role.id = "other";
+                track.name = utf8("Existing " + String((int)i + 1));
+                project.songs.front().tracks.push_back(std::move(track));
+            }
+        });
+        selectMixerTrack(existingIDs.front(), ModifierKeys{});
+        const Point<int> dropRow{gridPoint.x, timeline->headerHeight() + rowTop(1) + 5 - verticalOffset};
+        ComponentPeer::DragInfo batch;
+        for (const auto &file : {first, second, third}) batch.files.add(file.getFullPathName());
+        batch.position = peer->getComponent().getLocalPoint(this, getLocalPoint(timeline.get(), dropRow));
+        require(peer->handleDragMove(batch) && peer->handleDragDrop(batch), "Native peer rejected drop on existing rows");
+        importFinished(4);
+        {
+            const auto &tracks = session.song()->tracks;
+            require(tracks[0].id == existingIDs[0] && tracks[0].clips.empty(), "Batch used the selected track instead of the drop row");
+            for (int i = 1; i <= 2; ++i)
+                require(tracks[(size_t)i].id == existingIDs[(size_t)i] && tracks[(size_t)i].name == utf8("Existing " + String(i + 1)),
+                        "Batch replaced or renamed an existing track");
+            require(tracks[1].clips.size() == 1 && tracks[2].clips.size() == 1 && tracks[3].clips.size() == 1 &&
+                    tracks[3].name == "Audio 03" && tracks[1].clips.front().startTime == tracks[2].clips.front().startTime &&
+                    tracks[2].clips.front().startTime == tracks[3].clips.front().startTime,
+                    "Batch must place one item per row at the drop time and create one overflow track");
+        }
+        shortcut('Z');
+        importFinished(3);
+        undo();
+        checks.add("native_peer_batch_uses_drop_row_keeps_names_and_creates_only_overflow");
+
         const auto now = Time::getCurrentTime();
         const Point<float> emptyMixer{20.f, (float)(rowTop(0) + 20)};
         mouseDoubleClick(MouseEvent(Desktop::getInstance().getMainMouseSource(), emptyMixer,

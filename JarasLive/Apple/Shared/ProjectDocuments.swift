@@ -37,7 +37,7 @@ extension UTType {
     let multitrack = MultitrackPresentation()
     func dropAtNativeGrid(_ providers: [NSItemProvider], position: Double, track: UUID?) -> Bool {
         guard let song = show.current else { return false }
-        return importAudio(providers, start: position, track: track, song: song.id, layout: .separateTracks)
+        return dropAtGrid(providers, start: position, track: track, song: song.id, layout: .separateTracks)
     }
     private func importLyrics(_ providers: [NSItemProvider], at position: Double, song: UUID, project: UUID) {
         busy = true
@@ -101,7 +101,7 @@ extension UTType {
     @Published var projectTabIndex = 0
 
     #if os(iOS)
-    enum NativePicker: String, Identifiable { case project, projectFile, projectFolder, reaper, logic, package, packageDestination, stems, trackAudio, trackMedia, storage, temporaryDestination; var id: String { rawValue } }
+    enum NativePicker: String, Identifiable { case project, projectFile, projectFolder, reaper, logic, package, packageDestination, stems, trackAudio, trackMedia, storage; var id: String { rawValue } }
     @Published var nativePicker: NativePicker?
     @Published var nativePackagePrompt: PortableProjectImportPrompt?
     @Published private(set) var nativeStorageDirectory: URL?
@@ -317,12 +317,14 @@ extension UTType {
         }
     }
     private func receiveNativeStorage(_ root: URL) {
+        let resume = afterNativeStorage
+        afterNativeStorage = nil
         let scoped = root.startAccessingSecurityScopedResource()
         guard scoped else { error = "Could not access the selected folder."; return }
         busy = true; status = "Preparing external project folder…"; error = ""
         Task {
             var retained = false
-            var resume: (() -> Void)?
+            var preparedStorage = false
             defer { if !retained { root.stopAccessingSecurityScopedResource() } }
             do {
                 if ready { try await show.saveForClosing() }
@@ -359,14 +361,16 @@ extension UTType {
                 recent = recent.map { prepared.movedDocuments[$0.standardizedFileURL] ?? $0 }
                 for document in prepared.documents where !recent.contains(document) { recent.append(document) }
                 persistRecentProjects()
-                resume = afterNativeStorage; afterNativeStorage = nil
+                preparedStorage = true
             } catch { self.error = error.localizedDescription }
-            busy = false; status = ""; resume?()
+            busy = false; status = ""
+            if preparedStorage { resume?() }
         }
     }
     @Published var nativeNamePrompt = false
     @Published var nativeProjectName = ""
     private var nativePendingCreation: (scan: StemScan?, detectBPM: Bool, recordingChannels: Int?)?
+    var nativeNamingTemporarySave: Bool { isTemporary && nativePendingCreation == nil }
     private var nativeScopedFolders: [URL] = []
     private var nativeAudioTarget: (session: UUID, song: UUID, track: UUID, position: Double)?
     func chooseNativeTrackAudio(_ track: UUID) {
@@ -397,8 +401,11 @@ extension UTType {
         nativePicker = nil
         if kind == .project || kind == .projectFile || kind == .reaper || kind == .logic { if let url = urls.first { receiveNativeProject(url) }; return }
         if kind == .projectFolder { if let url = urls.first { receiveNativeProjectFolder(url) } else { cancelNativeProjectOpen() }; return }
-        if kind == .temporaryDestination { if let root = urls.first { receiveTemporaryDestination(root) }; return }
-        if kind == .storage { if let root = urls.first { receiveNativeStorage(root) }; return }
+        if kind == .storage {
+            if let root = urls.first { receiveNativeStorage(root) }
+            else { cancelNativePicker(kind: .storage) }
+            return
+        }
         if kind == .packageDestination { if let root = urls.first { receiveNativePackageDestination(root) }; return }
         if kind == .trackAudio || kind == .trackMedia {
             guard let target = nativeAudioTarget else { return }
@@ -435,10 +442,15 @@ extension UTType {
         }
     }
     func confirmNativeProjectName(presentPrompt: Bool = true) {
-        if isTemporary && nativePendingCreation == nil {
-            do { _ = try ProjectName.validated(nativeProjectName) }
+        if nativeNamingTemporarySave {
+            guard let directory = nativeTemporarySaveDirectory() else { return }
+            let name: String
+            do { name = try ProjectName.validated(nativeProjectName) }
             catch { self.error = error.localizedDescription; nativeNamePrompt = true; return }
-            nativePicker = .temporaryDestination; return
+            let destination = ProjectDirectoryPolicy.availableFolder(named: name, in: directory)
+                .appendingPathComponent(name).appendingPathExtension("jl")
+            Task { await promoteTemporary(to: destination) }
+            return
         }
         guard let pending = nativePendingCreation else { return }
         let name = nativeProjectName.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -637,7 +649,15 @@ extension UTType {
     }
     #endif
     @Published var pendingAudioDrop: PendingAudioDrop?
-    func importAudio(_ providers: [NSItemProvider], start: Double, track: UUID?, song: UUID, layout: AudioDropLayout? = nil, gap: Double = 0) -> Bool {
+    func dropAtGrid(_ providers: [NSItemProvider], start: Double, track: UUID?, song: UUID,
+                    layout: AudioDropLayout? = nil) -> Bool {
+        importAudio(providers, start: start, track: track, song: song,
+                    layout: track != nil && providers.count > 1 ? .separateTracks : layout,
+                    followsGridRows: true)
+    }
+
+    func importAudio(_ providers: [NSItemProvider], start: Double, track: UUID?, song: UUID, layout: AudioDropLayout? = nil,
+                     gap: Double = 0, followsGridRows: Bool = false) -> Bool {
         guard show.canControl(), ready, !busy, !providers.isEmpty, let destination = currentURL,
               let arrangement = show.snapshot.project.songs.first(where: { $0.id == song }) else { return false }
         let projectID = show.snapshot.project.id
@@ -653,8 +673,19 @@ extension UTType {
             pendingAudioDrop = PendingAudioDrop(providers: providers, start: start, track: track, song: song, project: projectID, session: show.projectSessionID)
             return true
         }
-        let targets = track.flatMap { id in arrangement.tracks.contains { $0.id == id } ? [id] : nil } ?? []
         let dropLayout = layout ?? .separateTracks
+        let targets: [UUID]
+        if followsGridRows, dropLayout == .separateTracks, providers.count > 1, let track {
+            let visibility = TrackVisibilityPreferences.shared.state(for: projectID)
+            let visible = visibility.visibleTracks(in: arrangement.tracks, area: .trackMixer)
+            guard let index = visible.firstIndex(where: { $0.id == track }) else {
+                audioImportError = "The destination track no longer exists"; return false
+            }
+            targets = StemProjectImporter.gridDropRows(in: visible, startingAt: index, limit: providers.count)
+                .map { visible[$0].id }
+        } else {
+            targets = track.map { [$0] } ?? []
+        }
         let videoTrackAvailable = arrangement.tracks.contains { $0.kind == .video }
         #if os(iOS)
         let nativeLoads = providers.map(Self.loadNativeDrop)
@@ -734,6 +765,12 @@ extension UTType {
                     let restoresMedia = remainingMissing != missingAudioPaths
                     if restoresMedia { projectAudio.setMissingAudioPaths(remainingMissing) }
                     do {
+                        if followsGridRows {
+                            let currentIDs = Set(show.snapshot.project.songs.first(where: { $0.id == song })?.tracks.map(\.id) ?? [])
+                            guard targets.allSatisfy(currentIDs.contains) else {
+                                throw ProjectError.invalid("The destination track no longer exists")
+                            }
+                        }
                         try show.insertAudioTracks(prepared.tracks, song: song, project: projectID)
                     } catch {
                         if restoresMedia { projectAudio.setMissingAudioPaths(missingAudioPaths) }
@@ -1758,6 +1795,15 @@ extension UTType {
     func createTemporary(fromFileMenu: Bool = false) {
         guard show.canControl(), !busy, !importingAudio, !show.saving,
               !TrackRecording.shared.recording, !TrackRecording.shared.busy else { return }
+        #if os(iOS)
+        guard nativePicker == nil else { return }
+        refreshNativeStorage()
+        guard nativeStorageDirectory != nil else {
+            afterNativeStorage = { [weak self] in self?.createTemporary(fromFileMenu: fromFileMenu) }
+            chooseNativeStorage()
+            return
+        }
+        #endif
         if isTemporary {
             error = ""; opened = UUID(); return
         }
@@ -1804,28 +1850,18 @@ extension UTType {
             .appendingPathComponent(name).appendingPathExtension("jl")
         await promoteTemporary(to: destination)
         #else
+        guard nativeTemporarySaveDirectory() != nil else { return }
         nativeProjectName = ""; nativePendingCreation = nil; nativeNamePrompt = true
         #endif
     }
     #if os(iOS)
-    private func receiveTemporaryDestination(_ root: URL) {
-        guard isTemporary else { return }
-        let scoped = root.startAccessingSecurityScopedResource()
-        let name: String
-        do { name = try ProjectName.validated(nativeProjectName) }
-        catch { if scoped { root.stopAccessingSecurityScopedResource() }; self.error = error.localizedDescription; return }
-        Task {
-            let destination = ProjectDirectoryPolicy.availableFolder(named: name, in: root)
-                .appendingPathComponent(name).appendingPathExtension("jl")
-            await promoteTemporary(to: destination)
-            if currentURL == destination {
-                if scoped { nativeStorageScopes.append(root) }
-                if let bookmark = try? root.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil) {
-                    var bookmarks = UserDefaults.standard.array(forKey: "jaras.nativeImportedProjectBookmarks") as? [Data] ?? []
-                    bookmarks.append(bookmark); UserDefaults.standard.set(bookmarks, forKey: "jaras.nativeImportedProjectBookmarks")
-                }
-            } else if scoped { root.stopAccessingSecurityScopedResource() }
+    private func nativeTemporarySaveDirectory() -> URL? {
+        refreshNativeStorage()
+        guard let nativeStorageDirectory else {
+            show.modalNotice = JarasLocalization.string("Choose the project folder in Home before saving this session.")
+            return nil
         }
+        return nativeStorageDirectory
     }
     #endif
     private func promoteTemporary(to destination: URL) async {

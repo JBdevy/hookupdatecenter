@@ -34,7 +34,7 @@ import Combine
         DAWRemoteHostBridge.bind(show, session: session)
         session.startLocalWorkspace()
         DAWRemoteHostBridge.bind(show, session: .nativeHost)
-        DAWRemoteSession.nativeHost.restoreHostPreference()
+        DAWRemoteSession.nativeHost.restoreHostPreference(defaultEnabled: true)
         for index in 1...2 {
             TeleprompterRemote.panel(index).configure(directory: documents.currentURL?.deletingLastPathComponent()) { [weak self] in
                 self?.refreshTeleprompterRemote(index)
@@ -166,7 +166,6 @@ import Combine
         let select: (UUID) -> Void
     }
     @AppStorage(JarasInterfaceTheme.preferenceKey) private var interfaceTheme = JarasInterfaceTheme.defaultTheme
-    @State private var remoteSettingsOpen = false
     @State private var remoteTeleprompter: Int?
     @State private var settingsOpen = false
     @State private var settingsSection: SettingsView.Section = .general
@@ -201,7 +200,7 @@ import Combine
         _local = StateObject(wrappedValue: IpadStandalonePresentation(show: show, documents: documents))
     }
     private var dialogOpen: Bool {
-        homeOpen || clickSoundTrack != nil || remoteSettingsOpen || remoteTeleprompter != nil || patch != nil || sends != nil || settingsOpen || metronomeOpen || regionActions != nil || detectingRegion != nil || selectionTempoRequest != nil || sharingProject || advancedOpen || matrixOpen || addingTrack || regionLoops != nil || itemMenu != nil || editingTextItem != nil || fullLyricsTarget != nil || trackEdit != nil || fx != nil || automationTrack != nil
+        homeOpen || clickSoundTrack != nil || remoteTeleprompter != nil || patch != nil || sends != nil || settingsOpen || metronomeOpen || regionActions != nil || detectingRegion != nil || selectionTempoRequest != nil || sharingProject || advancedOpen || matrixOpen || addingTrack || regionLoops != nil || itemMenu != nil || editingTextItem != nil || fullLyricsTarget != nil || trackEdit != nil || fx != nil || automationTrack != nil
     }
     var body: some View {
         VStack(spacing: 0) {
@@ -236,7 +235,7 @@ import Combine
                     shareProject: { sharingProject = true },
                     groupTracks: { show.groupTracks($0) }, groupableTracks: Set((show.current?.tracks ?? []).filter { $0.kind == .standard && $0.stereoLink == nil }.map(\.id)), openRegionLoops: { regionLoops = .init(clip: $0) }, openAdvanced: { advancedOpen = true }, nativeAdvancedOpen: advancedOpen,
                     openMatrixPatch: { matrixOpen = true }, nativeMatrixOpen: matrixOpen,
-                    toggleHozMixer: { hozMixerOpen.toggle() }, hozMixerOpen: hozMixerOpen, openSettings: { settingsSection = .general; settingsOpen = true }, nativeSettingsOpen: settingsOpen, openAudioSettings: { settingsSection = .audio; settingsOpen = true }, openRemoteSettings: { remoteSettingsOpen = true }, openTeleprompterRemote: { remoteTeleprompter = $0 }, remote: local.session)
+                    toggleHozMixer: { hozMixerOpen.toggle() }, hozMixerOpen: hozMixerOpen, openSettings: { settingsSection = .general; settingsOpen = true }, nativeSettingsOpen: settingsOpen, openAudioSettings: { settingsSection = .audio; settingsOpen = true }, openRemoteSettings: { settingsSection = .remote; settingsOpen = true }, openTeleprompterRemote: { remoteTeleprompter = $0 }, remote: local.session)
                     .environment(\.ipadMixerDialogs, IpadMixerDialogs(
                         openPatch: { patch = .init(track: $0, targets: $1) },
                         openSends: { sends = .init(request: $0, select: $1) }
@@ -361,13 +360,6 @@ import Combine
                     ProjectBrowserView(documents: documents, completed: { homeOpen = false }, homeModal: true)
                     Button("Modes") { homeOpen = false; onExit() }.padding(.bottom, 8)
                 }.background(JarasTheme.homeBackground)
-            }
-        } else if remoteSettingsOpen {
-            IpadCompactModal(preferredSize: CGSize(width: 440, height: 600)) {
-                VStack(spacing: 0) {
-                    IpadModalHeader(title: "Remote", close: { remoteSettingsOpen = false })
-                    ScrollView { DAWRemoteHostView(remote: .nativeHost) }.frame(maxWidth: .infinity)
-                }
             }
         } else if let index = remoteTeleprompter {
             IpadCompactModal(preferredSize: CGSize(width: 440, height: 480)) {
@@ -762,6 +754,7 @@ struct IpadTimelineRulerDrag {
 @MainActor final class IpadTimelineGestureControl {
     weak var view: IpadTimelineGestureView?
     func cancelMotion() { view?.cancelMotion() }
+    func setMarqueeActive(_ active: Bool) { view?.setMarqueeActive(active) }
 }
 struct IpadTimelineGestureProbe: UIViewRepresentable {
     let control: IpadTimelineGestureControl
@@ -781,6 +774,8 @@ final class IpadTimelineGestureView: UIView, UIGestureRecognizerDelegate {
     var zoomAction: ((Double, Double) -> Void)?
     var verticalScroll: (() -> UIScrollView?)?
     private weak var pausedVerticalPan: UIPanGestureRecognizer?
+    private weak var marqueeVerticalPan: UIPanGestureRecognizer?
+    private var marqueeActive = false
     private func restoreVerticalPan() {
         pausedVerticalPan?.isEnabled = true
         pausedVerticalPan = nil
@@ -844,9 +839,24 @@ final class IpadTimelineGestureView: UIView, UIGestureRecognizerDelegate {
         stopInertia()
         zoomLink?.invalidate(); zoomLink = nil; pendingZoom = 1
         panRecognizer.isEnabled = false; pinchRecognizer.isEnabled = false
-        panRecognizer.isEnabled = true; pinchRecognizer.isEnabled = true
+        panRecognizer.isEnabled = !marqueeActive; pinchRecognizer.isEnabled = !marqueeActive
+    }
+    func setMarqueeActive(_ active: Bool) {
+        guard marqueeActive != active else { return }
+        marqueeActive = active
+        cancelMotion()
+        if active {
+            if let pan = verticalScroll?()?.panGestureRecognizer, pan.isEnabled {
+                marqueeVerticalPan = pan
+                pan.isEnabled = false
+            }
+        } else {
+            marqueeVerticalPan?.isEnabled = true
+            marqueeVerticalPan = nil
+        }
     }
     func detach() {
+        setMarqueeActive(false)
         restoreVerticalPan()
         zoomLink?.invalidate(); zoomLink = nil; pendingZoom = 1
         stopInertia()
@@ -1417,45 +1427,67 @@ final class IpadTrackSelectionTouchView: UIView, UIGestureRecognizerDelegate {
 
 struct IpadRegionHeaderGesture: UIViewRepresentable {
     let singleTap: () -> Void
-    let doubleTap: () -> Void
+    var doubleTap: (() -> Void)? = nil
     let accessibilityTitle: String
     let moved: (Double) -> Void
     let ended: (Bool) -> Void
+    var holdDuration = 0.5
+    var openContextMenu: ((CGFloat) -> Void)? = nil
     func makeUIView(context: Context) -> IpadRegionHeaderTouchView { IpadRegionHeaderTouchView() }
     func updateUIView(_ view: IpadRegionHeaderTouchView, context: Context) {
         view.singleTap = singleTap; view.doubleTap = doubleTap; view.moved = moved; view.ended = ended
         view.accessibilityLabel = accessibilityTitle
+        view.doubleClickGesture.isEnabled = doubleTap != nil
+        view.holdGesture.minimumPressDuration = holdDuration
+        view.openContextMenu = openContextMenu
     }
 }
 final class IpadRegionHeaderTouchView: UIView {
     var singleTap: (() -> Void)?
     var doubleTap: (() -> Void)?
+    var openContextMenu: ((CGFloat) -> Void)?
     var moved: ((Double) -> Void)?
     var ended: ((Bool) -> Void)?
     private var origin: CGFloat?
+    lazy var doubleClickGesture: UITapGestureRecognizer = {
+        let gesture = UITapGestureRecognizer(target: self, action: #selector(doubleTapped))
+        gesture.numberOfTapsRequired = 2
+        return gesture
+    }()
+    lazy var holdGesture: UILongPressGestureRecognizer = {
+        let gesture = UILongPressGestureRecognizer(target: self, action: #selector(held(_:)))
+        gesture.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
+        gesture.allowableMovement = 8
+        return gesture
+    }()
     override init(frame: CGRect) {
         super.init(frame: frame)
         let single = UITapGestureRecognizer(target: self, action: #selector(tapped))
-        let double = UITapGestureRecognizer(target: self, action: #selector(doubleTapped)); double.numberOfTapsRequired = 2
-        let secondary = UITapGestureRecognizer(target: self, action: #selector(doubleTapped))
+        let double = doubleClickGesture
+        let secondary = UITapGestureRecognizer(target: self, action: #selector(secondaryTapped(_:)))
         secondary.buttonMaskRequired = .secondary
         secondary.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.indirectPointer.rawValue)]
-        let hold = UILongPressGestureRecognizer(target: self, action: #selector(held(_:)))
-        hold.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
         let pan = UIPanGestureRecognizer(target: self, action: #selector(dragged(_:)))
         single.require(toFail: double); single.require(toFail: pan); double.require(toFail: pan)
         pan.require(toFail: secondary)
-        let gestures: [UIGestureRecognizer] = [single, double, secondary, hold, pan]
+        let gestures: [UIGestureRecognizer] = [single, double, secondary, holdGesture, pan]
         gestures.forEach(addGestureRecognizer)
         isAccessibilityElement = true
         accessibilityTraits = .button
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-    override func accessibilityActivate() -> Bool { doubleTap?(); return true }
+    override func accessibilityActivate() -> Bool { showContextActions(at: bounds.midX); return true }
     @objc private func tapped() { singleTap?() }
     @objc private func doubleTapped() { doubleTap?() }
+    @objc private func secondaryTapped(_ gesture: UITapGestureRecognizer) {
+        showContextActions(at: gesture.location(in: self).x)
+    }
     @objc private func held(_ gesture: UILongPressGestureRecognizer) {
-        if gesture.state == .began { doubleTap?() }
+        if gesture.state == .began { showContextActions(at: gesture.location(in: self).x) }
+    }
+    private func showContextActions(at x: CGFloat) {
+        if let openContextMenu { openContextMenu(x) }
+        else { doubleTap?() }
     }
     @objc private func dragged(_ gesture: UIPanGestureRecognizer) {
         switch gesture.state {
@@ -1548,6 +1580,7 @@ struct IpadDialogButtonStyle: ButtonStyle {
     var configureMetronome: (() -> Void)?
     var only: IpadTransportControl? = nil
     var controlWidth: CGFloat? = nil
+    var controlHeight = TransportControlMetrics.proHeight
     @ObservedObject private var recorder = TrackRecording.shared
     @ObservedObject private var metronome = MetronomeSettings.shared
     @State private var recordingSettings = false
@@ -1561,12 +1594,12 @@ struct IpadDialogButtonStyle: ButtonStyle {
                     TransportControlIcon(name: "record", size: 13, color: recorder.recording || recorder.countingIn ? nil : JarasTheme.liveOffRed)
                 }
             }.buttonStyle(RecordingButtonStyle(active: recorder.recording || recorder.countingIn, width: controlWidth ?? 47,
-                    height: TransportControlMetrics.proHeight, fontSize: 10, cornerRadius: 6, transport: true,
+                    height: controlHeight, fontSize: 10, cornerRadius: 6, transport: true,
                     idleTransportBackground: Color(hex: 0x454545), idleTransportForeground: .white))
                 .overlay {
                     IpadTapHoldTouchSurface(tap: { recorder.toggle(show: show) }, hold: { recordingSettings = true })
                 }
-                .disabled(recorder.busy).accessibilityLabel("Record")
+                .disabled(recorder.busy && !recorder.countingIn).accessibilityLabel("Record")
                 .accessibilityValue(recorder.recording ? "Recording" : "Off")
                 .accessibilityAction(named: Text("Recording mode")) { recordingSettings = true }
                 .popover(isPresented: $recordingSettings) {
@@ -1578,7 +1611,7 @@ struct IpadDialogButtonStyle: ButtonStyle {
                 TransportControlIcon(name: "metronome", size: 17)
             }.buttonStyle(TransportButtonStyle(color: metronome.enabled ? JarasTheme.yellow : Color(hex: 0x454545),
                 active: metronome.enabled, inactiveOpacity: 1, fontSize: TransportControlMetrics.font,
-                width: controlWidth ?? 30, height: TransportControlMetrics.proHeight, bordered: false))
+                width: controlWidth ?? 30, height: controlHeight, bordered: false))
                 .overlay {
                     if let configureMetronome {
                         IpadTapHoldTouchSurface(tap: { metronome.enabled.toggle() }, hold: configureMetronome)
@@ -1591,28 +1624,30 @@ struct IpadDialogButtonStyle: ButtonStyle {
     }
 }
 
-/// The transport has no independent recording stage: choose an armed or
-/// selected track and edit the same settings offered by that track's REC.
+/// Edit the same recording settings offered by each track's REC.
 @MainActor private struct IpadTransportRecordingSettings: View {
     @ObservedObject var show: ShowController
     @ObservedObject private var recorder = TrackRecording.shared
     @State private var selected: UUID?
     private var tracks: [Track] {
-        let ids = recorder.armed.union(show.mixerTrackSelection)
-        return (show.current?.tracks ?? []).filter { $0.kind == .standard && ids.contains($0.id) }
+        (show.current?.tracks ?? []).filter { $0.kind == .standard }
     }
     private var selectedID: UUID? {
-        tracks.first(where: { $0.id == selected })?.id ?? tracks.first?.id
+        tracks.first(where: { $0.id == selected })?.id
+            ?? tracks.first(where: { recorder.armed.contains($0.id) || show.mixerTrackSelection.contains($0.id) })?.id
+            ?? tracks.first?.id
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
+            StopPlaybackOnRecordDisarm().padding(16)
+            Divider()
             if let id = selectedID {
                 Picker("Track", selection: Binding(get: { id }, set: { selected = $0 })) {
                     ForEach(tracks) { track in Text(verbatim: track.name).tag(track.id) }
                 }.padding(.horizontal, 16).padding(.top, 16)
                 TrackRecordingSettings(show: show, trackID: id)
             } else {
-                Text("Arm at least one track before recording.").padding(20)
+                Text("No tracks").padding(20)
             }
         }.frame(width: 360).preferredColorScheme(.dark)
     }
@@ -2192,13 +2227,12 @@ struct IpadTimelinePlaybackSurface<Content: View>: UIViewControllerRepresentable
 
 private final class IpadPlaybackNeedle {
     let layer = CALayer()
-    private let line = CALayer(), head = CAShapeLayer(), core = CALayer(), trail = CAGradientLayer()
+    private let line = CALayer(), head = CAShapeLayer(), core = CALayer()
     private struct Appearance: Equatable { let top: CGFloat; let headHeight: CGFloat; let height: CGFloat; let color: UInt32; let running: Bool }
     private var signature: Appearance?
     init() {
         layer.anchorPoint = .zero
-        for child in [trail, line, core, head] { layer.addSublayer(child) }
-        trail.startPoint = CGPoint(x: 0, y: 0.5); trail.endPoint = CGPoint(x: 1, y: 0.5)
+        for child in [line, core, head] { layer.addSublayer(child) }
     }
     func update(x: CGFloat, top: CGFloat, headHeight: CGFloat, height: CGFloat, color: UInt32, running: Bool, visible: Bool) {
         layer.isHidden = !visible
@@ -2217,8 +2251,6 @@ private final class IpadPlaybackNeedle {
         line.shadowPath = CGPath(rect: line.bounds, transform: nil)
         core.isHidden = !running; core.frame = CGRect(x: 1, y: headHeight, width: 1, height: stemHeight)
         core.backgroundColor = UIColor.white.withAlphaComponent(0.8).cgColor
-        trail.isHidden = !running; trail.frame = CGRect(x: -38, y: headHeight, width: 38, height: stemHeight)
-        trail.colors = [ink.withAlphaComponent(0).cgColor, ink.withAlphaComponent(0.16).cgColor, ink.withAlphaComponent(0.65).cgColor]
         head.frame = CGRect(x: w / 2 - 7, y: 0, width: 14, height: headHeight)
         let path = TimelineNeedleHead.path(centerX: 7, top: 0, tip: headHeight)
         head.path = path; head.fillColor = ink.cgColor; head.shadowPath = path

@@ -15,6 +15,7 @@ NS_ASSUME_NONNULL_BEGIN
 + (void)sendMIDI:(AVAudioUnitEffect *)node status:(unsigned char)status data1:(unsigned char)data1 data2:(unsigned char)data2;
 + (void)silence:(AVAudioUnitEffect *)node;
 + (void)instrumentMIDIInput:(AVAudioUnitEffect *)node enabled:(BOOL)enabled;
++ (void)araPlayback:(AVAudioUnitEffect *)node allowed:(BOOL)allowed;
 + (void)transport:(AVAudioUnitEffect *)node position:(double)position tempo:(double)tempo beats:(int)beats unit:(int)unit playing:(BOOL)playing;
 // Immutable tempo map and an audio-clock anchor, prepared by the graph owner.
 + (void)setTempoMap:(AVAudioUnitEffect *)node points:(NSArray<NSDictionary *> *)points;
@@ -22,7 +23,7 @@ NS_ASSUME_NONNULL_BEGIN
 + (void)onEdit:(AVAudioUnitEffect *)node identifier:(NSString *)identifier action:(void (^)(void))action;
 + (BOOL)isPluginLoaded:(AVAudioUnitEffect *)node identifier:(NSString *)identifier;
 + (NSDictionary * _Nullable)state:(AVAudioUnitEffect *)node identifier:(NSString *)identifier;
-+ (void)rememberCapturedState:(AVAudioUnitEffect *)node identifier:(NSString *)identifier component:(NSString * _Nullable)component controller:(NSString * _Nullable)controller;
++ (void)rememberCapturedState:(AVAudioUnitEffect *)node identifier:(NSString *)identifier component:(NSString * _Nullable)component controller:(NSString * _Nullable)controller ara:(NSString * _Nullable)ara;
 + (void)onParameterEdit:(AVAudioUnitEffect *)node identifier:(NSString *)identifier action:(void (^)(unsigned int, double, BOOL))action;
 + (float)gainReduction:(AVAudioUnitEffect *)node identifier:(NSString *)identifier;
 + (NSArray<NSDictionary *> *)parameters:(AVAudioUnitEffect *)node identifier:(NSString *)identifier;

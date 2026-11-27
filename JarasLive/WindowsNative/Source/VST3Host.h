@@ -12,8 +12,20 @@ namespace catlive::native::vst3 {
 struct Description {
     std::filesystem::path path;
     std::string classID, name, vendor, category;
+    bool supportsARA = false;
 };
-struct State { std::vector<std::uint8_t> component, controller; };
+struct State { std::vector<std::uint8_t> component, controller, ara; };
+struct ARAClip {
+    std::filesystem::path file;
+    std::string id, name, sourcePath;
+    double start = 0, duration = 0, offset = 0, rate = 1;
+};
+struct ARATimeline {
+    std::string name;
+    std::vector<ARAClip> clips;
+    std::vector<jaras::PluginTempoMap::Point> tempo;
+    bool rendersTrack = false;
+};
 struct MIDIEvent { int offset = 0; std::uint8_t status = 0, data1 = 0, data2 = 0; };
 using Transport = jaras::PluginTransport;
 // Scan in a child process: third-party DLL entry points may crash or hang.
@@ -26,12 +38,13 @@ class Editor;
 // process() belongs to one audio thread and never acquires locks or allocates.
 class Processor final {
 public:
-    Processor(const Description &, const State &, double rate, int maximumFrames = 4096);
+    Processor(const Description &, const State &, double rate, int maximumFrames = 4096,
+              const ARATimeline *timeline = nullptr);
     ~Processor();
     Processor(const Processor &) = delete;
     Processor &operator=(const Processor &) = delete;
     bool process(float *left, float *right, int frames, const Transport &,
-                 const MIDIEvent *events = nullptr, int eventCount = 0) noexcept;
+                 const MIDIEvent *events = nullptr, int eventCount = 0, bool renderARA = true) noexcept;
     // Audio-thread only, once after the normal item render for this callback.
     // Advances a visible, otherwise idle editor with silence; output is discarded.
     bool processEditorSilence(int frames, const Transport &) noexcept;
@@ -43,6 +56,7 @@ public:
     unsigned latency() const noexcept;
     float gainReduction() const noexcept;
     bool isInstrument() const noexcept;
+    bool hasARA() const noexcept;
     std::unique_ptr<Editor> openEditor(void *parentHWND, std::function<void(int,int)> resize);
 private:
     struct Impl;

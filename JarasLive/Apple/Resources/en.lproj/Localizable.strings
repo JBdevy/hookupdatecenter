@@ -2271,7 +2271,7 @@
 "Bluetooth microphone" = "Bluetooth microphone";
 "Using the Bluetooth microphone may reduce headset playback quality." = "Using the Bluetooth microphone may reduce headset playback quality.";
 
-"Preview on/off" = "Preview on/off";
+"Preview on/off" = "Show/Hide Preview";
 
 "Insert media" = "Insert media";
 
@@ -2759,3 +2759,6 @@
 "No matching files" = "No matching files";
 "Forward" = "Forward";
 "Loading" = "Loading";
+"Enable Remote" = "Enable Remote";
+"Remote device name" = "Remote device name";
+"Choose the project folder in Home before saving this session." = "Choose the project folder in Home before saving this session.";

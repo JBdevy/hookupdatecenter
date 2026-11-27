@@ -35,13 +35,15 @@ import AVFoundation
         let before = settings
         settings.externalPlugins?[index].componentState = state["componentState"] as? String
         settings.externalPlugins?[index].controllerState = state["controllerState"] as? String
+        if let araState = state["araState"] as? String { settings.externalPlugins?[index].araState = araState }
         guard settings != before else { return }
         // A capture acknowledges the live processor, including when its editor
         // closes. Reapplying this snapshot can recreate the instrument and send
         // controller defaults back into it; only a real preset edit needs that.
         guard try show.storeCapturedPluginState(track, clip: clip, identifier: identifier,
             componentState: settings.externalPlugins?[index].componentState,
-            controllerState: settings.externalPlugins?[index].controllerState),
+            controllerState: settings.externalPlugins?[index].controllerState,
+            araState: settings.externalPlugins?[index].araState),
             let plugin = settings.externalPlugins?[index] else { return }
         DesktopProjectTabs.shared.audio(for: show).rememberCapturedPluginState(track: track, clip: clip, plugin: plugin, source: node)
     }
@@ -449,6 +451,9 @@ private final class FXChainEffectNameView: NSTextField {
                 let minimum = panel?.contentRect(forFrameRect: frame).size ?? frame.size
                 size = NSSize(width: minimum.width, height: minimum.height - (presetBar.isHidden ? 0 : 36))
                 panel?.contentMinSize = NSSize(width: sidebarWidth + size.width, height: size.height)
+            } else if kind == "EQ - 31 Band" {
+                size = NSSize(width: 1000, height: 390)
+                panel?.contentMinSize = NSSize(width: sidebarWidth + 740, height: 350)
             } else {
                 size = NSSize(width: kind == DrummerPadKind.full.rawValue ? 1000 : 740,
                               height: compactControls ? 360 : 560)

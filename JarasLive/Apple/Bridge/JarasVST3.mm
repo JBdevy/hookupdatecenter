@@ -1,6 +1,7 @@
 #import "JarasVST3.h"
 #if TARGET_OS_OSX
 #import <CoreAudioKit/AUViewController.h>
+#import <AudioToolbox/AudioToolbox.h>
 #include "CatMIDISequenceBridge.h"
 #include "JarasRealtimeClock.hpp"
 #include "../../Core/Transport/PluginTransportClock.hpp"
@@ -20,6 +21,8 @@
 #include "pluginterfaces/vst/ivstprocesscontext.h"
 #include "pluginterfaces/vst/vstspeaker.h"
 #include "pluginterfaces/gui/iplugview.h"
+#include "../../Core/ThirdParty/ARA/ARAVST3.h"
+#include "../../Core/ThirdParty/ARA/ARAAudioUnit.h"
 #include <atomic>
 #include <array>
 #include <vector>
@@ -42,6 +45,10 @@ DEF_CLASS_IID(IHostApplication) DEF_CLASS_IID(IComponentHandler) DEF_CLASS_IID(I
 DEF_CLASS_IID(IMessage) DEF_CLASS_IID(IAttributeList) DEF_CLASS_IID(IParameterChanges) DEF_CLASS_IID(IParamValueQueue)
 DEF_CLASS_IID(IEventList) DEF_CLASS_IID(IMidiMapping)
 }}
+namespace ARA {
+DEF_CLASS_IID(IPlugInEntryPoint)
+DEF_CLASS_IID(IPlugInEntryPoint2)
+}
 namespace {
 template<class T> bool iidIs(const TUID id) { return FUnknownPrivate::iidEqual(id,T::iid); }
 template<> bool iidIs<FUnknown>(const TUID id) { return FUnknownPrivate::iidEqual(id,FUnknown_iid); }
@@ -276,12 +283,18 @@ struct MIDIPerformance {
     MIDIPerformance(){for(auto &channel:controllers)for(auto &value:channel)value=-1;}
 };
 #include "JarasHostedAudioUnit.inc"
+#include "JarasARAHost.inc"
 class Instance final: public IComponentHandler, public IComponentHandler2 {
 public:
     std::shared_ptr<Module> module; Host host; IComponent *component=nullptr; IAudioProcessor *processor=nullptr; IEditController *controller=nullptr;
     IConnectionPoint *source=nullptr,*destination=nullptr; bool initialized=false,controllerInitialized=false,active=false,processing=false;
     bool instrument=false;
     std::unique_ptr<HostedAudioUnit> audioUnit;
+    std::unique_ptr<araHost::Document> ara;
+    NSDictionary *araTimeline = nil;
+    NSString *appliedARAState = nil;
+    NSString *retainedARAState = nil;
+    std::atomic<bool> araPlaybackAllowed{false};
     NSString *identifier, *classID; std::atomic<bool> bypass{false},hasChanges{false}; std::unique_ptr<Param[]> params; int paramCount=0; Changes changes;
     catlive::audio::VST3GainReduction reduction;
     std::vector<std::pair<ParamID,int>> parameterIndex;
@@ -330,6 +343,8 @@ public:
     explicit Instance(NSDictionary *spec,double sampleRate,bool offline):rate(sampleRate),processMode(offline?kOffline:kRealtime) { try {
         identifier=spec[@"id"]; classID=spec[@"classID"];
         instrument=[spec[@"category"] containsString:@"Instrument"];
+        araTimeline = spec[@"araTimeline"];
+        retainedARAState = appliedARAState = spec[@"araState"];
         if ([spec[@"classID"] hasPrefix:@"AU-"]) {
             const auto description = hostedAudioUnitDescription(spec[@"classID"]);
             const auto component = AudioComponentFindNext(nullptr, &description);
@@ -341,6 +356,7 @@ public:
             } @catch (NSException *error) {
                 throw std::runtime_error(error.reason.UTF8String ?: "Audio Unit is unavailable.");
             }
+            ara = araHost::bind(node.audioUnit, araTimeline, appliedARAState);
             audioUnit = std::make_unique<HostedAudioUnit>(node, rate, instrument, offline, spec[@"componentState"]);
             appliedComponent = spec[@"componentState"];
             bypass = [spec[@"bypassed"] boolValue];
@@ -350,6 +366,7 @@ public:
         FUID uid;
         if(!uid.fromString([spec[@"classID"] UTF8String])||module->factory->createInstance(uid,IComponent::iid,(void **)&component)!=kResultOk||!component)throw std::runtime_error("Could not create this VST3 processor.");
         if(component->initialize(&host)!=kResultOk)throw std::runtime_error("VST3 processor initialization failed."); initialized=true;
+        ara = araHost::bind(component, araTimeline, appliedARAState);
         processor=query<IAudioProcessor>(component);if(!processor||processor->canProcessSampleSize(kSample32)!=kResultOk)throw std::runtime_error("This VST3 processor does not support 32-bit audio.");
         controller=query<IEditController>(component);
         if(!controller){TUID cid{};if(component->getControllerClassId(cid)==kResultOk&&module->factory->createInstance(cid,IEditController::iid,(void **)&controller)==kResultOk&&controller){if(controller->initialize(&host)!=kResultOk)throw std::runtime_error("VST3 controller initialization failed.");controllerInitialized=true;}}
@@ -420,7 +437,7 @@ public:
         bypass=[spec[@"bypassed"] boolValue];
     } catch (...) { close(); throw; } }
     ~Instance(){close();}
-    void close(){editCallbacksActive->store(false);if(processing)processor->setProcessing(false);if(active)component->setActive(false);if(source&&destination){source->disconnect(destination);destination->disconnect(source);}if(source)source->release();if(destination)destination->release();if(controller){controller->setComponentHandler(nullptr);if(controllerInitialized)controller->terminate();controller->release();}if(processor)processor->release();if(component){if(initialized)component->terminate();component->release();}}
+    void close(){editCallbacksActive->store(false);audioUnit.reset();if(processing)processor->setProcessing(false);if(active)component->setActive(false);if(source&&destination){source->disconnect(destination);destination->disconnect(source);}if(source)source->release();if(destination)destination->release();if(controller){controller->setComponentHandler(nullptr);if(controllerInitialized)controller->terminate();controller->release();}if(processor)processor->release();if(component){if(initialized)component->terminate();component->release();}ara.reset();}
     void enqueue(uint8 status,uint8 data1,uint8 data2){
         auto &midi=midiPerformance->midi;auto &midiRead=midiPerformance->read;auto &midiWrite=midiPerformance->write;auto &panic=midiPerformance->panic;
         int kind=status&0xf0,channel=status&15;
@@ -432,6 +449,7 @@ public:
     }
     void process(AudioBufferList *buffer,unsigned count,const jaras::PluginTransport& transport,const CatMIDIEvent* sequence,unsigned sequenceCount){
         if(bypass.load()||count>frames)return;
+        if (ara && (!ara->coversTrack || !araPlaybackAllowed.load(std::memory_order_relaxed))) return;
         auto &midi=midiPerformance->midi;auto &midiRead=midiPerformance->read;auto &midiWrite=midiPerformance->write;auto &panic=midiPerformance->panic;auto &held=midiPerformance->held;
         if (audioUnit) {
             if (panic.exchange(false)) {
@@ -449,7 +467,7 @@ public:
                 const auto &event = sequence[index];
                 audioUnit->send(event.offset, {event.status, event.pitch, event.velocity});
             }
-            audioUnit->process(buffer, count, transport);
+            audioUnit->process(buffer, count, transport, ara != nullptr);
             return;
         }
         const bool resuming=resumeMIDI;
@@ -475,7 +493,7 @@ public:
             auto &input=inputs[index]; input.silenceFlags=0;
             for(int c=0;c<input.numChannels;++c) {
                 auto destination=input.channelBuffers32[c];
-                const float *source=(int(index)==mainIn && c<2 && c<int(buffer->mNumberBuffers))
+                const float *source=(!ara && int(index)==mainIn && c<2 && c<int(buffer->mNumberBuffers))
                     ? static_cast<const float*>(buffer->mBuffers[c].mData) : nullptr;
                 bool silent=true;
                 if(source) {
@@ -540,6 +558,8 @@ public:
     }
     NSDictionary *replacementSpec(NSDictionary *spec){
         NSString *c=spec[@"componentState"],*v=spec[@"controllerState"];
+        NSString *archive = spec[@"araState"];
+        if (archive != appliedARAState && ![archive isEqualToString:appliedARAState]) return spec;
         if((c==appliedComponent||[c isEqualToString:appliedComponent])&&(v==appliedController||[v isEqualToString:appliedController]))return nil;
         auto current=state();
         if((!c||[c isEqualToString:current[@"componentState"]])&&(!v||[v isEqualToString:current[@"controllerState"]])){
@@ -553,13 +573,22 @@ public:
         return replacement;
     }
     NSDictionary *state(){
-        if (audioUnit) return audioUnit->state();
-        Stream componentData,controllerData;
-        // Never replace a recoverable preset with an empty blob when a plugin
-        // fails to serialize (for example while a library is still loading).
-        if(component->getState(&componentData)!=kResultOk)return nil;
-        if(controller)controller->getState(&controllerData);
-        return @{@"componentState":componentData.base64(),@"controllerState":controllerData.base64()};
+        NSMutableDictionary *state;
+        if (audioUnit) {
+            state = [audioUnit->state() mutableCopy];
+            if (!state) return nil;
+        } else {
+            Stream componentData,controllerData;
+            if(component->getState(&componentData)!=kResultOk)return nil;
+            if(controller)controller->getState(&controllerData);
+            state = [@{@"componentState":componentData.base64(),@"controllerState":controllerData.base64()} mutableCopy];
+        }
+        if (ara) {
+            auto archive = ara->state();
+            if (!archive) return nil;
+            if (archive.length) state[@"araState"] = archive;
+        } else if (retainedARAState.length) state[@"araState"] = retainedARAState;
+        return state;
     }
 };
 struct Chain {std::vector<std::shared_ptr<Instance>> instances;};
@@ -636,7 +665,15 @@ NSError *failure(const std::exception &e){return [NSError errorWithDomain:@"Jara
 - (NSTimeInterval)latency {return kernel.latency();}
 - (AUInternalRenderBlock)internalRenderBlock {Kernel *state=&kernel;return ^AUAudioUnitStatus(AudioUnitRenderActionFlags *flags,const AudioTimeStamp *t,AVAudioFrameCount n,NSInteger bus,AudioBufferList *out,const AURenderEvent *events,AURenderPullInputBlock pull){if(!pull)return kAudioUnitErr_NoConnection;auto result=pull(flags,t,n,0,out);if(result==noErr)state->process(out,n,t);if(state->published.load())*flags&=~kAudioUnitRenderAction_OutputIsSilence;return result;};}
 @end
-@interface JarasVSTEditorView: NSView { @public std::shared_ptr<Instance> instance; IPlugView *plugView; std::unique_ptr<Frame> frame; BOOL attached; }
+@interface JarasVSTEditorView: NSView {
+@public
+    std::shared_ptr<Instance> instance;
+    IPlugView *plugView;
+    std::unique_ptr<Frame> frame;
+    BOOL attached;
+@private
+    NSTimer *araUpdates;
+}
 - (void)replaceInstance:(std::shared_ptr<Instance>)replacement;
 @end
 static NSHashTable<JarasVSTEditorView *> *nativeEditors(){
@@ -647,6 +684,7 @@ static NSHashTable<JarasVSTEditorView *> *nativeEditors(){
 }
 @implementation JarasVSTEditorView
 - (void)replaceInstance:(std::shared_ptr<Instance>)replacement {
+    [araUpdates invalidate]; araUpdates = nil;
     auto next=replacement->controller?replacement->controller->createView(ViewType::kEditor):nullptr;
     if(next&&next->isPlatformTypeSupported(kPlatformTypeNSView)!=kResultOk){next->release();next=nullptr;}
     // Remove the old editor while its controller is still retained. The NSView
@@ -659,7 +697,10 @@ static NSHashTable<JarasVSTEditorView *> *nativeEditors(){
 - (void)viewDidMoveToWindow {
     [super viewDidMoveToWindow];
     if(!plugView) return;
-    if(!self.window) { const BOOL wasAttached=attached; attached=NO; if(wasAttached) plugView->removed(); return; }
+    if(!self.window) {
+        [araUpdates invalidate]; araUpdates = nil;
+        const BOOL wasAttached=attached; attached=NO; if(wasAttached) plugView->removed(); return;
+    }
     if(attached) return;
     // Attach after the panel is ordered on screen; GPU-backed Cocoa editors
     // cannot initialize their surface while the parent window is still hidden.
@@ -667,9 +708,19 @@ static NSHashTable<JarasVSTEditorView *> *nativeEditors(){
 }
 - (void)attachEditor {
     if(!plugView || attached || !self.window || !self.window.visible) return;
+    if (instance->ara) instance->ara->selectTrack();
     attached=YES; // Resize callbacks issued by attached() must reach onSize().
     attached=plugView->attached((__bridge void *)self,kPlatformTypeNSView)==kResultOk;
     if(!attached) return;
+    if (instance->ara) {
+        __weak JarasVSTEditorView *weakView = self;
+        araUpdates = [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *) {
+            JarasVSTEditorView *view = weakView;
+            if (!view) return;
+            auto current = view->instance;
+            if (current->ara && current->ara->poll() && current->edited) current->edited();
+        }];
+    }
     ViewRect rect;
     if(plugView->getSize(&rect)==kResultOk && rect.getWidth()>0 && rect.getHeight()>0) frame->resizeView(plugView,&rect);
     self.needsDisplay=YES;
@@ -681,7 +732,10 @@ static NSHashTable<JarasVSTEditorView *> *nativeEditors(){
     [super setFrameSize:NSMakeSize(rect.getWidth(),rect.getHeight())];
     if(plugView && attached)plugView->onSize(&rect);
 }
-- (void)dealloc {if(plugView){if(attached)plugView->removed();plugView->setFrame(nullptr);plugView->release();}}
+- (void)dealloc {
+    [araUpdates invalidate];
+    if(plugView){if(attached)plugView->removed();plugView->setFrame(nullptr);plugView->release();}
+}
 @end
 @interface JarasAudioUnitEditorView : NSView {
 @public
@@ -711,6 +765,7 @@ static NSHashTable<JarasAudioUnitEditorView *> *audioUnitEditors() {
     [_editor.view removeFromSuperview];
     _editor = nil;
     instance = replacement;
+    if (instance->ara) instance->ara->selectTrack();
     __weak JarasAudioUnitEditorView *weakView = self;
     [replacement->audioUnit->unit requestViewControllerWithCompletionHandler:^(NSViewController *editor) {
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -732,7 +787,10 @@ static NSHashTable<JarasAudioUnitEditorView *> *audioUnitEditors() {
     }];
     _editTimer = [NSTimer scheduledTimerWithTimeInterval:0.25 repeats:YES block:^(NSTimer *timer) {
         auto view = weakView;
-        if (view && edited->exchange(false)) view->instance->notifyEdit();
+        if (view) {
+            const bool araEdited = view->instance->ara && view->instance->ara->poll();
+            if (edited->exchange(false) || araEdited) view->instance->notifyEdit();
+        }
         if (!view) [timer invalidate];
     }];
 }
@@ -833,13 +891,27 @@ static void replaceNativeEditors(std::shared_ptr<Instance> previous,std::shared_
         for(NSDictionary *spec in plugins){
             auto previous=k.find(spec[@"id"]),i=previous;
             NSDictionary *replacement=nil;
+            NSDictionary *timeline = spec[@"araTimeline"];
+            const bool changedARATimeline = i && (i->ara || !i->araTimeline) &&
+                timeline != i->araTimeline && ![timeline isEqualToDictionary:i->araTimeline];
             // State restoration is arbitrary plugin code. Never run setState
             // on the processor concurrently serving the render callback.
-            if(!i||![i->classID isEqualToString:spec[@"classID"]]||fabs(i->rate-rate)>0.01||i->processMode!=processMode)replacement=spec;
+            if(!i||![i->classID isEqualToString:spec[@"classID"]]||fabs(i->rate-rate)>0.01||i->processMode!=processMode||changedARATimeline)replacement=spec;
             else replacement=i->replacementSpec(spec);
             if(replacement){
+                if (previous && previous->ara && [previous->classID isEqualToString:spec[@"classID"]] &&
+                    (spec[@"araState"] == previous->appliedARAState || [spec[@"araState"] isEqualToString:previous->appliedARAState])) {
+                    NSString *liveArchive = previous->ara->state();
+                    if (!liveArchive) throw std::runtime_error("Could not preserve the current ARA edits.");
+                    if (liveArchive.length) {
+                        NSMutableDictionary *updated = [replacement mutableCopy];
+                        updated[@"araState"] = liveArchive;
+                        replacement = updated;
+                    }
+                }
                 i=std::make_shared<Instance>(replacement,rate,offline);
                 i->appliedComponent=spec[@"componentState"];i->appliedController=spec[@"controllerState"];
+                i->appliedARAState=spec[@"araState"];
                 if(previous && [previous->classID isEqualToString:i->classID]){
                     i->edited=previous->edited;i->parameterEdited=previous->parameterEdited;
                     i->hasNativeEditor=previous->hasNativeEditor.load();
@@ -864,6 +936,11 @@ static void replaceNativeEditors(std::shared_ptr<Instance> previous,std::shared_
 + (void)sequenceClock:(AVAudioUnitEffect *)node head:(int)head position:(double)position clock:(double)clock running:(BOOL)running loopStart:(double)start loopEnd:(double)end { ((JarasVSTAudioUnit *)node.AUAudioUnit)->kernel.sequence.configure(head,position,clock,running,start,end); }
 + (void)sendMIDI:(AVAudioUnitEffect *)node status:(unsigned char)status data1:(unsigned char)data1 data2:(unsigned char)data2 {auto &k=((JarasVSTAudioUnit *)node.AUAudioUnit)->kernel;if(k.current)for(auto &i:k.current->instances)if(!i->instrument||k.instrumentMIDIInput.load()||(status&0xf0)!=0x90||data2==0)i->enqueue(status,data1,data2);}
 + (void)instrumentMIDIInput:(AVAudioUnitEffect *)node enabled:(BOOL)enabled {auto &k=((JarasVSTAudioUnit *)node.AUAudioUnit)->kernel;k.instrumentMIDIInput.store(enabled);}
++ (void)araPlayback:(AVAudioUnitEffect *)node allowed:(BOOL)allowed {
+    auto &kernel = ((JarasVSTAudioUnit *)node.AUAudioUnit)->kernel;
+    if (kernel.current) for (auto &instance : kernel.current->instances)
+        instance->araPlaybackAllowed.store(allowed, std::memory_order_relaxed);
+}
 + (void)silence:(AVAudioUnitEffect *)node {auto &k=((JarasVSTAudioUnit *)node.AUAudioUnit)->kernel;if(k.current)for(auto &i:k.current->instances)i->midiPerformance->panic=true;}
 + (void)transport:(AVAudioUnitEffect *)node position:(double)position tempo:(double)tempo beats:(int)beats unit:(int)unit playing:(BOOL)playing {
     auto &k=((JarasVSTAudioUnit *)node.AUAudioUnit)->kernel;
@@ -885,11 +962,11 @@ static void replaceNativeEditors(std::shared_ptr<Instance> previous,std::shared_
 + (void)onEdit:(AVAudioUnitEffect *)node identifier:(NSString *)id action:(void (^)(void))action {auto i=((JarasVSTAudioUnit *)node.AUAudioUnit)->kernel.find(id);if(i)i->edited=[action copy];}
 + (BOOL)isPluginLoaded:(AVAudioUnitEffect *)node identifier:(NSString *)id {return ((JarasVSTAudioUnit *)node.AUAudioUnit)->kernel.find(id)!=nullptr;}
 + (NSDictionary *)state:(AVAudioUnitEffect *)node identifier:(NSString *)id {auto i=((JarasVSTAudioUnit *)node.AUAudioUnit)->kernel.find(id);return i?i->state():nil;}
-+ (void)rememberCapturedState:(AVAudioUnitEffect *)node identifier:(NSString *)id component:(NSString *)component controller:(NSString *)controller {
++ (void)rememberCapturedState:(AVAudioUnitEffect *)node identifier:(NSString *)id component:(NSString *)component controller:(NSString *)controller ara:(NSString *)ara {
     auto i=((JarasVSTAudioUnit *)node.AUAudioUnit)->kernel.find(id);
     // Called on the control thread only after the owner persists this live
     // snapshot. Do not call setState, reread transient state, or touch DSP.
-    if(i){i->appliedComponent=component;i->appliedController=controller;}
+    if(i){i->appliedComponent=component;i->appliedController=controller;i->appliedARAState=ara;i->retainedARAState=ara;}
 }
 + (void)onParameterEdit:(AVAudioUnitEffect *)node identifier:(NSString *)id action:(void (^)(unsigned int,double,BOOL))action {auto i=((JarasVSTAudioUnit *)node.AUAudioUnit)->kernel.find(id);if(i)i->parameterEdited=[action copy];}
 + (float)gainReduction:(AVAudioUnitEffect *)node identifier:(NSString *)id {

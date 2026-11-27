@@ -4,8 +4,6 @@
 namespace catlive {
 class TimelineLockPanel final : public Component, private Timer {
     Label title;
-    ToggleButton lock;
-    std::function<bool()> readLocked;
     std::array<ToggleButton, 6> options;
     std::function<int()> read;
     std::function<void(int)> commit;
@@ -13,20 +11,12 @@ class TimelineLockPanel final : public Component, private Timer {
         jaras::TimelineLocks::itemPosition, jaras::TimelineLocks::itemVolume, jaras::TimelineLocks::itemPan,
         jaras::TimelineLocks::itemMute};
     void timerCallback() override {
-        lock.setToggleState(readLocked(), dontSendNotification);
         const int mask = read();
         for (size_t i=0;i<options.size();++i) options[i].setToggleState((mask & masks[i]) == masks[i], dontSendNotification);
     }
 public:
-    TimelineLockPanel(std::function<bool()> locked, std::function<void(bool)> setLocked,
-                      std::function<int()> current, std::function<void(int)> changed)
-      : readLocked(std::move(locked)), read(std::move(current)), commit(std::move(changed)) {
-        lock.setButtonText("Lock");
-        lock.onClick = [this, setLocked = std::move(setLocked)] {
-            setLocked(lock.getToggleState());
-            timerCallback();
-        };
-        addAndMakeVisible(lock);
+    TimelineLockPanel(std::function<int()> current, std::function<void(int)> changed)
+      : read(std::move(current)), commit(std::move(changed)) {
         title.setText(localization::translate(String::fromUTF8("Bloqueios da grade")), dontSendNotification);
         addAndMakeVisible(title);
         const char *labels[] = {"Bloquear tudo", "Regiões e marcadores", "Posição dos itens", "Volume dos itens", "Pan dos itens", "Mute dos itens"};
@@ -40,12 +30,11 @@ public:
             };
             addAndMakeVisible(button);
         }
-        setSize(320, 288); timerCallback(); startTimer(150);
+        setSize(320, 258); timerCallback(); startTimer(150);
     }
     void paint(Graphics &g) override { g.setColour(Colours::grey.withAlpha(.35f));g.drawHorizontalLine((float)options[0].getBottom() + 6, 14.f, (float)getWidth() - 14); }
     void resized() override {
         auto r=getLocalBounds().reduced(14);title.setBounds(r.removeFromTop(28));
-        lock.setBounds(r.removeFromTop(30));
         for(size_t i=0;i<options.size();++i) { if(i==1)r.removeFromTop(12);options[i].setBounds(r.removeFromTop(31)); }
     }
 };

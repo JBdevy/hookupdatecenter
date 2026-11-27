@@ -148,6 +148,8 @@ struct FXEditor: View {
                     set: { settings.arpeggiator = $0 }))
             case "Chorus", "Phaser", "Amp", "Gate Divisor", "Soft Clipper":
                 if let effect = NativeCreativeEffect(rawValue: page) { creativeEditor(effect) }
+            case "EQ - 31 Band":
+                graphicEQEditor
             default:
                 HStack {
                     Toggle(enabledTitle, isOn: $settings.reverbEnabled).toggleStyle(.switch).tint(JarasTheme.green).mapFXMIDI(.enabled, name: "Enabled", range: 0...1)
@@ -291,6 +293,60 @@ struct FXEditor: View {
                 }
             }.padding(18).nativeFXRack()
         }
+    }
+
+    private var graphicEQEditor: some View {
+        let effect = NativeCreativeEffect.graphicEQ
+        let parameters = effect.parameters
+        return VStack(spacing: 12) {
+            HStack {
+                Toggle(enabledTitle, isOn: Binding(get: { settings.isEnabled(effect.rawValue) },
+                    set: { settings.setEnabled(effect.rawValue, enabled: $0) }))
+                    .toggleStyle(.switch).tint(JarasTheme.green)
+                Spacer()
+                Button("Reset") { settings.setCreativeParameters(nil, for: effect) }
+            }
+            HStack(spacing: 0) {
+                VStack(spacing: 0) {
+                    Text(verbatim: "dB").frame(height: 22)
+                    VStack {
+                        ForEach(["+12", "+6", "0", "−6", "−12"], id: \.self) { label in
+                            if label != "+12" { Spacer(minLength: 0) }
+                            Text(verbatim: label)
+                        }
+                    }.frame(height: 146)
+                    Color.clear.frame(height: 24).accessibilityHidden(true)
+                }
+                .font(.jarasSystem(size: 9, weight: .medium))
+                .monospacedDigit().foregroundStyle(JarasTheme.secondary)
+                .frame(width: 27)
+                HStack(spacing: 0) {
+                    ForEach(parameters.dropLast(), id: \.key) { graphicEQFader($0) }
+                }
+                .background(alignment: .top) {
+                    VStack {
+                        ForEach(0..<5) { index in
+                            if index > 0 { Spacer(minLength: 0) }
+                            Rectangle().fill(Color.white.opacity(index == 2 ? 0.26 : 0.08)).frame(height: 1)
+                        }
+                    }.frame(height: 136).padding(.top, 27).allowsHitTesting(false)
+                }
+                Rectangle().fill(Color.white.opacity(0.16)).frame(width: 1, height: 192)
+                    .padding(.horizontal, 5).accessibilityHidden(true)
+                if let output = parameters.last { graphicEQFader(output).frame(width: 38) }
+            }
+            .padding(.horizontal, 8).padding(.vertical, 10)
+            .background {
+                RoundedRectangle(cornerRadius: 9).fill(LinearGradient(
+                    colors: [Color(hex: 0x241a2e), Color(hex: 0x15121c)],
+                    startPoint: .top, endPoint: .bottom))
+            }
+            .overlay { RoundedRectangle(cornerRadius: 9).strokeBorder(.white.opacity(0.13)).allowsHitTesting(false) }
+        }
+    }
+
+    private func graphicEQFader(_ parameter: NativeCreativeEffect.Parameter) -> some View {
+        GraphicEQFader(parameter: parameter, value: creativeValue(.graphicEQ, parameter))
     }
 
     private var triggerEditor: some View {
@@ -475,6 +531,76 @@ struct FXEditor: View {
             HStack { Text(verbatim: label).font(.jarasCaption); Spacer(); Text(String(format: "%.1f %@", value.wrappedValue * scale, suffix)).font(.jarasSystem(size: 10, design: .monospaced)) }
             Slider(value: value, in: range).tint(JarasTheme.green)
         }.mapFXMIDI(parameter, name: label, range: range, band: band)
+    }
+}
+
+private struct GraphicEQFader: View {
+    let parameter: NativeCreativeEffect.Parameter
+    @Binding var value: Double
+    @GestureState private var dragging = false
+
+    private var output: Bool { parameter.key == "output" }
+    private var accent: Color { output ? NativeFXAppearance.mint : NativeFXAppearance.violet }
+    private var gain: String { value == 0 ? "0" : String(format: "%+.1f", value) }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Text(verbatim: gain).monospacedDigit().lineLimit(1).minimumScaleFactor(0.65)
+                .foregroundStyle(value == 0 ? JarasTheme.secondary : accent)
+                .frame(height: 22)
+            GeometryReader { geometry in
+                let travel = max(1, geometry.size.height - 10)
+                let x = geometry.size.width / 2
+                let center = geometry.size.height / 2
+                let position = 5 + travel * (1 - (value - parameter.range.lowerBound) /
+                                            (parameter.range.upperBound - parameter.range.lowerBound))
+                ZStack {
+                    Rectangle().fill(Color.black.opacity(0.63))
+                        .frame(width: 4, height: travel).position(x: x, y: center)
+                    Rectangle().fill(accent.opacity(0.63))
+                        .frame(width: 2, height: abs(center - position))
+                        .position(x: x, y: (center + position) / 2)
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(LinearGradient(colors: [accent.opacity(0.85), Color(hex: 0x393146)],
+                                             startPoint: .top, endPoint: .bottom))
+                        .overlay { RoundedRectangle(cornerRadius: 2).strokeBorder(accent.opacity(dragging ? 1 : 0.54)) }
+                        .overlay { Rectangle().fill(Color.white.opacity(0.79)).frame(height: 1).padding(.horizontal, 3) }
+                        .frame(width: min(16, max(6, geometry.size.width - 5)), height: 9)
+                        .position(x: x, y: position)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .contentShape(Rectangle())
+                .gesture(DragGesture(minimumDistance: 3)
+                    .updating($dragging) { _, active, _ in active = true }
+                    .onChanged { event in
+                        let fraction = min(1, max(0, 1 - (event.location.y - 5) / travel))
+                        let range = parameter.range
+                        setGain(range.lowerBound + fraction * (range.upperBound - range.lowerBound))
+                    })
+                .onTapGesture(count: 2) { value = parameter.initial }
+            }.frame(height: 146)
+            Text(verbatim: output ? "Output" : parameter.title).lineLimit(1).minimumScaleFactor(0.65)
+                .foregroundStyle(output ? accent : Color.white.opacity(0.84))
+                .padding(.horizontal, 1.5)
+                .frame(height: 24)
+        }
+        .font(.jarasSystem(size: 9, weight: .medium))
+        .frame(maxWidth: .infinity)
+        .background(dragging ? accent.opacity(0.08) : .clear)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Text(verbatim: output ? "Output" : parameter.title + " Hz"))
+        .accessibilityValue(Text(verbatim: gain + " dB"))
+        .accessibilityAdjustableAction { direction in
+            switch direction {
+            case .increment: setGain(value + 0.1)
+            case .decrement: setGain(value - 0.1)
+            @unknown default: break
+            }
+        }
+    }
+
+    private func setGain(_ next: Double) {
+        value = min(parameter.range.upperBound, max(parameter.range.lowerBound, (next * 10).rounded() / 10))
     }
 }
 

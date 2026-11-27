@@ -416,7 +416,7 @@ private struct NativeProjectPicker: UIViewControllerRepresentable {
     func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
         let reaper = UTType(filenameExtension: "rpp") ?? UTType(importedAs: "com.cockos.reaper.project", conformingTo: .data)
         let logic = UTType(filenameExtension: "logicx") ?? UTType(importedAs: "com.apple.logicx.project", conformingTo: .package)
-        let types: [UTType] = (kind == .stems || kind == .storage || kind == .packageDestination || kind == .temporaryDestination || kind == .projectFolder) ? [.folder] : kind == .trackAudio ? [.audio, .movie, .image] : kind == .trackMedia ? [.image, .movie] : kind == .reaper ? [reaper] : kind == .logic ? [logic, .package] : kind == .projectFile ? [.catLiveProject] : kind == .project ? [.catLiveProject, .catLivePackage, .zip, reaper, logic] : [.catLivePackage, .zip]
+        let types: [UTType] = (kind == .stems || kind == .storage || kind == .packageDestination || kind == .projectFolder) ? [.folder] : kind == .trackAudio ? [.audio, .movie, .image] : kind == .trackMedia ? [.image, .movie] : kind == .reaper ? [reaper] : kind == .logic ? [logic, .package] : kind == .projectFile ? [.catLiveProject] : kind == .project ? [.catLiveProject, .catLivePackage, .zip, reaper, logic] : [.catLivePackage, .zip]
         let picker = UIDocumentPickerViewController(forOpeningContentTypes: types, asCopy: kind == .trackAudio || kind == .trackMedia)
         picker.directoryURL = directory
         picker.allowsMultipleSelection = kind == .stems
@@ -426,7 +426,6 @@ private struct NativeProjectPicker: UIViewControllerRepresentable {
         if kind == .projectFolder {
             picker.title = JarasLocalization.string("Choose the folder containing the selected project and its media.")
         }
-        if kind == .temporaryDestination { picker.title = JarasLocalization.string("Save Project") }
         if kind == .packageDestination { picker.title = JarasLocalization.string("Choose a folder for the imported project") }
         picker.delegate = context.coordinator
         return picker
@@ -605,7 +604,7 @@ struct NativeProjectPresentation: ViewModifier {
             .alert("Project name", isPresented: $documents.nativeNamePrompt) {
                 TextField("Project name", text: $documents.nativeProjectName)
                 Button("Cancel", role: .cancel) { documents.cancelNativeProjectName() }
-                Button("Create") { documents.confirmNativeProjectName() }
+                Button(documents.nativeNamingTemporarySave ? "Save" : "Create") { documents.confirmNativeProjectName() }
             }
     }
     private func pickerDismissed() {

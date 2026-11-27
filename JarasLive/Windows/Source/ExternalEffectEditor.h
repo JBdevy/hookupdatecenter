@@ -17,6 +17,14 @@ class ExternalEffectEditor final : public Component, private AsyncUpdater, priva
     String failure;
     int width = 740, height = 560;
     bool attempted = false;
+    void releaseEditor() {
+        shortcuts.reset();
+        editor.reset();
+        const auto hwnd = static_cast<HWND>(host.getHWND());
+        host.setHWND(nullptr);
+        if (hwnd && IsWindow(hwnd)) DestroyWindow(hwnd);
+        canvas = nullptr;
+    }
     void handleAsyncUpdate() override {
         if (!isShowing() || !getPeer()) return;
         if (attempted) { reportPreferredSize(); return; }
@@ -43,7 +51,9 @@ class ExternalEffectEditor final : public Component, private AsyncUpdater, priva
             width=editor->width();height=editor->height();resized();
             reportPreferredSize();
         } catch (const std::exception &e) {
-            failure=String::fromUTF8(e.what());shortcuts.reset();editor.reset();host.setHWND(nullptr);canvas=nullptr;repaint();
+            failure=String::fromUTF8(e.what());
+            releaseEditor();
+            repaint();
         }
     }
     void reportPreferredSize() {
@@ -71,7 +81,8 @@ public:
         horizontal.addListener(this);vertical.addListener(this);
     }
     ~ExternalEffectEditor() override {
-        cancelPendingUpdate();shortcuts.reset();editor.reset();host.setHWND(nullptr);
+        cancelPendingUpdate();
+        releaseEditor();
     }
     void syncVisibility(){if(editor)editor->setVisible(isShowing());}
     bool uses(const std::shared_ptr<native::vst3::Processor> &plugin)const{return processor==plugin;}

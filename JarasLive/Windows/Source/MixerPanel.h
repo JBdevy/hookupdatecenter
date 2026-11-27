@@ -623,7 +623,7 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
                 const bool shownMute = mixer.session.trackDisplayMute(id,t->mute), shownSolo = mixer.session.trackDisplaySolo(id,t->solo);
                 const auto selected = !id.empty() && mixer.selectedTrack(id);
                 const auto levels = mixer.session.audio.meterLevels(id);
-                vu.refresh(mixer.session.audio.meterRMS(id));
+                vu.refresh(mixer.session.audio.meterVUMean(id));
                 fader.setLinked(t->stereoLinkPartner.has_value());
                 if (fader.isVisible() && fader.isVertical()) {
                     fader.setMeterLevels(levels);
@@ -657,6 +657,10 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
         }
         void paintOverChildren(Graphics &g) override {
             const auto bounds = getLocalBounds().toFloat();
+            if (libraryEffectOverStrip) {
+                g.setColour(theme::green.withAlpha(.65f));
+                g.drawRoundedRectangle(bounds.reduced(1), 5, 2);
+            }
             if (!id.empty() || !mixer.session.project().masterMute) return;
             const bool bright = masterMuteBlinkPhase == 0;
             g.setColour(Colour(0xffff3b30).withAlpha(bright ? .28f : .04f));
@@ -991,7 +995,7 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
         }
 
         void mouseDrag(const MouseEvent &e) override {
-            if (!pressedPower && !id.empty() && pressedEffect.isNotEmpty() && e.mods.isLeftButtonDown() && e.getDistanceFromDragStart() > 8) {
+            if (!pressedPower && pressedEffect.isNotEmpty() && e.mods.isLeftButtonDown() && e.getDistanceFromDragStart() > 8) {
                 auto description = object(); put(description, "type", "catlive-fx-copy");
                 put(description, "project", text(mixer.session.project().id)); put(description, "source", text(id));
                 put(description, "effect", pressedEffect);
@@ -1026,9 +1030,9 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
             dragging = false; pressedPower = false; pressedSlot = -1; pressedEffect.clear();
         }
         bool isInterestedInDragSource(const SourceDetails &d) override {
-            if (isLibraryEffectDrag(d.description)) return shows(HozMixerView::sendSlots) && (id.empty() || (track() && jaras::fixedTrackName(track()->role).empty()));
+            if (isLibraryEffectDrag(d.description) || isEffectDrag(d.description))
+                return id.empty() || (track() && jaras::fixedTrackName(track()->role).empty());
             if(id.empty()) return false;
-            if (isEffectDrag(d.description)) return track() && jaras::fixedTrackName(track()->role).empty();
             return mixer.session.song()&&!trackDrop::source(d.description,mixer.session.project(),*mixer.session.song()).empty();
         }
         void itemDragEnter(const SourceDetails &d) override {itemDragMove(d);}
@@ -1036,6 +1040,7 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
             const bool library = isLibraryEffectDrag(d.description);
             if (library || isEffectDrag(d.description)) {
                 effectDropSlot = slotAt(d.localPosition);
+                libraryEffectOverStrip = library && effectDropSlot < 0;
                 mixer.dropPreview.reset(); mixer.blocked.clear(); repaint(); return;
             }
             if(id.empty()) return;
@@ -1043,18 +1048,30 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
             mixer.dropPreview=trackDrop::resolve(*mixer.session.song(),trackDrop::sources(d.description,mixer.session.project(),*mixer.session.song()),id,d.localPosition.x>getWidth()/2,d.localPosition.y<16);
             mixer.blocked=mixer.dropPreview?ID{}:id;mixer.repaint();
         }
-        void itemDragExit(const SourceDetails &) override {effectDropSlot=-1;mixer.dropPreview.reset();mixer.blocked.clear();mixer.repaint();repaint();}
+        void itemDragExit(const SourceDetails &) override {effectDropSlot=-1;libraryEffectOverStrip=false;mixer.dropPreview.reset();mixer.blocked.clear();mixer.repaint();repaint();}
         void itemDropped(const SourceDetails &d) override {
             const bool library = isLibraryEffectDrag(d.description);
             if (library || isEffectDrag(d.description)) {
                 const int slot = slotAt(d.localPosition); itemDragExit(d);
-                if (slot < 0 || !isInterestedInDragSource(d)) return;
-                const auto chain = list(get(fxchain::settings(mixer.session, id), "inserted"));
+                if ((!library && slot < 0) || !isInterestedInDragSource(d)) return;
+                auto settings = fxchain::settings(mixer.session, id);
+                auto chain = list(get(settings, "inserted"));
                 try {
                     const auto before = isPositiveAndBelow(slot, chain.size()) ? chain[slot].toString() : String();
-                    if (library)
+                    if (library) {
                         mixer.session.insertLibraryEffect(id, str(d.description, "identity"), str(d.description, "preset"), before);
-                    else mixer.session.copyEffect(utf8(str(d.description,"source")), str(d.description,"effect"), id, before);
+                    } else {
+                        const auto source = utf8(str(d.description, "source"));
+                        const auto effect = str(d.description, "effect");
+                        if (source != id) {
+                            mixer.session.copyEffect(source, effect, id, before);
+                        } else if (effect != before && chain.contains(var(effect))) {
+                            chain.removeFirstMatchingValue(var(effect));
+                            chain.insert(before.isEmpty() ? chain.size() : chain.indexOf(var(before)), effect);
+                            put(settings, "inserted", chain);
+                            mixer.session.configureEffects(id, settings);
+                        }
+                    }
                 } catch (const std::exception &e) { mixer.error(String::fromUTF8(e.what())); }
                 refresh(); return;
             }
@@ -1153,6 +1170,7 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
         }
         bool dragging=false;
         int pressedSlot=-1, effectDropSlot=-1, firstSlot=0, hoveredSlot=-1;
+        bool libraryEffectOverStrip = false;
         int firstOutput=0;
         bool pressedOutput=false, pressedPower=false;
         String pressedEffect;

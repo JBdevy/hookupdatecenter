@@ -2266,7 +2266,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
                     let radius: CGFloat = item.rect.width < 20 ? 0 : 3
                     context.addPath(CGPath(roundedRect: item.rect, cornerWidth: radius, cornerHeight: radius, transform: nil))
                     let color = GridSelectionItem.stackedHeaderColor
-                    if item.stackedOverlap {
+                    if item.stackedOverlap && !selected.contains(item.id) {
                         // Opaque ink from the front header covers prior titles
                         // only inside the band. The waveform surface stays shared.
                         context.setFillColor(red: CGFloat((color >> 16) & 255) / 255, green: CGFloat((color >> 8) & 255) / 255,

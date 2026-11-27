@@ -15,20 +15,22 @@ class ClassicVU final : public Component {
         return {48.f + radius * std::sin(angle), 41.f - radius * std::cos(angle)};
     }
     Image face;
+    static constexpr float dialWidth = 96.f, dialHeight = 45.f;
     VUStyle style = VUStyle::purple;
-    double amplitude = 0, lastRefresh = 0;
+    audio::AnalogVU pointer;
+    double lastRefresh = 0;
     float level = -20;
-    void buildFace() {
-        face = Image(Image::ARGB, 192, 90, true);
+    void buildFace(int pixelWidth, int pixelHeight) {
+        face = Image(Image::ARGB, pixelWidth, pixelHeight, true);
         Graphics g(face);
-        g.addTransform(AffineTransform::scale(2));
+        g.addTransform(AffineTransform::scale(pixelWidth / dialWidth, pixelHeight / dialHeight));
         const juce::Rectangle<float> box{.5f,.5f,95,44};
         const bool amber = style == VUStyle::amber;
         g.setGradientFill(ColourGradient(Colour(amber ? 0xffffde87 : 0xff512d72),0,0,
                                          Colour(amber ? 0xffe3a644 : 0xff241632),0,45,false));
         g.fillRoundedRectangle(box,5);
         g.setColour(Colour(amber ? 0xff9b6934 : 0xff80659a)); g.drawRoundedRectangle(box,5,1);
-        g.setFont(theme::semiboldFont(7));
+        g.setFont(theme::semiboldFont(8.5f));
         for (const auto mark : marks) {
             g.setColour(amber ? Colour(mark > 0 ? 0xffa52519 : 0xff332318) : theme::green);
             const auto a=point(float(mark),26), b=point(float(mark),31);
@@ -38,8 +40,9 @@ class ClassicVU final : public Component {
                 g.drawText((mark>0 ? "+" : "") + String(mark), juce::Rectangle<float>(18,9).withCentre(anchor), Justification::centred);
             }
         }
-        g.setColour(Colour(amber ? 0xff332318 : 0xffd0b3eb));g.setFont(theme::semiboldFont(8));
-        g.drawText("VU",39,25,18,8,Justification::centred);
+        g.setColour(Colour(amber ? 0xff332318 : 0xffd0b3eb));
+        g.setFont(theme::semiboldFont(9));
+        g.drawText("VU", 39, 24, 18, 10, Justification::centred);
     }
 public:
     ClassicVU() {
@@ -58,16 +61,21 @@ public:
         const auto now=Time::getMillisecondCounterHiRes() / 1000.;
         const auto elapsed=lastRefresh == 0 ? 1. / 30 : now - lastRefresh;
         lastRefresh=now;
-        input=std::isfinite(input) ? std::max(0.f,input) : 0.f;
-        amplitude += (input-amplitude) * (1 - std::exp(-elapsed / (input>amplitude ? .10 : .24)));
-        const auto next=float(std::round(jlimit(-20.,3.,20 * std::log10(std::max(.000001,amplitude)) + 18) * 10) / 10);
+        const auto next=pointer.update(input, elapsed);
         if (next != level) { level=next;repaint(); }
     }
     void paint(Graphics &g) override {
-        if (!face.isValid()) buildFace();
-        const auto scale=std::min(getWidth()/96.f,getHeight()/45.f);
-        g.addTransform(AffineTransform::scale(scale).translated((getWidth()-96*scale)/2,(getHeight()-45*scale)/2));
-        g.drawImage(face,juce::Rectangle<float>{0,0,96,45});
+        if (getLocalBounds().isEmpty()) return;
+        const auto scale = std::min(getWidth() / dialWidth, getHeight() / dialHeight);
+        const auto dpi = g.getInternalContext().getPhysicalPixelScaleFactor();
+        const auto pixelWidth = std::max(1, roundToInt(dialWidth * scale * dpi));
+        const auto pixelHeight = std::max(1, roundToInt(dialHeight * scale * dpi));
+        // Cache the dial at its displayed pixel size. Only the needle changes on meter ticks.
+        if (!face.isValid() || face.getWidth() != pixelWidth || face.getHeight() != pixelHeight)
+            buildFace(pixelWidth, pixelHeight);
+        const auto dial = getLocalBounds().toFloat().withSizeKeepingCentre(dialWidth * scale, dialHeight * scale);
+        g.drawImage(face, dial);
+        g.addTransform(AffineTransform::scale(scale).translated(dial.getX(), dial.getY()));
         g.setColour(Colour(style == VUStyle::amber ? 0xff261a12 : 0xfff2e9ff));
         g.drawLine(Line<float>({48,41},point(level,32)),1.15f);
         g.fillEllipse(46,39,4,4);

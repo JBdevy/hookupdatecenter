@@ -2,25 +2,30 @@
 import SwiftUI
 import UIKit
 
+private let timelineSelectionHoldDuration: TimeInterval = 0.45
+
 @MainActor enum IpadTimelinePointerContextMenu {
     static var contains: (UITouch) -> Bool = { _ in false }
 }
 struct IpadTimelinePointerEvent {
     enum Phase { case began, moved, ended, cancelled }
+    enum Source { case pointer, touchDrag, touchMarquee }
     let phase: Phase
     let position: CGPoint
     let origin: CGPoint
     let secondary: Bool
     let modifiers: HardwareKeyboardModifiers
-    var direct = false
+    var source = Source.pointer
+    var direct: Bool { source != .pointer }
     var distance: CGFloat { hypot(position.x - origin.x, position.y - origin.y) }
 }
 
-/// Direct drags are opt-in and limited to selected items in Track Mixer Edit.
+/// Direct item drags and empty-grid long presses are enabled separately.
 struct IpadTimelinePointerProbe: UIViewRepresentable {
     var enabled: Bool
     var capturesPointer = true
     var acceptsTouch: ((CGPoint) -> Bool)? = nil
+    var acceptsMarqueeTouch: ((CGPoint) -> Bool)? = nil
     var touchTap: ((CGPoint) -> Bool)? = nil
     var reset: UUID
     var accepts: (CGPoint) -> Bool
@@ -31,6 +36,7 @@ struct IpadTimelinePointerProbe: UIViewRepresentable {
     func updateUIView(_ view: IpadTimelinePointerView, context: Context) {
         view.accepts = accepts; view.acceptsTouch = acceptsTouch; view.wantsAutoScroll = wantsAutoScroll
         view.event = event; view.wheel = wheel
+        view.acceptsMarqueeTouch = acceptsMarqueeTouch
         view.touchTap = touchTap
         view.setEnabled(enabled, reset: reset, capturesPointer: capturesPointer)
     }
@@ -40,6 +46,7 @@ struct IpadTimelinePointerProbe: UIViewRepresentable {
 final class IpadTimelinePointerView: UIView, UIGestureRecognizerDelegate {
     var accepts: (CGPoint) -> Bool = { _ in false }
     var acceptsTouch: ((CGPoint) -> Bool)?
+    var acceptsMarqueeTouch: ((CGPoint) -> Bool)?
     var touchTap: ((CGPoint) -> Bool)?
     var wantsAutoScroll: (CGPoint) -> Bool = { _ in false }
     var event: (IpadTimelinePointerEvent) -> Void = { _ in }
@@ -52,6 +59,8 @@ final class IpadTimelinePointerView: UIView, UIGestureRecognizerDelegate {
     private var originalScrollTypes: UIScrollTypeMask?
     private var dragClock: CADisplayLink?
     private var touchOrigin = CGPoint.zero
+    private var marqueeOrigin = CGPoint.zero
+    private var holdingMarquee = false
     private final class TickTarget: NSObject {
         weak var view: IpadTimelinePointerView?
         init(_ view: IpadTimelinePointerView) { self.view = view }
@@ -59,6 +68,7 @@ final class IpadTimelinePointerView: UIView, UIGestureRecognizerDelegate {
     }
     private lazy var pointer = IpadGridPointerRecognizer(target: self, action: #selector(pointerChanged(_:)))
     private lazy var touchDrag = UIPanGestureRecognizer(target: self, action: #selector(touchChanged(_:)))
+    private lazy var marquee = UILongPressGestureRecognizer(target: self, action: #selector(marqueeChanged(_:)))
     private lazy var directTap = UITapGestureRecognizer(target: self, action: #selector(touchTapped(_:)))
     private lazy var scroll = UIPanGestureRecognizer(target: self, action: #selector(wheelChanged(_:)))
     override init(frame: CGRect) { super.init(frame: frame); isUserInteractionEnabled = false }
@@ -75,6 +85,12 @@ final class IpadTimelinePointerView: UIView, UIGestureRecognizerDelegate {
         touchDrag.maximumNumberOfTouches = 1
         touchDrag.cancelsTouchesInView = true
         touchDrag.isEnabled = active && acceptsTouch != nil
+        marquee.delegate = self
+        marquee.allowedTouchTypes = touchDrag.allowedTouchTypes
+        marquee.minimumPressDuration = timelineSelectionHoldDuration
+        marquee.allowableMovement = 8
+        marquee.cancelsTouchesInView = true
+        marquee.isEnabled = active && acceptsMarqueeTouch != nil
         directTap.delegate = self
         directTap.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
         directTap.cancelsTouchesInView = false
@@ -83,7 +99,7 @@ final class IpadTimelinePointerView: UIView, UIGestureRecognizerDelegate {
         scroll.allowedScrollTypesMask = [.continuous, .discrete]
         scroll.cancelsTouchesInView = false
         window.addGestureRecognizer(pointer); window.addGestureRecognizer(touchDrag); window.addGestureRecognizer(directTap)
-        window.addGestureRecognizer(scroll)
+        window.addGestureRecognizer(marquee); window.addGestureRecognizer(scroll)
         updateWheelRouting()
     }
     override func didMoveToSuperview() { super.didMoveToSuperview(); updateWheelRouting() }
@@ -124,11 +140,12 @@ final class IpadTimelinePointerView: UIView, UIGestureRecognizerDelegate {
     func setEnabled(_ enabled: Bool, reset: UUID, capturesPointer: Bool = true) {
         if resetID != reset || active != enabled || self.capturesPointer != capturesPointer {
             pointer.isEnabled = false; scroll.isEnabled = false
-            touchDrag.isEnabled = false
+            touchDrag.isEnabled = false; marquee.isEnabled = false
             resetID = reset; active = enabled; self.capturesPointer = capturesPointer
             pointer.isEnabled = enabled && capturesPointer; scroll.isEnabled = enabled
         }
         touchDrag.isEnabled = enabled && acceptsTouch != nil
+        marquee.isEnabled = enabled && acceptsMarqueeTouch != nil
         directTap.isEnabled = enabled && touchTap != nil
         updateWheelRouting()
     }
@@ -136,7 +153,8 @@ final class IpadTimelinePointerView: UIView, UIGestureRecognizerDelegate {
         dragClock?.invalidate(); dragClock = nil
         restoreWheelRouting()
         owner?.removeGestureRecognizer(pointer); owner?.removeGestureRecognizer(touchDrag); owner?.removeGestureRecognizer(directTap)
-        owner?.removeGestureRecognizer(scroll); owner = nil
+        owner?.removeGestureRecognizer(marquee); owner?.removeGestureRecognizer(scroll); owner = nil
+        holdingMarquee = false
     }
     deinit { dragClock?.invalidate() }
     func gestureRecognizer(_ recognizer: UIGestureRecognizer, shouldReceive event: UIEvent) -> Bool {
@@ -149,6 +167,9 @@ final class IpadTimelinePointerView: UIView, UIGestureRecognizerDelegate {
             return touch.type == .direct && touchTap != nil && !ProgramChangeHeadAnchorView.contains(touch)
         } else if recognizer === touchDrag {
             guard touch.type == .direct, acceptsTouch?(point) == true, !ProgramChangeHeadAnchorView.contains(touch) else { return false }
+        } else if recognizer === marquee {
+            guard touch.type == .direct, acceptsMarqueeTouch?(point) == true,
+                  !ProgramChangeHeadAnchorView.contains(touch), !IpadTimelinePointerContextMenu.contains(touch) else { return false }
         } else {
             guard touch.type == .indirectPointer, accepts(point) else { return false }
         }
@@ -158,11 +179,16 @@ final class IpadTimelinePointerView: UIView, UIGestureRecognizerDelegate {
             view = candidate.superview
         }
         if recognizer === touchDrag { touchOrigin = point }
+        if recognizer === marquee { marqueeOrigin = point }
         return true
     }
     override func gestureRecognizerShouldBegin(_ recognizer: UIGestureRecognizer) -> Bool {
         if recognizer === directTap { return active && touchTap != nil && containsVisiblePoint(recognizer.location(in: self)) }
         if recognizer === touchDrag { return active && acceptsTouch != nil }
+        if recognizer === marquee {
+            return IpadHardwareKeyboardFocus.permitsInput(in: self, enabled: active)
+                && containsVisiblePoint(marqueeOrigin) && acceptsMarqueeTouch?(marqueeOrigin) == true
+        }
         let point = recognizer.location(in: self)
         guard IpadHardwareKeyboardFocus.permitsInput(in: self, enabled: active),
               containsVisiblePoint(point), accepts(point) else { return false }
@@ -183,7 +209,7 @@ final class IpadTimelinePointerView: UIView, UIGestureRecognizerDelegate {
         switch gesture.state {
         case .began:
             event(.init(phase: .began, position: touchOrigin, origin: touchOrigin,
-                        secondary: false, modifiers: [], direct: true))
+                        secondary: false, modifiers: [], source: .touchDrag))
             phase = .moved
         case .changed: phase = .moved
         case .ended: phase = .ended
@@ -191,7 +217,27 @@ final class IpadTimelinePointerView: UIView, UIGestureRecognizerDelegate {
         default: return
         }
         event(.init(phase: phase, position: point, origin: touchOrigin,
-                    secondary: false, modifiers: [], direct: true))
+                    secondary: false, modifiers: [], source: .touchDrag))
+    }
+    @objc private func marqueeChanged(_ gesture: UILongPressGestureRecognizer) {
+        let phase: IpadTimelinePointerEvent.Phase
+        let point: CGPoint
+        switch gesture.state {
+        case .began:
+            holdingMarquee = true
+            phase = .began; point = marqueeOrigin
+        case .changed where holdingMarquee:
+            phase = .moved; point = gesture.location(in: self)
+        case .ended where holdingMarquee:
+            holdingMarquee = false
+            phase = .ended; point = gesture.location(in: self)
+        case .cancelled where holdingMarquee:
+            holdingMarquee = false
+            phase = .cancelled; point = marqueeOrigin
+        default: return
+        }
+        event(.init(phase: phase, position: point, origin: marqueeOrigin,
+                    secondary: false, modifiers: [], source: .touchMarquee))
     }
     @objc private func pointerChanged(_ recognizer: IpadGridPointerRecognizer) {
         let phase: IpadTimelinePointerEvent.Phase
@@ -259,7 +305,7 @@ final class IpadGridPointerRecognizer: UIGestureRecognizer {
 struct IpadRulerTouchInput: UIViewRepresentable {
     var enabled: Bool
     var drag: (CGFloat, CGFloat, Bool, Bool) -> Void
-    var selection: (CGFloat, CGFloat, Bool, Bool) -> Void
+    var selection: ((CGFloat, CGFloat, Bool, Bool) -> Void)?
     var tap: (CGFloat) -> Void
     func makeUIView(context: Context) -> IpadRulerTouchView { IpadRulerTouchView() }
     func updateUIView(_ view: IpadRulerTouchView, context: Context) {
@@ -268,7 +314,10 @@ struct IpadRulerTouchInput: UIViewRepresentable {
 }
 final class IpadRulerTouchView: UIView {
     var drag: ((CGFloat, CGFloat, Bool, Bool) -> Void)?
-    var selection: ((CGFloat, CGFloat, Bool, Bool) -> Void)?
+    var selection: ((CGFloat, CGFloat, Bool, Bool) -> Void)? {
+        didSet { selectionHold.isEnabled = selection != nil }
+    }
+    private lazy var selectionHold = UILongPressGestureRecognizer(target: self, action: #selector(held(_:)))
     private var selectionOrigin: CGFloat?
     var tap: ((CGFloat) -> Void)?
     override init(frame: CGRect) {
@@ -277,12 +326,14 @@ final class IpadRulerTouchView: UIView {
         pan.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
         pan.maximumNumberOfTouches = 1
         let tap = UITapGestureRecognizer(target: self, action: #selector(tapped(_:)))
-        let hold = UILongPressGestureRecognizer(target: self, action: #selector(held(_:)))
-        hold.minimumPressDuration = 1.5; hold.allowableMovement = 8
-        hold.allowedTouchTypes = pan.allowedTouchTypes
-        pan.require(toFail: hold)
-        tap.allowedTouchTypes = pan.allowedTouchTypes; tap.require(toFail: pan); tap.require(toFail: hold)
-        addGestureRecognizer(pan); addGestureRecognizer(tap); addGestureRecognizer(hold)
+        selectionHold.minimumPressDuration = timelineSelectionHoldDuration
+        selectionHold.allowableMovement = 8
+        selectionHold.allowedTouchTypes = pan.allowedTouchTypes
+        selectionHold.isEnabled = false
+        pan.require(toFail: selectionHold)
+        tap.allowedTouchTypes = pan.allowedTouchTypes
+        tap.require(toFail: pan); tap.require(toFail: selectionHold)
+        addGestureRecognizer(pan); addGestureRecognizer(tap); addGestureRecognizer(selectionHold)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     @objc private func panned(_ gesture: UIPanGestureRecognizer) {
