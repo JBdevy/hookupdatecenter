@@ -575,8 +575,12 @@ struct WorkspaceLayoutTests {
                 "Alt scrolling must move only the MIDI Preview pitch rows");
         for (const int width : {1050, 1920}) {
             w.setSize(width, 1050);
-            require(w.controls.count("proMode") == 0 && w.transportProgressBounds().getHeight() == 4,
-                    "Desktop must open with the Pro transport and its four-point progress bar");
+            require(w.controls.count("proMode") == 0 && std::abs(w.transportProgressBounds().getHeight() - 3.2f) < .001f,
+                    "Desktop must open with the Pro transport and its 3.2-point progress bar");
+            const auto lane = w.transportProgressBounds();
+            require(lane.getBottom() <= w.transportBounds.getBottom(), "Progress bar escaped transport");
+            for (const auto& entry : w.controls) if (entry.second->isVisible())
+                require(!entry.second->getBounds().toFloat().intersects(lane), ("Progress bar overlaps " + entry.first).toRawUTF8());
             const auto &trackMemory = *w.controls.at("trackHeightFit");
             const auto &timeMemory = *w.controls.at("zoomFit");
             const auto fits = trackMemory.getBounds().getUnion(timeMemory.getBounds());
@@ -1655,6 +1659,144 @@ struct WorkspaceLayoutTests {
         require(session.song()->parts.front().pitchSemitones==0,"Tuner Redo lost last adjustment");
         directory.getChildFile("pitch-ui-profile.json").replaceWithText(JSON::toString(measurements,true));
     }
+    static void freeTempoPCM(const File& directory) {
+        using floatingControlTests::require;
+        const auto folder = directory.getNonexistentChildFile("free-clock", "");
+        require(folder.createDirectory().wasOk(), "Cannot create tempo fixture");
+        const auto file = folder.getChildFile("tone.wav");
+        auto stream = file.createOutputStream();
+        WavAudioFormat format;
+        std::unique_ptr<AudioFormatWriter> writer(format.createWriterFor(stream.get(), 48000, 2, 24, {}, 0));
+        require(writer != nullptr, "Cannot create stereo fixture");
+        stream.release();
+        AudioBuffer<float> tone(2,48000);
+        for(int i=0;i<48000;++i) {
+            tone.setSample(0,i, float(.25 * std::sin(i * .05)));
+            tone.setSample(1,i, float(.21 * std::sin(i * .09)));
+        }
+        require(writer->writeFromAudioSampleBuffer(tone,0,48000), "Cannot write stereo fixture");
+        writer.reset();
+        auto project = Session::makeEmptyProject("Free clock");
+        auto& song = project.songs.front();
+        song.parts.clear(); song.markers.reset();
+        song.timeSettings = jaras::ProjectTimeSettings{};
+        song.duration = 30; song.bpm = 120;
+        jaras::Track track; track.id = uuid(); track.role.id = "other";
+        jaras::AudioClip clip; clip.id = uuid(); clip.duration = 1; clip.audioFile = jaras::AudioFile{utf8(file.getFileName()),{}};
+        track.clips = {clip}; song.tracks = {track};
+        Session session; session.inspection = true; session.audio.prepareOffline(48000); session.mediaDirectory = folder;
+        session.restoreSnapshot(ProjectCodec::encode(project)); session.audio.setOffline(true);
+        AudioEngine reference(48000,true); reference.prepareSong(song,folder,{},&project);
+        reference.setMixer(project,song); reference.setOffline(true);
+        AudioEngine::State base; base.playing=true; reference.transport(base);
+        session.command(jaras::CommandKind::play);
+        double clock=100;
+        session.tempoEditClock=[&] {return clock;};
+        AudioBuffer<float> edited(2,256), dry(2,256);
+        float peak=0, maxDifference=0;
+        for(int block=0;block<120;++block) {
+            if (block==20 || block==70) {
+                clock+=1;
+                session.setTempo(block==20?146:87);
+                require(session.tempoBPM()==(block==20?146:87),"Project BPM was not changed");
+            }
+            reference.render(dry.getArrayOfWritePointers(),2,256);
+            session.audio.render(edited.getArrayOfWritePointers(),2,256);
+            peak=std::max(peak,dry.getMagnitude(0,256));
+            for(int ch=0;ch<2;++ch) for(int i=0;i<256;++i)
+                maxDifference=std::max(maxDifference,std::abs(dry.getSample(ch,i)-edited.getSample(ch,i)));
+        }
+        require(peak>.001f && maxDifference<.00001f, ("Free BPM changed audible PCM: " + String(maxDifference,8)).toRawUTF8());
+        require(session.song()->tracks[0].clips[0].playbackRate==1 && session.song()->parts.empty(),"Free BPM edited the audio item");
+        session.undo(); require(session.tempoBPM()==146,"Free BPM undo failed");
+        session.redo(); require(session.tempoBPM()==87,"Free BPM redo failed");
+    }
+    static void recordingAndSidebars(const File &directory) {
+        using floatingControlTests::require;
+        const auto folder = directory.getNonexistentChildFile("record-mix", "");
+        const auto wave = mediaImportTests::source(folder, "reference.wav", 48000);
+        auto project=Session::makeEmptyProject("Stress"); auto &song=project.songs[0];
+        song.duration=180;
+        for (int i=0;i<200;++i) {
+            jaras::Track track;track.id=uuid();track.name="Track "+std::to_string(i+1);track.role.id="other";
+            track.recordingOutput=true;
+            for(int j=0;j<45;++j) {
+                jaras::AudioClip clip;clip.id=uuid();clip.name="Item";clip.startTime=j*4.;clip.duration=1;
+                if (i==0) clip.audioFile=jaras::AudioFile{utf8(wave.getFileName()),{}};
+                track.clips.push_back(std::move(clip));
+            }
+            song.tracks.push_back(std::move(track));
+        }
+        song.parts.push_back({uuid(),"Verse",0,180});
+        const auto track=song.tracks.front().id;
+        Session session;session.inspection=true;session.audio.prepareOffline(48000);session.mediaDirectory=folder;
+        session.restoreSnapshot(ProjectCodec::encode(project));session.mediaDirectory=folder;session.audio.setOffline(true);
+        Auth auth;Lighting lights(session);Workspace w(session,auth,lights,false,folder.getChildFile("layout.json"));
+        w.setSize(1366,900);w.projectOpened(false);session.command(jaras::CommandKind::play);
+        AudioBuffer<float> output(2,256);
+        auto render=[&]{session.audio.render(output.getArrayOfWritePointers(),2,256);};
+        Array<var> samples;
+        auto action=[&](String label,auto perform){
+            render(); const auto start=Time::getMillisecondCounterHiRes(); perform();
+            const auto end=Time::getMillisecondCounterHiRes();
+            double previous=start,maximum=end-start;
+            for(int n=0; n<8 || session.busy; ++n) {
+                render();floatingControlTests::pump();
+                const double now=Time::getMillisecondCounterHiRes();
+                maximum=std::max(maximum,now-previous);previous=now;
+                require(now-start<20000,"UI control failed to finish");
+            }
+            require(session.transport().playing,"Transport stopped during a control action");
+            auto info=object();put(info,"action",label);put(info,"clickMs",end-start);put(info,"gapMs",maximum);samples.add(info);
+        };
+        for(int pass=1;pass<=2;++pass) {
+            auto number=String(pass);
+            for(const auto *id:{"mixer","setlist"}) {
+                auto &visible = String(id)=="mixer" ? w.mixerVisible : w.setlistVisible;
+                if(visible)w.controls.at(id)->onClick();
+                action(String(id)+"-open-"+number,[&]{w.controls.at(id)->onClick();});
+                require(visible, "Panel did not open");
+                if(String(id)=="mixer") {
+                    action("mixer-use-"+number,[&]{session.mixerCommand(jaras::CommandKind::mute,track,{});});
+                    session.mixerCommand(jaras::CommandKind::mute,track,{});
+                } else session.focusSetlistRegion(song.parts[0].id,true);
+                action(String(id)+"-close-"+number,[&]{w.controls.at(id)->onClick();});
+                require(!visible,"Panel did not close");
+            }
+            action("arm-"+number,[&]{session.cycleRecordArm(track);});
+            action("disarm-"+number,[&]{session.cycleRecordArm(track);});
+            session.cycleRecordArm(track);
+            action("rec-start-"+number,[&]{session.toggleRecording();});
+            require(session.audio.isRecording(),"REC did not start");
+            action("rec-finish-"+number,[&]{session.toggleRecording();});
+            require(!session.audio.isRecording() && session.song()->tracks[0].clips.size()==size_t(45+pass),"Take was lost");
+            if (session.preparingLiveAudio()) {
+                w.updateState();
+                const auto notice = w.transportInfo.getText();
+                require(w.transportInfo.isVisible() && (notice == String::fromUTF8("Preparing audio…") ||
+                    notice == String::fromUTF8("Preparando áudio…")), "Pending audio preparation needs a visible transport notice");
+            }
+            const auto finish = Time::getMillisecondCounterHiRes();
+            double previous = finish, maxPreparationGap = 0;
+            while (session.preparingLiveAudio() && previous - finish < 20000) {
+                render(); floatingControlTests::pump();
+                const auto now = Time::getMillisecondCounterHiRes();
+                maxPreparationGap = std::max(maxPreparationGap, now - previous);
+                previous = now;
+            }
+            auto sample = samples.getLast();
+            put(sample, "preparationGapMs", maxPreparationGap);
+            require(!session.preparingLiveAudio() && session.transport().playing, "Audio preparation did not finish while playing");
+            session.cycleRecordArm(track);
+        }
+        const auto lastTake = session.song()->tracks.front().clips.back().id;
+        session.undo();
+        require(session.song()->tracks.front().clips.size()==46, "Undo must remove just the last take");
+        session.redo();
+        require(session.song()->tracks.front().clips.size()==47 && session.song()->tracks.front().clips.back().id==lastTake,
+                "Redo must restore the recorded item and its identity");
+        directory.getChildFile("record-sidebars.json").replaceWithText(JSON::toString(var(samples)));
+    }
     static void immediateTrackScroll(const File &directory) {
         using floatingControlTests::require;
         auto project=floatingControlTests::fixture();auto &tracks=project.songs.front().tracks;
@@ -1726,18 +1868,48 @@ struct WorkspaceLayoutTests {
         require(w.pixelsPerSecond == precisionZoom, "Momentum continued zooming after touchpad release");
         const auto horizontalOffset = [&] { return num(get(w.diagnostics(), "timeline"), "horizontal"); };
         const auto horizontalStart = horizontalOffset();
+        auto settle = [] {
+            const auto until = Time::getMillisecondCounterHiRes() + 300.;
+            while (Time::getMillisecondCounterHiRes() < until) floatingControlTests::pump();
+        };
+        const int previousVertical = w.verticalOffset;
         wheel = {}; wheel.isSmooth = true; wheel.deltaX = -1.f;
+        const auto started = Time::getMillisecondCounterHiRes();
         grid->mouseWheelMove(plainWheel, wheel);
-        const auto horizontalSettles = Time::getMillisecondCounterHiRes() + 300;
-        while (Time::getMillisecondCounterHiRes() < horizontalSettles) floatingControlTests::pump();
-        const auto horizontalEnd = horizontalOffset();
-        require(std::abs(horizontalEnd - horizontalStart - 36.) < .01 && w.pixelsPerSecond == precisionZoom,
-                "Horizontal precision scrolling must limit each packet and preserve zoom");
+        const double dispatchMs = Time::getMillisecondCounterHiRes() - started;
+        const double directLarge = horizontalOffset();
+        settle();
+        const double large = horizontalOffset();
         wheel.isInertial = true;
         grid->mouseWheelMove(plainWheel, wheel);
-        const auto horizontalInertiaDeadline = Time::getMillisecondCounterHiRes() + 200;
-        while (Time::getMillisecondCounterHiRes() < horizontalInertiaDeadline) floatingControlTests::pump();
-        require(horizontalOffset() == horizontalEnd, "Horizontal scroll added a second coast after release");
+        settle();
+        require(horizontalOffset() == large, "Horizontal momentum moved the grid after release");
+
+        // Some Windows drivers deliver afterSmallPackets fractional packets without the smooth flag.
+        wheel = {}; wheel.deltaX = -.02f; wheel.deltaY = -.001f;
+        for (int i = 0; i < 8; ++i) grid->mouseWheelMove(plainWheel, wheel);
+        const double directSmall = horizontalOffset();
+        settle();
+        const double afterSmallPackets = horizontalOffset();
+        wheel.deltaX = .02f;
+        grid->mouseWheelMove(plainWheel, wheel);
+        const double reversed = horizontalOffset();
+        settle();
+        require(w.pixelsPerSecond == precisionZoom && w.verticalOffset == previousVertical,
+                "Horizontal touchpad panning changed zoom or vertical offset");
+        require(std::abs(directLarge - horizontalStart - 10.) < .01 && directLarge == large,
+                "A large touchpad packet must move at most ten pixels and stop with the finger");
+        require(std::abs(afterSmallPackets - large - 15.36) < .01 && afterSmallPackets == directSmall,
+                "Eight small horizontal packets must accumulate proportionally without a tail");
+        require(std::abs(reversed - afterSmallPackets + 1.92) < .01 && horizontalOffset() == reversed,
+                "Horizontal touchpad reversal must immediately follow the finger");
+        auto measurements = object();
+        put(measurements,"largePacketPixels",large-horizontalStart);
+        put(measurements,"eightSmallPacketsPixels",afterSmallPackets-large);
+        put(measurements,"driftAfterLargePacket",large-directLarge);
+        put(measurements,"driftAfterSmallPackets",afterSmallPackets-directSmall);
+        put(measurements,"dispatchMs",dispatchMs);
+        directory.getChildFile("grid-touchpad.json").replaceWithText(JSON::toString(measurements));
         wheel = {}; wheel.isSmooth = true;
         const int height=w.trackHeight;wheel.deltaY=.2f;
         w.mouseWheelMove(event(ModifierKeys::ctrlModifier),wheel);
@@ -2098,6 +2270,9 @@ template<class Test> void registerTests(const File &directory,Test &test) {
     test("Setlist transport gestures retain grid geometry and avoid workspace rebuilds",[&]{WorkspaceLayoutTests::setlistResponsiveness(directory);});
     test("Tuner gestures retain the project and audio graph while playing and stopped",[&]{WorkspaceLayoutTests::pitchResponsiveness(directory);});
     test("Tempo gestures update grid and preserve Undo and Redo",[&]{WorkspaceLayoutTests::tempoResponsiveness(directory);});
+    test("Free project BPM without regions or tempo markers preserves every PCM sample during Play",
+         [&] { WorkspaceLayoutTests::freeTempoPCM(directory); });
+    test("Playing stress grid opens and closes Track Mixer Setlist and keeps per-track REC responsive",[&]{WorkspaceLayoutTests::recordingAndSidebars(directory);});
     test("Track Mixer wheel thumb and grid scroll stay synchronized without rebuilding rows",[&]{WorkspaceLayoutTests::immediateTrackScroll(directory);});
     test("Repeated multi-track paste selects the last copy and immediately reveals it in both 900-track mixers while retaining controls",[&]{WorkspaceLayoutTests::duplicateTrackFollow(directory);});
     test("Keyboard right click opens the keyboard settings sheet",[&]{WorkspaceLayoutTests::keyboardContextSettings(directory);});

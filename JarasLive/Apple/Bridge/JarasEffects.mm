@@ -370,7 +370,9 @@ struct VoiceGainKernel {
 // Sample-clock item envelope, independent of UI timers and repeated source
 // segments. The control thread publishes bounded atomic snapshots; rendering
 // never allocates, locks, or rebuilds the graph.
+#include "../../Core/Audio/WaveLFO.hpp"
 struct ItemFadeKernel {
+    jaras::WaveLFO wave;
     std::vector<jaras::overlap::Ramp> envelope;
     catlive::audio::RealtimeBorrowedPointer<std::vector<jaras::overlap::Ramp>> publishedEnvelope;
     std::atomic<bool> hasEnvelope{false};
@@ -400,20 +402,20 @@ struct ItemFadeKernel {
             }
         }
     }
-    std::array<std::atomic<double>,10> pending{};
+    std::array<std::atomic<double>,15> pending{};
     std::atomic<unsigned> generation{0};
     unsigned consumedGeneration=~0u;
-    double parameters[10]{0,0,0,0,0,0,1,1,1,1};
+    double parameters[15]{0,0,0,0,0,0,1,1,1,1};
     double rate=48000;
     const double hostSecondsPerTick=[] {
         mach_timebase_info_data_t timebase{};
         mach_timebase_info(&timebase);
         return double(timebase.numer)/double(timebase.denom)*1e-9;
     }();
-    void configure(double in,double out,double duration,double position,uint64_t host,double sample,double inCurve=0,double inS=1,double outCurve=0,double outS=1) {
+    void configure(double in,double out,double duration,double position,uint64_t host,double sample,double inCurve=0,double inS=1,double outCurve=0,double outS=1, bool waveEnabled=false,double attack=0,double decay=0,double sustain=1,double release=0) {
         generation.fetch_add(1,std::memory_order_acq_rel);
-        const double values[]={in,out,duration,position,host?double(host)*hostSecondsPerTick:0,sample,std::exp2(4*std::clamp(inCurve,-1.,1.)),std::clamp(inS,-1.,1.),std::exp2(4*std::clamp(outCurve,-1.,1.)),std::clamp(outS,-1.,1.)};
-        for(unsigned i=0;i<10;++i) pending[i].store(values[i],std::memory_order_relaxed);
+        const double values[]={in,out,duration,position,host?double(host)*hostSecondsPerTick:0,sample,std::exp2(4*std::clamp(inCurve,-1.,1.)),std::clamp(inS,-1.,1.),std::exp2(4*std::clamp(outCurve,-1.,1.)),std::clamp(outS,-1.,1.),waveEnabled ? 1. : 0.,attack,decay,sustain,release};
+        for(unsigned i=0;i<15;++i) pending[i].store(values[i],std::memory_order_relaxed);
         generation.fetch_add(1,std::memory_order_release);
     }
     static double curve(double t) { t=std::clamp(t,0.0,1.0); return t*t*(3-2*t); }
@@ -422,14 +424,18 @@ struct ItemFadeKernel {
         const auto physical = jaras::physicalRenderTime(*time, rate); time = &physical;
         const auto before=generation.load(std::memory_order_acquire);
         if(!(before&1) && before!=consumedGeneration) {
-            double values[10];
-            for(unsigned i=0;i<10;++i) values[i]=pending[i].load(std::memory_order_relaxed);
-            if(generation.load(std::memory_order_acquire)==before) { std::copy(values,values+10,parameters); consumedGeneration=before; }
+            double values[15];
+            for(unsigned i=0;i<15;++i) values[i]=pending[i].load(std::memory_order_relaxed);
+            if(generation.load(std::memory_order_acquire)==before) {
+                std::copy(values, values + 15, parameters);
+                wave = values[10] ? jaras::WaveLFO::prepare(values[2], values[11], values[12], values[13], values[14]) : jaras::WaveLFO{};
+                consumedGeneration=before;
+            }
         }
         const double duration=parameters[2];
         const double in=std::min(duration,parameters[0]), out=std::min(duration,parameters[1]);
         const bool overlap = hasEnvelope.load(std::memory_order_acquire);
-        if(duration<=0 || (in<=0 && out<=0 && !overlap)) return;
+        if(duration<=0 || (in<=0 && out<=0 && !overlap && !wave.enabled)) return;
         double position=parameters[3];
         if(parameters[4]>0 && (time->mFlags&kAudioTimeStampHostTimeValid))
             position+=double(time->mHostTime)*hostSecondsPerTick-parameters[4];
@@ -437,13 +443,13 @@ struct ItemFadeKernel {
         else return;
         // Outside both edge ramps the envelope is exactly unity. Keep the
         // original sample loop for blocks crossing an edge or overlapping fades.
-        if(!frames || (!overlap && (in<=0 || position>=in) &&
+        if(!frames || (!overlap && !wave.enabled && (in<=0 || position>=in) &&
            (out<=0 || duration-(position+double(frames-1)/rate)>=out))) return;
         auto lease = publishedEnvelope.read();
         const auto *ramps = lease.get();
         for(unsigned frame=0;frame<frames;++frame) {
             const double t=position+double(frame)/rate;
-            const float gain=float((ramps ? jaras::overlap::gain(*ramps,t) : 1.)*(in>0?shaped(t/in,parameters[6],parameters[7]):1)*(out>0?shaped((duration-t)/out,parameters[8],parameters[9]):1));
+            const float gain=float(wave.gain(t)*(ramps ? jaras::overlap::gain(*ramps,t) : 1.)*(in>0?shaped(t/in,parameters[6],parameters[7]):1)*(out>0?shaped((duration-t)/out,parameters[8],parameters[9]):1));
             for(unsigned ch=0;ch<buffers->mNumberBuffers;++ch) {
                 auto& buffer=buffers->mBuffers[ch]; auto data=static_cast<float*>(buffer.mData);
                 if(!data) continue;
@@ -738,6 +744,10 @@ struct EQKernel {
 + (void)setInputFade:(AVAudioUnitEffect *)node fadeIn:(double)fadeIn fadeOut:(double)fadeOut duration:(double)duration position:(double)position hostTime:(uint64_t)hostTime sampleTime:(double)sampleTime {
     if(!std::isfinite(fadeIn)||!std::isfinite(fadeOut)||!std::isfinite(duration)||!std::isfinite(position)||!std::isfinite(sampleTime)) return;
     ((JarasEQAudioUnit *)node.AUAudioUnit)->kernel.fade.configure(std::max(0.0,fadeIn),std::max(0.0,fadeOut),std::max(0.0,duration),position,hostTime,sampleTime);
+}
++ (void)setInputFade:(AVAudioUnitEffect *)node fadeIn:(double)fadeIn fadeOut:(double)fadeOut fadeInCurve:(double)inCurve fadeInSCurve:(double)inS fadeOutCurve:(double)outCurve fadeOutSCurve:(double)outS duration:(double)duration position:(double)position hostTime:(uint64_t)hostTime sampleTime:(double)sampleTime waveEnabled:(BOOL)waveEnabled attack:(double)attack decay:(double)decay sustain:(double)sustain release:(double)release {
+    ((JarasEQAudioUnit *)node.AUAudioUnit)->kernel.fade.configure(fadeIn, fadeOut, duration, position, hostTime, sampleTime,
+        inCurve, inS, outCurve, outS, waveEnabled, attack, decay, sustain, release);
 }
 + (void)setInputFade:(AVAudioUnitEffect *)node fadeIn:(double)fadeIn fadeOut:(double)fadeOut fadeInCurve:(double)inCurve fadeInSCurve:(double)inS fadeOutCurve:(double)outCurve fadeOutSCurve:(double)outS duration:(double)duration position:(double)position hostTime:(uint64_t)hostTime sampleTime:(double)sampleTime {
     if(!std::isfinite(fadeIn)||!std::isfinite(fadeOut)||!std::isfinite(duration)||!std::isfinite(position)||!std::isfinite(sampleTime)||!std::isfinite(inCurve)||!std::isfinite(inS)||!std::isfinite(outCurve)||!std::isfinite(outS)) return;

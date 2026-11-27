@@ -397,18 +397,38 @@ template <typename Test> void registerTests(const File &directory,Test &test) {
         clip.audioFile=jaras::AudioFile{"source.wav",{}};clip.loopStart=0;clip.loopLength=.125;
         clip.sourceOffset=.001;clip.fadeIn=.03;clip.fadeOut=.04;clip.gain=.8;clip.normalizationGain=.75;
         clip.phaseInverted=true;clip.pan=-.3;track.clips={clip};song.tracks={track};project.songs={song};
-        auto engine=std::make_unique<AudioEngine>(48000,true);
-        engine->prepareSong(song,folder,{},&project);engine->setMixer(project,song);engine->setOffline(true);
-        AudioEngine::State state;state.playing=true;engine->transport(state);
-        AudioBuffer<float> output(2,480);
-        for(int block=0;block<25;++block) {
-            engine->render(output.getArrayOfWritePointers(),2,480);
-            for(int n=0;n<480;++n)for(int ch=0;ch<2;++ch) {
-                const double time=(block*480+n)/48000.,local=time-clip.startTime;
-                const double gain=-.8*.75*(ch==1?.7:1)*jaras::itemFadeGain(clip,time);
-                const auto value=local<0||local>=clip.duration?0:expected(pcm,48000,clip,local,ch)*gain;
-                require(std::abs(output.getSample(ch,n)-value)<.000003,
-                        "Direct loop PCM altered fade/gain/phase/pan at sample "+String(block*480+n));
+        for (bool waveEnabled : {false, true}) {
+            if (waveEnabled) {
+                auto settings = fxschema::defaults();
+                put(settings, "inserted", Array<var>{"Wave LFO"});
+                put(settings, "waveLFOEnabled", true);
+                auto wave = object();
+                put(wave, "attack", .02); put(wave, "decay", .04);
+                put(wave, "sustain", .5); put(wave, "release", .03);
+                put(settings, "waveLFO", wave);
+                song.tracks[0].clips[0].fxJSON = utf8(JSON::toString(settings));
+                project.songs[0] = song;
+            }
+            auto engine=std::make_unique<AudioEngine>(48000,true);
+            engine->prepareSong(song,folder,{},&project);engine->setMixer(project,song);engine->setOffline(true);
+            AudioEngine::State state;state.playing=true;engine->transport(state);
+            AudioBuffer<float> output(2,480);
+            for(int block=0;block<25;++block) {
+                engine->render(output.getArrayOfWritePointers(),2,480);
+                for(int n=0;n<480;++n)for(int ch=0;ch<2;++ch) {
+                    const double time=(block*480+n)/48000.,local=time-clip.startTime;
+                    const double gain=-.8*.75*(ch==1?.7:1)*jaras::itemFadeGain(clip,time);
+                    double waveGain = 1;
+                    if (waveEnabled && local >= 0 && local < clip.duration) {
+                        if (local < .02) waveGain = local / .02;
+                        else if (local < .06) waveGain = 1 - .5 * (local - .02) / .04;
+                        else if (local < .17) waveGain = .5;
+                        else waveGain = .5 * (.2 - local) / .03;
+                    }
+                    const auto value=local<0||local>=clip.duration?0:expected(pcm,48000,clip,local,ch)*gain*waveGain;
+                    require(std::abs(output.getSample(ch,n)-value)<.000003,
+                            "Direct loop PCM altered fade/gain/phase/pan at sample "+String(block*480+n));
+                }
             }
         }
     });

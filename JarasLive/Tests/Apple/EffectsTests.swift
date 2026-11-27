@@ -871,6 +871,9 @@ func testSpectrumWorker(rate: Double) {
         }
         let output = try render(settings, rate: rate, duration: 0.5, analysis: false, creativeTempo: 120,
                                 minimumReduction: effect == .softClipper ? 6 : nil)
+        if effect == .amp {
+            precondition(output[0] == output[1], "A fully wet Amp must output one mono signal")
+        }
         precondition(output[0] != dry[0] && output[1] != dry[1], "\(effect.rawValue) did not affect stereo PCM")
     }
     var limiter = NativeFXSettings()

@@ -36,6 +36,7 @@ public struct RecordingArmState: Equatable {
     }
     /// Selection is retained for future automatic arming, but unrelated track
     /// clicks do not change the REC controls or their capture configuration.
+    public func hasSameModes(as other: Self) -> Bool { modes == other.modes }
     public func hasSamePresentation(as other: Self) -> Bool {
         modes == other.modes && armed == other.armed
     }

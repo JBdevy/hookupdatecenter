@@ -84,9 +84,10 @@ final class TrackDuplicationTests: XCTestCase {
         var expectedItem = original.clips[0], item = copy.clips[0]
         XCTAssertNotEqual(item.id, expectedItem.id)
         assertFXCopy(item.fx!, expectedItem.fx!); assertAutomationCopy(item.automation!, expectedItem.automation!, newFX: item.fx!, oldFX: expectedItem.fx!)
+        expectedItem.name += " 001"
         expectedItem.id = item.id; expectedItem.fx = item.fx; expectedItem.automation = item.automation
         XCTAssertEqual(item, expectedItem, "All timing, audio, fades, MIDI and media fields travel with the item")
-        var expectedMIDI = original.clips[1]
+        var expectedMIDI = original.clips[1]; expectedMIDI.name += " 001"
         XCTAssertNotEqual(copy.clips[1].id, expectedMIDI.id); XCTAssertNotEqual(copy.clips[1].midi!.notes[0].id, expectedMIDI.midi!.notes[0].id)
         expectedMIDI.id = copy.clips[1].id; expectedMIDI.midi!.notes[0].id = copy.clips[1].midi!.notes[0].id
         XCTAssertEqual(copy.clips[1], expectedMIDI)

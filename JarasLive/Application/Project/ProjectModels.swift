@@ -616,7 +616,10 @@ public struct Song: Codable, Identifiable, Equatable, Sendable {
         }
         return result
     }
-    public var pitchGroups: [Track] { tracks.filter { track in track.kind == .standard && tracks.contains { $0.parentTrackID == track.id } } }
+    public var pitchGroups: [Track] {
+        let parents = Set(tracks.compactMap(\.parentTrackID))
+        return tracks.filter { $0.kind == .standard && parents.contains($0.id) }
+    }
     public var pitchTracks: [Track] { let folders = Set(pitchGroups.map(\.id)); return tracks.filter { $0.kind == .standard && !folders.contains($0.id) } }
     public func pitchTargets(_ region: Part) -> (tracks: Set<UUID>, groups: Set<UUID>) {
         (Set(region.pitchTrackIDs ?? pitchTracks.map(\.id)), Set(region.pitchGroupIDs ?? pitchGroups.map(\.id)))
@@ -1944,5 +1947,41 @@ extension Song {
             tracks.insert(track, at: tracks.firstIndex(where: { $0.kind == .standard }) ?? tracks.endIndex)
         }
         duration = max(duration, clips.map { $0.startTime + $0.duration }.max() ?? 0)
+    }
+}
+
+/// Display names are allocated on insertion. Loading a document never rewrites the grid.
+struct GridItemNames {
+    private var used: Set<String> = []
+    private var nextSuffix: [String: Int] = [:]
+
+    init(_ tracks: [Track]) {
+        for track in tracks { for item in track.clips { used.insert(item.name) } }
+    }
+
+    mutating func allocate(_ name: String) -> String {
+        guard !used.insert(name).inserted else { return name }
+        var stem = name[...]
+        var ext = ""
+        if let dot = stem.lastIndex(of: "."), dot != stem.startIndex {
+            let tail = stem[stem.index(after: dot)...].utf8
+            if (1...5).contains(tail.count), tail.allSatisfy({ (65...90).contains($0) || (97...122).contains($0) || (48...57).contains($0) }) {
+                ext = String(stem[dot...]); stem = stem[..<dot]
+            }
+        }
+        if let space = stem.lastIndex(of: " "), space != stem.startIndex {
+            let digits = stem[stem.index(after: space)...].utf8
+            if digits.count >= 3, digits.allSatisfy({ (48...57).contains($0) }) { stem = stem[..<space] }
+        }
+        let key = String(stem) + ext
+        var number = nextSuffix[key] ?? 0
+        var candidate: String
+        repeat {
+            number += 1
+            let digits = String(number)
+            candidate = String(stem) + " " + String(repeating: "0", count: max(0, 3 - digits.count)) + digits + ext
+        } while !used.insert(candidate).inserted
+        nextSuffix[key] = number
+        return candidate
     }
 }

@@ -25,6 +25,7 @@ public:
     }
     bool applyProjectSync(projectSync::Frame frame, double elapsed, bool first, bool *mixerChanged=nullptr);
     void applyProjectEdit(Project project);
+    Project exchangeProjectEdit(Project project);
     // Control-thread timing history excludes immutable decoded peak arrays.
     Project timingSnapshot();
     void restoreTimingSnapshot(Project project);
@@ -70,6 +71,7 @@ public:
     std::map<ID, int> setTrackMixerComponents(const ID& song, const std::map<ID, int>& masks);
     void setMarkers(const std::vector<TimelineMarker>& markers, const std::vector<ID>& removing = {}, bool retime = false);
     void setMarker(ID id, std::string name, double position, unsigned color, std::optional<double> bpm = {}, std::optional<int> beats = {}, std::optional<int> unit = {}, std::optional<std::string> timebase = {}, std::optional<bool> section = {}, std::optional<bool> loopSection = {});
+    double setFreeTempo(const ID& song, double bpm);
     void setProjectTiming(double bpm, int beats, int unit, std::optional<ProjectTimeSettings> settings);
     void deleteManualMarker(const ID& id);
     void setRegionInit(const ID& id, int count, bool bars);
@@ -85,7 +87,7 @@ public:
     const Part* sectionPlaybackRegion() const;
     std::optional<double> nextSectionTrigger() const;
 private:
-    void commitProjectEdit(Project project);
+    Project commitProjectEdit(Project project);
     void advanceWithoutLiveTracking(double elapsed);
     std::vector<ID> automaticSectionHandled_;
     struct AutomaticSectionRun { ID trigger; int count = 0; bool cancelled = false; };

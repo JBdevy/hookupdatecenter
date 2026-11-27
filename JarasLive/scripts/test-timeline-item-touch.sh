@@ -10,10 +10,14 @@ folder=Path(sys.argv[1])
 full=Path('Apple/Shared/GridSelectionInput.swift').read_text()
 source=full.split('#if os(macOS)\nimport AppKit')[0]
 typography = '// App-owned typography.' + Path('Apple/Shared/Theme.swift').read_text().split('// App-owned typography.', 1)[1]
-source += '\nimport AppKit\nimport CoreText\n'+typography+'\n'+full[full.index('enum GridSelectionHeaderText {'):full.index('private enum GridSelectionHeaderControls {')]
-folder.joinpath('metadata.swift').write_text(source)
+source += '\nimport AppKit\nimport CoreText\n'+typography+'\n'+full[full.index('enum GridSelectionHeaderText {'):full.index('enum GridSelectionHeaderControls {')]
+models = Path('Application/Project/ProjectModels.swift').read_text()
+elastic = models[models.index('public struct ElasticPoint:'):models.index('public struct AudioClip:')]
+theme = Path('Apple/Shared/Theme.swift').read_text()
+colors = 'extension Color {' + theme.split('extension Color {', 1)[1].split('\n}', 1)[0] + '\n}\n'
+folder.joinpath('metadata.swift').write_text(source + '\n' + elastic + colors)
 grid=Path('Apple/Shared/TimelineGridView.swift').read_text()
-start=grid.index('private struct ClipDragInput: View {')
+start=grid.index('struct TouchWaveLFOOverlay: View {')
 folder.joinpath('touch.swift').write_text('import SwiftUI\n'+grid[start:grid.index('\n#endif',start)])
 folder.joinpath('main.swift').write_text('import AppKit\n'+Path('Tests/Apple/TimelineItemTouchGestureTests.swift').read_text())
 PY

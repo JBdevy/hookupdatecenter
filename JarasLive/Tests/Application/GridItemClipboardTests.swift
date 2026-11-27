@@ -4,6 +4,8 @@ import XCTest
 @MainActor private final class ClipboardExecutor: CommandExecutor {
     var project = Project.empty(name: "Clipboard")
     var transport = TransportState(playing: false, position: 7, editPosition: 100, queue: QueueState(), loop: LoopState(enabled: false), subPlay: SubPlayState(playing: false, position: 0))
+    var receivedTracks: [Track] = []
+    func insertAudioTracks(_ tracks: [Track], song: UUID) throws { receivedTracks = tracks }
     var pastes = 0, loads = 0, reads = 0
     func load(_ value: Project) throws { try value.validate(); project = value; transport.songId = value.songs[0].id; loads += 1 }
     func snapshot() throws -> ShowSnapshot { reads += 1; return ShowSnapshot(project: project, transport: transport) }
@@ -98,6 +100,7 @@ final class GridItemClipboardTests: XCTestCase {
             let pasted = show.pasteItems()
             let value = try XCTUnwrap(show.current?.tracks[1].clips.first { pasted.contains($0.id) })
             var expected = original; expected.id = value.id; expected.startTime = 73.125
+            if !moving { expected.name += " 001" }
             XCTAssertEqual(value, expected)
             XCTAssertEqual(show.current?.tracks[0].clips.count, moving ? 0 : 1)
             XCTAssertTrue(show.current?.tracks[2].clips.isEmpty == true)
@@ -146,7 +149,7 @@ final class GridItemClipboardTests: XCTestCase {
         XCTAssertEqual(duplicated.count, 2)
         let items = try XCTUnwrap(show.current).tracks.flatMap(\.clips).filter { duplicated.contains($0.id) }
         XCTAssertEqual(items.map(\.startTime), [25,35])
-        var expected = first; expected.id = items[0].id; expected.startTime = 25
+        var expected = first; expected.id = items[0].id; expected.startTime = 25; expected.name += " 001"
         XCTAssertEqual(items[0], expected)
         let pasted = show.pasteItems()
         XCTAssertEqual(pasted.count, 1, "Duplicate must preserve the previous clipboard")
@@ -170,6 +173,7 @@ final class GridItemClipboardTests: XCTestCase {
         let entries = try clipboard.items(in: project, at: 100)
         try project.pasteItems(entries, song: clipboard.song, moving: false)
         var expected = original; expected.id = entries[0].clip.id; expected.startTime = 100
+        expected.name = original.name + " 001"
         XCTAssertEqual(project.songs[0].tracks[0].clips[1], expected)
         XCTAssertNotEqual(expected.id, original.id)
         XCTAssertEqual(project.mediaPaths, ["Stems/original.wav", "Stems/other.wav"])
@@ -193,6 +197,40 @@ final class GridItemClipboardTests: XCTestCase {
         try project.pasteItems(second, song: clipboard.song, moving: false)
         XCTAssertEqual(project.songs[0].tracks.map { $0.clips.count }, [3, 3])
     }
+    @MainActor func testGridDropNumbersBothNewItemsAgainstTheWholeGrid() throws {
+        let project = fixture(), executor = ClipboardExecutor()
+        let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)
+        let song = project.songs[0]
+        var row = Track(id: UUID(), name: "New track", role: .other)
+        let original = song.tracks[0].clips[0]
+        for _ in 0..<2 {
+            var incoming = original
+            incoming.id = UUID()
+            row.clips.append(incoming)
+        }
+        try show.insertAudioTracks([row], song: song.id, project: project.id)
+        let inserted = try XCTUnwrap(show.current?.tracks.last)
+        XCTAssertEqual(inserted.clips.map(\.name), ["Stem 001", "Stem 002"])
+        XCTAssertEqual(inserted.clips.map(\.audioFile), [original.audioFile, original.audioFile])
+        XCTAssertEqual(executor.receivedTracks[0].clips.map(\.name), inserted.clips.map(\.name))
+    }
+
+    func testPasteReservesLegacyDuplicateNamesAndUsesNextNumberAcrossTracks() throws {
+        var project = fixture()
+        let id = project.songs[0].tracks[0].clips[0].id
+        for row in project.songs[0].tracks.indices { project.songs[0].tracks[row].clips[0].name = "Voz.wav" }
+        let saved = try JSONEncoder().encode(project)
+        project = try JSONDecoder().decode(Project.self, from: saved)
+        try project.validate()
+        for n in 1...3 {
+            let source = n == 1 ? id : project.songs[0].tracks[0].clips.last!.id
+            let clipboard = try XCTUnwrap(GridItemClipboard(project: project, song: project.songs[0].id, selected: [source]))
+            try project.pasteItems(clipboard.items(in: project, at: 100), song: clipboard.song, moving: false)
+            XCTAssertEqual(project.songs[0].tracks[0].clips.last?.name, "Voz 00" + String(n) + ".wav")
+        }
+        XCTAssertEqual(project.songs[0].tracks.map { $0.clips[0].name }, ["Voz.wav", "Voz.wav"])
+    }
+
     func testPendingMovePreservesOriginalUntilPasteAndUsesLatestItemState() throws {
         var project = fixture(); let before = project
         let original = project.songs[0].tracks[0].clips[0]

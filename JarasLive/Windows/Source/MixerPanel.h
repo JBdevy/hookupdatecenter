@@ -172,6 +172,9 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
         refreshVisible();
         syncScroll();
     }
+    void refreshRecordArms(const std::set<ID>& affected) {
+        for (auto* strip : strips) strip->refreshRecordArmIfNeeded(affected);
+    }
     void refreshVisible() {
         master->refresh();
         const auto visible = viewport.getViewArea();
@@ -600,6 +603,16 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
                         return &track;
             return nullptr;
         }
+        void refreshRecordArmIfNeeded(const std::set<ID>& affected) {
+            if (affected.count(id)) refreshRecordArm();
+        }
+        void refreshRecordArm() {
+            const bool automatic = mixer.session.recordArm(id) == 2;
+            record.setButtonText(automatic ? "A" : "");
+            record.getProperties().set("icon", automatic ? "" : "record.circle");
+            record.setToggleState(mixer.session.recordingArmed(id), dontSendNotification);
+            record.repaint();
+        }
         void refresh() {
             const int blinkPhase = id.empty() && mixer.session.project().masterMute
                 ? int(int64(Time::getMillisecondCounterHiRes() / 500.0) % 2) : -1;
@@ -645,9 +658,7 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
                 mute.setToggleState(shownMute, dontSendNotification);
                 solo.setToggleState(shownSolo, dontSendNotification);
                 phase.setToggleState(t->phaseInverted.value_or(false), dontSendNotification);
-                record.setButtonText(mixer.session.recordArm(id) == 2 ? "A" : "");
-                record.getProperties().set("icon", mixer.session.recordArm(id) == 2 ? "" : "record.circle");
-                record.setToggleState(mixer.session.recordingArmed(id), dontSendNotification);
+                refreshRecordArm();
                 const auto &settings = slotSettings();
                 firstSlot = jlimit(0, maximumFirstSlot(), firstSlot);
                 firstOutput = jlimit(0, maximumFirstOutput(), firstOutput);

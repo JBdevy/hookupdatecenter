@@ -730,7 +730,13 @@ private final class WorkspaceHostingView<Content: View>: NSHostingView<Content>,
         rootView = content
     }
     override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); laidOutBounds = nil }
-    override func viewDidUnhide() { super.viewDidUnhide(); laidOutBounds = nil; needsLayout = true }
+    override func viewDidUnhide() {
+        super.viewDidUnhide()
+        // The mixer column already tracks its row band, bounds and model revision.
+        // Reopening at the same width can reuse the layout of its mounted rows.
+        if !retainsSidebarViewportLayout { laidOutBounds = nil }
+        needsLayout = true
+    }
     override func hitTest(_ point: NSPoint) -> NSView? {
         // NSHostingView on Ventura updates its SwiftUI graph before rejecting
         // an outside point. Reject other rows/panes before entering that graph.
@@ -1330,16 +1336,20 @@ private final class WorkspaceSplitView<Leading: View, Trailing: View>: NSView, T
                               width: barWidth, height: available.height)
         let rightFrame = CGRect(x: sidebarLeading ? 0 : primaryWidth + barWidth, y: 0,
                                 width: mountedWidth, height: hostedHeight)
-        if leading.frame != leftFrame {
+        if leading.frame.size != leftFrame.size {
             leading.layoutProfile?.sizeChanged(leading, from: leading.frame.size, to: leftFrame.size)
             leading.frame = leftFrame
             leading.needsLayout = true
+        } else if leading.frame.origin != leftFrame.origin {
+            leading.setFrameOrigin(leftFrame.origin)
         }
         if divider.frame != barFrame { divider.frame = barFrame }
-        if trailing.frame != rightFrame {
+        if trailing.frame.size != rightFrame.size {
             trailing.layoutProfile?.sizeChanged(trailing, from: trailing.frame.size, to: rightFrame.size)
             trailing.frame = rightFrame
             trailing.needsLayout = true
+        } else if trailing.frame.origin != rightFrame.origin {
+            trailing.setFrameOrigin(rightFrame.origin)
         }
         let hidesSetlist = visibleWidth <= 0
         if trailing.isHidden != hidesSetlist { trailing.isHidden = hidesSetlist }

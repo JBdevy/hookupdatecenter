@@ -328,6 +328,13 @@ public struct NativeConvolutionSettings: Codable, Equatable, Sendable {
     }
 }
 
+extension WaveLFOEnvelope {
+    public func validate() throws {
+        guard [attack, decay, release].allSatisfy({ (0...60).contains($0) }),
+              (0...1).contains(sustain) else { throw ProjectError.invalid("Invalid Wave LFO envelope") }
+    }
+}
+
 public struct NativeFXSettings: Codable, Equatable, Sendable {
     public var instances: [NativeFXInstance]?
 
@@ -337,6 +344,16 @@ public struct NativeFXSettings: Codable, Equatable, Sendable {
     public var inserted: [String] = []
     public static let order = ["Instruments", "CatSynth", "Arpeggiator", "EQ", "Compressor", "Pitch", "Delay", "Reverb", reverbConvolution, "Limiter", "CatLive Trigger", "Cat Gate"] + DrummerPadKind.allCases.map(\.rawValue) + NativeCreativeEffect.allCases.map(\.rawValue)
     public static let stemSeparator = "CatStemSeparation 5"
+    public static let waveLFOName = WaveLFOEnvelope.name
+    public var waveLFOEnabled: Bool?
+    public var waveLFO: WaveLFOEnvelope?
+    public var waveLFOParameters: WaveLFOEnvelope {
+        get { waveLFO ?? WaveLFOEnvelope() }
+        set { waveLFO = newValue }
+    }
+    public var activeWaveLFO: WaveLFOEnvelope? {
+        waveLFOEnabled == true && inserted.contains(Self.waveLFOName) ? waveLFOParameters : nil
+    }
     public static let reverbConvolution = "Reverb-Convolution"
     public var convolutionEnabled: Bool?
     public var convolution: NativeConvolutionSettings?
@@ -486,6 +503,7 @@ public struct NativeFXSettings: Codable, Equatable, Sendable {
         try drummer48?.validate(.full)
         try trigger?.validate()
         try convolution?.validate()
+        try waveLFO?.validate()
         try gate?.validate()
         try stemMix?.validate()
         try limiter?.validate()
@@ -502,7 +520,7 @@ public struct NativeFXSettings: Codable, Equatable, Sendable {
         let external = externalPlugins ?? []
         guard Set(external.map(\.id)).count == external.count,
               external.allSatisfy({ !$0.id.isEmpty && $0.hasValidClassID && !$0.name.isEmpty && !$0.path.isEmpty }) else { throw ProjectError.invalid("Invalid external plugin") }
-        guard Set(inserted).count == inserted.count, inserted.allSatisfy({ effect in Self.order.contains(effect) || effect == Self.stemSeparator || external.contains(where: { $0.effectKey == effect }) || native.contains(where: { $0.effectKey == effect }) }), bands.count <= 10, Set(bands.map(\.id)).count == bands.count,
+        guard Set(inserted).count == inserted.count, inserted.allSatisfy({ effect in Self.order.contains(effect) || effect == Self.waveLFOName || effect == Self.stemSeparator || external.contains(where: { $0.effectKey == effect }) || native.contains(where: { $0.effectKey == effect }) }), bands.count <= 10, Set(bands.map(\.id)).count == bands.count,
               bands.allSatisfy({ $0.frequency.isFinite && (20...20000).contains($0.frequency) && $0.gain.isFinite && (-24...24).contains($0.gain) && $0.q.isFinite && (0.1...18).contains($0.q) && [6,12,24,36,48,72,96,192].contains($0.slope) && ["bell","lowCut","highCut","lowShelf","highShelf"].contains($0.type) }),
               [threshold, ratio, attack, release, makeup, delayTime, feedback, delayMix, reverbMix, reverbDecay, reverbLowCut, reverbHighCut].allSatisfy(\.isFinite),
               (-60...0).contains(threshold), (1...20).contains(ratio), (0.0001...0.2).contains(attack), (0.01...3).contains(release), (-12...24).contains(makeup),
@@ -561,7 +579,7 @@ extension NativeFXSettings {
     /// persisted insertion order. Explicit reordering promotes these legacy
     /// stages to ordinary independent inserts before changing their order.
     public var clipEffectKeys: [String] {
-        let originals = Self.order.dropFirst().filter { inserted.contains($0) }
+        let originals = ([Self.waveLFOName] + Self.order.dropFirst()).filter { inserted.contains($0) }
         return originals + effectKeys.filter { !originals.contains($0) }
     }
     /// Keep the existing document/audio format: independent native instances
@@ -569,7 +587,7 @@ extension NativeFXSettings {
     /// an actual move, leaving unopened/unchanged legacy chains untouched.
     @discardableResult public mutating func reorderClipEffect(_ effect: String, before target: String?) -> String? {
         let current = clipEffectKeys
-        guard effect != target, current.contains(effect), target == nil || current.contains(target!) else { return nil }
+        guard effect != Self.waveLFOName, target != Self.waveLFOName, effect != target, current.contains(effect), target == nil || current.contains(target!) else { return nil }
         var ordered = current.filter { $0 != effect }
         ordered.insert(effect, at: target.flatMap { ordered.firstIndex(of: $0) } ?? ordered.count)
         guard ordered != current else { return nil }
@@ -594,6 +612,11 @@ extension NativeFXSettings {
     public func settings(for key: String) -> Self { instances?.first { $0.effectKey == key }?.settings ?? self }
     public var instrumentKeys: [String] { inserted.filter { kind(of: $0) == "Instruments" && settings(for: $0).instrumentID != nil } }
     @discardableResult public mutating func appendNative(_ kind: String, instrument: String? = nil, parameters: InstrumentParameters? = nil, asInstance: Bool = false) -> String {
+        if kind == Self.waveLFOName {
+            if !inserted.contains(kind) { inserted.insert(kind, at: 0) }
+            setEnabled(kind, enabled: true)
+            return kind
+        }
         if kind == Self.stemSeparator { return kind } // Removed: separation is an offline item action.
         if !asInstance && !inserted.contains(kind) {
             // A new insertion owns fresh parameters, including legacy projects
@@ -612,7 +635,7 @@ extension NativeFXSettings {
     public mutating func removeInstance(_ key: String) { instances?.removeAll { $0.effectKey == key } }
     public mutating func removeEffect(_ key: String) {
         guard inserted.contains(key) else { return }
-        if Self.order.contains(key) || key == Self.stemSeparator {
+        if Self.order.contains(key) || key == Self.waveLFOName || key == Self.stemSeparator {
             self = merging(effect: key, from: Self())
             if key == "Instruments" { instrumentBypassed = nil }
         }
@@ -624,6 +647,7 @@ extension NativeFXSettings {
     public func isEnabled(_ effect: String) -> Bool {
         if let instance = instances?.first(where: { $0.effectKey == effect }) { return instance.settings.isEnabled(instance.kind) }
         if let plugin = externalPlugins?.first(where: { $0.effectKey == effect }) { return !plugin.bypassed }
+        if effect == Self.waveLFOName { return waveLFOEnabled == true }
         if effect == Self.reverbConvolution { return convolutionEnabled == true }
         if effect == NativeCreativeEffect.graphicEQ.rawValue { return graphicEQEnabled == true }
         switch effect { case "CatSynth": return catSynthEnabled == true; case "Drummer Pad 16": return drummer16Enabled == true; case "Drummer Pad 48": return drummer48Enabled == true; case "Arpeggiator": return arpeggiatorEnabled == true; case "Chorus": return chorusEnabled == true; case "Phaser": return phaserEnabled == true; case "Amp": return ampEnabled == true; case "Soft Clipper": return softClipperEnabled == true; case "Gate Divisor": return divisionGateEnabled == true; case "CatLive Trigger": return triggerEnabled == true; case "Cat Gate": return gateEnabled == true; case Self.stemSeparator: return false; case "Instruments": return instrumentID != nil && instrumentBypassed != true; case "EQ": return eqEnabled; case "Compressor": return compressorEnabled; case "Limiter": return limiterEnabled == true; case "Pitch": return pitchEnabled == true; case "Delay": return delayEnabled; case "Reverb": return reverbEnabled; default: return false }
@@ -631,6 +655,7 @@ extension NativeFXSettings {
     public mutating func setEnabled(_ effect: String, enabled: Bool) {
         if let index = instances?.firstIndex(where: { $0.effectKey == effect }), let kind = instances?[index].kind { instances?[index].settings.setEnabled(kind, enabled: enabled); return }
         if let index = externalPlugins?.firstIndex(where: { $0.effectKey == effect }) { externalPlugins?[index].bypassed = !enabled; return }
+        if effect == Self.waveLFOName { waveLFOEnabled = enabled; return }
         if effect == Self.reverbConvolution { convolutionEnabled = enabled; return }
         if effect == NativeCreativeEffect.graphicEQ.rawValue { graphicEQEnabled = enabled; return }
         switch effect { case "CatSynth": catSynthEnabled = enabled; case "Drummer Pad 16": drummer16Enabled = enabled; case "Drummer Pad 48": drummer48Enabled = enabled; case "Arpeggiator": arpeggiatorEnabled = enabled; case "Chorus": chorusEnabled = enabled; case "Phaser": phaserEnabled = enabled; case "Amp": ampEnabled = enabled; case "Soft Clipper": softClipperEnabled = enabled; case "Gate Divisor": divisionGateEnabled = enabled; case "CatLive Trigger": triggerEnabled = enabled; case "Cat Gate": gateEnabled = enabled; case Self.stemSeparator:
@@ -650,6 +675,11 @@ extension NativeFXSettings {
         if let creative = NativeCreativeEffect(rawValue: effect) {
             next.setEnabled(effect, enabled: draft.isEnabled(effect))
             next.setCreativeParameters(draft.creativeParameters(creative), for: creative)
+            return next
+        }
+        if effect == Self.waveLFOName {
+            next.waveLFOEnabled = draft.waveLFOEnabled
+            next.waveLFO = draft.waveLFO
             return next
         }
         if effect == Self.reverbConvolution {

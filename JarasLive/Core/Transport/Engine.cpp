@@ -1,4 +1,5 @@
 #include "Engine.hpp"
+#include "../Tracks/GridItemNames.hpp"
 #include "PlaybackScope.hpp"
 #include "SongPluginTempo.hpp"
 #include "../Songs/TempoEditMap.hpp"
@@ -12,6 +13,7 @@
 #include <map>
 #include <unordered_map>
 #include <unordered_set>
+#include <string_view>
 namespace jaras {
 const Engine::AutomaticSectionRun* Engine::automaticSectionRun(const ID& id) const {
     const auto run = std::find_if(automaticSectionRuns_.begin(), automaticSectionRuns_.end(),
@@ -35,18 +37,21 @@ void Engine::loadProject(Project project) {
     auto ids = order(); if (!ids.empty()) transport_.songId = ids.front();
 }
 void Engine::applyProjectEdit(Project project) {
+    exchangeProjectEdit(std::move(project));
+}
+Project Engine::exchangeProjectEdit(Project project) {
     projectSync::requireWritable();
     if (project.id != project_.id) throw std::invalid_argument("Cannot edit another project");
     orderSpecialTracks(project); synchronizeTimecode(project); synchronizeRegionOwnership(project, &project_); validate(project);
-    commitProjectEdit(std::move(project));
+    return commitProjectEdit(std::move(project));
 }
-void Engine::commitProjectEdit(Project project) {
+Project Engine::commitProjectEdit(Project project) {
     if (project_.projectSyncID) project.projectSyncID = project_.projectSyncID;
     if (project_.regionSetlist && project_.regionSetlist->autoAdvance &&
         (!project.regionSetlist || !project.regionSetlist->autoAdvance)) clearWaitingQueue();
     const bool liveChanged = project_.regionSetlist && project_.regionSetlist->liveEnabled.value_or(false) !=
         (project.regionSetlist && project.regionSetlist->liveEnabled.value_or(false));
-    project_ = std::move(project);
+    std::swap(project_, project);
     if (liveChanged) liveElapsedByRegion_.clear();
     normalizeLiveMarks();
     if (!currentSong()) { const bool bypassed = transport_.multiLoopsBypassed; transport_ = {}; manualSubCursor_ = false; transport_.multiLoopsBypassed = bypassed; auto ids = order(); if (!ids.empty()) transport_.songId = ids.front(); }
@@ -56,6 +61,7 @@ void Engine::commitProjectEdit(Project project) {
     if(!region(transport_.exclusivePlaybackRegionId)) transport_.exclusivePlaybackRegionId.reset();
     if(!region(transport_.subExclusivePlaybackRegionId)) transport_.subExclusivePlaybackRegionId.reset();
     syncRegion(); autoQueueRegion(); refreshMultiLoop();
+    return project;
 }
 std::vector<ID> Engine::order() const {
     if (!project_.setlists.empty()) return project_.setlists.front().songIds;
@@ -461,8 +467,16 @@ void Engine::setRegionPitchState(const ID& id, std::optional<int> semitones,
     projectSync::requireWritable();
     if (semitones && (*semitones < -12 || *semitones > 12)) throw std::invalid_argument("Invalid region pitch");
     for (auto& song : project_.songs) if (song.id == transport_.songId) {
-        for (const auto* identifiers : {&tracks, &groups}) if (*identifiers) for (const auto& target : **identifiers)
-            if (std::none_of(song.tracks.begin(), song.tracks.end(), [&](const auto& t) { return t.id == target && fixedTrackName(t.role).empty(); })) throw std::invalid_argument("Invalid pitch track");
+        std::unordered_set<std::string_view> requested;
+        for (const auto* targets : {&tracks, &groups}) {
+            if (*targets) requested.insert((*targets)->begin(), (*targets)->end());
+        }
+        for (const auto& track : song.tracks) {
+            if (requested.empty()) break;
+            if (requested.find(track.id) != requested.end() && fixedTrackName(track.role).empty())
+                requested.erase(track.id);
+        }
+        if (!requested.empty()) throw std::invalid_argument("Invalid pitch track");
         for (auto& part : song.parts) if (part.id == id) {
             part.pitchSemitones = semitones; part.pitchTrackIDs = std::move(tracks); part.pitchGroupIDs = std::move(groups); return;
         }
@@ -524,6 +538,17 @@ void Engine::deleteManualMarker(const ID& id) {
         }), loops.end());
     }
     refreshMultiLoop();
+}
+double Engine::setFreeTempo(const ID& id, double bpm) {
+    projectSync::requireWritable();
+    auto found = std::find_if(project_.songs.begin(), project_.songs.end(), [&](const Song& song) { return song.id == id; });
+    if (found == project_.songs.end() || !std::isfinite(bpm) || bpm < 60 || bpm > 300 ||
+        found->timeSettings.value_or(ProjectTimeSettings{}).timebase != ProjectTimebase::free ||
+        (found->markers && std::any_of(found->markers->begin(), found->markers->end(), [](const auto& m) { return m.tempoBPM.has_value(); })))
+        throw std::invalid_argument("Invalid free timebase tempo edit");
+    const auto before = found->bpm;
+    found->bpm = bpm;
+    return before;
 }
 void Engine::setProjectTiming(double bpm, int beats, int unit, std::optional<ProjectTimeSettings> settings) {
     projectSync::requireWritable();
@@ -901,7 +926,10 @@ void Engine::pasteItems(const ID& songID, std::vector<Track> tracks, bool moving
             }
         }
     }
+    std::optional<GridItemNames> names;
+    if (!moving) names.emplace(song->tracks);
     for (auto& source : tracks) {
+        if (names) for (auto& clip : source.clips) names->assign(clip.name);
         auto target = std::find_if(song->tracks.begin(), song->tracks.end(), [&](const auto& track) { return track.id == source.id; });
         for (auto& clip : source.clips) { song->duration = std::max(song->duration, clip.startTime + clip.duration); target->clips.push_back(std::move(clip)); }
     }
@@ -913,7 +941,9 @@ void Engine::insertAudioTracks(const ID& songID, std::vector<Track> tracks) {
     Project next = project_;
     auto song = std::find_if(next.songs.begin(), next.songs.end(), [&](const auto& value) { return value.id == songID; });
     if (song == next.songs.end()) throw std::invalid_argument("Unknown destination grid");
+    GridItemNames names(song->tracks);
     for (auto& imported : tracks) {
+        for (auto& clip : imported.clips) names.assign(clip.name);
         const bool projectionMedia = !imported.clips.empty() && std::all_of(imported.clips.begin(), imported.clips.end(), [](const auto& clip) { return clip.audioFile && clip.audioFile->path.rfind("Videos/", 0) == 0; });
         if (!projectionMedia && (imported.role.id == "timecode" || imported.role.id == "chords")) throw std::invalid_argument("Audio requires an audio track");
         if (imported.clips.empty()) throw std::invalid_argument("Missing imported audio item");

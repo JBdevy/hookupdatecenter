@@ -6494,6 +6494,8 @@ private struct RemoteNativeTimeline: View {
             itemFade: { id, fadeIn, value, finished in
                 if finished { localShow?.setItemFade(id, fadeIn: fadeIn, seconds: value) }
                 else { localShow?.previewItemFade(id, fadeIn: fadeIn, seconds: value) }
+            }, itemWaveLFO: { id, envelope, finished in
+                localShow?.editWaveLFO(id, envelope: envelope, finished: finished)
             }, beginResize: { pauseFollowing() }, resizeItem: { id, left, right in
                 guard editorEnabled, let show = localShow, show.canControl(),
                       show.snapshot.project.id == state.project, show.current?.id == state.song else { return }
@@ -6628,6 +6630,7 @@ private struct RemoteTimelineTrackRow: View, Equatable {
     var cursorPosition: () -> Double? = { nil }
     var selectTrack: (() -> Void)? = nil
     var itemFade: ((UUID, Bool, Double, Bool) -> Void)? = nil
+    var itemWaveLFO: ((UUID, WaveLFOEnvelope, Bool) -> Void)? = nil
     var beginResize: (() -> Void)? = nil
     var resizeItem: ((UUID, Double, Double) -> Void)? = nil
     var resizeShared: ((UUID, UUID, Double) -> Void)? = nil
@@ -6902,6 +6905,15 @@ private struct RemoteTimelineTrackRow: View, Equatable {
                     scale: scale, alignsToViewport: true, itemInset: IpadNativeItemGeometry.itemInset).allowsHitTesting(false)
             }
             if local, let nativeTrack {
+                ForEach(nativeTrack.clips.filter { $0.fx?.waveLFOEnabled == true && $0.fxBypassed != true &&
+                    $0.startTime < end && $0.startTime + $0.duration > start }) { clip in
+                    let size = CGSize(width: clip.duration / span * width, height: itemGeometry.height(clip.id))
+                    let item = GridSelectionItem(id: clip.id, rect: CGRect(origin: .zero, size: size),
+                                                 duration: clip.duration, waveLFO: clip.fx?.activeWaveLFO)
+                    TouchWaveLFOOverlay(item: item) { envelope, finished in itemWaveLFO?(clip.id, envelope, finished) }
+                        .frame(width: size.width, height: size.height)
+                        .offset(x: (clip.startTime - start) / span * width, y: itemGeometry.offset(clip.id))
+                }
                 ForEach(nativeTrack.clips.filter { $0.elasticPoints?.isEmpty == false &&
                     $0.startTime < end && $0.startTime + $0.duration > start }) { clip in
                     elasticMarkers(clip, geometry: itemGeometry)

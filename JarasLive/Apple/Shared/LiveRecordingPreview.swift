@@ -74,8 +74,15 @@ struct RecordingPreviewTake {
         items[id] = item
         if item.clip.recordingLane != oldLane { revision &+= 1 }
     }
-    func remove(_ id: UUID) { items[id] = nil; revision &+= 1 }
-    func clear() { items = [:]; revision &+= 1 }
+    func remove(_ id: UUID) {
+        guard items.removeValue(forKey: id) != nil else { return }
+        revision &+= 1
+    }
+    func clear() {
+        guard !items.isEmpty else { return }
+        items.removeAll()
+        revision &+= 1
+    }
     func count(for track: UUID, existing: Int) -> Int {
         max(existing, items.values.filter { $0.track == track }.map { ($0.clip.recordingLane ?? 0) + 1 }.max() ?? 0)
     }
@@ -87,6 +94,7 @@ struct RecordingGridOverlay: View {
     let heights: [CGFloat]
     let rulerHeight: CGFloat
     let scale: CGFloat
+    var laneLayouts: [TrackLanes]?
     var alignsToViewport = false
     var itemInset = GridSelectionItem.verticalInset
     @ObservedObject private var preview = LiveRecordingPreview.shared
@@ -101,7 +109,8 @@ struct RecordingGridOverlay: View {
             for (id, take) in preview.takes {
                 guard !TrackRecording.shared.countingIn else { break }
                 guard let reservation = RecordingLaneLayout.shared.items[id], let index = tracks.firstIndex(where: { $0.id == reservation.track }) else { continue }
-                let count = RecordingLaneLayout.shared.count(for: reservation.track, existing: TrackLanes(track: tracks[index]).count)
+                let existing = laneLayouts.map { $0[index].count } ?? TrackLanes(track: tracks[index]).count
+                let count = RecordingLaneLayout.shared.count(for: reservation.track, existing: existing)
                 let laneHeight = heights[index] / CGFloat(count)
                 // Only the item outline follows the playhead. The waveform is
                 // drawn as its captured samples arrive from the writer.

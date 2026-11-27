@@ -19,6 +19,7 @@ inline const StringArray &fields(const String &kind) {
         {"CatStemSeparation 5", {"stemSeparatorEnabled", "stemMix"}},
         {"CatLive Trigger", {"triggerEnabled", "trigger"}},
         {"Cat Gate", {"gateEnabled", "gate"}},
+        {"Wave LFO", {"waveLFOEnabled", "waveLFO"}},
         {"EQ", {"eqEnabled", "bands", "eqChannels"}},
         {"EQ - 31 Band", {"graphicEQEnabled", "graphicEQ"}},
         {"Compressor", {"compressorEnabled", "threshold", "ratio", "attack", "release", "makeup", "compressorChannels"}},

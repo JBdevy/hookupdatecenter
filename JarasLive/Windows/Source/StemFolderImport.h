@@ -1,4 +1,5 @@
 #pragma once
+#include "../../Core/Tracks/GridItemNames.hpp"
 #include "Common.h"
 #include "ProjectCodec.h"
 #include "ClickTempo.h"
@@ -381,7 +382,11 @@ inline jaras::Project build(const Scan& scan,const String& removal,jaras::Projec
         auto entry=object();put(entry,"path",path);put(entry,"files",var(files));virtualFolders.add(entry);
     }
     auto values=[](const var& value){return value.getArray()?*value.getArray():Array<var>{};};
-    auto& arrangement=project.songs[0];const auto originalCount=arrangement.tracks.size();double offset=0;
+    auto& arrangement=project.songs[0];
+    jaras::GridItemNames itemNames(arrangement.tracks);
+    std::unordered_set<ID> existingItems;
+    for (const auto &track : arrangement.tracks) for (const auto &clip : track.clips) existingItems.insert(clip.id);
+    const auto originalCount=arrangement.tracks.size();double offset=0;
     std::set<ID> folders;for(const auto& track:arrangement.tracks)if(track.parentTrackID)folders.insert(*track.parentTrackID);
     for(const auto& track:arrangement.tracks)if(!track.parentTrackID&&track.clips.empty()&&text(track.name).trim().startsWith("#")&&rules.call("groupKeyFromFolderName",{text(track.name)}).toString().isNotEmpty())folders.insert(track.id);
     for(const auto& part:arrangement.parts)offset=std::max(offset,part.endTime);
@@ -609,6 +614,8 @@ inline jaras::Project build(const Scan& scan,const String& removal,jaras::Projec
             auto markers=clickTempo::markers(arrangement,*part,[&](const jaras::AudioFile& file){return clickTempo::transients(destination.getParentDirectory().getChildFile(text(file.path)));});
             if(markers.empty())warnings.add(text(part->name)+": no valid Click found for BPM detection");else clickTempo::insert(arrangement,*part,markers);
         }
+        for (auto &track : arrangement.tracks) for (auto &clip : track.clips)
+            if (!existingItems.count(clip.id)) itemNames.assign(clip.name);
         project.updatedAt=utf8(Time::getCurrentTime().toISO8601(true));
         jaras::validate(project);if(importedFiles)*importedFiles=owned;return project;
     }catch(...){for(const auto& file:owned)file.deleteFile();throw;}

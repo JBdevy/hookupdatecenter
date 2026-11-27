@@ -46,6 +46,28 @@ precondition(alphaAt(deselectedPixels, 116) > 0 && alphaAt(deselectedPixels, 115
 grid.updateSelection([])
 precondition(pixels() == deselectedPixels, "Clearing selection must restore the original header")
 print("GRID_HEADER_SELECTION_INVALIDATION_AND_RESTORE_OK")
+do {
+    var testItem = item
+    testItem.rect = CGRect(x: 30, y: 100, width: 500, height: 100)
+    testItem.duration = 5
+    grid.updateLayout(GridSelectionLayout(items: [testItem]), pixelsPerSecond: 30)
+    let plain = pixels()
+    var envelope = WaveLFOEnvelope()
+    envelope.attack = 1; envelope.decay = 1; envelope.sustain = 0.6; envelope.release = 1
+    testItem.waveLFO = envelope
+    grid.updateLayout(GridSelectionLayout(items: [testItem]), pixelsPerSecond: 30)
+    let ink = pixels()
+    precondition(ink != plain, "Adding Wave LFO must draw the envelope directly on the audio item")
+    let handles = testItem.wavePoints(envelope)
+    precondition(handles.count == 5 && testItem.rect.contains(handles[1]) && testItem.rect.contains(handles[3]))
+    let changed = testItem.draggedWave(envelope, handle: 2, point: CGPoint(x: 280, y: testItem.waveBody.midY))
+    precondition(abs(changed.decay - 1.5) < 1e-9 && abs(changed.sustain - 0.5) < 1e-9)
+    testItem.fxBypassed = true
+    grid.updateLayout(GridSelectionLayout(items: [testItem]), pixelsPerSecond: 30)
+    precondition(pixels() != ink, "Bypass must update the overlay")
+    grid.updateLayout(GridSelectionLayout(items: [item]), pixelsPerSecond: 30)
+}
+print("GRID_WAVE_LFO_VISIBLE_ENVELOPE_EDIT_AND_BYPASS_OK")
 
 // AppKit can already have a narrow dirty strip when it restores the horizontal
 // scroll position. That strip cannot replace titles across the retained backing.

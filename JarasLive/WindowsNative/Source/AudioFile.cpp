@@ -1,4 +1,6 @@
 #include "AudioFile.h"
+#include "../../Core/Audio/DiskIOActivity.hpp"
+#include <cstdio>
 
 #include <algorithm>
 #include <array>
@@ -92,6 +94,7 @@ struct PaddedMP3Input {
         const auto position = input.stream.tellg();
         if (position < 0 || static_cast<std::uint64_t>(position) >= input.length) return 0;
         const auto count = static_cast<std::streamsize>(std::min<std::uint64_t>(bytes, input.length - static_cast<std::uint64_t>(position)));
+        const audio::DiskIOActivity::Operation io(audio::diskIOActivity);
         input.stream.read(static_cast<char*>(destination), count);
         return static_cast<size_t>(input.stream.gcount());
     }
@@ -104,6 +107,7 @@ struct PaddedMP3Input {
             (offset > 0 && base > std::numeric_limits<std::int64_t>::max() - offset)) return DRMP3_FALSE;
         const auto target = base + offset;
         if (static_cast<std::uint64_t>(target) > input.length) return DRMP3_FALSE;
+        const audio::DiskIOActivity::Operation io(audio::diskIOActivity);
         input.stream.clear(); input.stream.seekg(target);
         return input.stream ? DRMP3_TRUE : DRMP3_FALSE;
     }
@@ -121,6 +125,7 @@ struct AudioFile::Impl {
     AudioFileInfo info;
     drwav wav{};
     drmp3 mp3{};
+    std::unique_ptr<std::FILE, decltype(&std::fclose)> mp3Stream{nullptr, &std::fclose};
     std::unique_ptr<PaddedMP3Input> paddedMP3;
     drflac* flac = nullptr;
     bool wavOpen = false, mp3Open = false;
@@ -294,11 +299,23 @@ struct AudioFile::Impl {
 
     void openMP3(bool prepareSeeking) {
 #if defined(_WIN32)
-        mp3Open = drmp3_init_file_w(&mp3, path.c_str(), nullptr) != 0;
+        mp3Stream.reset(_wfopen(path.c_str(), L"rb"));
 #else
-        mp3Open = drmp3_init_file(&mp3, path.c_str(), nullptr) != 0;
+        mp3Stream.reset(std::fopen(path.c_str(), "rb"));
 #endif
+        // A random MP3 seek may synthesize many frames from a cached checkpoint.
+        // Measure file access inside the decoder, excluding that CPU time.
+        const auto read = [](void* file, void* buffer, size_t bytes) -> size_t {
+            const audio::DiskIOActivity::Operation io(audio::diskIOActivity);
+            return std::fread(buffer, 1, bytes, static_cast<std::FILE*>(file));
+        };
+        const auto seek = [](void* file, int offset, drmp3_seek_origin origin) -> drmp3_bool32 {
+            const audio::DiskIOActivity::Operation io(audio::diskIOActivity);
+            return drmp3__on_seek_stdio(file, offset, origin);
+        };
+        mp3Open = mp3Stream && drmp3_init(&mp3, read, seek, drmp3__on_tell_stdio, nullptr, mp3Stream.get(), nullptr);
         if (!mp3Open) {
+            mp3Stream.reset();
             auto input = std::make_unique<PaddedMP3Input>(path);
             if (input->findAudioEnd(info.encodedBytes)) {
                 mp3 = {};

@@ -251,7 +251,7 @@ class Workspace final : public Component,
     int proLibraryWidth = 0, proLibraryResizeStart = 0;
     int proLibraryWidthLimit() const;
     struct DockHeights { int mixer = 0, parts = 0, total = 0, visible = 0, preview = 0; } dockHeights;
-    void layoutWorkspaceColumns(bool widthOnly);
+    void layoutWorkspaceColumns(bool widthOnly, bool togglingPanel = false);
     void layoutTrackRows();
     void refreshTrackHeightGeometry(std::optional<int> visibleY = std::nullopt);
     bool adjustingTrackRowGeometry = false;
@@ -295,10 +295,13 @@ class Workspace final : public Component,
     ParameterSlider masterPan, zoom, trackHeightSlider;
     std::optional<std::pair<double, double>> transportProgressRange;
     int transportProgressPixels = -1;
-    juce::Rectangle<int> transportProgressBounds() const {
-        constexpr int progressHeight = 4;
-        return transportDisplayBounds.reduced(3, 0).removeFromBottom(progressHeight);
+    juce::Rectangle<float> transportProgressBounds() const {
+        constexpr float progressHeight = 3.2f;
+        auto lane = transportDisplayBounds.reduced(3, 0).toFloat().withHeight(progressHeight);
+        return lane.withY(float(transportBounds.getBottom() - 1) - progressHeight);
     }
+    std::unique_ptr<Component> saveIndicator;
+    void refreshSaveIndicator();
     Label songDisplay, transportTime, transportInfo, footer, tempo;
     DragDivider mixerDivider, setlistDivider, partsLeftDivider, partsRightDivider;
     DragDivider footerHeightDivider{false}, mixerHeightDivider{false};
@@ -389,6 +392,7 @@ class Workspace final : public Component,
     mutable TrackRowGeometry rowGeometry;
     mutable uint64 rowGeometryRevision = ~uint64(0);
     mutable ID rowGeometrySong;
+    ItemLanes makeItemLanes(const jaras::Track& track) const;
     const ItemLanes &itemLanes(int index) const;
     int minimumTrackHeight() const;
     int itemLaneHeight(int index) const;

@@ -1,4 +1,5 @@
 #pragma once
+#include "WaveLFO.h"
 #include <bitset>
 #include "../../Core/Audio/StopTransition.hpp"
 #include "../../Core/Audio/RemoteMainAudio.hpp"
@@ -116,6 +117,7 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     std::atomic<bool> metronomeEnabled{false};
     void closeDevice();
     void refreshTiming(const jaras::Song &song);
+    void refreshTempoClock(const jaras::Song &song);
     void refreshTempo(const jaras::Song &before, const jaras::Song &after);
     void refreshItemPitch(const jaras::Song &, const ID &);
     void refreshRegionPitch(const jaras::Song &, const ID &);
@@ -384,6 +386,7 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
         std::atomic<bool> cancelled{false}, done{false};
         bool sendTransport=false, routingOnly=false, destinationOnly=false;
         double milliseconds=0;
+        double warmAfter = 0;
     };
     std::unique_ptr<ThreadPool> transportWorker;
     std::shared_ptr<TransportPreparation> transportPreparation;
@@ -428,6 +431,7 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
         bool mute = false, solo = false, mono = false, phase = false;
     };
     struct Voice {
+        WaveLFOParameters waveLFO;
         std::vector<jaras::overlap::Ramp> overlapEnvelope;
         ID track, clipID;
         std::optional<double> playbackStart;

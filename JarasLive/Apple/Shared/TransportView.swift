@@ -402,7 +402,7 @@ struct TimelineNavigationControls: View {
 }
 
 struct SongProgressBar: View {
-    static let panelHeight: CGFloat = 4
+    static let panelHeight: CGFloat = 3.2
     static let remoteHeight: CGFloat = 2
     let position: Double?
     let start: Double?
@@ -1055,6 +1055,66 @@ extension EnvironmentValues {
     }
 }
 
+private struct TimebaseChange {
+    let project: UUID
+    let song: UUID
+    let relative: Bool
+    var title: String { relative ? "Enable relative timebase?" : "Disable relative timebase?" }
+    var action: String { relative ? "Enable" : "Disable" }
+    var message: String { relative ? "Relative timebase: changing the project BPM adjusts item duration and playback speed to follow the tempo. With Free timebase, changing the project BPM preserves item duration and playback speed. Tempo markers with their own timebase keep their individual settings." : "Free timebase: changing the project BPM changes the grid without stretching or shortening items. Item duration and playback speed are preserved. Tempo markers with their own timebase keep their individual settings." }
+}
+
+#if os(macOS)
+private struct TimebaseConfirmationButton<Label: View>: View {
+    let request: () -> TimebaseChange?
+    let apply: (TimebaseChange) -> Void
+    @ViewBuilder let label: () -> Label
+    @State private var presenter = Presenter()
+
+    private final class Presenter {
+        weak var anchor: NSView?
+        lazy var popover = NSPopover()
+    }
+
+    private struct Anchor: NSViewRepresentable {
+        let presenter: Presenter
+        func makeNSView(context: Context) -> NSView {
+            let view = NSView()
+            presenter.anchor = view
+            return view
+        }
+        func updateNSView(_ view: NSView, context: Context) {}
+    }
+
+    var body: some View {
+        Button {
+            guard let anchor = presenter.anchor, anchor.window != nil, !presenter.popover.isShown,
+                  let change = request() else { return }
+            let popover = presenter.popover
+            popover.behavior = .transient
+            popover.animates = false
+            let content = VStack(alignment: .leading, spacing: 10) {
+                Text(verbatim: JarasLocalization.string(change.title)).font(.headline)
+                Text(verbatim: JarasLocalization.string(change.message)).fixedSize(horizontal: false, vertical: true)
+                HStack {
+                    Spacer()
+                    Button(JarasLocalization.string("Cancel")) { [weak popover] in popover?.close() }.keyboardShortcut(.cancelAction)
+                    Button(JarasLocalization.string(change.action)) { [weak popover, apply] in
+                        popover?.close()
+                        apply(change)
+                    }.keyboardShortcut(.defaultAction)
+                }
+            }.padding(16).frame(width: 360)
+            let controller = NSHostingController(rootView: content)
+            controller.view.setAccessibilityIdentifier("timeline-timebase-confirmation")
+            popover.contentViewController = controller
+            popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .minY)
+        } label: { label() }
+        .background(Anchor(presenter: presenter).allowsHitTesting(false))
+    }
+}
+#endif
+
 struct TimelineEditingBar<Zoom: View>: View {
     let show: ShowController
     let editKey: String
@@ -1067,8 +1127,10 @@ struct TimelineEditingBar<Zoom: View>: View {
     @ViewBuilder let zoom: (Bool) -> Zoom
     @ObservedObject private var updates: ShowProjectPresentation
     @AppStorage(TimelineSnapPreference.key) private var snapEnabled = true
-    @State private var pendingTimebase: (project: UUID, song: UUID, relative: Bool)?
+    #if !os(macOS)
+    @State private var pendingTimebase: TimebaseChange?
     @State private var confirmingTimebase = false
+    #endif
 
     init(show: ShowController, editKey: String, tool: Binding<ProGridTool>, movingRegion: Bool,
          mixerButtons: AnyView, workspaceButtons: AnyView? = nil, liveButtons: AnyView? = nil,
@@ -1135,12 +1197,17 @@ struct TimelineEditingBar<Zoom: View>: View {
             Rectangle().fill(JarasTheme.line).frame(height: 1).allowsHitTesting(false)
         }
         .controlSize(.small)
-        .alert(Text(verbatim: JarasLocalization.string(pendingTimebase?.relative == true ? "Enable relative timebase?" : "Disable relative timebase?")), isPresented: $confirmingTimebase) {
+        #if !os(macOS)
+        .alert(Text(verbatim: JarasLocalization.string(pendingTimebase?.title ?? "")), isPresented: $confirmingTimebase) {
             Button("Cancel", role: .cancel) { pendingTimebase = nil }
-            Button(LocalizedStringKey(pendingTimebase?.relative == true ? "Enable" : "Disable")) { applyTimebase() }
+            Button(LocalizedStringKey(pendingTimebase?.action ?? "")) {
+                if let pending = pendingTimebase { applyTimebase(pending) }
+                pendingTimebase = nil
+            }
         } message: {
-            Text(LocalizedStringKey(pendingTimebase?.relative == true ? "Relative timebase: changing the project BPM adjusts item duration and playback speed to follow the tempo. With Free timebase, changing the project BPM preserves item duration and playback speed. Tempo markers with their own timebase keep their individual settings." : "Free timebase: changing the project BPM changes the grid without stretching or shortening items. Item duration and playback speed are preserved. Tempo markers with their own timebase keep their individual settings."))
+            Text(LocalizedStringKey(pendingTimebase?.message ?? ""))
         }
+        #endif
     }
 
     #if os(iOS)
@@ -1233,17 +1300,26 @@ struct TimelineEditingBar<Zoom: View>: View {
                 .accessibilityLabel("Timeline snapping").accessibilityIdentifier("timeline-snap")
                 .accessibilityValue(snapEnabled ? "On" : "Off")
                 .jarasHelp(snapEnabled ? "Snap on — Shift temporarily disables snapping" : "Snap off — free positioning")
+            #if os(macOS)
+            TimebaseConfirmationButton(request: { timebaseChange(relative: !relative) }, apply: applyTimebase) {
+                timelineLabel(icon: "itemTimebase", active: relative && !movingRegion)
+            }
+            .buttonStyle(TimelineSwitchStyle())
+            .accessibilityLabel("Relative timebase").accessibilityIdentifier("timeline-timebase")
+            .accessibilityValue(relative && !movingRegion ? "Enabled" : "Disabled")
+            .disabled(show.current == nil || movingRegion)
+            #else
             Button {
-                if show.canControl(), let song = show.current {
-                    pendingTimebase = (show.snapshot.project.id, song.id, !relative)
-                    confirmingTimebase = true
-                }
+                guard let request = timebaseChange(relative: !relative) else { return }
+                pendingTimebase = request
+                confirmingTimebase = true
             } label: {
                 timelineLabel(icon: "itemTimebase", active: relative && !movingRegion)
             }.buttonStyle(TimelineSwitchStyle())
                 .accessibilityLabel("Relative timebase").accessibilityIdentifier("timeline-timebase")
                 .accessibilityValue(relative && !movingRegion ? "Enabled" : "Disabled")
                 .disabled(show.current == nil || movingRegion)
+            #endif
         }
     }
 
@@ -1253,9 +1329,13 @@ struct TimelineEditingBar<Zoom: View>: View {
             .frame(width: 34, height: TimelineEditingBarMetrics.controlHeight).contentShape(Rectangle())
     }
 
-    private func applyTimebase() {
-        defer { pendingTimebase = nil }
-        guard let pending = pendingTimebase, pending.project == show.snapshot.project.id, show.canControl(),
+    private func timebaseChange(relative: Bool) -> TimebaseChange? {
+        guard show.canControl(), let song = show.current else { return nil }
+        return TimebaseChange(project: show.snapshot.project.id, song: song.id, relative: relative)
+    }
+
+    private func applyTimebase(_ pending: TimebaseChange) {
+        guard pending.project == show.snapshot.project.id, show.canControl(),
               let song = show.current, song.id == pending.song else { return }
         var settings = song.projectTime
         settings.timebase = pending.relative ? .relative : .free

@@ -11,7 +11,23 @@ inline void run(const File &directory) {
     const File file(path);
     MemoryBlock original;if(!file.loadFileAsData(original))throw std::runtime_error("Could not read source project");
     Session session;session.inspection=true;session.document=file;session.mediaDirectory=file.getParentDirectory();
-    session.restoreSnapshot(ProjectCodec::read(file));
+    auto raw = ProjectCodec::read(file);
+    if (SystemStats::getEnvironmentVariable("CATLIVE_TEMPO_STRESS_FREE_EMPTY", {}) == "1") {
+        auto model = ProjectCodec::decode(raw);
+        model.regionSetlist.reset();
+        for (auto& song : model.songs) {
+            song.parts.clear();
+            song.markers.reset();
+            auto settings = song.timeSettings.value_or(jaras::ProjectTimeSettings{});
+            settings.timebase = jaras::ProjectTimebase::free;
+            song.timeSettings = settings;
+            song.regionOwnershipInitialized = false;
+        }
+        jaras::synchronizeRegionOwnership(model);
+        raw = ProjectCodec::encode(model);
+    }
+    session.restoreSnapshot(raw);
+    raw = var();
     if(!session.song() || !session.audio.missingFiles.isEmpty())throw std::runtime_error("Tempo stress project has missing media");
     struct Record { double milliseconds=0; int phase=0; float peak=0; };
     auto records=std::make_unique<std::array<Record,6000>>();
@@ -45,6 +61,9 @@ inline void run(const File &directory) {
     } catch(...) {error=std::current_exception();}
     running=false;callback.join();session.audio.setExternalRenderDriven(false);
     auto report=object();put(report,"tempoIntervalMs",interval);put(report,"tracks",(int)session.song()->tracks.size());put(report,"hardwareFrames",512);
+    put(report,"parts",(int)session.song()->parts.size());
+    put(report,"tempoMarkers",session.song()->markers ? (int)std::count_if(session.song()->markers->begin(),session.song()->markers->end(),[](const auto& m){return m.tempoBPM.has_value();}) : 0);
+    put(report,"relative",session.song()->timeSettings.value_or(jaras::ProjectTimeSettings{}).timebase == jaras::ProjectTimebase::relative);
     put(report,"sourceUnderruns",(int64)session.audio.getUnderruns());put(report,"records",(int)count);put(report,"stream",session.audio.streamDiagnostics());put(report,"callback",session.audio.callbackMetrics.snapshot());
     Array<var> slowBlocks;
     for(size_t i=0;i<count;++i)if((*records)[i].milliseconds>512000./48000.){auto row=object();put(row,"index",(int)i);put(row,"phase",(*records)[i].phase);put(row,"ms",(*records)[i].milliseconds);slowBlocks.add(row);}

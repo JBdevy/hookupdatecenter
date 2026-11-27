@@ -254,6 +254,7 @@ enum AppStartupPresentation {
             show.audioFX = { audio.previewFX($0, settings: $1) }
             show.audioClipFX = { audio.previewClipFX($0, settings: $1) }
             show.audioClipFXBypass = { audio.previewClipFXBypass($0, bypassed: $1) }
+            show.audioItemWaveLFO = { audio.previewWaveLFO($0, envelope: $1) }
             show.audioItemFade = { audio.previewItemFade($0, fadeIn: $1, seconds: $2) }
             show.audioItemFadeShape = { audio.previewItemFadeShape($0, fadeIn: $1, curvature: $2, sCurve: $3) }
             show.audioItemPhase = { audio.previewItemPhase($0, inverted: $1) }

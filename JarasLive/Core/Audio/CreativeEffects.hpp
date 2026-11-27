@@ -144,13 +144,13 @@ public:
             return;
         }
 
+        if (kind == CreativeEffect::amp) {
+            processAmp(left, right, frames, settings);
+            return;
+        }
         float* inputs[]{left, right};
         constexpr double tau = 6.283185307179586;
         const double mix = .01 * (kind == CreativeEffect::chorus ? settings[2] : settings[3]);
-        const double gain = std::pow(10., settings[0] / 20.);
-        const double output = std::pow(10., settings[2] / 20.);
-        const double tone = -std::expm1(-tau * (650. * std::pow(9., settings[1] / 100.)) / rate);
-        const double highPass = -std::expm1(-tau * 75. / rate);
         for (unsigned n = 0; n < frames; ++n) {
             for (unsigned ch = 0; ch < 2 && inputs[ch]; ++ch) {
                 auto& state = channels[ch];
@@ -176,21 +176,13 @@ public:
                         wet = allPass;
                     }
                     state.previous = wet;
-                } else if (kind == CreativeEffect::amp) {
-                    state.filters[0] += highPass * (dry - state.filters[0]);
-                    const double driven = gain * (dry - state.filters[0]);
-                    const double clipped = driven / std::sqrt(1. + driven * driven);
-                    state.filters[1] += tone * (clipped - state.filters[1]);
-                    wet = state.filters[1] * output;
                 }
                 inputs[ch][n] = static_cast<float>(dry + mix * (wet - dry));
             }
             if (kind == CreativeEffect::chorus && !channels[0].delay.empty())
                 writeIndex = (writeIndex + 1) % channels[0].delay.size();
-            if (kind != CreativeEffect::amp) {
-                phase += settings[0] / rate;
-                if (phase >= 1) phase -= 1;
-            }
+            phase += settings[0] / rate;
+            if (phase >= 1) phase -= 1;
         }
     }
 
@@ -206,6 +198,28 @@ private:
     std::array<Channel, 2> channels;
     size_t writeIndex = 0;
     double rate = 48000, phase = 0, envelope = 1;
+
+    void processAmp(float* left, float* right, unsigned frames, const std::array<double, 4>& settings) noexcept {
+        constexpr double tau = 6.283185307179586;
+        const double gain = std::pow(10., settings[0] / 20.);
+        const double output = std::pow(10., settings[2] / 20.);
+        const double tone = -std::expm1(-tau * (650. * std::pow(9., settings[1] / 100.)) / rate);
+        const double highPass = -std::expm1(-tau * 75. / rate);
+        const double mix = settings[3] * .01;
+        auto& filters = channels[0].filters;
+        for (unsigned n = 0; n < frames; ++n) {
+            const double dryLeft = left[n];
+            const double dryRight = right ? right[n] : dryLeft;
+            const double mono = .5 * (dryLeft + dryRight);
+            filters[0] += highPass * (mono - filters[0]);
+            const double driven = gain * (mono - filters[0]);
+            const double clipped = driven / std::sqrt(1. + driven * driven);
+            filters[1] += tone * (clipped - filters[1]);
+            const double wet = mix * output * filters[1];
+            left[n] = static_cast<float>((1. - mix) * dryLeft + wet);
+            if (right) right[n] = static_cast<float>((1. - mix) * dryRight + wet);
+        }
+    }
 
     void processGate(float* left, float* right, unsigned frames,
                      const std::array<double, 4>& settings, const PluginTransport& transport) noexcept {

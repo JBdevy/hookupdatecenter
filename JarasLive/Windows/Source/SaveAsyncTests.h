@@ -194,6 +194,87 @@ template <typename Test> void registerTests(const File &directory, Test &test) {
                     session.project().name=="Newest persisted version" && session.document==target,
                 "Reopening the pending Save loaded stale contents or failed to finish");
     });
+    test("Untitled Save As preserves original stem names, colliding sources and completed progress", [&] {
+        const auto folder = directory.getNonexistentChildFile("untitled-save", "");
+        const auto name = String::fromUTF8("Percussão ao vivo.WAV");
+        const auto first = mediaImportTests::source(folder.getChildFile("one"), name, 800);
+        const auto second = mediaImportTests::source(folder.getChildFile("two"), name, 1600);
+        Session session;
+        session.temporarySession = std::make_unique<TemporaryProjectSession>(folder);
+        const auto scratch = session.temporarySession->directory;
+        mediaImportTests::initialise(session, scratch);
+        session.save(scratch.getChildFile("Temporary.jl"));
+        require(session.suggestedSaveName() == "Untitled", "A temporary folder supplied the suggested project name");
+        session.importAudio({first, second}, 0);
+        mediaImportTests::wait(session);
+        require(session.song()->tracks.size() == 2, "Two input files were not imported");
+        require(session.song()->tracks[0].clips[0].name == utf8(first.getFileNameWithoutExtension()) &&
+                session.song()->tracks[1].clips[0].name == utf8(first.getFileNameWithoutExtension() + " 001"),
+                "Dragging duplicate filenames did not number the grid items");
+        const auto path1 = session.song()->tracks[0].clips[0].audioFile->path;
+        const auto path2 = session.song()->tracks[1].clips[0].audioFile->path;
+        require(path1 == utf8("Stems/" + name) && path2 != path1 &&
+                text(path2).startsWith("Stems/" + second.getFileNameWithoutExtension()) && text(path2).endsWith(".WAV"),
+                "Original media names, extensions or collision suffixes were lost");
+        const auto target = folder.getChildFile("saved/Untitled.jl");
+        String error = "pending";
+        session.saveAsync(target, [&](String failure) { error = failure; });
+        require(session.saveProgress().has_value(), "Save did not expose progress when started");
+        finish(session);
+        require(error.isEmpty() && !session.saveProgress() && session.document == target, "Save completion was published incorrectly");
+        session.load(target);
+        require(session.project().name == "Untitled" && session.song()->tracks.size() == 2, "Saved project did not reopen");
+        for (int i = 0; i < 2; ++i) {
+            const auto &path = session.song()->tracks[size_t(i)].clips[0].audioFile->path;
+            require(path == (i == 0 ? path1 : path2), "Reopen changed a saved media path");
+            mediaImportTests::unchangedMedia(i == 0 ? first : second, ProjectCodec::resolveMedia(target.getParentDirectory(), path));
+        }
+    });
+    test("Async Save shows byte progress and recovers legacy temporary stem filenames", [&] {
+        Session session; const auto root=directory.getNonexistentChildFile("legacy-progress", "");
+        session.temporarySession=std::make_unique<TemporaryProjectSession>(root);
+        const auto scratch=session.temporarySession->directory;
+        mediaImportTests::initialise(session,scratch);
+        session.save(scratch.getChildFile("Temporary.jl"));
+        const auto id=uuid();
+        const auto source=scratch.getChildFile("Stems/"+text(id)+".wav");
+        source.getParentDirectory().createDirectory();
+        {
+            FileOutputStream stream(source);
+            require(stream.openedOk() && stream.setPosition(48*1024*1024) && stream.writeByte(5), "Could not create copy fixture");
+        }
+        session.edit([&](jaras::Project &p) {
+            jaras::Track track; track.id=uuid(); track.role.id="other";
+            jaras::AudioClip clip; clip.id=id; clip.name="Guitarra base"; clip.duration=1;
+            clip.audioFile=jaras::AudioFile{utf8("Stems/"+text(id)+".wav"),{}};
+            track.clips={clip};p.songs[0].tracks={track};
+        },false);
+        const auto doc=root.getChildFile("Saved/Show.jl");
+        Auth auth; Lighting lighting(session);
+        Workspace workspace(session,auth,lighting,false,root.getChildFile("layout.json"));
+        workspace.setSize(1280,800);workspace.projectOpened(false);
+        String error="pending"; session.saveAsync(doc,[&](String failure){error=failure;});
+        auto *indicator=workspace.findChildWithID("project-save-progress");
+        require(indicator && indicator->isVisible() && !indicator->getBounds().isEmpty(),"No visible save progress bar");
+        double last=0; bool advanced=false;
+        const auto deadline=Time::getMillisecondCounterHiRes()+15000;
+        while(Time::getMillisecondCounterHiRes()<deadline) {
+            const auto state=session.saveProgress(); if(!state || state->phase==Session::SaveProgress::Phase::writing) break;
+            if(state->phase==Session::SaveProgress::Phase::copying) {
+                require(state->filename=="Guitarra base.wav" && state->fileIndex==1 && state->fileCount==1 &&
+                        state->fraction>=last && state->fraction<1,"File copy showed invalid progress");
+                advanced|=state->fraction>0;
+                last=state->fraction;
+            }
+            Thread::yield();
+        }
+        finish(session);
+        require(advanced && error.isEmpty() && !workspace.findChildWithID("project-save-progress"),"The save bar failed to advance or dismiss");
+        const auto disk=ProjectCodec::decode(ProjectCodec::read(doc));
+        require(session.song()->tracks[0].clips[0].audioFile->path=="Stems/Guitarra base.wav" &&
+                disk.songs[0].tracks[0].clips[0].audioFile->path=="Stems/Guitarra base.wav" &&
+                doc.getSiblingFile("Stems/Guitarra base.wav").getSize()==source.getSize(),"Legacy stem did not survive promotion");
+    });
     test("Async Save As copies media and retains the original document after destination failure", [&] {
         Session session; session.inspection=true; session.audio.prepareOffline(48000);
         session.restoreSnapshot(ProjectCodec::encode(floatingControlTests::fixture()));

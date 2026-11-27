@@ -283,6 +283,26 @@ final class StemImportTests: XCTestCase {
         XCTAssertEqual(imported.songs[0].tracks.flatMap(\.clips).first?.pitchSemitones, -3)
     }
 
+    func testCreateAndAppendNumberStemItemsAcrossTheGridAndPreserveLegacyDuplicates() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let a = try fixture(root, folder: "Song A", file: "Kick.wav")
+        let b = try fixture(root, folder: "Song B", file: "Kick.wav")
+        let scan = try StemProjectImporter.scan([a, b])
+        let destination = root.appendingPathComponent("Project/Show.jl")
+        var project = try StemProjectImporter.build(scan: scan, remove: "", base: .empty(name: "Show"), destination: destination)
+        func labels(_ value: Project) -> [String] {
+            value.songs[0].tracks.flatMap { $0.clips.filter { $0.audioFile != nil }.map(\.name) }.sorted()
+        }
+        XCTAssertEqual(labels(project), ["Kick 001.wav", "Kick.wav"])
+        for row in project.songs[0].tracks.indices {
+            for index in project.songs[0].tracks[row].clips.indices { project.songs[0].tracks[row].clips[index].name = "Kick.wav" }
+        }
+        project = try JSONDecoder().decode(Project.self, from: JSONEncoder().encode(project))
+        try project.validate()
+        let appended = try StemProjectImporter.build(scan: scan, remove: "", base: project, destination: destination)
+        XCTAssertEqual(labels(appended), ["Kick 001.wav", "Kick 002.wav", "Kick.wav", "Kick.wav"])
+    }
     func testAppendMatchesCustomNamesBeforeTaxonomyAndPreservesTracks() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

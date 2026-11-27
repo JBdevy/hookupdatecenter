@@ -1010,6 +1010,13 @@ struct TimecodePlaybackSpan {
     // and reschedule PCM; graph ownership changes on project/device teardown.
     private var pitchClipRevision: UInt64?
     private var pitchParts: [Part] = []
+    // Linked items on different tracks often share this range. Region ownership
+    // uses the whole source range even when tempo markers split it for playback.
+    private struct PitchRange: Hashable {
+        let start: Double
+        let end: Double
+        let preferred: UUID?
+    }
     private var clipPitches: [UUID: Float] = [:]
     private var suspendedVoiceOutputs = Set<ObjectIdentifier>()
     private var idleVoices: [UUID: [Voice]] = [:]
@@ -4030,6 +4037,9 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
             }
         }
     }
+    func previewWaveLFO(_ id: UUID, envelope: WaveLFOEnvelope) {
+        previewFade(id) { $0.fx?.waveLFO = envelope }
+    }
     func previewItemFade(_ id: UUID, fadeIn: Bool, seconds: Double) {
         guard seconds.isFinite, seconds >= 0 else { return }
         previewFade(id) { clip in
@@ -5465,6 +5475,46 @@ for sampler in samplers.values { sampler.sequenceHead(Int32(head), position: 0, 
             loopStart: transport.loop.enabled ? transport.loop.start ?? 0 : 0, loopEnd: transport.loop.enabled ? transport.loop.end ?? 0 : 0,
             sampleTime: sample.map(Double.init) ?? .nan)
     }
+
+    private func updateClipPitches(_ song: Song) {
+        clipPitches.removeAll(keepingCapacity: true)
+        clipPitches.reserveCapacity(clips.count)
+        for (_, clip) in clips {
+            clipPitches[clip.id] = Float((clip.pitchSemitones ?? 0) * 100)
+        }
+
+        let pitched = song.parts.filter { $0.semitones != 0 }
+        guard !pitched.isEmpty else { return }
+        let hierarchy = TrackHierarchy(song.tracks)
+        var regionsByTrack: [UUID: [UUID: Int]] = [:]
+        for region in pitched {
+            let targets = song.pitchTargets(region)
+            var included = targets.tracks.union(targets.groups)
+            for group in targets.groups { included.formUnion(hierarchy.descendants(of: group)) }
+            for track in included { regionsByTrack[track, default: [:]][region.id] = region.semitones }
+        }
+
+        var owners: [PitchRange: UUID?] = [:]
+        for track in song.tracks where track.kind == .standard {
+            guard let regions = regionsByTrack[track.id] else { continue }
+            for source in track.clips where source.frozenMIDI != true && source.renderedTiming != true {
+                guard let fragments = clipFragments[source.id] else { continue }
+                let range = PitchRange(start: source.startTime, end: source.startTime + source.duration, preferred: source.regionOwnerID)
+                let owner: UUID?
+                if let cached = owners[range] {
+                    owner = cached
+                } else {
+                    owner = song.regionOwnerForMedia(at: range.start, end: range.end, preferred: range.preferred)
+                    owners.updateValue(owner, forKey: range)
+                }
+                guard let owner, let semitones = regions[owner] else { continue }
+                for fragment in fragments {
+                    clipPitches[fragment] = Float(((source.pitchSemitones ?? 0) + Double(semitones)) * 100)
+                }
+            }
+        }
+    }
+
     func update(_ snapshot: ShowSnapshot, revision: UInt64, sampledAt: Double = ProcessInfo.processInfo.systemUptime) throws {
         if snapshot.transport.subPlay.playing, subplayDestination.task == nil, subplayDestination.key != nil {
             subplayDestination.cancel()
@@ -5832,19 +5882,7 @@ for sampler in samplers.values { sampler.sequenceHead(Int32(head), position: 0, 
         if changedLoopGains.contains(MultiLoopTrack.masterID) { applyMasterGain() }
         if pitchParts != song.parts || pitchClipRevision != revision {
             pitchParts = song.parts; pitchClipRevision = revision
-            var sourceItems: [UUID: AudioClip] = [:]
-            for source in song.tracks.flatMap(\.clips) {
-                for fragment in clipFragments[source.id] ?? [source.id] { sourceItems[fragment] = source }
-            }
-            clipPitches = Dictionary(uniqueKeysWithValues: clips.map { track, clip in
-                let original = sourceItems[clip.id] ?? clip
-                let owner = song.regionOwnerForMedia(at: original.startTime, end: original.startTime + original.duration,
-                                                      preferred: original.regionOwnerID)
-                let region = song.parts.first(where: { $0.id == owner })
-                let semitones = (clip.pitchSemitones ?? 0) +
-                    (clip.frozenMIDI == true || clip.renderedTiming == true ? 0 : Double(song.pitch(for: track, region: region)))
-                return (clip.id, Float(semitones * 100))
-            })
+            updateClipPitches(song)
             #if os(macOS)
             araPlaybackBlocked = Set(clips.compactMap { track, clip in
                 (clipPitches[clip.id] ?? 0) != 0 || overlapEnvelopes[clip.id] != nil ? track : nil

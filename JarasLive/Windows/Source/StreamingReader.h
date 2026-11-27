@@ -128,7 +128,8 @@ class StreamingReader final : public AudioFormatReader {
         if (!transitionDecoder) return false;
         auto next = std::make_unique<Pinned>(at, int(numChannels), wanted);
         {
-            const audio::DiskIOActivity::Operation read(audio::diskIOActivity);
+            std::optional<audio::DiskIOActivity::Operation> read;
+            if (!metersFileReads(*transitionDecoder)) read.emplace(audio::diskIOActivity);
             if (!transitionDecoder->read(&next->pcm, 0, wanted, at, true, true)) return false;
         }
         next->forward = std::make_unique<RealtimeBufferedReader>(transitionDecoder.release(), service.preparedFill, 131072);

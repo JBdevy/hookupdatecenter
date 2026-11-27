@@ -1261,7 +1261,7 @@ struct WorkspaceLibrary: View {
     private static let nativeSampleCategories = voiceGuideCategories + otherNativeSampleCategories
 
     private static let nativeTypes: [String: String] = [
-        "EQ": "EQ", "Compressor": "Dynamics", "Pitch": "Pitch Shift", "Delay": "Delay",
+        NativeFXSettings.waveLFOName: "Dynamics", "EQ": "EQ", "Compressor": "Dynamics", "Pitch": "Pitch Shift", "Delay": "Delay",
         "Reverb": "Reverb", NativeFXSettings.reverbConvolution: "Reverb", "Limiter": "Dynamics", "CatLive Trigger": "Trigger", "Cat Gate": "Dynamics",
         "Chorus": "Modulation", "Phaser": "Modulation", "Amp": "Distortion", "Soft Clipper": "Dynamics", "Gate Divisor": "Dynamics", "Arpeggiator": "MIDI", "Drummer Pad 16": "Instrument", "Drummer Pad 48": "Instrument", "CatSynth": "Instrument", "EQ - 31 Band": "EQ"
     ]
@@ -1352,7 +1352,7 @@ struct WorkspaceLibrary: View {
         let externalTypes: [String] = []
         #endif
         return (["All", "Native"] + pluginTypes(externalTypes: externalTypes)).map { title in
-            var entries = NativeFXSettings.order.compactMap { name -> (identity: String, name: String)? in
+            var entries = (NativeFXSettings.order + [NativeFXSettings.waveLFOName]).compactMap { name -> (identity: String, name: String)? in
                 guard let type = nativeTypes[name], title == "All" || title == "Native" || title == type else { return nil }
                 return ("native:" + name, name == "Limiter" ? "CatLive Limiter" : name)
             }
@@ -1924,7 +1924,7 @@ struct WorkspaceLibrary: View {
         let external = type == "Native" ? [] : plugins.matchingPlugins(query: "", type: favoritesOnly ? PluginCatalog.favoritesType : type ?? "",
                                                vendor: "", allowsInstruments: true).filter { matchesSearch($0.name) }
         #endif
-        let native = NativeFXSettings.order.filter {
+        let native = (NativeFXSettings.order + [NativeFXSettings.waveLFOName]).filter {
             guard let category = Self.nativeTypes[$0], matchesSearch(pluginName("native:" + $0)) else { return false }
             if favoritesOnly { return favoriteKeys.contains("native:" + $0) }
             return type == nil || type == "Native" || category == type
@@ -2544,7 +2544,11 @@ struct WorkspaceLibrary: View {
                 let parts = identity.dropFirst(7).split(separator: ":", maxSplits: 1)
                 guard let rawKind = parts.first else { return nil }
                 let kind = String(rawKind)
-                guard NativeFXSettings.order.contains(kind) else { return nil }
+                if kind == NativeFXSettings.waveLFOName {
+                    guard let clip, let owner = show.current?.tracks.first(where: { $0.clips.contains { $0.id == clip } }),
+                          owner.kind == .standard, let item = owner.clips.first(where: { $0.id == clip }),
+                          item.midi == nil, (item.audioFile ?? owner.audioFile) != nil else { return nil }
+                } else if !NativeFXSettings.order.contains(kind) { return nil }
                 if kind == "Instruments" {
                     guard parts.count == 2, !isVinhetas(track, show: show) else { return nil }
                     let instrument = String(parts[1])

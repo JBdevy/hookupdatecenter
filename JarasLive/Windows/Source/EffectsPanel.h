@@ -993,7 +993,8 @@ class EffectsPanel final : public Component, public DragAndDropContainer, public
         int destination=chain.getRowContainingPosition(point.x,point.y);
         if(destination<0)destination=point.y<0?0:keys.size();
         else if(point.y>=chain.getRowPosition(destination,true).getCentreY())++destination;
-        if(source<0)return;
+        if(source<0 || effect.toString()=="Wave LFO")return;
+        if(keys.contains(var("Wave LFO"))) destination=std::max(1,destination);
         keys.remove(source);if(destination>source)--destination;
         destination=jlimit(0,keys.size(),destination);
         if(destination==source)return;
@@ -1178,6 +1179,14 @@ class EffectsPanel final : public Component, public DragAndDropContainer, public
             knob("Decay", "reverbDecay", .1, 20, .1, " s");
             knob("Low Cut", "reverbLowCut", 20, 2000, 1, " Hz");
             knob("High Cut", "reverbHighCut", 2000, 20000, 1, " Hz");
+        }
+        if (k == "Wave LFO") {
+            auto value = current();
+            if (!get(value, "waveLFO").isObject()) put(value, "waveLFO", WaveLFOParameters{}.json());
+            knob("Attack", "attack", 0, 60, .001, " s", 1, "waveLFO");
+            knob("Decay", "decay", 0, 60, .001, " s", 1, "waveLFO");
+            knob("Sustain", "sustain", 0, 100, .1, " %", 100, "waveLFO");
+            knob("Release", "release", 0, 60, .001, " s", 1, "waveLFO");
         }
         if (k == "Limiter") {
             knob("Gain", "inputGain", -24, 24, .1, " dB", 1, "limiter");

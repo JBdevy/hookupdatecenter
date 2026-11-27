@@ -1122,6 +1122,13 @@ enum StemProjectImporter {
                     }
                 }
             }
+            var names = GridItemNames(project.songs[0].tracks)
+            let existing = Set(project.songs[0].tracks.flatMap { $0.clips.map(\.id) })
+            for row in arrangement.tracks.indices {
+                for index in arrangement.tracks[row].clips.indices where !existing.contains(arrangement.tracks[row].clips[index].id) {
+                    arrangement.tracks[row].clips[index].name = names.allocate(arrangement.tracks[row].clips[index].name)
+                }
+            }
             project.songs[0] = arrangement
             project.updatedAt = ISO8601DateFormatter().string(from: Date())
             try project.validate()

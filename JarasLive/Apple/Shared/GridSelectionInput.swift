@@ -157,6 +157,37 @@ struct GridSelectionItem {
     var duration: Double = 0
     var fadeIn: Double = 0
     var fadeOut: Double = 0
+    var waveLFO: WaveLFOEnvelope?
+    var waveBody: CGRect {
+        CGRect(x: rect.minX, y: rect.minY + Self.bodyInset + 3, width: rect.width,
+               height: max(0, rect.height - Self.bodyInset - 6))
+    }
+    func wavePoints(_ envelope: WaveLFOEnvelope) -> [CGPoint] {
+        let body = waveBody
+        guard duration > 0, body.height > 4, body.width > 4 else { return [] }
+        let e = envelope.fitted(to: duration)
+        let scale = body.width / duration
+        let level = body.maxY - e.sustain * body.height
+        return [CGPoint(x: body.minX, y: body.maxY),
+                CGPoint(x: body.minX + e.attack * scale, y: body.minY),
+                CGPoint(x: body.minX + (e.attack + e.decay) * scale, y: level),
+                CGPoint(x: body.maxX - e.release * scale, y: level),
+                CGPoint(x: body.maxX, y: body.maxY)]
+    }
+    func draggedWave(_ envelope: WaveLFOEnvelope, handle: Int, point: CGPoint) -> WaveLFOEnvelope {
+        let body = waveBody
+        var e = envelope.fitted(to: duration)
+        let t = min(duration, max(0, (point.x - body.minX) * duration / max(1, body.width)))
+        switch handle {
+        case 1: e.attack = min(60, max(0, min(t, duration - e.decay - e.release)))
+        case 2:
+            e.decay = min(60, max(0, min(t - e.attack, duration - e.release - e.attack)))
+            e.sustain = min(1, max(0, (body.maxY - point.y) / max(1, body.height)))
+        case 3: e.release = min(60, max(0, min(duration - t, duration - e.attack - e.decay)))
+        default: break
+        }
+        return e
+    }
     var fadeEligible = true
     var fadeControlsEnabled = false
     var showsFadeHandles: Bool { fadeEligible && (fadeControlsEnabled || fadeIn > 0 || fadeOut > 0) }
@@ -794,6 +825,8 @@ struct GridSelectionInput: NSViewRepresentable {
     var resizeShared: (UUID, UUID, CGFloat, Bool) -> Void = { _,_,_,_ in }
     var fadeShape: (UUID, Bool, Bool, Double, Bool) -> Void = { _, _, _, _, _ in }
     var fade: (UUID, Bool, Double, Bool) -> Void = { _, _, _, _ in }
+    var addWave: (UUID) -> Void = { _ in }
+    var editWave: (UUID, WaveLFOEnvelope, Bool) -> Void = { _, _, _ in }
     var setFadeControls: (Set<UUID>, Bool) -> Void = { _, _ in }
     var gain: (UUID, Double, Bool) -> Void = { _,_,_ in }
     var phase: (UUID) -> Void = { _ in }
@@ -869,7 +902,7 @@ struct GridSelectionInput: NSViewRepresentable {
         view.itemPressed = itemPressed
         view.supportsProTools = proTools; view.applyProTool = applyProTool; view.applyTrackTool = applyTrackTool; view.setLoopArea = setLoopArea
         view.renameItem = renameItem; view.exportMIDI = exportMIDI
-        view.mute = mute; view.move = move; view.seek = seek; view.selectRow = selectRow; view.selectionChanged = selectionChanged; view.createRegion = createRegion; view.reRender = reRender; view.normalize = normalize; view.resetRate = resetRate; view.resetDuration = resetDuration; view.convert = convert; view.freezeMIDI = freezeMIDI; view.glue = glue; view.tuner = tuner; view.export = export; view.resize = resize; view.resizeShared = resizeShared; view.fade = fade; view.setFadeControls = setFadeControls; view.fadeShape = fadeShape; view.gain = gain; view.phase = phase; view.pan = pan; view.fx = fx; view.editText = editText; view.editMIDI = editMIDI; view.createMIDI = createMIDI
+        view.mute = mute; view.move = move; view.seek = seek; view.selectRow = selectRow; view.selectionChanged = selectionChanged; view.createRegion = createRegion; view.reRender = reRender; view.normalize = normalize; view.resetRate = resetRate; view.resetDuration = resetDuration; view.convert = convert; view.freezeMIDI = freezeMIDI; view.glue = glue; view.tuner = tuner; view.export = export; view.resize = resize; view.resizeShared = resizeShared; view.fade = fade; view.setFadeControls = setFadeControls; view.editWave = editWave; view.addWave = addWave; view.fadeShape = fadeShape; view.gain = gain; view.phase = phase; view.pan = pan; view.fx = fx; view.editText = editText; view.editMIDI = editMIDI; view.createMIDI = createMIDI
         view.observeHeaderScroll()
     }
 }
@@ -1032,6 +1065,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
         let text: Bool
         let fadeRects: [CGRect?]
         let fadeCurves: [Double]
+        let wave: WaveLFOEnvelope?
     }
     private var drawnHeaderProjection: HeaderProjection?
     weak var headerDocument: NSView?
@@ -1093,6 +1127,9 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
     private var sharedResize: (left: UUID, right: UUID)?
     var fadeShape: ((UUID, Bool, Bool, Double, Bool) -> Void)?
     var fade: ((UUID, Bool, Double, Bool) -> Void)?
+    var addWave: ((UUID) -> Void)?
+    var editWave: ((UUID, WaveLFOEnvelope, Bool) -> Void)?
+    private var waveDrag: (item: GridSelectionItem, handle: Int, start: WaveLFOEnvelope, live: WaveLFOEnvelope)?
     var setFadeControls: ((Set<UUID>, Bool) -> Void)?
     private var fadeItem: (item: GridSelectionItem, left: Bool, sCurve: Bool?)?
     private var liveFade: (id: UUID, left: Bool, seconds: Double, sCurve: Bool?)?
@@ -1312,6 +1349,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
             item.rect = item.rect.offsetBy(dx: dx, dy: dy)
             item.visibleHeader = item.visibleHeader?.offsetBy(dx: dx, dy: dy)
             if let liveHeaderPan, liveHeaderPan.id == item.id || (selected.contains(liveHeaderPan.id) && selected.contains(item.id)) { item.pan = liveHeaderPan.value }
+            if let drag = waveDrag, drag.item.id == item.id { item.waveLFO = drag.live }
             let fadeRects = item.fadeDrawingRects(in: body)
             let band = (highlight || item.stackedOverlap && !item.headerHidden) ? CGRect(x: item.rect.minX, y: item.rect.minY, width: item.rect.width,
                 height: min(GridSelectionItem.headerHeight, item.rect.height)).intersection(body) : nil
@@ -1326,7 +1364,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
                 rect: item.headerRect.intersection(body), name: item.name!,
                 blackTitle: band != nil || (selected.contains(item.id) ? item.selectedBlackTitle : item.blackTitle), selectionBand: band, stackedOverlap: item.stackedOverlap, divider: divider, gain: item.gain, pan: item.pan,
                 phase: item.phaseInverted, muted: item.muted, hasFX: item.hasFX, bypass: item.fxBypassed,
-                editable: item.editable, midi: item.midiEditable, text: item.textEditable, fadeRects: fadeRects, fadeCurves: [item.fadeInCurve, item.fadeInSCurve, item.fadeOutCurve, item.fadeOutSCurve])
+                editable: item.editable, midi: item.midiEditable, text: item.textEditable, fadeRects: fadeRects, fadeCurves: [item.fadeInCurve, item.fadeInSCurve, item.fadeOutCurve, item.fadeOutSCurve], wave: item.waveLFO)
         }
         let prepared = PreparedHeaderProjection(key: key,
             pixels: HeaderProjection(viewport: body, headers: headers), drawings: drawings)
@@ -1413,6 +1451,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
         proMarquee = false; proLoop = false; pendingProTool = nil
         stopSelectionScroll()
         if let id = draggedItem, isItemMove { move?(id, .zero, .nan, true) }
+        if let drag = waveDrag { editWave?(drag.item.id, drag.start, false); waveDrag = nil; preparedHeaderProjection = nil }
         if let fadeItem {
             if let sCurve = fadeItem.sCurve { fadeShape?(fadeItem.item.id, fadeItem.left, sCurve, sCurve ? fadeItem.item.curve(fadeItem.left).sCurve : fadeItem.item.curve(fadeItem.left).curvature, false) }
             else { fade?(fadeItem.item.id, fadeItem.left, fadeItem.left ? fadeItem.item.fadeIn : fadeItem.item.fadeOut, false) }
@@ -1508,6 +1547,15 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
             resizingLeft = false; heldItemGuide = item.rect
             return
         }
+        if let wave = item.waveLFO, !item.fxBypassed, tool == .select {
+            let points = item.wavePoints(wave)
+            if let hit = points.indices.dropFirst().dropLast().min(by: {
+                hypot(points[$0].x - timeline.x, points[$0].y - timeline.y) < hypot(points[$1].x - timeline.x, points[$1].y - timeline.y)
+            }), hypot(points[hit].x - timeline.x, points[hit].y - timeline.y) <= 6 {
+                waveDrag = (item, hit, wave, wave)
+                return
+            }
+        }
         if let shape = item.fadeShape(at: timeline) {
             if event.clickCount == 2 { fadeShape?(item.id, shape.left, shape.sCurve, shape.sCurve ? 1 : 0, true); return }
             fadeItem = (item, shape.left, shape.sCurve); draggedItem = item.id; return
@@ -1551,6 +1599,14 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
         draggedItem = item.id; dragStart = event.locationInWindow; dragOrigin = timeline
     }
     override func mouseDragged(with event: NSEvent) {
+        if var drag = waveDrag {
+            drag.live = drag.item.draggedWave(drag.start, handle: drag.handle, point: timelinePoint(event))
+            waveDrag = drag
+            preparedHeaderProjection = nil
+            needsDisplay = true
+            editWave?(drag.item.id, drag.live, false)
+            return
+        }
         if var drag = elasticDrag {
             let point = timelinePoint(event)
             if drag.rateRight != nil {
@@ -1630,6 +1686,13 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
         move?(id, translation, ended && !inside ? .nan : point.y, ended)
     }
     override func mouseUp(with event: NSEvent) {
+        if let drag = waveDrag {
+            waveDrag = nil
+            preparedHeaderProjection = nil
+            needsDisplay = true
+            editWave?(drag.item.id, drag.live, true)
+            return
+        }
         if let drag = elasticDrag {
             elasticDrag = nil
             needsDisplay = true
@@ -2016,6 +2079,9 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
     @objc private func toggleContextClickDouble() {
         if let contextItem { toggleClickDouble?(contextItem) }
     }
+    @objc private func openWaveLFO() {
+        if let contextItem { addWave?(contextItem) }
+    }
     func itemContextMenu(for contextItem: UUID) -> NSMenu {
         self.contextItem = contextItem
         let menu = NSMenu()
@@ -2036,6 +2102,11 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
         if item(id: contextItem)?.rateEditable == true || item(id: contextItem)?.midiEditable == true || fileRate {
             let rate = NSMenuItem(title: JarasLocalization.string("Config rate"), action: #selector(configureRateSelection), keyEquivalent: "")
             rate.target = self; menu.addItem(rate)
+        }
+        if item(id: contextItem)?.audioExportable == true {
+            let entry = NSMenuItem(title: WaveLFOEnvelope.name, action: #selector(openWaveLFO), keyEquivalent: "")
+            entry.target = self
+            menu.addItem(entry)
         }
         let eligible = fadeMenuTargets(contextItem).compactMap { item(id: $0) }.filter(\.fadeEligible)
         if !eligible.isEmpty {
@@ -2242,6 +2313,22 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
         let border = NSBezierPath(rect: rect.insetBy(dx: 0.5, dy: 0.5)); border.lineWidth = 1; border.stroke()
     }
     private func drawItemFades(_ item: GridSelectionItem, visibleRects: [CGRect?]) {
+        if let wave = item.waveLFO, !item.fxBypassed, let context = NSGraphicsContext.current?.cgContext {
+            let points = item.wavePoints(wave)
+            if points.count == 5 {
+                context.saveGState()
+                context.clip(to: item.rect)
+                context.setStrokeColor(NSColor.systemTeal.cgColor)
+                context.setFillColor(NSColor.systemTeal.cgColor)
+                context.setLineWidth(1.5)
+                context.addLines(between: points)
+                context.strokePath()
+                for point in points.dropFirst().dropLast() {
+                    context.fillEllipse(in: CGRect(x: point.x - 3, y: point.y - 3, width: 6, height: 6))
+                }
+                context.restoreGState()
+            }
+        }
         guard visibleRects.contains(where: { $0 != nil }) else { return }
         NSGraphicsContext.saveGraphicsState()
         NSBezierPath(rect: item.rect).addClip()

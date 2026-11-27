@@ -1,5 +1,6 @@
 #pragma once
 #include "ProjectCodec.h"
+#include "../../Core/Tracks/GridItemNames.hpp"
 #include <cctype>
 namespace catlive::trackEditing {
 struct TrackDuplicationResult {
@@ -216,6 +217,9 @@ inline TrackDuplicationResult duplicateDocument(const var &document, const ID &s
         const bool implicit = at != positions.end() && utf8(str(tracks[at->second], "parentTrackID")) == edge->second && sendsToGroup(tracks[at->second]);
         if (implicit) edge = connections.erase(edge); else ++edge;
     }
+    jaras::GridItemNames names;
+    for (const auto &track : destinationTracks)
+        for (const auto &clip : list(get(track, "clips"))) names.reserve(utf8(str(clip, "name")));
     std::map<ID, var> copies;
     for (const auto &original : tracks) {
         const auto originalID = id(original); if (!selected.count(originalID)) continue;
@@ -233,6 +237,7 @@ inline TrackDuplicationResult duplicateDocument(const var &document, const ID &s
         }
         copyFXAndAutomation(copy, fresh);
         for (auto clip : list(get(copy, "clips"))) {
+            auto label = utf8(str(clip, "name")); names.assign(label); put(clip, "name", text(label));
             fresh.replace(clip); remapArray(clip, "separatedStemTracks", mapping);
             for (auto note : list(get(get(clip, "midi"), "notes"))) fresh.replace(note);
             copyFXAndAutomation(clip, fresh);

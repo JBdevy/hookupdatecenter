@@ -31,6 +31,7 @@ inline bool addsInstrument(const var &previous, const var &next) {
     });
 }
 inline String enabledKey(const String &kind) {
+    if (kind == "Wave LFO") return "waveLFOEnabled";
     if (const auto *spec = jaras::audio::creativeEffect(utf8(kind))) return spec->enabledField;
     if (kind == "CatLive Trigger") return "triggerEnabled";
     if (kind == "Drummer Pad 16") return "drummer16Enabled";

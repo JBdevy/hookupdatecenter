@@ -257,6 +257,7 @@ public extension Project {
                 return copy
             }
         }
+        var names = GridItemNames(destination.tracks)
         var copies: [UUID: Track] = [:]
         let connections = source.trackConnections.sorted {
             $0.source == $1.source ? $0.destination.uuidString < $1.destination.uuidString : $0.source.uuidString < $1.source.uuidString
@@ -289,6 +290,7 @@ public extension Project {
             copy.clips = original.clips.map { original in
                 var clip = original
                 clip.id = UUID()
+                clip.name = names.allocate(original.name)
                 clip.separatedStemTracks = original.separatedStemTracks?.map(mapped)
                 if var midi = clip.midi {
                     for note in midi.notes.indices { midi.notes[note].id = UUID() }

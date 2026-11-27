@@ -329,6 +329,14 @@ import Combine
         actions.append(command("Phase invert", { for item in ids { show.toggleItemPhase(item) } }))
         actions.append(command("Criar região do item", { show.regionsFromSelection(ids) }))
         if clip.midi == nil && (clip.audioFile ?? track.audioFile) != nil {
+            if track.kind == .standard {
+                actions.append(command(NativeFXSettings.waveLFOName, {
+                    if clip.fx?.inserted.contains(NativeFXSettings.waveLFOName) != true {
+                        guard show.insertClipFX(id, effect: NativeFXSettings.waveLFOName) != nil else { return }
+                    }
+                    fx = .init(clip: id)
+                }))
+            }
             actions.append(command("Open file location", { open("file") }))
             actions.append(command("Reset rate", { open("resetRate") }))
             if !clip.isImage { actions.append(command("Reset duration", { open("resetDuration") })) }

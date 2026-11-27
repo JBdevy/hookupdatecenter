@@ -67,6 +67,8 @@ void run(Test test, Require require, const File &directory) {
             effect.prepare(settings, 48000);
             AudioBuffer<float> input(2, 2048), dry(2, 2048);
             tone(dry, 48000, 0, .3f);
+            if (spec.kind == jaras::audio::CreativeEffect::amp)
+                dry.applyGain(1, 0, dry.getNumSamples(), .5f);
             input.makeCopyOf(dry);
             // Quarter-note position 0.25 selects the second gate step.
             const jaras::PluginTempoMap map(std::vector<jaras::PluginTempoMap::Point>{{0, 60, 4, 4}});
@@ -74,6 +76,8 @@ void run(Test test, Require require, const File &directory) {
             float delta = 0;
             for (int n = 0; n < 2048; ++n) {
                 require(std::isfinite(input.getSample(0, n)), name + " rendered invalid PCM");
+                if (spec.kind == jaras::audio::CreativeEffect::amp)
+                    require(input.getSample(0,n) == input.getSample(1,n), "A fully wet Amp must output one mono signal");
                 delta += std::abs(input.getSample(0, n) - dry.getSample(0, n));
             }
             require(delta > 1, name + " did not affect PCM");

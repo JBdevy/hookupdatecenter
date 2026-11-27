@@ -304,6 +304,28 @@ final class ProjectSaveTests: XCTestCase {
         XCTAssertEqual(show.clipFXSettings(clip.id).bands[1].gain, 4)
         XCTAssertFalse(show.clipFXSettings(clip.id).compressorEnabled)
     }
+    @MainActor func testWaveLFOIsAnUndoableAudioItemEnvelope() throws {
+        var project = Project.empty(name: "Wave LFO")
+        var track = Track(id: UUID(), name: "Audio", role: .other)
+        let clip = AudioClip(id: UUID(), name: "Stem", startTime: 2, duration: 3, audioFile: AudioFile(path: "Stems/Stem.wav"))
+        track.clips = [clip]; project.songs[0].tracks = [track]
+        let show = try ShowController(executor: SaveTestExecutor(), persistence: SaveTestStore(), initialProject: project)
+        let key = NativeFXSettings.waveLFOName
+        XCTAssertNil(show.clipFXSettings(clip.id).activeWaveLFO)
+        XCTAssertEqual(show.insertClipFX(clip.id, effect: key), key)
+        var fx = show.clipFXSettings(clip.id)
+        fx.waveLFOParameters.attack = 0.5; fx.waveLFOParameters.decay = 0.12
+        fx.waveLFOParameters.sustain = 0.25; fx.waveLFOParameters.release = 1.5
+        show.updateClipFX(clip.id, effect: key, settings: fx); show.commitFX()
+        let restored = try JSONDecoder().decode(Project.self, from: JSONEncoder().encode(show.snapshot.project))
+        XCTAssertEqual(restored.songs[0].tracks[0].clips[0].fx?.activeWaveLFO, fx.waveLFOParameters)
+        show.toggleClipFXBypass(clip.id, effect: key)
+        XCTAssertNil(show.clipFXSettings(clip.id).activeWaveLFO)
+        show.undo()
+        XCTAssertEqual(show.clipFXSettings(clip.id).activeWaveLFO, fx.waveLFOParameters)
+        show.removeClipFX(clip.id, effect: key)
+        XCTAssertNil(show.clipFXSettings(clip.id).activeWaveLFO)
+    }
     @MainActor func testClosingRemovedItemEditorsCannotReinsertEffectsDuringPlayback() throws {
         var project = Project.empty(name: "Removed item effects")
         var track = Track(id: UUID(), name: "Audio", role: .other)

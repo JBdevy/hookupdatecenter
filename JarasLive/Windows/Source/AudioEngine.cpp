@@ -369,7 +369,7 @@ bool AudioEngine::cacheSplitItems(const jaras::Song &song, const std::map<ID, ID
         voice->start=clip.startTime; voice->duration=clip.duration; voice->offset=clip.sourceOffset; voice->speed=clip.playbackRate;
         voice->playbackStart=jaras::playbackItemStart(song,clip); voice->regionOwnerIndex=jaras::playbackOwnerIndex(song,clip.regionOwnerID);
         voice->clipGain=original->clipGain; voice->clipPan=original->clipPan; voice->channelMode=original->channelMode;
-        voice->fadeIn=clip.fadeIn.value_or(0); voice->fadeOut=clip.fadeOut.value_or(0); voice->fadeInShape=original->fadeInShape; voice->fadeOutShape=original->fadeOutShape;
+        voice->fadeIn=clip.fadeIn.value_or(0); voice->fadeOut=clip.fadeOut.value_or(0); voice->waveLFO=original->waveLFO; voice->fadeInShape=original->fadeInShape; voice->fadeOutShape=original->fadeOutShape;
         voice->volume=original->volume; voice->pan=original->pan; voice->mute=original->mute; voice->solo=original->solo;
         voice->itemMuted=original->itemMuted; voice->fxBypassed=original->fxBypassed; voice->frozen=original->frozen;
         voice->firstOutput=original->firstOutput; voice->outputChannels=original->outputChannels;
@@ -624,6 +624,9 @@ void AudioEngine::refreshOverlapEnvelopes(const jaras::Song &song) {
 }
 void AudioEngine::refreshTiming(const jaras::Song &song) {
     refreshOverlapEnvelopes(song);
+    refreshTempoClock(song);
+}
+void AudioEngine::refreshTempoClock(const jaras::Song &song) {
     auto timing = ClickProgram::tempo(song);
     auto pluginTiming = jaras::pluginTempoMap(song);
     struct Edit { ClickProgram* target; std::vector<ClickProgram::Section> sections; };
@@ -1049,6 +1052,13 @@ void AudioEngine::previewDynamics(const ID &id, const String &key, const var &se
     });
 }
 void AudioEngine::previewNativeParameters(const ID &id, const String &key, const String &kind, const var &settings, const var &chainSettings) {
+    if (kind == "Wave LFO") {
+        const auto wave = WaveLFOParameters::read(chainSettings);
+        enqueuePreparedEdit([this, id, wave]() noexcept {
+            for (auto& voice : voices) if (voice->clipID == id) voice->waveLFO = wave;
+        });
+        return;
+    }
     if (kind == "Instruments") {
         // SF2 controls are atomic in SoundFontRenderer. Configuration clones
         // its document values here on the UI thread, never under the device lock.
@@ -1134,6 +1144,7 @@ void AudioEngine::setEffects(const ID &id, const var &settings, const jaras::Son
                               ? std::make_unique<SharedMIDIUpdate>(sharedMIDISequence(voice->bus, voice.get(), *midiTakeActive))
                               : nullptr;
             const bool instrument=hasTakeInstrument(saved);
+            const auto wave = WaveLFOParameters::read(saved);
             // Ordered after previews; the prepared chains retain displaced
             // processors until this boundary is acknowledged on control.
             commitPreparedEdit([&]() noexcept {
@@ -1148,6 +1159,7 @@ void AudioEngine::setEffects(const ID &id, const var &settings, const jaras::Son
             voice->fx[0].swap(prepared[0]);
             voice->fx[1].swap(prepared[1]);
             std::swap(voice->fxSettings, saved);
+            voice->waveLFO = wave;
             if(preparedLatency)installLatencyPlan(preparedLatency,running);
             stemLatencyFingerprint=stemFingerprint();
             });
@@ -1481,6 +1493,7 @@ void AudioEngine::prepareSong(const jaras::Song &song, const File &directory,
                 if (auto found = overlaps.find(clip.id); found != overlaps.end()) voice->overlapEnvelope = std::move(found->second);
                 voice->midiItem = midiItem;
                 voice->fxSettings = clip.fxJSON ? JSON::parse(text(*clip.fxJSON)) : var();
+                voice->waveLFO = WaveLFOParameters::read(voice->fxSettings);
                 voice->midiInstrument = hasTakeInstrument(voice->fxSettings);
                 if (midiItem) {
                     voice->midiSequence = MIDIPlayback::sequence(takePlaybackNotes(track, clip, song, true, &playbackRates));
@@ -1976,7 +1989,8 @@ void AudioEngine::scheduleTransportPreparation(const State &state,bool routingOn
         ready=read.reader().transitionReady(read.position,read.count,read.loop)&&ready;
     }
     if(ready)task->done=true;
-    else runTransportPreparation(task);
+    else if (playing) runTransportPreparation(task);
+    else task->warmAfter = Time::getMillisecondCounterHiRes() + 140.;
     startTimer(20);timerCallback();
 }
 void AudioEngine::runTransportPreparation(const std::shared_ptr<TransportPreparation> &task) {
@@ -2023,6 +2037,12 @@ void AudioEngine::timerCallback() {
     if(queuedPreparation)for(const auto &read:queuedPreparation->reads)read.reader().keepTransitionWarm(read.loop);
     const auto task=transportPreparation;
     if(!task || task->cancelled){if(!queuedPreparation&&!metronomePreparation)stopTimer();return;}
+    // While stopped, several clicks/drags can replace the edit cursor within a
+    // few frames. Warm only the settled destination. Play bypasses the delay.
+    if (task->warmAfter > 0 && (task->sendTransport || Time::getMillisecondCounterHiRes() >= task->warmAfter)) {
+        task->warmAfter = 0;
+        runTransportPreparation(task);
+    }
     // No disk reads or locks on this path. Retain only the selected destination
     // when stopped; a playing reader chooses its own forward read position.
     if(task->done && !task->state.playing&&!task->state.subPlaying)
@@ -2581,7 +2601,8 @@ void AudioEngine::mixVoice(Voice &v, int head, double at, float *const *out, int
     AudioCallbackMetrics::Detail gainProfile(callbackMetrics,1);
     const bool startRamp=playbackStartRamp[head]>=0 && v.start<=playbackStartRamp[head]+1e-7 &&
         double(renderClock+dest+begin-playbackStartFrame[head])<sr*.003;
-    if(v.automation.curves.empty() && v.fadeIn<=0 && v.fadeOut<=0 && v.overlapEnvelope.empty() && !startRamp)
+    const auto wave = v.fxBypassed ? jaras::WaveLFO{} : v.waveLFO.shape(v.duration);
+    if(!wave.enabled && v.automation.curves.empty() && v.fadeIn<=0 && v.fadeOut<=0 && v.overlapEnvelope.empty() && !startRamp)
         applyConstantItemGain(v.processed[head],end-begin,v.clipGain,v.clipPan,v.channelMode);
     else for (int i = begin; i < end; ++i) {
         float a = v.processed[head].getSample(0, i - begin),
@@ -2602,7 +2623,7 @@ void AudioEngine::mixVoice(Voice &v, int head, double at, float *const *out, int
             left *= 1 - (float)values.pan;
         else
             right *= 1 + (float)values.pan;
-        float fade = (float)jaras::overlap::gain(v.overlapEnvelope,local);
+        float fade = float(wave.gain(local) * jaras::overlap::gain(v.overlapEnvelope,local));
         const double entry=playbackStartRamp[head];
         if(entry>=0 && v.start<=entry+1e-7)
             fade*=float(jlimit(0.,1.,double(renderClock+dest+i-playbackStartFrame[head])/(sr*.003)));

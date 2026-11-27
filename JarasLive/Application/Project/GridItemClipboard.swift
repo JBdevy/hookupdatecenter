@@ -103,7 +103,7 @@ public struct GridItemClipboard: Equatable, Sendable {
 }
 
 public extension Project {
-    mutating func pasteItems(_ entries: [GridItemClipboard.Entry], song: UUID, moving: Bool, addingTracks: [Track] = []) throws {
+    @discardableResult mutating func pasteItems(_ entries: [GridItemClipboard.Entry], song: UUID, moving: Bool, addingTracks: [Track] = []) throws -> [GridItemClipboard.Entry] {
         guard !entries.isEmpty, let index = songs.firstIndex(where: { $0.id == song }),
               Set(entries.map { $0.clip.id }).count == entries.count else { throw ProjectError.invalid("Invalid item paste") }
         var candidate = self
@@ -120,13 +120,18 @@ public extension Project {
                 candidate.songs[index].tracks[origin].clips.remove(at: item)
             }
         }
-        for entry in entries {
+        var names = moving ? nil : GridItemNames(candidate.songs[index].tracks)
+        var committed = entries
+        for i in committed.indices {
+            if let name = names?.allocate(committed[i].clip.name) { committed[i].clip.name = name }
+            let entry = committed[i]
             let track = candidate.songs[index].tracks.firstIndex { $0.id == entry.track }!
             candidate.songs[index].tracks[track].clips.append(entry.clip)
             candidate.songs[index].duration = max(candidate.songs[index].duration, entry.clip.startTime + entry.clip.duration)
         }
         try candidate.validate()
         self = candidate
+        return committed
     }
 }
 

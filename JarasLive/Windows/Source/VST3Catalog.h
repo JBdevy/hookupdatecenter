@@ -217,7 +217,7 @@ inline const std::vector<std::pair<String, String>> &libraryNativePlugins() {
         {"Limiter", "Dynamics"}, {"CatLive Trigger", "Trigger"}, {"Cat Gate", "Dynamics"},
         {"Drummer Pad 16", "Instrument"}, {"Drummer Pad 48", "Instrument"},
         {"Chorus", "Modulation"}, {"Phaser", "Modulation"}, {"Amp", "Distortion"},
-        {"Gate Divisor", "Dynamics"}, {"Soft Clipper", "Dynamics"}, {"EQ - 31 Band", "EQ"}
+        {"Wave LFO", "Dynamics"}, {"Gate Divisor", "Dynamics"}, {"Soft Clipper", "Dynamics"}, {"EQ - 31 Band", "EQ"}
     };
     return plugins;
 }

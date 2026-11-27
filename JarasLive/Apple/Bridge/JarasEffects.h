@@ -133,6 +133,7 @@ FOUNDATION_EXPORT int64_t JarasAudioDiskOccupiedNanoseconds(void);
 + (void)setOverlapEnvelope:(AVAudioUnitEffect *)node data:(nullable NSData *)data;
 + (void)setInputFade:(AVAudioUnitEffect *)node fadeIn:(double)fadeIn fadeOut:(double)fadeOut duration:(double)duration position:(double)position hostTime:(uint64_t)hostTime sampleTime:(double)sampleTime;
 + (void)setInputFade:(AVAudioUnitEffect *)node fadeIn:(double)fadeIn fadeOut:(double)fadeOut fadeInCurve:(double)inCurve fadeInSCurve:(double)inS fadeOutCurve:(double)outCurve fadeOutSCurve:(double)outS duration:(double)duration position:(double)position hostTime:(uint64_t)hostTime sampleTime:(double)sampleTime;
++ (void)setInputFade:(AVAudioUnitEffect *)node fadeIn:(double)fadeIn fadeOut:(double)fadeOut fadeInCurve:(double)inCurve fadeInSCurve:(double)inS fadeOutCurve:(double)outCurve fadeOutSCurve:(double)outS duration:(double)duration position:(double)position hostTime:(uint64_t)hostTime sampleTime:(double)sampleTime waveEnabled:(BOOL)waveEnabled attack:(double)attack decay:(double)decay sustain:(double)sustain release:(double)release;
 + (void)setInputChannelMode:(AVAudioUnitEffect *)node mode:(int)mode;
 + (void)setOutputMeteringEnabled:(AVAudioUnitEffect *)node enabled:(BOOL)enabled;
 + (float)takeOutputPeak:(AVAudioUnitEffect *)node channel:(NSUInteger)channel;

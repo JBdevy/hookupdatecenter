@@ -1326,6 +1326,19 @@ public final class ShowTrackSelectionPresentation: ObservableObject {
     public private(set) var setlistRevision: UInt64 = 0
     public var audioItemChannelMode: (UUID, Int) -> Void = { _, _ in }
     public var audioItemNormalization: (UUID, Double) -> Void = { _, _ in }
+    public var audioItemWaveLFO: (UUID, WaveLFOEnvelope) -> Void = { _, _ in }
+    public func editWaveLFO(_ id: UUID, envelope: WaveLFOEnvelope, finished: Bool) {
+        guard canControl(), !finishing else { return }
+        if finished {
+            var settings = clipFXSettings(id)
+            guard settings.activeWaveLFO != nil else { return }
+            settings.waveLFO = envelope
+            updateClipFX(id, effect: NativeFXSettings.waveLFOName, settings: settings)
+            commitFX()
+        } else {
+            audioItemWaveLFO(id, envelope)
+        }
+    }
     public var audioItemFade: (UUID, Bool, Double) -> Void = { _, _, _ in }
     public var audioItemFadeShape: (UUID, Bool, Double, Double) -> Void = { _, _, _, _ in }
     public var audioItemPhase: (UUID, Bool) -> Void = { _, _ in }
@@ -2032,9 +2045,9 @@ public final class ShowTrackSelectionPresentation: ObservableObject {
     @discardableResult public func pasteTransferredItems(_ entries: [GridItemClipboard.Entry], song: UUID, addingTracks: [Track] = []) throws -> Set<UUID> {
         guard canControl(), !finishing, current?.id == song else { throw ProjectError.invalid("The destination project is no longer active.") }
         var project = snapshot.project
-        try project.pasteItems(entries, song: song, moving: false, addingTracks: addingTracks)
+        let committed = try project.pasteItems(entries, song: song, moving: false, addingTracks: addingTracks)
         tick()
-        if addingTracks.isEmpty { try executor.pasteItems(entries, song: song, moving: false) }
+        if addingTracks.isEmpty { try executor.pasteItems(committed, song: song, moving: false) }
         else { try executor.applyProjectEdit(project) }
         snapshot.project = project; markChanged(); onProjectEdited(); message = ""
         return Set(entries.map { $0.clip.id })
@@ -2065,9 +2078,9 @@ public final class ShowTrackSelectionPresentation: ObservableObject {
         do {
             let entries = try clipboard.items(in: snapshot.project, at: position, selectedTracks: selectedTracks)
             var project = snapshot.project
-            try project.pasteItems(entries, song: clipboard.song, moving: clipboard.moving)
+            let committed = try project.pasteItems(entries, song: clipboard.song, moving: clipboard.moving)
             if project != snapshot.project {
-                tick(); try executor.pasteItems(entries, song: clipboard.song, moving: clipboard.moving)
+                tick(); try executor.pasteItems(committed, song: clipboard.song, moving: clipboard.moving)
                 snapshot.project = project; markChanged(); onProjectEdited()
             }
             let ids = Set(entries.map { $0.clip.id })
@@ -2392,7 +2405,9 @@ public final class ShowTrackSelectionPresentation: ObservableObject {
             let playback = try executor.playbackSnapshot()
             snapshot.transport = playback.transport; snapshot.nextSongId = playback.nextSongId
             if let restoredCursorPosition { self.restoredCursorPosition = map.position(restoredCursorPosition) }
-            rememberCursor(); markChanged(refreshAudio: before.tempoMarkersAffectAudio || updated.tempoMarkersAffectAudio)
+            rememberCursor()
+            markChanged(refreshAudio: before.tempoMarkersAffectAudio || updated.tempoMarkersAffectAudio,
+                        preservingMediaStorage: true, knownChanged: true)
             message = ""
         } catch { reportControlError(error) }
     }
@@ -2415,7 +2430,10 @@ public final class ShowTrackSelectionPresentation: ObservableObject {
             let scaledTimeline = settings.timebase == .relative && old.bpm != bpm
             let changedAudio = scaledTimeline || (old.bpm != bpm && snapshot.project.songs[index].tempoMarkersAffectAudio) || (old.projectTime.timebase != settings.timebase && (old.tempoMarkersAffectAudio || snapshot.project.songs[index].tempoMarkersAffectAudio))
             if scaledTimeline, let restoredCursorPosition { self.restoredCursorPosition = restoredCursorPosition * old.bpm / bpm }
-            rememberCursor(); resetTapTempo(); markChanged(refreshAudio: changedAudio); message = ""
+            rememberCursor()
+            resetTapTempo()
+            markChanged(refreshAudio: changedAudio, preservingMediaStorage: true, knownChanged: true)
+            message = ""
             return true
         } catch { reportControlError(error); return false }
     }
@@ -2496,7 +2514,8 @@ public final class ShowTrackSelectionPresentation: ObservableObject {
             case .beatUnit: snapshot.project.songs[index].beatUnit = Int(value)
             default: return
             }
-            markChanged(refreshAudio: command == .tempo && (song.projectTime.timebase == .relative || song.tempoMarkersAffectAudio))
+            markChanged(refreshAudio: command == .tempo && (song.projectTime.timebase == .relative || song.tempoMarkersAffectAudio),
+                        preservingMediaStorage: true, knownChanged: true)
         } catch { reportControlError(error) }
     }
     public func updateActiveLoopArea() {
@@ -3073,10 +3092,15 @@ public final class ShowTrackSelectionPresentation: ObservableObject {
         }
     }
     @discardableResult public func insertClipFX(_ clip: UUID, effect: String) -> String? {
-        guard canControl(), !finishing, NativeFXSettings.order.dropFirst().contains(effect) else { return nil }
+        guard canControl(), !finishing, effect == NativeFXSettings.waveLFOName || NativeFXSettings.order.dropFirst().contains(effect) else { return nil }
         var changes: [(UUID, NativeFXSettings, String)] = []
         do {
             for target in clipFXTargets(clip) {
+                if effect == NativeFXSettings.waveLFOName {
+                    guard let track = current?.tracks.first(where: { $0.clips.contains { $0.id == target } }),
+                          let item = track.clips.first(where: { $0.id == target }),
+                          track.kind == .standard, item.midi == nil, (item.audioFile ?? track.audioFile) != nil else { continue }
+                }
                 var value = clipFXSettings(target)
                 // Independent inserts append after the existing item chain, which
                 // can still contain shared stages from older projects.
@@ -3699,8 +3723,10 @@ public final class ShowTrackSelectionPresentation: ObservableObject {
         }
         var tracks = tracks
         let arrangement = snapshot.project.songs[index]
+        var names = GridItemNames(arrangement.tracks)
         for row in tracks.indices { for item in tracks[row].clips.indices {
             let clip = tracks[row].clips[item]
+            tracks[row].clips[item].name = names.allocate(clip.name)
             tracks[row].clips[item].regionOwnerID = arrangement.regionOwner(at: clip.startTime)
         } }
         try executor.insertAudioTracks(tracks, song: song)
@@ -3724,7 +3750,10 @@ public final class ShowTrackSelectionPresentation: ObservableObject {
             try executor.addRecordedClip(clip, track: track)
             snapshot.project.songs[songIndex].tracks[trackIndex].clips.append(clip)
             snapshot.project.songs[songIndex].duration = max(snapshot.project.songs[songIndex].duration, clip.startTime + clip.duration)
-            markChanged()
+            // The new take shares the existing project media and introduces only its own paths.
+            if let path = clip.audioFile?.path { knownMediaPaths.insert(path) }
+            if let fx = clip.fx { knownMediaPaths.formUnion(fx.samplePaths) }
+            markChanged(preservingMediaStorage: true, knownChanged: true)
         }
         catch { message = "Recording saved, but could not insert item: " + error.localizedDescription }
     }
@@ -4676,7 +4705,7 @@ public final class ShowTrackSelectionPresentation: ObservableObject {
             snapshot.project.songs[song].parts[region].pitchSemitones = semitones
             snapshot.project.songs[song].parts[region].pitchTrackIDs = t
             snapshot.project.songs[song].parts[region].pitchGroupIDs = g
-            markChanged(refreshAudio: false)
+            markChanged(refreshAudio: false, preservingMediaStorage: true, knownChanged: true)
         } catch { message = error.localizedDescription }
     }
     public func editRegionColors(_ ids: Set<UUID>, color: UInt32) {
@@ -4927,7 +4956,10 @@ public final class ShowTrackSelectionPresentation: ObservableObject {
                 snapshot.project.songs[song].markers!.insert(initial, at: 0)
             }
             let playbackBoundaryChanged = value.sourceRegionID != nil && previous?.position != value.position
-            markChanged(refreshAudio: playbackBoundaryChanged || ((value.isTempo || previous?.isTempo == true) && (affectedAudio || snapshot.project.songs[song].tempoMarkersAffectAudio)))
+            let retimeAudio = (value.isTempo || previous?.isTempo == true) &&
+                (affectedAudio || snapshot.project.songs[song].tempoMarkersAffectAudio)
+            markChanged(refreshAudio: playbackBoundaryChanged || retimeAudio,
+                        preservingMediaStorage: true, knownChanged: previous != value)
         } catch { reportControlError(error) }
     }
     @discardableResult public func unifyRegions(containing id: UUID, name: String) -> Bool {

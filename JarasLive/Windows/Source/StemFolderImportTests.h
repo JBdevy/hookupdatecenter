@@ -3,6 +3,31 @@
 #include "MediaImportTests.h"
 namespace catlive::stemImportTests {
 template<class Test> void registerTests(const File& directory,Test test) {
+ test("Stem create and append number new grid items while preserving legacy duplicates",[&]{
+    using mediaImportTests::require;
+    const auto root=directory.getNonexistentChildFile("stem-item-numbering", "");
+    const auto first=root.getChildFile("Song A"), second=root.getChildFile("Song B");
+    mediaImportTests::source(first,"Kick.wav",4800);
+    mediaImportTests::source(second,"Kick.wav",2400);
+    const auto scan=stemImport::scan({first,second});
+    StringArray warnings;
+    const auto doc=root.getChildFile("Project/Show.jl");
+    auto project=stemImport::build(*scan,"",Session::makeEmptyProject("Show"),doc,false,{},warnings);
+    auto names=[](const jaras::Project &value) {
+        StringArray result;
+        for(const auto &t:value.songs[0].tracks) for(const auto &c:t.clips) if(c.audioFile)result.add(text(c.name));
+        return result;
+    };
+    auto labels=names(project);
+    require(labels.size()==2 && labels.contains("Kick.wav") && labels.contains("Kick 001.wav"),"Create did not number the second stem");
+    for(auto &t:project.songs[0].tracks)for(auto &c:t.clips)if(c.audioFile)c.name="Kick.wav";
+    ProjectCodec::write(doc,ProjectCodec::encode(project));
+    project=ProjectCodec::decode(ProjectCodec::read(doc));
+    auto appended=stemImport::build(*scan,"",project,doc,false,{},warnings);
+    labels=names(appended);
+    require(labels.size()==4 && labels.contains("Kick 001.wav") && labels.contains("Kick 002.wav") &&
+        std::count(labels.begin(),labels.end(),String("Kick.wav"))==2,"Appending renamed old items or failed to reserve names");
+ });
  test("Stem append prefers custom destination names over taxonomy and keeps numbered destinations separate",[&]{
     using mediaImportTests::require;
     auto root=directory.getNonexistentChildFile("custom-stem-names","");root.createDirectory();

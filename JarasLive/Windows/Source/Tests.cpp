@@ -6808,7 +6808,7 @@ int runTests(const File &directory) {
         auto p = projectFixture();
         auto &first = p.songs[0].tracks[0].clips[0];
         first.fxJSON = utf8(JSON::toString(fxschema::complete(JSON::parse(R"({"inserted":["EQ"],"eqEnabled":true,"bands":[{"frequency":1000,"gain":5}]})")),true,17));
-        first.fadeInCurve = .4; first.fadeOutSCurve = -.2; first.pan = -.3;
+        first.name = "Kick"; first.fadeInCurve = .4; first.fadeOutSCurve = -.2; first.pan = -.3;
         first.loopStart = 1; first.loopLength = 4; first.separatedStemTracks = {uuid()};
         auto other = p.songs[0].tracks[0]; other.id = uuid(); other.clips[0].id = uuid();
         other.clips[0].startTime = 20; other.clips[0].midi.emplace(); other.clips[0].audioFile.reset();
@@ -6826,6 +6826,9 @@ int runTests(const File &directory) {
         Session session; session.inspection=true; session.restoreSnapshot(ProjectCodec::encode(p));
         const auto apply=[&](const auto &values){session.edit([&](auto &project){auto edit=session.core;edit.pasteItems(clipboard->song,values,false);project=edit.project();});};
         apply(entries);expect(session.song()->tracks[0].clips.size()==2 && session.song()->tracks[1].clips.size()==2,"Paste did not insert all items");
+        expect(session.song()->tracks[0].clips.back().name=="Kick 001" && session.song()->tracks[1].clips.back().name=="Kick 002" &&
+               session.song()->tracks[0].clips.front().name=="Kick" && session.song()->tracks[1].clips.front().name=="Kick",
+               "Grid paste must reserve both legacy names and number the new items across tracks");
         session.undo();expect(session.song()->tracks[0].clips.size()==1 && session.song()->tracks[1].clips.size()==1,"One undo must remove the complete paste");
         session.redo();expect(session.song()->tracks[0].clips.back().id==copy.id && session.song()->tracks[0].clips.back().fxJSON==source.fxJSON,"Redo did not restore exact item state");
         const auto duplicate=clipboard->items(p,clipboard->endPosition());
@@ -7979,6 +7982,56 @@ int runTests(const File &directory) {
         const auto before=audio.getUnderruns();
         for(int i=0;i<6;++i)render();
         expect(audio.getUnderruns()==before && audio.state().position<.1,"Loop transition lost its prepared start");
+    });
+    test("Stopped grid cursor audio disk activity and immediate Play", [&] {
+        const auto source = directory.getChildFile("click-123.mp3");
+        const auto media = directory.getChildFile("grid-io"); media.createDirectory();
+        jaras::Song song; song.id = uuid(); song.duration = 48;
+        for (int i = 0; i < 12; ++i) {
+            const auto name = String(i) + ".mp3";
+            expect(source.copyFileTo(media.getChildFile(name)), "Missing compressed grid fixture");
+            jaras::Track track; track.id = uuid(); track.role.id = "other";
+            jaras::AudioClip clip; clip.id = uuid(); clip.duration = 48; clip.gain = .04;
+            clip.audioFile = jaras::AudioFile{utf8(name), {}};
+            track.clips = {clip}; song.tracks.push_back(std::move(track));
+        }
+        AudioEngine audio; audio.prepareOffline(44100); audio.prepareSong(song, media);
+        AudioBuffer<float> out(2, 256);
+        auto render = [&] { audio.render(out.getArrayOfWritePointers(), 2, 256); };
+        IO_COUNTERS before{}, after{};
+        ResourceUsage usage; usage.sample();
+        expect(GetProcessIoCounters(GetCurrentProcess(), &before) != 0, "Cannot sample process I/O");
+        int maxDisk = 0;
+        const auto start = Time::getMillisecondCounterHiRes();
+        AudioEngine::State state;
+        for (int i = 0; i < 12; ++i) {
+            state.position = 2 + i * 3.;
+            audio.transportAsync(state); render();
+            floatingControlTests::pump();
+            usage.sample();
+            maxDisk = std::max(maxDisk, int(usage.disk.value_or(0)));
+        }
+        const auto settle = Time::getMillisecondCounterHiRes() + 1800;
+        while (Time::getMillisecondCounterHiRes() < settle) {
+            floatingControlTests::pump(); usage.sample();
+            maxDisk = std::max(maxDisk, int(usage.disk.value_or(0)));
+        }
+        expect(GetProcessIoCounters(GetCurrentProcess(), &after) != 0, "Cannot finish process I/O sample");
+        auto result = object();
+        put(result, "clicks", 12); put(result, "peakMeterPercent", maxDisk);
+        put(result, "readBytes", (int64)(after.ReadTransferCount - before.ReadTransferCount));
+        put(result, "writeBytes", (int64)(after.WriteTransferCount - before.WriteTransferCount));
+        put(result, "sampleMilliseconds", Time::getMillisecondCounterHiRes() - start);
+        const auto play = Time::getMillisecondCounterHiRes();
+        const auto misses = audio.getUnderruns();
+        state.playing = true; audio.transportAsync(state);
+        while (audio.preparingTransport() && Time::getMillisecondCounterHiRes() < play + 5000) floatingControlTests::pump();
+        render();
+        put(result, "playMilliseconds", Time::getMillisecondCounterHiRes() - play);
+        put(result, "underruns", int(audio.getUnderruns() - misses));
+        expect(directory.getChildFile("grid-io.json").replaceWithText(JSON::toString(result)), "Could not write grid measurement");
+        expect(audio.state().playing && std::abs(audio.state().position - state.position - 256./44100) < 1.e-7 &&
+               audio.getUnderruns() == misses, "The selected position was not ready for Play");
     });
     test("Cold MP3 Play in the middle starts every stem together and reuses exact seeking history", [&] {
         const auto source=directory.getChildFile("click-123.mp3");

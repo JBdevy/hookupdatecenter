@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 
 #if os(macOS)
 /// AppStorage invalidates every reader of a defaults suite on some macOS
@@ -117,6 +118,7 @@ import SwiftUI
     }
 
     var projectedValue: Binding<Value> { Binding(get: { entry.value }, set: { entry.save($0) }) }
+    var values: AnyPublisher<Value, Never> { entry.$value.eraseToAnyPublisher() }
 }
 #else
 typealias WorkspacePreference<Value> = AppStorage<Value>

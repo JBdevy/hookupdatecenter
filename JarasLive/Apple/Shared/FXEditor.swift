@@ -153,6 +153,16 @@ struct FXEditor: View {
                 if let effect = NativeCreativeEffect(rawValue: page) { creativeEditor(effect) }
             case "EQ - 31 Band":
                 graphicEQEditor
+            case NativeFXSettings.waveLFOName:
+                VStack {
+                    Toggle(enabledTitle, isOn: Binding(get: { settings.waveLFOEnabled == true }, set: { settings.waveLFOEnabled = $0 }))
+                    HStack {
+                        FXKnob("Attack", value: $settings.waveLFOParameters.attack, range: 0...60, unit: "s", reset: 0.05)
+                        FXKnob("Decay", value: $settings.waveLFOParameters.decay, range: 0...60, unit: "s", reset: 0.20)
+                        FXKnob("Sustain", value: Binding(get: { settings.waveLFOParameters.sustain * 100 }, set: { settings.waveLFOParameters.sustain = $0 / 100 }), range: 0...100, unit: "%", reset: 75)
+                        FXKnob("Release", value: $settings.waveLFOParameters.release, range: 0...60, unit: "s", reset: 0.25)
+                    }
+                }
             case NativeFXSettings.reverbConvolution:
                 convolutionEditor
             default:

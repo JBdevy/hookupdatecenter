@@ -23,3 +23,20 @@ public struct ItemFadeCurve: Equatable, Sendable {
         return (low + high) / 2
     }
 }
+
+public struct WaveLFOEnvelope: Codable, Equatable, Hashable, Sendable {
+    public static let name = "Wave LFO"
+    public var attack = 0.05, decay = 0.20, sustain = 0.75, release = 0.25
+    public init() {}
+
+    public func fitted(to duration: Double) -> Self {
+        let total = attack + decay + release
+        guard total > duration, total > 0 else { return self }
+        let scale = max(0, duration) / total
+        var copy = self
+        copy.attack *= scale
+        copy.decay *= scale
+        copy.release *= scale
+        return copy
+    }
+}

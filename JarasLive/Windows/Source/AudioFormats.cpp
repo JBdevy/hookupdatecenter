@@ -65,6 +65,9 @@ class GaplessMP3Format final : public AudioFormat {
                                                       const AudioFormatWriterOptions&) override { return {}; }
 };
 }
+bool metersFileReads(const juce::AudioFormatReader &reader) {
+    return dynamic_cast<const GaplessMP3Reader*>(&reader) != nullptr;
+}
 void registerAudioFormats(juce::AudioFormatManager &formats) {
     formats.registerFormat(new GaplessMP3Format(), false);
     formats.registerBasicFormats();

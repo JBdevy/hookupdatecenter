@@ -58,6 +58,7 @@ class Session final : private Timer {
     uint64 revision = 0;
     std::function<void()> changed, tick, selectionChanged, mixerChanged, transportChanged;
     std::function<void(bool)> timingChanged;
+    std::function<void()> tempoClockChanged;
     std::function<void(String)> transportFadeoutWarning;
     std::function<void(String)> audioOutputWarning;
     void toggleTransportFadeout(bool enabled, const std::set<ID> &tracks, double seconds);
@@ -82,6 +83,15 @@ class Session final : private Timer {
                    std::function<void(StringArray)> missingMedia = {});
     void save(const File &);
     void saveAsync(const File &, std::function<void(String)> completed = {});
+    struct SaveProgress {
+        enum class Phase { preparing, copying, writing };
+        Phase phase = Phase::preparing;
+        String filename;
+        int fileIndex = 0, fileCount = 0;
+        double fraction = 0;
+    };
+    std::optional<SaveProgress> saveProgress() const;
+    String suggestedSaveName() const;
     bool isSaving() const { return activeSave != nullptr; }
     void waitForSave(std::function<void(String)> completed);
     void setReductionDraft(const var &);
@@ -162,6 +172,8 @@ class Session final : private Timer {
     void toggleRecording(bool stopPlayback = false);
     bool recordingCountInActive() const { return countingIn; }
     void updateRecordingTargets(bool starting = false);
+    std::function<void(const std::set<ID>&)> recordArmsChanged;
+    std::function<void(const std::set<ID>&)> recordingItemsChanged;
     int recordArm(const ID &id) const {
         auto at = recordArms.find(id);
         return at == recordArms.end() ? 0 : at->second;
@@ -241,8 +253,12 @@ class Session final : private Timer {
     ItemPitchHistory itemPitchHistory(const ID &) const;
     void applyItemPitchHistory(ItemPitchHistory, bool recordHistory);
     void notifyTiming(bool geometry);
+    struct FreeTempoHistory { ID song; double bpm; };
+    FreeTempoHistory applyFreeTempo(const FreeTempoHistory&);
     struct TimelineHistory { jaras::Project project; bool tempo = false, itemControls = false, mixerControls = false, routingControls = false, outputRouting = false; };
     void applyTimelineHistory(const TimelineHistory &, bool recordHistory);
+    void insertRecordedTakes(const ID& songID, std::vector<std::pair<ID, jaras::AudioClip>>& takes, bool loop,
+                             const std::set<ID>& affected);
     struct MarkerHistory { ID song; std::optional<std::vector<jaras::TimelineMarker>> markers; };
     struct ItemHistory { std::map<ID, std::vector<jaras::AudioClip>> tracks; };
     ItemHistory itemHistory(const ItemHistory &) const;
@@ -269,6 +285,8 @@ class Session final : private Timer {
     void notifyTrackMixerComponents();
     struct HistoryEntry {
         var project;
+        std::optional<FreeTempoHistory> freeTempo;
+        HistoryEntry(FreeTempoHistory value) : freeTempo(std::move(value)) {}
         std::optional<TimelineHistory> timeline;
         std::optional<PitchHistory> pitch;
         std::optional<ItemPitchHistory> itemPitch;

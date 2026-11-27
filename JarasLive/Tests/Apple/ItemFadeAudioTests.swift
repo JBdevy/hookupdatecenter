@@ -38,5 +38,21 @@ for (key, position, inversed) in [("right", 0.25, false), ("left", 1.25, true)] 
         precondition(abs(Double(output.floatChannelData![channel][sample]) - expected) < 0.00002, "Crossfade PCM differs from the overlap")
     } }
 }
+JarasEqualizer.setOverlapEnvelope(effect, data: Data())
+for (position, duration, enabled, expected) in [
+    (0.125, 2.0, true, 0.5), (0.50, 2, true, 0.75), (1.0, 2, true, 0.5),
+    (1.875, 2, true, 0.25), (0.0625, 0.5, true, 0.5), (1.875, 2, false, 1.0)
+] {
+    JarasEqualizer.setInputFade(effect, fadeIn: 0, fadeOut: 0, fadeInCurve: 0, fadeInSCurve: 1,
+        fadeOutCurve: 0, fadeOutSCurve: 1, duration: duration, position: position, hostTime: 0,
+        sampleTime: Double(engine.manualRenderingSampleTime), waveEnabled: enabled, attack: 0.25,
+        decay: 0.5, sustain: 0.5, release: 0.25)
+    let status = try engine.renderOffline(512, to: output)
+    precondition(status == .success)
+    for channel in 0..<2 {
+        precondition(abs(Double(output.floatChannelData![channel][0]) - 0.25 * expected) < 0.00002, "Wave LFO seek/phase mismatch")
+    }
+}
+print("WAVE_LFO_NATIVE_STEREO_PCM_ATTACK_DECAY_SUSTAIN_RELEASE_SEEK_SHORT_BYPASS_OK")
 engine.stop()
 print("ITEM_FADE_TWO_PARAMETERS_NATIVE_PCM_49152_SAMPLES_OK")

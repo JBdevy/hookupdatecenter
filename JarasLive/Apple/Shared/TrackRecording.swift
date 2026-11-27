@@ -269,14 +269,51 @@ private final class CaptureWriter: @unchecked Sendable {
 
 }
 
+@MainActor final class TrackArmIndicator: ObservableObject {
+    struct State: Equatable {
+        let mode: RecordingArmState.Mode
+        let active: Bool
+    }
+    @Published private(set) var state: State
+    init(_ state: State) { self.state = state }
+    func update(_ value: State) {
+        if value != state { state = value }
+    }
+}
+
 @MainActor final class TrackRecording: ObservableObject {
     static var shared = TrackRecording()
     weak var projectAudio: StemAudioPlayback?
     private var projectTabActive = true
-    @Published private(set) var armed: Set<UUID> = []
+    @Published private(set) var armed: Set<UUID> = [] {
+        didSet {
+            for id in oldValue.symmetricDifference(armed) {
+                armIndicators.object(forKey: id as NSUUID)?.update(indicatorState(for: id))
+            }
+        }
+    }
+    private let armIndicators = NSMapTable<NSUUID, TrackArmIndicator>.strongToWeakObjects()
+    private func indicatorState(for id: UUID) -> TrackArmIndicator.State {
+        .init(mode: armState.mode(for: id), active: armed.contains(id))
+    }
+    func indicator(for id: UUID) -> TrackArmIndicator {
+        if let existing = armIndicators.object(forKey: id as NSUUID) { return existing }
+        let indicator = TrackArmIndicator(indicatorState(for: id))
+        armIndicators.setObject(indicator, forKey: id as NSUUID)
+        return indicator
+    }
     private(set) var armState = RecordingArmState() {
         willSet {
             if !armState.hasSamePresentation(as: newValue) { objectWillChange.send() }
+        }
+        didSet {
+            guard !oldValue.hasSameModes(as: armState) else { return }
+            for case let key as NSUUID in armIndicators.keyEnumerator() {
+                let id = key as UUID
+                if oldValue.mode(for: id) != armState.mode(for: id) {
+                    armIndicators.object(forKey: key)?.update(indicatorState(for: id))
+                }
+            }
         }
     }
     private var microphoneTracks: Set<UUID> = []
@@ -631,10 +668,17 @@ private final class CaptureWriter: @unchecked Sendable {
         guard !busy else { return }
         let wanted = armState.armed
         if let show {
-            microphoneTracks = wanted.intersection(Set(show.snapshot.project.songs.flatMap(\.tracks).filter {
-                !$0.recordsOutput && hasRecordingInput($0) && $0.recordingMode != .midi && $0.fx?.hasNativeMIDIInstrument != true && $0.fx?.instrumentKeys.isEmpty != false &&
-                    !($0.fx?.externalPlugins?.contains { $0.category.contains("Instrument") } ?? false)
-            }.map(\.id)))
+            microphoneTracks.removeAll(keepingCapacity: true)
+            if !wanted.isEmpty {
+                for song in show.snapshot.project.songs {
+                    for track in song.tracks where wanted.contains(track.id) && !track.recordsOutput &&
+                        hasRecordingInput(track) && track.recordingMode != .midi &&
+                        track.fx?.hasNativeMIDIInstrument != true && track.fx?.instrumentKeys.isEmpty != false &&
+                        track.fx?.externalPlugins?.contains(where: { $0.category.contains("Instrument") }) != true {
+                        microphoneTracks.insert(track.id)
+                    }
+                }
+            }
         }
         let authorization: AVAuthorizationStatus = AudioDeviceSettings.shared.usesSystemLoopback ? .authorized : AVCaptureDevice.authorizationStatus(for: .audio)
         let effective = authorization == .authorized || inputChannels == 0 ? wanted : wanted.subtracting(microphoneTracks)
@@ -872,7 +916,9 @@ private final class CaptureWriter: @unchecked Sendable {
                     RecordingLaneLayout.shared.remove(id); LiveRecordingPreview.shared.takes[id] = nil
                 }
                 pendingTakes.remove(item.clip.id)
-                if !show.snapshot.project.songs.flatMap(\.tracks).flatMap(\.clips).contains(where: { $0.id == item.clip.id }) { error = show.message }
+                if show.current?.tracks.first(where: { $0.id == item.track })?.clips.contains(where: { $0.id == item.clip.id }) != true {
+                    error = show.message
+                }
             }
         }
         if let message { error = message }
@@ -1346,8 +1392,18 @@ struct TrackRecordButton: View {
     let track: Track
     var touchHeight: CGFloat = 28
     var touchWidth: CGFloat = 28
-    @ObservedObject private var recorder = TrackRecording.shared
+    private let recorder: TrackRecording
+    @ObservedObject private var indicator: TrackArmIndicator
     @State private var editingMode = false
+    @MainActor init(show: ShowController, track: Track, touchHeight: CGFloat = 28, touchWidth: CGFloat = 28) {
+        self.show = show
+        self.track = track
+        self.touchHeight = touchHeight
+        self.touchWidth = touchWidth
+        let recorder = TrackRecording.shared
+        self.recorder = recorder
+        _indicator = ObservedObject(wrappedValue: recorder.indicator(for: track.id))
+    }
     private func toggleArm(automatic: Bool) {
         let targets = show.mixerControlTargets(track.id).filter { $0.kind == .standard }
         let requiresInput = targets.contains { $0.recordingMode != .midi && $0.fx?.hasNativeMIDIInstrument != true && $0.fx?.instrumentKeys.isEmpty != false && !($0.fx?.externalPlugins?.contains { $0.category.contains("Instrument") } ?? false) }
@@ -1362,11 +1418,11 @@ struct TrackRecordButton: View {
             #endif
         } label: {
             Group {
-                if recorder.armState.mode(for: track.id) == .automatic {
+                if indicator.state.mode == .automatic {
                     Text(verbatim: "A").font(.jarasSystem(size: 11, weight: .bold))
                 } else { Image(systemName: "record.circle") }
             }.frame(width: 22, height: min(21, touchHeight))
-        }.buttonStyle(RecordingButtonStyle(active: recorder.armed.contains(track.id)))
+        }.buttonStyle(RecordingButtonStyle(active: indicator.state.active))
         #if os(macOS)
         .background(TrackControlSelectionExclusion())
         .immediateRightClick { editingMode = true }
@@ -1382,7 +1438,7 @@ struct TrackRecordButton: View {
             TrackRecordingSettings(show: show, trackID: track.id)
         }
         .accessibilityLabel("Arm track for recording")
-        .accessibilityValue(Text(recorder.armState.mode(for: track.id) == .automatic ? "Automatic record arm" : recorder.armed.contains(track.id) ? "Armed" : "Off"))
+        .accessibilityValue(Text(indicator.state.mode == .automatic ? "Automatic record arm" : indicator.state.active ? "Armed" : "Off"))
         .accessibilityAction(named: Text("Recording mode")) { editingMode = true }
         .jarasHelp("Record arm: click to arm or disarm, Shift-click for Automatic")
     }

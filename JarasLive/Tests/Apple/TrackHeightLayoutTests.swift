@@ -36,6 +36,22 @@ MainActor.assumeIsolated {
         let rows = cache.layout(tracks, height: height, key: TimelineRenderKey(revision: 2))
         precondition(rows.heights[0] == 66 && abs(rows.heights[1] - 240) < 1e-9 && rows.baseHeight == 66, "a full-range pair stops shared zoom without changing ratios")
     }
+    let takeCache = TrackLayoutCache()
+    var session = (0..<200).map { _ in Track(clips: [AudioClip(startTime: 0, duration: 1)]) }
+    _ = takeCache.layout(session, height: 64, key: TimelineRenderKey(revision: 1))
+    let previousBuilds = LaneBuildCounter.count
+    let take = AudioClip(startTime: 0, duration: 1, recordingLane: 1)
+    let destination = session[87].id
+    RecordingLaneLayout.shared.counts[destination] = 2
+    RecordingLaneLayout.shared.items[take.id] = .init(track: destination, clip: take)
+    let recordingRows = takeCache.layout(session, height: 64, key: TimelineRenderKey(revision: 1, recordingRevision: 1))
+    precondition(recordingRows.lanes[87].count == 2 && LaneBuildCounter.count == previousBuilds + 1)
+    session[87].clips.append(take)
+    RecordingLaneLayout.shared.items[take.id] = nil
+    RecordingLaneLayout.shared.counts[destination] = nil
+    let committed = takeCache.layout(session, height: 64, key: TimelineRenderKey(revision: 2, recordingRevision: 2))
+    precondition(committed.lanes[87].count == 2 && LaneBuildCounter.count == previousBuilds + 2)
+    print("REC_TAKE_RESERVE_AND_COMMIT_REUSE_199_UNCHANGED_LANE_MAPS_OK")
     var recording = Track()
     RecordingLaneLayout.shared.counts[recording.id] = 3
     RecordingLaneLayout.shared.items[UUID()] = .init(track: recording.id, clip: AudioClip(startTime: 0, duration: 1))

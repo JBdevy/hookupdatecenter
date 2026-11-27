@@ -1,6 +1,7 @@
 #pragma once
 #include "../../Core/Audio/DiskIOActivity.hpp"
 #include "Common.h"
+#include "AudioFormats.h"
 namespace catlive {
 // Decode on the existing read-ahead worker. Audio only leases immutable pages:
 // no mutex, file I/O, allocation, deletion, notification or waiting at timeout 0.
@@ -97,7 +98,8 @@ private:
             page.pcm.clear();
             try {
                 {
-                    const audio::DiskIOActivity::Operation read(audio::diskIOActivity);
+                    std::optional<audio::DiskIOActivity::Operation> read;
+                    if (!metersFileReads(*source)) read.emplace(audio::diskIOActivity);
                     page.decoded=source->read(page.pcm.getArrayOfWritePointers(),int(numChannels),wanted,pageFrames);
                 }
                 // JUCE skips fixed-to-float conversion on failure. Such bytes

@@ -1425,6 +1425,17 @@ class Workspace::TrackRow final : public Component, public DragAndDropTarget {
                     return &t;
         return nullptr;
     }
+    void refreshRecordArmIfNeeded(const std::set<ID>& affected) {
+        if (affected.count(id)) refreshRecordArm();
+    }
+    void refreshRecordArm() {
+        const bool automatic = w.session.recordArm(id) == 2;
+        record.setButtonText(automatic ? "A" : "");
+        record.getProperties().set("icon", automatic ? "" : "record.circle");
+        record.getProperties().set("fontSize", automatic ? 11 : 15);
+        record.setToggleState(w.session.recordingArmed(id), dontSendNotification);
+        record.repaint();
+    }
     void refreshInputMonitor(const jaras::Track &track) {
         const bool available = !track.receivesMain();
         monitor.setEnabled(available);
@@ -1458,13 +1469,9 @@ class Workspace::TrackRow final : public Component, public DragAndDropTarget {
             phase.setToggleState(t->phaseInverted.value_or(false), dontSendNotification);
             phase.setTooltip(t->phaseInverted.value_or(false) ? "Fase invertida - Restaurar fase" : "Inverter fase");
             env.setToggleState(!automation::visible(*t).isEmpty(), dontSendNotification);
-            const int arm = w.session.recordArm(id);
             record.setVisible(jaras::fixedTrackName(t->role).empty());
             refreshInputMonitor(*t);
-            record.setButtonText(arm == 2 ? "A" : "");
-            record.getProperties().set("icon", arm == 2 ? "" : "record.circle");
-            record.getProperties().set("fontSize", arm == 2 ? 11 : 15);
-            record.setToggleState(w.session.recordingArmed(id), dontSendNotification);
+            refreshRecordArm();
             record.setColour(TextButton::buttonOnColourId, Colour(0xffff1f1f));
             if (fxColourSource!=t->fxJSON) {
                 fxColourSource=t->fxJSON;
@@ -2777,8 +2784,17 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
         const bool preciseZoom = !pan && preciseWheel;
         if (!std::isfinite(d.deltaY) || !std::isfinite(d.deltaX)) return;
         const double axisDelta = std::abs(d.deltaX) > std::abs(d.deltaY) ? d.deltaX : d.deltaY;
-        const double panDelta = -400. * axisDelta;
-        const double delta = pan ? (preciseWheel ? jlimit(-36., 36., panDelta) : panDelta)
+        if (pan && preciseWheel) {
+            // High-resolution input already supplies the gesture trajectory. Keep
+            // fractional positions and apply each packet directly to the viewport.
+            stopGesture();
+            const double pixels = jlimit(-10., 10., -96. * axisDelta);
+            horizontal.setCurrentRangeStart(jlimit(firstOffset,
+                std::max(firstOffset, horizontal.getMaximumRangeLimit() - horizontal.getCurrentRangeSize()),
+                horizontal.getCurrentRangeStart() + pixels));
+            return;
+        }
+        const double delta = pan ? -400. * axisDelta
             : preciseZoom ? jlimit(-.065, .065, d.deltaY * std::log(1.3) * 2.0)
                           : d.deltaY * std::log(1.3) * 4;
         if (delta == 0 || !std::isfinite(delta)) return;
@@ -3684,6 +3700,17 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                                     g.fillPath(envelope); g.restoreState();
                                 }
                             }
+                            if (audioItem.fxJSON && audioItem.duration > 0 && rect.getWidth() > 4 && rect.getHeight() > 28) {
+                                const auto wave = itemWave(audioItem);
+                                if (wave.enabled) {
+                                    const auto points = wave.points(rect, audioItem.duration);
+                                    Path line; line.startNewSubPath(points.front());
+                                    for (size_t i = 1; i < points.size(); ++i) line.lineTo(points[i]);
+                                    g.setColour(Colour(0xff50dacf)); g.strokePath(line, PathStrokeType(1.5f));
+                                    for (size_t i = 1; i + 1 < points.size(); ++i)
+                                        g.fillEllipse(points[i].x - 3, points[i].y - 3, 6.f, 6.f);
+                                }
+                            }
                             if (layeredWaveforms && jaras::itemShowsFadeHandles(audioItem)) header.drawFades(g, audioItem);
                         };
                         if (layeredWaveforms) {
@@ -4235,6 +4262,24 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                         if (const auto &c = *iter; itemRect(row,c).contains(e.position)) {
                             const ItemHeader header(itemRect(row,c), (float)getWidth(), track, c, t.w.itemTitle(c),
                                 t.itemHeadersHidden, t.w.pixelsPerSecond, t.w.clipSelected(c.id));
+                            if (e.mods.isLeftButtonDown() && !e.mods.isPopupMenu() && c.fxJSON && c.duration > 0) {
+                                const auto bounds = itemRect(row,c);
+                                const auto envelope = itemWave(c);
+                                if (envelope.enabled && bounds.getWidth() > 4 && bounds.getHeight() > 28) {
+                                    const auto nodes = envelope.points(bounds, c.duration);
+                                    int handle = 0;
+                                    float distance = 6.f;
+                                    for (int i = 1; i <= 3; ++i) {
+                                        const float d = nodes[i].getDistanceFrom(e.position);
+                                        if (d < distance) { handle = i; distance = d; }
+                                    }
+                                    if (handle) {
+                                        auto fx = JSON::parse(text(*c.fxJSON));
+                                        waveDrag = WaveDrag{c.id, bounds, c.duration, handle, fx, fx.clone(), envelope, envelope};
+                                        return;
+                                    }
+                                }
+                            }
                             const auto control = header.hit(e.position, c);
                             {
                                 if (e.mods.isShiftDown() && control != ItemHeader::fx) {
@@ -4315,6 +4360,14 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
         }
 
         void mouseDrag(const MouseEvent &e) override {
+            if (waveDrag) {
+                auto& d = *waveDrag;
+                d.live = d.start.drag(d.handle, e.position, d.bounds, d.duration);
+                put(d.settings, "waveLFO", d.live.json());
+                t.w.session.audio.previewNativeParameters(d.id, "Wave LFO", "Wave LFO", d.settings, d.settings);
+                repaint(d.bounds.getSmallestIntegerContainer());
+                return;
+            }
             if (elasticDrag) {
                 if (e.getDistanceFromDragStart() >= 2) {
                     auto &drag = *elasticDrag;
@@ -4416,6 +4469,13 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
             }
         }
         void mouseUp(const MouseEvent &e) override {
+            if (waveDrag) {
+                auto d = std::exchange(waveDrag, std::nullopt);
+                if (e.getDistanceFromDragStart() > 0)
+                    t.w.perform([&] { t.w.session.configureEffects(d->id, d->settings); });
+                repaint();
+                return;
+            }
             if (std::exchange(suppressElasticRelease, false)) return;
             if (elasticDrag) {
                 const auto drag = std::exchange(elasticDrag, std::nullopt);
@@ -4696,6 +4756,10 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
             t.mouseWheelMove(e, d);
         }
         void cancelDrag() {
+            if (waveDrag) {
+                auto d = std::exchange(waveDrag, std::nullopt);
+                t.w.session.audio.previewNativeParameters(d->id, "Wave LFO", "Wave LFO", d->original, d->original);
+            }
             elasticDrag.reset();
             t.regionTimebaseSuspended = false;
             t.w.timelineTimebase.setToggleState(t.w.session.song() && t.w.session.song()->timeSettings.value_or(jaras::ProjectTimeSettings{}).timebase == jaras::ProjectTimebase::relative, dontSendNotification);
@@ -5017,6 +5081,28 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                 g.setColour(Colours::black);g.strokePath(p,PathStrokeType(4));g.setColour(Colours::white);g.strokePath(p,PathStrokeType(2));
                 return MouseCursor(image,12,12);
             }();return cursor;
+        }
+        struct WaveDrag {
+            ID id;
+            juce::Rectangle<float> bounds;
+            double duration;
+            int handle;
+            var original, settings;
+            WaveLFOParameters start, live;
+        };
+        std::optional<WaveDrag> waveDrag;
+        struct WaveDisplay { std::string json; WaveLFOParameters wave; };
+        std::map<ID, WaveDisplay> waveDisplays;
+        WaveLFOParameters itemWave(const jaras::AudioClip& clip) {
+            if (!clip.fxJSON || clip.fxBypassed.value_or(false)) return {};
+            if (waveDrag && waveDrag->id == clip.id) return waveDrag->live;
+            if (waveDisplays.size() > 512) waveDisplays.clear();
+            auto& cached = waveDisplays[clip.id];
+            if (cached.json != *clip.fxJSON) {
+                cached.json = *clip.fxJSON;
+                cached.wave = WaveLFOParameters::read(JSON::parse(text(cached.json)));
+            }
+            return cached.wave;
         }
         jaras::AudioClip controlOriginal;
         std::optional<jaras::AudioClip> dragOriginalClip;
@@ -5550,6 +5636,7 @@ void Workspace::paintOverChildren(Graphics &g) {
             g.fillRect(x,(float)timeline->getY()+timeline->headerHeight(),1.f,(float)timeline->getHeight()-timeline->headerHeight());
         }
     }
+    if (!mixerVisible) return;
     auto boundsFor=[&](const ID &id)->juce::Rectangle<int>{if(const auto *song=session.song()){auto i=trackTree::index(*song,id);if(i<(size_t)rows.size())return getLocalArea(rows[(int)i],rows[(int)i]->getLocalBounds().withWidth(rows[(int)i]->bodyWidth()));}return {};};
     Graphics::ScopedSaveState saved(g);g.reduceClipRegion(tracksViewport.getBounds());
     if(trackDropPreview){auto r=boundsFor(trackDropPreview->indicator);g.setColour(trackDropPreview->joins?theme::yellow:theme::green);g.fillRect(r.getX(),trackDropPreview->after?r.getBottom()-2:r.getY(),r.getWidth(),2);}
@@ -6235,14 +6322,14 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
         CallOutBox::launchAsynchronously(std::move(panel),controls["save"]->getScreenBounds(),nullptr);
     };
     button("mixer", "Tracks", [this] {
-        mixerVisible = !mixerVisible;
-        resized();
+        showMixer();
     }).setTooltip("Track Mixer");
     auto &setlistButton = button("setlist", {}, [this] {
         setlistVisible = !setlistVisible;
         if (setlistVisible && proDock == ProDock::notes) proLibraryDock->showNotesTab();
         const auto previousFooter = footerBounds;
-        resized();
+        if (footerHeightSetting > 27 || !projectReady) resized();
+        else layoutWorkspaceColumns(false, true);
         repaint(previousFooter.getUnion(footerBounds));
     });
     setlistButton.setTitle("Setlist");
@@ -6767,6 +6854,31 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
         rebuild();
         updateState();
     };
+    session.recordingItemsChanged = [this](const std::set<ID>& affected) {
+        const auto* song = session.song();
+        if (song && itemLayoutRevision + 1 == session.revision && itemLayouts.size() == song->tracks.size()) {
+            for (size_t i = 0; i < song->tracks.size(); ++i)
+                if (affected.count(song->tracks[i].id)) itemLayouts[i] = makeItemLanes(song->tracks[i]);
+            itemLayoutRevision = session.revision;
+        }
+        if (song && itemTitleRevision + 1 == session.revision) {
+            for (const auto& track : song->tracks) if (affected.count(track.id))
+                for (const auto& clip : track.clips) itemTitles.erase(clip.id);
+            itemTitleRevision = session.revision;
+        }
+        tempoControl->retainTempoAfterMixerChange();
+        timeline->refreshTimingGeometry();
+        if (session.audio.isRecording()) timeline->refreshWaveforms();
+        timeline->refreshMixer();
+        updateState();
+    };
+    session.tempoClockChanged = [this] {
+        if (itemLayoutRevision + 1 == session.revision) itemLayoutRevision = session.revision;
+        if (itemTitleRevision + 1 == session.revision) itemTitleRevision = session.revision;
+        tempoControl->retainTempoAfterMixerChange();
+        timeline->refreshMixer();
+        updateState();
+    };
     session.timingChanged = [this](bool geometry) {
         if (geometry) {
             timeline->refreshTimingGeometry(); setlist->refresh();
@@ -6777,6 +6889,19 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
             timeline->refreshMixer(true);
         }
         tuner->repaint(); caption->repaint(); updateState();
+    };
+    session.recordArmsChanged = [this](const std::set<ID>& affected) {
+        for (auto* row : rows) row->refreshRecordArmIfNeeded(affected);
+        footerMixer->refreshRecordArms(affected);
+        focusMixer->refreshRecordArms(affected);
+        for (const auto& entry : floatingWindows)
+            if (auto* mixer = dynamic_cast<MixerPanel*>(entry.second->getContentComponent()))
+                mixer->refreshRecordArms(affected);
+        if (session.audio.isRecording()) {
+            refreshTrackHeightGeometry();
+            timeline->repaint();
+        }
+        updateState();
     };
     session.mixerChanged = [this] {
         // Retain cached item layouts while repainting all affected group/solo
@@ -7180,7 +7305,10 @@ Workspace::~Workspace() {
     floatingWindows.clear();
     setlistWindow.reset();
     session.changed = {};
+    session.tempoClockChanged = {};
+    session.recordingItemsChanged = {};
     session.mixerChanged = {};
+    session.recordArmsChanged = {};
     session.timingChanged = {};
     session.setlistChanged = {};
     session.transportChanged = {};
@@ -7596,7 +7724,7 @@ void Workspace::paint(Graphics &g) {
     g.fillRect(0, toolTop, getWidth(), transportBounds.getY() - toolTop);
     g.setColour(theme::panel);
     g.fillRect(footerBounds);
-    g.fillRect(tracksViewport.getX(), workspaceBounds.getY(), tracksViewport.getWidth(), workspaceBounds.getHeight());
+    if (mixerVisible) g.fillRect(tracksViewport.getX(), workspaceBounds.getY(), tracksViewport.getWidth(), workspaceBounds.getHeight());
     if (g.clipRegionIntersects(footerBounds)) {
         if (setlistVisible) {
             const auto state = session.presentationTransport();
@@ -7689,7 +7817,7 @@ void Workspace::paint(Graphics &g) {
         g.setColour(Colours::white.withAlpha(.12f));
         g.fillRect(lane);
         g.setColour(theme::green);
-        g.fillRect(lane.withWidth(std::min(lane.getWidth(), transportProgressPixels)));
+        g.fillRect(lane.withWidth(std::min(lane.getWidth(), float(transportProgressPixels))));
     }
     for (auto bounds : {tempoDisplayBounds, tuner->getBounds()}) {
         if (bounds.isEmpty() || !g.clipRegionIntersects(bounds)) continue;
@@ -8329,7 +8457,7 @@ int Workspace::proLibraryWidthLimit() const {
         100 - timelineGrid::verticalScrollbarWidth);
 }
 
-void Workspace::layoutWorkspaceColumns(bool widthOnly) {
+void Workspace::layoutWorkspaceColumns(bool widthOnly, bool togglingPanel) {
     const auto previousTrackHeader = tracksViewport.getBounds().withTop(workspaceBounds.getY())
         .withBottom(tracksViewport.getY());
     const int rail = workspaceBounds.getX();
@@ -8375,10 +8503,13 @@ void Workspace::layoutWorkspaceColumns(bool widthOnly) {
     const int partsX = rail + leadingSetlist + libraryExtent;
     const int mixerX = partsX + leftPartsWidth + focusWidth;
     const int trackTop = workspaceBounds.getY() + timeline->headerHeight();
-    const bool resizeRows = !widthOnly || tracksViewport.getWidth() != left;
+    // Preserve row widths across collapse. A hidden mixer consumes no column space.
+    const int trackWidth = mixerVisible ? left : tracksViewport.getWidth();
+    const int trackHeightAvailable = std::max(1, workspaceBounds.getHeight() - timeline->headerHeight());
+    const bool resizeRows = tracksViewport.getWidth() != trackWidth || tracksViewport.getHeight() != trackHeightAvailable;
     tracksViewport.setVisible(mixerVisible);
-    tracksViewport.setBounds(mixerX, trackTop, left, std::max(1, workspaceBounds.getHeight() - timeline->headerHeight()));
-    if (resizeRows) layoutTrackRows();
+    tracksViewport.setBounds(mixerX, trackTop, trackWidth, trackHeightAvailable);
+    if (resizeRows || (!widthOnly && !togglingPanel)) layoutTrackRows();
     const int addTrackX = mixerX + mixerBodyWidth - 37;
     const int rulerY = workspaceBounds.getY() + timeline->rulerTop();
     addTrack.setBounds(addTrackX, rulerY + (timeline->rulerHeight - 24) / 2, 32, 24);
@@ -8396,10 +8527,10 @@ void Workspace::layoutWorkspaceColumns(bool widthOnly) {
     if (!detachedSetlist) {
         const int sidebarHeight = workspaceBounds.getHeight() + visibleDockHeight;
         setlist->setVisible(setlistVisible);
-        setlist->setBounds(leadingSetlist ? rail : getWidth()-rightProWidth-right-sectionsWidth,workspaceBounds.getY(),right,sidebarHeight);
+        if (setlistVisible) setlist->setBounds(leadingSetlist ? rail : getWidth()-rightProWidth-right-sectionsWidth,workspaceBounds.getY(),right,sidebarHeight);
         setlist->setPartsVisible(partsRightVisible);
         partsSidebar->setVisible(partsRightVisible && setlistVisible);
-        partsSidebar->setBounds(getWidth()-rightProWidth-sectionsWidth,workspaceBounds.getY(),sectionsWidth,sidebarHeight);
+        if (partsSidebar->isVisible()) partsSidebar->setBounds(getWidth()-rightProWidth-sectionsWidth,workspaceBounds.getY(),sectionsWidth,sidebarHeight);
         partsRightDivider.setVisible(partsRightVisible&&setlistVisible);
         partsRightDivider.setBounds(partsSidebar->getX()-3,workspaceBounds.getY(),6,sidebarHeight);
     } else if (setlistWindow && !widthOnly) {
@@ -8547,16 +8678,19 @@ String Workspace::itemTitle(const jaras::AudioClip &clip) const {
     }
     itemTitles.emplace(clip.id,title);return title;
 }
+ItemLanes Workspace::makeItemLanes(const jaras::Track& track) const {
+    auto items = ItemLanes::references(track);
+    for (const auto& preview : session.recordingItems)
+        if (preview.track == track.id) items.push_back(&preview.clip);
+    return ItemLanes(std::move(items), jaras::isTeleprompterRole(track.role),
+                     track.stackedStems.value_or(appearance.stackedStems()));
+}
 const ItemLanes &Workspace::itemLanes(int index) const {
     if (timeline) if (const auto *preview = timeline->previewItemLanes(index)) return *preview;
     if (itemLayoutRevision != session.revision) {
         itemLayouts.clear();
-        if (const auto *song = session.song()) for (const auto &track : song->tracks) {
-            auto items = ItemLanes::references(track);
-            for (const auto &item : session.recordingItems)
-                if (item.track == track.id) items.push_back(&item.clip);
-            itemLayouts.emplace_back(std::move(items), jaras::isTeleprompterRole(track.role), track.stackedStems.value_or(appearance.stackedStems()));
-        }
+        if (const auto* song = session.song()) for (const auto& track : song->tracks)
+            itemLayouts.push_back(makeItemLanes(track));
         itemLayoutRevision = session.revision;
     }
     return itemLayouts.at((size_t)index);
@@ -8745,7 +8879,58 @@ void Workspace::rebuild() {
     caption->repaint();
     repaint();
 }
+namespace {
+class ProjectSaveIndicator final : public Component {
+    String caption, detail;
+    double fraction = -1;
+public:
+    ProjectSaveIndicator() {
+        setComponentID("project-save-progress");
+        setInterceptsMouseClicks(false, false);
+        setAlwaysOnTop(true);
+    }
+    void update(const Session::SaveProgress &state) {
+        using Phase = Session::SaveProgress::Phase;
+        const auto title = localization::translate(state.phase == Phase::copying ? "Copying media…"
+            : state.phase == Phase::writing ? "Writing project…" : "Saving project…");
+        auto next = state.filename;
+        if (state.phase == Phase::copying)
+            next = String(state.fileIndex) + " / " + String(state.fileCount) + "   " + next;
+        const auto amount = state.phase == Phase::preparing ? -1. : state.fraction;
+        if (caption == title && detail == next && fraction == amount && amount >= 0) return;
+        caption = title; detail = next; fraction = amount;
+        setTitle(caption); setDescription(detail);
+        repaint();
+    }
+    void paint(Graphics &g) override {
+        auto area = getLocalBounds().toFloat().reduced(1);
+        g.setColour(theme::panel); g.fillRoundedRectangle(area, 7);
+        g.setColour(theme::secondary); g.drawRoundedRectangle(area, 7, 1);
+        auto content = getLocalBounds().reduced(12, 7);
+        auto titleRow = content.removeFromTop(20);
+        g.setFont(theme::font(13, true)); g.setColour(Colours::white);
+        if (fraction >= 0) g.drawText(String(int(fraction * 100)) + "%", titleRow.removeFromRight(48), Justification::centredRight);
+        g.drawText(caption, titleRow, Justification::centredLeft);
+        theme::progressBar(g, content.removeFromTop(12).toFloat(), fraction);
+        g.setFont(theme::font(12)); g.setColour(theme::secondary);
+        g.drawText(detail, content, Justification::centredLeft, true);
+    }
+};
+}
+void Workspace::refreshSaveIndicator() {
+    const auto progress = session.saveProgress();
+    if (!progress) { saveIndicator.reset(); return; }
+    if (!saveIndicator) {
+        saveIndicator = std::make_unique<ProjectSaveIndicator>();
+        addAndMakeVisible(*saveIndicator);
+    }
+    auto area = getLocalBounds().reduced(12);
+    area.removeFromBottom(footerBounds.getHeight());
+    saveIndicator->setBounds(area.removeFromBottom(68).removeFromRight(std::min(350, area.getWidth())));
+    static_cast<ProjectSaveIndicator &>(*saveIndicator).update(*progress);
+}
 void Workspace::updateState() {
+    if (layoutActive && (session.isSaving() || saveIndicator)) refreshSaveIndicator();
     const auto &t = session.transport();
     const auto audible = session.presentationTransport();
     stage.observe(audible);
@@ -8890,6 +9075,8 @@ void Workspace::updateState() {
     if (proTransport) updateProPosition(position);
     else transportTime.setText(clockText(position, position >= 3600.), dontSendNotification);
     const auto information = session.recordingCountInActive() ? localization::translate("Count-in")
+        : session.preparingLiveAudio() || session.audio.preparingTransport()
+            ? (localization::english ? String::fromUTF8("Preparing audio…") : String::fromUTF8("Preparando áudio…"))
         : session.liveCapacityWarning().isNotEmpty() ? session.liveCapacityWarning()
         : t.automaticSectionNotice ? text(*t.automaticSectionNotice)
         : t.loop.enabled ? String("Loop Ativo") : t.ignoreNextAfter ? String("Ignore Next") : String();
@@ -8901,7 +9088,7 @@ void Workspace::updateState() {
                                : String::fromUTF8("■ STOPPED");
     if (t.subPlay.playing)
         status += String::fromUTF8("  ·  SUB PLAY ") + clockText(t.subPlay.position);
-    if (session.busy)
+    if (session.busy && !session.isSaving())
         status +=
             String::fromUTF8("  ·  Importando ") + String(session.importProgress * 100, 0) + "%";
     footer.setText(status + "     " + audioInfo + "     " + session.message,
@@ -9084,7 +9271,7 @@ void Workspace::timerCallback() {
     }
     if (transportProgressPixels != pixels) {
         transportProgressPixels = pixels;
-        repaint(lane);
+        repaint(lane.getSmallestIntegerContainer());
     }
     // The timeline's separate 60 Hz clock moves the grid and needles together.
     // This slower timer only animates the temporary stopped Subplay preview.
@@ -9499,7 +9686,7 @@ void Workspace::mouseDown(const MouseEvent &event) {
 }
 void Workspace::mouseWheelMove(const MouseEvent &event, const MouseWheelDetails &details) {
     auto relative = event.getEventRelativeTo(this);
-    if (tracksViewport.getBounds().contains(relative.getPosition())) {
+    if (mixerVisible && tracksViewport.getBounds().contains(relative.getPosition())) {
         ++wheelCount;
         if (event.mods.isCtrlDown()) {
             tracksViewport.cancelWheel();
@@ -9912,8 +10099,8 @@ void Workspace::createTemporaryProject() {
         if (!safe) return;
         try {
             auto lease = std::make_unique<TemporaryProjectSession>();
-            auto file = lease->directory.getChildFile("Temporary.jl");
-            auto project = Session::makeEmptyProject(localization::translate("Temporary"));
+            auto file = lease->directory.getChildFile("Untitled.jl");
+            auto project = Session::makeEmptyProject("Untitled");
             project.projectSyncID = uuid();
             ProjectCodec::write(file, ProjectCodec::encode(project));
             safe->session.temporarySession = std::move(lease);
@@ -10115,10 +10302,10 @@ void Workspace::chooseSave(bool saveAs, std::function<void()> saved, std::functi
         } else session.waitForSave(finish);
         return;
     }
-    auto suggested =
-        File::getSpecialLocation(File::userDocumentsDirectory)
-            .getChildFile("CatLive/" + File::createLegalFileName(text(session.project().name)) +
-                          "/" + File::createLegalFileName(text(session.project().name)) + ".jl");
+    const auto name = session.suggestedSaveName();
+    auto folder = File::getSpecialLocation(File::userDocumentsDirectory).getChildFile("CatLive");
+    if (folder.createDirectory().failed()) folder = folder.getParentDirectory();
+    const auto suggested = (promoting ? folder : folder.getChildFile(name)).getChildFile(name + ".jl");
     chooser = std::make_unique<FileChooser>(localization::translate("Save Project"),
                                             suggested, "*.jl", true);
     chooser->launchAsync(
@@ -11118,6 +11305,7 @@ void Workspace::showClipMenu(ID id, Point<int> point) {
     if (fileItem && (!clipSelected(id) || selectedClips.size() <= 1)) {
         menu.addItem(40, localization::translate("Open file location")); menu.addSeparator();
     }
+    if(audioItem && durationItem && !midiItem) menu.addItem(49, "Wave LFO");
     if(rateItem)menu.addItem(46,localization::translate("Config rate"));
     const auto fadeTargets = clipSelected(id) && !selectedClips.empty() ? selectedClips : std::set<ID>{id};
     size_t eligibleFades = 0, activeFades = 0;
@@ -11161,6 +11349,11 @@ std::function<void(int)> Workspace::clipMenuAction(ID id, ID ownerID) {
                 return;
             safe->perform([safe,id,ownerID,targets,projectID,songID,action] {
                 auto &w = *safe;
+                if (action == 49) {
+                    if (w.session.project().id == projectID && w.session.song() && w.session.song()->id == songID &&
+                        w.session.insertLibraryEffect(id, "native:Wave LFO", {}, {}, true).isNotEmpty()) w.openItemFX(id);
+                    return;
+                }
                 if (action == 47 || action == 48) {
                     if (w.session.project().id != projectID || !w.session.song() || w.session.song()->id != songID) return;
                     const bool enabled = action == 47;
@@ -11942,7 +12135,8 @@ void Workspace::mixerMenu(Point<int> point) {
 }
 void Workspace::showMixer() {
     mixerVisible = !mixerVisible;
-    resized();
+    if (projectReady) layoutWorkspaceColumns(false, true);
+    else resized();
     repaint();
 }
 void Workspace::showTeleprompter(int index) {
@@ -12198,8 +12392,8 @@ var Workspace::diagnostics() const {
     put(value, "resourceSampleIntervalSeconds", 1);
     put(value, "resourceMemoryScope", "process physical working set / installed physical RAM");
     put(value, "mixerDetached", mixerDetached);
-    put(value, "trackMixerWidth", tracksViewport.getWidth());
-    put(value, "setlistWidth", setlist->getWidth());
+    put(value, "trackMixerWidth", mixerVisible ? tracksViewport.getWidth() : 0);
+    put(value, "setlistWidth", setlistVisible ? setlist->getWidth() : 0);
     put(value,"setlistPlacement",setlistPlacement==SetlistPlacement::left?"left":setlistPlacement==SetlistPlacement::right?"right":"detached");
     put(value,"setlistDetachedVisible",setlistWindow && setlistWindow->isVisible());
     put(value,"trackMixerVisible",tracksViewport.isVisible());

@@ -50,6 +50,7 @@ template <typename Test> inline void run(Test &&test) {
         expect(result.trackIDs.size()==1,"Wrong copy count");
         const auto copied = findTrack(result.document,result.trackIDs[0]);
         const auto copiedItem = list(get(copied,"clips"))[0];
+        expect(str(copiedItem,"name") == str(item,"name")+" 001", "Pasting a track lost its numbered grid label");
         expect(same(findTrack(result.document,sourceID),source),"Source track changed");
         expect(same(get(source,"futureTrackState"),get(copied,"futureTrackState")),"Unknown track data lost");
         for (const auto *key : {"volume","pan","color","heightScale","phaseInverted","inputPatch","outputs","recordingFormat","inputMonitoring"})

@@ -244,6 +244,8 @@ void NativeFX::prepare(const var &settings, double sampleRate, const NativeFX *p
     hasDynamicsMeter = false;
     reductionDB = -1.f;
     auto append = [&](String kind, const String &key, const var &value) {
+        // The source envelope uses each playing item's own clock in AudioEngine.
+        if (kind == "Wave LFO") return;
         if (kind == "CatSynth") {
             if (!flag(value, "catSynthEnabled")) return;
             auto e = std::make_unique<Effect>();

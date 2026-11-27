@@ -531,11 +531,14 @@ final class NativeEffectsChain {
         updateItemFade(clip)
     }
     func updateItemFade(_ clip: AudioClip) {
+        let wave = clip.fxBypassed == true ? nil : clip.fx?.activeWaveLFO
         JarasEqualizer.setInputFade(equalizer, fadeIn: clip.fadeIn ?? 0, fadeOut: clip.fadeOut ?? 0,
                                     fadeInCurve: clip.fadeInCurve ?? 0, fadeInSCurve: clip.fadeInSCurve ?? 1,
                                     fadeOutCurve: clip.fadeOutCurve ?? 0, fadeOutSCurve: clip.fadeOutSCurve ?? 1,
                                     duration: clip.fadeTimelineDuration ?? clip.duration, position: itemFadeClock.position,
-                                    hostTime: itemFadeClock.host, sampleTime: itemFadeClock.sample)
+                                    hostTime: itemFadeClock.host, sampleTime: itemFadeClock.sample,
+                                    waveEnabled: wave != nil, attack: wave?.attack ?? 0, decay: wave?.decay ?? 0,
+                                    sustain: wave?.sustain ?? 1, release: wave?.release ?? 0)
     }
     func setPlaybackBoundary(_ host: UInt64 = 0) { JarasEqualizer.setPlaybackBoundary(equalizer, hostTime: host) }
     func setSourcePolarity(_ inverted: Bool) { JarasEqualizer.setPolarity(equalizer, inverted: inverted) }
