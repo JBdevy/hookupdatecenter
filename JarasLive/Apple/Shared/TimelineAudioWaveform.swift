@@ -1482,72 +1482,13 @@ final class TimelineAudioWaveform: ObservableObject {
         lock.unlock()
     }
 
-    /// Network overviews reuse the editor's peak pyramid and are prepared on
-    /// the Remote utility queue. Each bin covers the item's timeline, not the raw file.
-    static func remoteWaveformPage(_ request: DAWRemoteWaveformRequest, song: Song, directory: URL?,
-                                   items: [(clip: AudioClip, path: String?)], finished: Bool) -> DAWRemoteWaveformPage {
-        let bins = DAWRemoteWaveformPage.bins
-        var sources: [String: WaveformSource] = [:]
-        var missing = Set<String>()
-        let media = TimelineMediaURLCache()
-        let entries = items.compactMap { item -> DAWRemoteWaveformPage.Entry? in
-            let clip = item.clip
-            guard clip.duration > 0, clip.duration.isFinite else { return nil }
-            if let path = item.path, !missing.contains(path),
-               let url = path.hasPrefix("/") ? URL(fileURLWithPath: path) : directory.map({ media.resolve(path, directory: $0) }) {
-                let source: WaveformSource?
-                if let cached = sources[path] {
-                    source = cached
-                } else if let file = try? AVAudioFile(forReading: url) {
-                    let header = Header(rate: file.processingFormat.sampleRate, frames: file.length,
-                                        channels: Int(file.processingFormat.channelCount))
-                    source = try? WaveformSource.loadOrBuild(url, header: header)
-                    if let source { sources[path] = source } else { missing.insert(path) }
-                } else {
-                    missing.insert(path)
-                    source = nil
-                }
-                if let source {
-                    var peaks = [UInt8](repeating: 0, count: bins)
-                    let seconds = clip.duration / Double(bins)
-                    for segment in song.tempoAudioSegments(clip) {
-                        let first = Int(max(0, min(Double(bins), floor((segment.startTime - clip.startTime) / seconds))))
-                        let last = Int(max(0, min(Double(bins), ceil((segment.startTime + segment.duration - clip.startTime) / seconds))))
-                        guard first < last else { continue }
-                        for index in first..<last {
-                            let start = max(0, clip.startTime + Double(index) * seconds - segment.startTime)
-                            let end = min(segment.duration, clip.startTime + Double(index + 1) * seconds - segment.startTime)
-                            let length = (end - start) * segment.audioRate
-                            guard length > 0 else { continue }
-                            let offset = segment.sourceOffset + start * segment.audioRate
-                            let peak: Float
-                            if let loop = segment.loopLength, loop > 0 {
-                                let origin = segment.loopStart ?? 0
-                                let delta = (offset - origin).truncatingRemainder(dividingBy: loop)
-                                let phase = delta < 0 ? delta + loop : delta
-                                if length >= loop { peak = source.remotePeak(origin, origin + loop) }
-                                else {
-                                    let tail = min(length, loop - phase)
-                                    peak = max(source.remotePeak(origin + phase, origin + phase + tail),
-                                               source.remotePeak(origin, origin + length - tail))
-                                }
-                            } else { peak = source.remotePeak(offset, offset + length) }
-                            peaks[index] = max(peaks[index], UInt8((min(1, peak) * 255).rounded()))
-                        }
-                    }
-                    return .init(id: clip.id, peaks: Data(peaks))
-                }
-            }
-            guard !clip.waveform.isEmpty else { return nil }
-            let peaks = (0..<bins).map { index in
-                let first = index * clip.waveform.count / bins
-                let last = max(first + 1, (index + 1) * clip.waveform.count / bins)
-                let peak = clip.waveform[first..<last].filter(\.isFinite).max() ?? 0
-                return UInt8((min(1, max(0, peak)) * 255).rounded())
-            }
-            return .init(id: clip.id, peaks: Data(peaks))
-        }
-        return .init(revision: request.revision, offset: request.offset, finished: finished, entries: entries)
+    /// Retains one peak source while the caller reads a batch of intervals.
+    static func remotePeakReader(for url: URL) -> ((Double, Double) -> Float)? {
+        guard let file = try? AVAudioFile(forReading: url) else { return nil }
+        let header = Header(rate: file.processingFormat.sampleRate, frames: file.length,
+                            channels: Int(file.processingFormat.channelCount))
+        guard let source = try? WaveformSource.loadOrBuild(url, header: header) else { return nil }
+        return source.remotePeak
     }
 
     /// Peak-cache analysis runs on a utility worker. Read tiny PCM windows only

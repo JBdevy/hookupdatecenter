@@ -10749,3 +10749,68 @@ private struct RemoteVinhetasPager: UIViewControllerRepresentable {
     }
 }
 #endif
+
+private extension TimelineAudioWaveform {
+    /// Network overviews reuse the editor's peak pyramid and are prepared on
+    /// the Remote utility queue. Each bin covers the item's timeline, not the raw file.
+    static func remoteWaveformPage(_ request: DAWRemoteWaveformRequest, song: Song, directory: URL?,
+                                   items: [(clip: AudioClip, path: String?)], finished: Bool) -> DAWRemoteWaveformPage {
+        let bins = DAWRemoteWaveformPage.bins
+        var sources: [String: (Double, Double) -> Float] = [:]
+        var missing = Set<String>()
+        let media = TimelineMediaURLCache()
+        let entries = items.compactMap { item -> DAWRemoteWaveformPage.Entry? in
+            let clip = item.clip
+            guard clip.duration > 0, clip.duration.isFinite else { return nil }
+            if let path = item.path, !missing.contains(path),
+               let url = path.hasPrefix("/") ? URL(fileURLWithPath: path) : directory.map({ media.resolve(path, directory: $0) }) {
+                let source: ((Double, Double) -> Float)?
+                if let cached = sources[path] {
+                    source = cached
+                } else {
+                    source = remotePeakReader(for: url)
+                    if let source { sources[path] = source } else { missing.insert(path) }
+                }
+                if let source {
+                    var peaks = [UInt8](repeating: 0, count: bins)
+                    let seconds = clip.duration / Double(bins)
+                    for segment in song.tempoAudioSegments(clip) {
+                        let first = Int(max(0, min(Double(bins), floor((segment.startTime - clip.startTime) / seconds))))
+                        let last = Int(max(0, min(Double(bins), ceil((segment.startTime + segment.duration - clip.startTime) / seconds))))
+                        guard first < last else { continue }
+                        for index in first..<last {
+                            let start = max(0, clip.startTime + Double(index) * seconds - segment.startTime)
+                            let end = min(segment.duration, clip.startTime + Double(index + 1) * seconds - segment.startTime)
+                            let length = (end - start) * segment.audioRate
+                            guard length > 0 else { continue }
+                            let offset = segment.sourceOffset + start * segment.audioRate
+                            let peak: Float
+                            if let loop = segment.loopLength, loop > 0 {
+                                let origin = segment.loopStart ?? 0
+                                let delta = (offset - origin).truncatingRemainder(dividingBy: loop)
+                                let phase = delta < 0 ? delta + loop : delta
+                                if length >= loop { peak = source(origin, origin + loop) }
+                                else {
+                                    let tail = min(length, loop - phase)
+                                    peak = max(source(origin + phase, origin + phase + tail),
+                                               source(origin, origin + length - tail))
+                                }
+                            } else { peak = source(offset, offset + length) }
+                            peaks[index] = max(peaks[index], UInt8((min(1, peak) * 255).rounded()))
+                        }
+                    }
+                    return .init(id: clip.id, peaks: Data(peaks))
+                }
+            }
+            guard !clip.waveform.isEmpty else { return nil }
+            let peaks = (0..<bins).map { index in
+                let first = index * clip.waveform.count / bins
+                let last = max(first + 1, (index + 1) * clip.waveform.count / bins)
+                let peak = clip.waveform[first..<last].filter(\.isFinite).max() ?? 0
+                return UInt8((min(1, max(0, peak)) * 255).rounded())
+            }
+            return .init(id: clip.id, peaks: Data(peaks))
+        }
+        return .init(revision: request.revision, offset: request.offset, finished: finished, entries: entries)
+    }
+}
