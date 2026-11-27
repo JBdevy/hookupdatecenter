@@ -8899,7 +8899,8 @@ void Workspace::updateState() {
     for (const auto &entry : controls) {
         const auto &id = entry.first;
         auto *button = entry.second;
-        if (id != "menu" && id != "railKeyboard" && id != "play" && id != "editMode" && id != "save" && id != "focus")
+        if (id != "menu" && id != "railKeyboard" && id != "play" && id != "editMode" &&
+            id != "save" && id != "focus" && id != "mixer" && id != "railMixer" && id != "panelSelector")
             button->setButtonText(localization::translate(button->getButtonText()));
         button->setTooltip(localization::translate(button->getTooltip()));
     }

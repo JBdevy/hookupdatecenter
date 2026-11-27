@@ -255,10 +255,14 @@ final class ProjectSaveTests: XCTestCase {
         let project = Project.empty(name: "Time selection")
         let show = try ShowController(executor: SaveTestExecutor(), persistence: SaveTestStore(), initialProject: project)
         let song = project.songs[0].id
+        let gridFocusRequest = show.regionFocusRequest
+        let setlistFocusRequest = show.setlistFocusRequest
         show.regionFromTimeSelection(song: song, start: 12.125, end: 21.875)
         let region = try XCTUnwrap(show.current?.parts.first)
         XCTAssertEqual(region.startTime, 12.125); XCTAssertEqual(region.endTime, 21.875)
         XCTAssertEqual(show.focusedRegion, region.id); XCTAssertTrue(show.hasUnsavedChanges)
+        XCTAssertEqual(show.regionFocusRequest, gridFocusRequest)
+        XCTAssertNotEqual(show.setlistFocusRequest, setlistFocusRequest)
         XCTAssertEqual(show.current?.tracks, project.songs[0].tracks)
         show.undo(); XCTAssertEqual(show.current?.parts, [])
         show.redo(); XCTAssertEqual(show.current?.parts, [region])

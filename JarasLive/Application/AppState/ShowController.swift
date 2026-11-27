@@ -4936,7 +4936,11 @@ public final class ShowTrackSelectionPresentation: ObservableObject {
             project.songs[index].parts.sort { $0.startTime < $1.startTime }
         }
         if current?.parts.contains(where: { $0.id == region.id }) == true {
-            focusedRegion = region.id; regionFocusRequest = UUID(); message = ""
+            focusedRegion = region.id
+            // A new region is already in the user's viewport. Reveal its
+            // setlist row without replaying the previous timeline navigation.
+            setlistFocusRequest = UUID()
+            message = ""
         }
     }
     public func regionsFromSelection(_ ids: Set<UUID>) {

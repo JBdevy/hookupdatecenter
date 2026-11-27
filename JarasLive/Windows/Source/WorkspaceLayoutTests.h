@@ -324,9 +324,11 @@ struct WorkspaceLayoutTests {
                                     std::pair{"railMixer", "Hoz Mixer"},
                                     std::pair{"panelSelector", "Panel"}}) {
                 const auto *control = w.controls.at(id);
-                require(control->getX() > previousRight && control->getY() == w.timelineSnap.getY() &&
-                        control->getButtonText() == title,
-                        "Show Track Mixer, Hoz Mixer and Panel in strip order");
+                const auto diagnostic = String(id) + " at " + control->getBounds().toString() +
+                    ", after x=" + String(previousRight) + ", at width=" + String(w.getWidth()) +
+                    ", with label '" + control->getButtonText() + "'";
+                require(control->getX() > previousRight && control->getY() == w.timelineEditingBounds.getY() + 4 &&
+                        control->getButtonText() == title, ("Misplaced strip control: " + diagnostic).toRawUTF8());
                 previousRight = control->getRight();
             }
             if (w.timelineSnap.isVisible())

@@ -3186,7 +3186,7 @@ void Session::addMarker(String name, double position, bool section) {
 }
 void Session::addRegion(String name, double start, double end) {
     auto id = song() ? song()->id : ID{};
-    edit([&](jaras::Project &p) {
+    editTimeline([&](jaras::Project &p) {
         for (auto &s : p.songs)
             if (s.id == id) {
                 jaras::Part part;
