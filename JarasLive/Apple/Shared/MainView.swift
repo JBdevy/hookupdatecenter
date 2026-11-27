@@ -101,8 +101,8 @@ struct MainView: View {
     @State private var fullLyricsTarget: FullLyricsTarget?
     @State private var lastObservedProjectID: UUID?
     @State private var presentedSessionID: UUID?
-    @AppStorage(JarasInterfaceTheme.preferenceKey) private var interfaceTheme = JarasInterfaceTheme.defaultTheme
-    @AppStorage("jaras.language") private var language = "en"
+    @WorkspacePreference(JarasInterfaceTheme.preferenceKey) private var interfaceTheme = JarasInterfaceTheme.defaultTheme
+    @WorkspacePreference("jaras.language") private var language = "en"
     #if os(macOS)
     private var footerMixerPreferenceKey: String { remotePresentation ? "jaras.remote.layout.mixer.open" : "jaras.layout.mixer.open" }
     private var footerMixerOpen: Bool {
@@ -134,7 +134,7 @@ struct MainView: View {
     @State private var showingFileExport = false
     @State private var showingProjectShare = false
     #else
-    @AppStorage("jaras.layout.mixer.open", store: WorkspaceLayoutPreferences.storage) private var footerMixerOpen = false
+    @WorkspacePreference("jaras.layout.mixer.open", store: WorkspaceLayoutPreferences.storage) private var footerMixerOpen = false
     #endif
     #if os(macOS)
     private var keyboardOpen: Bool {
@@ -153,43 +153,43 @@ struct MainView: View {
     }
     @StateObject private var vinhetasWindow = VinhetasWindow()
     #endif
-    @AppStorage("jaras.layout.parts.open", store: WorkspaceLayoutPreferences.storage) private var partsLeftOpen = false
-    @AppStorage("jaras.layout.parts.horizontal", store: WorkspaceLayoutPreferences.storage) private var partsLeftHorizontal = false
-    @AppStorage("jaras.layout.parts.heightScale", store: WorkspaceLayoutPreferences.storage) private var partsHeightScale = 1.0
-    @AppStorage("jaras.layout.partsRight.open", store: WorkspaceLayoutPreferences.storage) private var partsRightOpen = false
-    @AppStorage("jaras.layout.setlist.placement", store: WorkspaceLayoutPreferences.storage) private var setlistPlacement: SetlistPlacement = .right
-    @AppStorage("jaras.layout.setlist.dockSide", store: WorkspaceLayoutPreferences.storage) private var setlistDockPlacement: SetlistPlacement = .right
+    @WorkspacePreference("jaras.layout.parts.open", store: WorkspaceLayoutPreferences.storage) private var partsLeftOpen = false
+    @WorkspacePreference("jaras.layout.parts.horizontal", store: WorkspaceLayoutPreferences.storage) private var partsLeftHorizontal = false
+    @WorkspacePreference("jaras.layout.parts.heightScale", store: WorkspaceLayoutPreferences.storage) private var partsHeightScale = 1.0
+    @WorkspacePreference("jaras.layout.partsRight.open", store: WorkspaceLayoutPreferences.storage) private var partsRightOpen = false
+    @WorkspacePreference("jaras.layout.setlist.placement", store: WorkspaceLayoutPreferences.storage) private var setlistPlacement: SetlistPlacement = .right
+    @WorkspacePreference("jaras.layout.setlist.dockSide", store: WorkspaceLayoutPreferences.storage) private var setlistDockPlacement: SetlistPlacement = .right
     @State private var keyboardSettings = false
-    @AppStorage("jaras.footerMixerHeight", store: WorkspaceLayoutPreferences.storage) private var footerMixerHeight = Double(FooterHorizontalMixer.minimumDockHeight)
+    @WorkspacePreference("jaras.footerMixerHeight", store: WorkspaceLayoutPreferences.storage) private var footerMixerHeight = Double(FooterHorizontalMixer.minimumDockHeight)
     @State private var footerResizeCoordinator = FooterVerticalResizeCoordinator()
     private func maximumFooterHeight(workspaceHeight: CGFloat) -> CGFloat {
         min(161.046875, max(27, workspaceHeight - 150 - (keyboardOpen ? 108 : 0)
             - (footerMixerOpen ? min(723.55859375, max(FooterHorizontalMixer.minimumDockHeight, footerMixerHeight)) : 0)))
     }
-    @AppStorage("jaras.trackColumnWidth", store: WorkspaceLayoutPreferences.storage) private var mixerWidth = Double(SidebarWidthLimits.trackMixerDefault)
-    @AppStorage("jaras.trackColumnRestoreWidth", store: WorkspaceLayoutPreferences.storage) private var mixerRestoreWidth = Double(SidebarWidthLimits.trackMixerDefault)
+    @WorkspacePreference("jaras.trackColumnWidth", store: WorkspaceLayoutPreferences.storage) private var mixerWidth = Double(SidebarWidthLimits.trackMixerDefault)
+    @WorkspacePreference("jaras.trackColumnRestoreWidth", store: WorkspaceLayoutPreferences.storage) private var mixerRestoreWidth = Double(SidebarWidthLimits.trackMixerDefault)
     #if os(macOS)
     @State private var setlistScrollController = SidebarScrollController()
-    @AppStorage(TrackMixerVU.preferenceKey) private var showsTrackVU = false
+    @WorkspacePreference(TrackMixerVU.preferenceKey) private var showsTrackVU = false
     #endif
-    @AppStorage("jaras.setlistWidth", store: WorkspaceLayoutPreferences.storage) private var setlistWidth = Double(SidebarWidthLimits.setlistDefault)
-    @AppStorage("jaras.setlistRestoreWidth", store: WorkspaceLayoutPreferences.storage) private var setlistRestoreWidth = 240.0
+    @WorkspacePreference("jaras.setlistWidth", store: WorkspaceLayoutPreferences.storage) private var setlistWidth = Double(SidebarWidthLimits.setlistDefault)
+    @WorkspacePreference("jaras.setlistRestoreWidth", store: WorkspaceLayoutPreferences.storage) private var setlistRestoreWidth = 240.0
     init(show: ShowController, remotePresentation: Bool = false, auth: AuthService, backend: any BackendClient, documents: ProjectDocuments,
          showProjects: @escaping (Bool) -> Void = { _ in }) {
         self.show = show; self.remotePresentation = remotePresentation
         self.auth = auth; self.backend = backend; self.documents = documents; self.showProjects = showProjects
         let prefix = remotePresentation ? "jaras.remote." : "jaras."
         #if !os(macOS)
-        _footerMixerOpen = AppStorage(wrappedValue: false, prefix + "layout.mixer.open", store: WorkspaceLayoutPreferences.storage)
+        _footerMixerOpen = WorkspacePreference(wrappedValue: false, prefix + "layout.mixer.open", store: WorkspaceLayoutPreferences.storage)
         #endif
-        _partsLeftOpen = AppStorage(wrappedValue: false, prefix + "layout.parts.open", store: WorkspaceLayoutPreferences.storage)
-        _partsRightOpen = AppStorage(wrappedValue: false, prefix + "layout.partsRight.open", store: WorkspaceLayoutPreferences.storage)
-        _setlistPlacement = AppStorage(wrappedValue: .right, prefix + "layout.setlist.placement", store: WorkspaceLayoutPreferences.storage)
-        _setlistDockPlacement = AppStorage(wrappedValue: .right, prefix + "layout.setlist.dockSide", store: WorkspaceLayoutPreferences.storage)
-        _mixerWidth = AppStorage(wrappedValue: remotePresentation ? 280 : Double(SidebarWidthLimits.trackMixerDefault), prefix + "trackColumnWidth", store: WorkspaceLayoutPreferences.storage)
-        _mixerRestoreWidth = AppStorage(wrappedValue: remotePresentation ? 280 : Double(SidebarWidthLimits.trackMixerDefault), prefix + "trackColumnRestoreWidth", store: WorkspaceLayoutPreferences.storage)
-        _setlistWidth = AppStorage(wrappedValue: remotePresentation ? 370 : Double(SidebarWidthLimits.setlistDefault), prefix + "setlistWidth", store: WorkspaceLayoutPreferences.storage)
-        _setlistRestoreWidth = AppStorage(wrappedValue: remotePresentation ? 370 : 240, prefix + "setlistRestoreWidth", store: WorkspaceLayoutPreferences.storage)
+        _partsLeftOpen = WorkspacePreference(wrappedValue: false, prefix + "layout.parts.open", store: WorkspaceLayoutPreferences.storage)
+        _partsRightOpen = WorkspacePreference(wrappedValue: false, prefix + "layout.partsRight.open", store: WorkspaceLayoutPreferences.storage)
+        _setlistPlacement = WorkspacePreference(wrappedValue: .right, prefix + "layout.setlist.placement", store: WorkspaceLayoutPreferences.storage)
+        _setlistDockPlacement = WorkspacePreference(wrappedValue: .right, prefix + "layout.setlist.dockSide", store: WorkspaceLayoutPreferences.storage)
+        _mixerWidth = WorkspacePreference(wrappedValue: remotePresentation ? 280 : Double(SidebarWidthLimits.trackMixerDefault), prefix + "trackColumnWidth", store: WorkspaceLayoutPreferences.storage)
+        _mixerRestoreWidth = WorkspacePreference(wrappedValue: remotePresentation ? 280 : Double(SidebarWidthLimits.trackMixerDefault), prefix + "trackColumnRestoreWidth", store: WorkspaceLayoutPreferences.storage)
+        _setlistWidth = WorkspacePreference(wrappedValue: remotePresentation ? 370 : Double(SidebarWidthLimits.setlistDefault), prefix + "setlistWidth", store: WorkspaceLayoutPreferences.storage)
+        _setlistRestoreWidth = WorkspacePreference(wrappedValue: remotePresentation ? 370 : 240, prefix + "setlistRestoreWidth", store: WorkspaceLayoutPreferences.storage)
     }
     private func toggleBarMixer() {
         #if os(macOS)
@@ -1175,16 +1175,16 @@ private struct DesktopToolbarDockInputs<Content: View>: View {
     @ObservedObject var docks: DesktopPerformanceDocks
     @ObservedObject private var midiPreview: MIDIPreviewVisibility
     @ObservedObject private var detachedPreview: MIDIPreviewVisibility
-    @AppStorage(desktopLibraryVisibilityKey, store: WorkspaceLayoutPreferences.storage) private var libraryOpen = false
-    @AppStorage("jaras.vinhetas.visible", store: WorkspaceLayoutPreferences.storage) private var padsOpen = false
-    @AppStorage private var mixerOpen: Bool
+    @WorkspacePreference(desktopLibraryVisibilityKey, store: WorkspaceLayoutPreferences.storage) private var libraryOpen = false
+    @WorkspacePreference("jaras.vinhetas.visible", store: WorkspaceLayoutPreferences.storage) private var padsOpen = false
+    @WorkspacePreference private var mixerOpen: Bool
     let content: (DesktopDockIndicators) -> Content
 
     init(docks: DesktopPerformanceDocks, detachedPreview: MIDIPreviewVisibility, mixerKey: String, content: @escaping (DesktopDockIndicators) -> Content) {
         self.docks = docks; self.content = content
         _midiPreview = ObservedObject(wrappedValue: docks.midiPreview)
         _detachedPreview = ObservedObject(wrappedValue: detachedPreview)
-        _mixerOpen = AppStorage(wrappedValue: false, mixerKey, store: WorkspaceLayoutPreferences.storage)
+        _mixerOpen = WorkspacePreference(wrappedValue: false, mixerKey, store: WorkspaceLayoutPreferences.storage)
     }
 
     var body: some View {
@@ -1195,14 +1195,14 @@ private struct DesktopToolbarDockInputs<Content: View>: View {
 
 private struct DesktopFooterDockInputs<Content: View>: View {
     let docks: DesktopPerformanceDocks
-    @AppStorage private var mixerOpen: Bool
-    @AppStorage("catlive.footerDisplayHeight", store: WorkspaceLayoutPreferences.storage) private var storedFooterHeight = 27.0
+    @WorkspacePreference private var mixerOpen: Bool
+    @WorkspacePreference("catlive.footerDisplayHeight", store: WorkspaceLayoutPreferences.storage) private var storedFooterHeight = 27.0
     @State private var keyboardOpen: Bool?
     @ViewBuilder let content: (Bool, Bool, Binding<Double>) -> Content
 
     init(docks: DesktopPerformanceDocks, mixerKey: String, @ViewBuilder content: @escaping (Bool, Bool, Binding<Double>) -> Content) {
         self.docks = docks; self.content = content
-        _mixerOpen = AppStorage(wrappedValue: false, mixerKey, store: WorkspaceLayoutPreferences.storage)
+        _mixerOpen = WorkspacePreference(wrappedValue: false, mixerKey, store: WorkspaceLayoutPreferences.storage)
     }
 
     var body: some View {
@@ -1217,9 +1217,9 @@ private struct DesktopRightDockEditorWidth<Content: View>: View {
     let docks: DesktopPerformanceDocks
     let baseWidth: CGFloat
     @ViewBuilder let content: (CGFloat) -> Content
-    @AppStorage(desktopLibraryVisibilityKey, store: WorkspaceLayoutPreferences.storage) private var libraryOpen = false
-    @AppStorage("jaras.layout.library.width", store: WorkspaceLayoutPreferences.storage) private var libraryWidth = 344.0
-    @AppStorage(WorkspaceLibrary.folderWidthKey, store: WorkspaceLayoutPreferences.storage)
+    @WorkspacePreference(desktopLibraryVisibilityKey, store: WorkspaceLayoutPreferences.storage) private var libraryOpen = false
+    @WorkspacePreference("jaras.layout.library.width", store: WorkspaceLayoutPreferences.storage) private var libraryWidth = 344.0
+    @WorkspacePreference(WorkspaceLibrary.folderWidthKey, store: WorkspaceLayoutPreferences.storage)
     private var libraryFolders = WorkspaceLibrary.defaultFolderWidth
     @State private var focusWidth: CGFloat?
 
@@ -1250,7 +1250,7 @@ private struct DetachedSetlistContent: View {
     let show: ShowController
     let mediaDirectory: URL?
     @Binding var partsOpen: Bool
-    @AppStorage("jaras.language") private var language = "en"
+    @WorkspacePreference("jaras.language") private var language = "en"
     var body: some View {
         SectionListDock(visible: partsOpen, storageKey: "catlive.parts.detached.width",
                         minimumPrimaryWidth: SidebarWidthLimits.setlist, defaultFraction: 0.42) {
@@ -1498,9 +1498,9 @@ struct RegionPitchTargets: View {
 struct FooterPianoKeyboard: View {
     var active = true
     @ObservedObject private var state = KeyboardMIDIMonitor.shared
-    @AppStorage("jaras.keyboard.whiteColor") private var whiteColor = 0x54ff93
-    @AppStorage("jaras.keyboard.blackColor") private var blackColor = 0x54ff93
-    @AppStorage("jaras.keyboard.style") private var style = "default"
+    @WorkspacePreference("jaras.keyboard.whiteColor") private var whiteColor = 0x54ff93
+    @WorkspacePreference("jaras.keyboard.blackColor") private var blackColor = 0x54ff93
+    @WorkspacePreference("jaras.keyboard.style") private var style = "default"
     @State private var pressed: Set<UInt8> = []
     #if os(iOS)
     @Environment(\.scenePhase) private var scenePhase
@@ -1596,8 +1596,8 @@ private struct FooterKeyboardTouchInput: UIViewRepresentable {
 
 private struct KeyboardSettingsView: View {
     @Environment(\.dismiss) private var dismiss
-    @AppStorage("jaras.keyboard.whiteColor") private var whiteColor = 0x54ff93
-    @AppStorage("jaras.keyboard.blackColor") private var blackColor = 0x54ff93
+    @WorkspacePreference("jaras.keyboard.whiteColor") private var whiteColor = 0x54ff93
+    @WorkspacePreference("jaras.keyboard.blackColor") private var blackColor = 0x54ff93
     private func color(_ value: Binding<Int>) -> Binding<Color> {
         Binding(get: { Color(hex: UInt32(value.wrappedValue)) }, set: { color in
             #if os(macOS)
@@ -1816,7 +1816,7 @@ private struct DesktopHozMixerDock: View {
     let show: ShowController
     let maximumHeight: CGFloat
     let resizeCoordinator: FooterVerticalResizeCoordinator
-    @AppStorage("jaras.layout.mixer.open", store: WorkspaceLayoutPreferences.storage) private var visible = false
+    @WorkspacePreference("jaras.layout.mixer.open", store: WorkspaceLayoutPreferences.storage) private var visible = false
 
     var body: some View {
         FooterMixerPanel(show: show, active: visible, maximumHeight: maximumHeight, resizeCoordinator: resizeCoordinator)
@@ -1824,13 +1824,13 @@ private struct DesktopHozMixerDock: View {
 }
 // Parts changes the available space, while the workspace and timeline keep their identities.
 private struct DesktopPartsLayout<Content: View>: View {
-    @AppStorage private var open: Bool
-    @AppStorage("jaras.layout.parts.horizontal", store: WorkspaceLayoutPreferences.storage) private var horizontal = false
-    @AppStorage("jaras.layout.parts.heightScale", store: WorkspaceLayoutPreferences.storage) private var heightScale = 1.0
+    @WorkspacePreference private var open: Bool
+    @WorkspacePreference("jaras.layout.parts.horizontal", store: WorkspaceLayoutPreferences.storage) private var horizontal = false
+    @WorkspacePreference("jaras.layout.parts.heightScale", store: WorkspaceLayoutPreferences.storage) private var heightScale = 1.0
     @ObservedObject var detached: DetachedPartsWindow
     @ViewBuilder var content: (Bool, Bool, CGFloat) -> Content
     init(remote: Bool, detached: DetachedPartsWindow, @ViewBuilder content: @escaping (Bool, Bool, CGFloat) -> Content) {
-        _open = AppStorage(wrappedValue: false, (remote ? "jaras.remote." : "jaras.") + "layout.parts.open",
+        _open = WorkspacePreference(wrappedValue: false, (remote ? "jaras.remote." : "jaras.") + "layout.parts.open",
                            store: WorkspaceLayoutPreferences.storage)
         self.detached = detached
         self.content = content

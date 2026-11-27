@@ -385,11 +385,11 @@ private struct TimelineGridContent: View, Equatable {
             lhs.mediaDirectory == rhs.mediaDirectory && lhs.missingAudioPaths == rhs.missingAudioPaths &&
             lhs.visibility == rhs.visibility
     }
-    @AppStorage(JarasInterfaceTheme.preferenceKey) private var interfaceTheme = JarasInterfaceTheme.defaultTheme
+    @WorkspacePreference(JarasInterfaceTheme.preferenceKey) private var interfaceTheme = JarasInterfaceTheme.defaultTheme
     #if !os(macOS)
-    @AppStorage(TimelineSnapPreference.key) private var snapEnabled = true
+    @WorkspacePreference(TimelineSnapPreference.key) private var snapEnabled = true
     #endif
-    @AppStorage(TimelineAppearanceDefaults.invertWaveformColorsKey) private var invertWaveformColors = TimelineAppearanceDefaults.invertWaveformColors
+    @WorkspacePreference(TimelineAppearanceDefaults.invertWaveformColorsKey) private var invertWaveformColors = TimelineAppearanceDefaults.invertWaveformColors
     @ObservedObject private var recordingLayout = RecordingLaneLayout.shared
     @Environment(\.locale) private var locale
     private let itemEditors: TimelineItemEditors
@@ -500,11 +500,11 @@ private struct TimelineGridContent: View, Equatable {
     @State private var showingTrackVisibility = false
     @State private var draggingMain = false
     @State private var draggingSub = false
-    @AppStorage("jaras.trackColumnWidth", store: WorkspaceLayoutPreferences.storage) private var savedLabelWidth = Double(SidebarWidthLimits.trackMixerDefault)
-    @AppStorage("jaras.trackColumnRestoreWidth", store: WorkspaceLayoutPreferences.storage) private var restoreLabelWidth = 248.0
+    @WorkspacePreference("jaras.trackColumnWidth", store: WorkspaceLayoutPreferences.storage) private var savedLabelWidth = Double(SidebarWidthLimits.trackMixerDefault)
+    @WorkspacePreference("jaras.trackColumnRestoreWidth", store: WorkspaceLayoutPreferences.storage) private var restoreLabelWidth = 248.0
     @State private var resizeStart: CGFloat?
     @State private var mixerResizeState = SidebarResizeState()
-    @AppStorage(TrackMixerVU.preferenceKey) private var showsTrackVU = false
+    @WorkspacePreference(TrackMixerVU.preferenceKey) private var showsTrackVU = false
     @State private var rowHeightState = TimelineRowHeight()
     #if os(macOS)
     #endif
@@ -519,8 +519,8 @@ private struct TimelineGridContent: View, Equatable {
         self.remotePresentation = remotePresentation; self.toggleMixer = toggleMixer
         self.isSetlistVisible = isSetlistVisible
         let prefix = remotePresentation ? "jaras.remote." : "jaras."
-        _savedLabelWidth = AppStorage(wrappedValue: remotePresentation ? 280 : Double(SidebarWidthLimits.trackMixerDefault), prefix + "trackColumnWidth", store: WorkspaceLayoutPreferences.storage)
-        _restoreLabelWidth = AppStorage(wrappedValue: remotePresentation ? 280 : 248, prefix + "trackColumnRestoreWidth", store: WorkspaceLayoutPreferences.storage)
+        _savedLabelWidth = WorkspacePreference(wrappedValue: remotePresentation ? 280 : Double(SidebarWidthLimits.trackMixerDefault), prefix + "trackColumnWidth", store: WorkspaceLayoutPreferences.storage)
+        _restoreLabelWidth = WorkspacePreference(wrappedValue: remotePresentation ? 280 : 248, prefix + "trackColumnRestoreWidth", store: WorkspaceLayoutPreferences.storage)
     }
     private var visibleSong: Song? {
         guard var song = show.current else { return nil }

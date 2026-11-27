@@ -11,7 +11,7 @@ import UIKit
 private struct LibraryScrollView<Content: View>: View {
     let axes: Axis.Set
     @ViewBuilder let content: () -> Content
-    @AppStorage(JarasInterfaceTheme.preferenceKey) private var theme = JarasInterfaceTheme.defaultTheme
+    @WorkspacePreference(JarasInterfaceTheme.preferenceKey) private var theme = JarasInterfaceTheme.defaultTheme
 
     init(_ axes: Axis.Set = .vertical, @ViewBuilder content: @escaping () -> Content) {
         self.axes = axes
@@ -449,7 +449,7 @@ enum WorkspaceBrowserFileTransfer {
 private struct WorkspaceFilesPane: View {
     @ObservedObject var files: WorkspaceFiles
     let theme: JarasInterfaceTheme
-    @AppStorage("catlive.files.columns") private var columns = true
+    @WorkspacePreference("catlive.files.columns") private var columns = true
     @State private var query = ""
     @State private var choosingFolder = false
     @State private var selectionError: String?
@@ -711,7 +711,7 @@ struct DesktopLibraryDock: View {
     let theme: JarasInterfaceTheme
     let show: ShowController
     let available: CGFloat
-    @AppStorage("jaras.layout.library.open", store: WorkspaceLayoutPreferences.storage) private var visible = false
+    @WorkspacePreference("jaras.layout.library.open", store: WorkspaceLayoutPreferences.storage) private var visible = false
 
     var body: some View {
         DesktopLibraryPane(theme: theme, show: show, available: available, visible: visible)
@@ -731,8 +731,8 @@ struct DesktopLibraryPane: View {
     let show: ShowController
     let available: CGFloat
     let visible: Bool
-    @AppStorage("jaras.layout.library.width", store: WorkspaceLayoutPreferences.storage) private var saved = 344.0
-    @AppStorage(WorkspaceLibrary.folderWidthKey, store: WorkspaceLayoutPreferences.storage) private var folders = WorkspaceLibrary.defaultFolderWidth
+    @WorkspacePreference("jaras.layout.library.width", store: WorkspaceLayoutPreferences.storage) private var saved = 344.0
+    @WorkspacePreference(WorkspaceLibrary.folderWidthKey, store: WorkspaceLayoutPreferences.storage) private var folders = WorkspaceLibrary.defaultFolderWidth
     @State private var liveWidth: Double?
     @State private var visibilityChanges = PassthroughSubject<Bool, Never>()
     var body: some View {
@@ -824,7 +824,7 @@ struct ResizableWorkspaceLibrary: View {
     var finishOuterResize: (() -> Void)? = nil
     var visibilityChanges: PassthroughSubject<Bool, Never>? = nil
 
-    @AppStorage(WorkspaceLibrary.folderWidthKey, store: WorkspaceLayoutPreferences.storage)
+    @WorkspacePreference(WorkspaceLibrary.folderWidthKey, store: WorkspaceLayoutPreferences.storage)
     private var folderWidth = WorkspaceLibrary.defaultFolderWidth
     @State private var dragStart: CGFloat?
 
@@ -859,7 +859,7 @@ private struct LibraryColumns<Folders: View, Entries: View>: View {
     let theme: JarasInterfaceTheme
     let folders: Folders
     let entries: Entries
-    @AppStorage(WorkspaceLibrary.folderWidthKey, store: WorkspaceLayoutPreferences.storage)
+    @WorkspacePreference(WorkspaceLibrary.folderWidthKey, store: WorkspaceLayoutPreferences.storage)
     private var folderWidth = WorkspaceLibrary.defaultFolderWidth
     @State private var liveFolderWidth: CGFloat?
     @State private var dragStart: CGFloat?
@@ -1131,7 +1131,7 @@ private struct LibraryDockPickerList<Content: View>: View {
     let show: ShowController
     @Binding var tab: Tab
     let closeSetlist: () -> Void
-    @AppStorage(LibraryNote.storageKey, store: WorkspaceLayoutPreferences.storage) private var storedNotes = Data()
+    @WorkspacePreference(LibraryNote.storageKey, store: WorkspaceLayoutPreferences.storage) private var storedNotes = Data()
     @State private var selection: UUID?
     @State private var namingNote: LibraryNote?
     @State private var showingPicker = false
@@ -1274,11 +1274,11 @@ struct WorkspaceLibrary: View {
     #if os(macOS)
     @ObservedObject private var plugins = PluginCatalog.shared
     #endif
-    @AppStorage(LibraryNote.storageKey, store: WorkspaceLayoutPreferences.storage) private var storedNotes = Data()
-    @AppStorage("jaras.library.samplerCategories", store: WorkspaceLayoutPreferences.storage) private var storedSamplerCategories = Data()
-    @AppStorage("jaras.library.midiCategories", store: WorkspaceLayoutPreferences.storage) private var storedMIDICategories = Data()
-    @AppStorage("jaras.library.favorites", store: WorkspaceLayoutPreferences.storage) private var storedFavorites = Data()
-    @AppStorage("jaras.library.samplerPreviewDB", store: WorkspaceLayoutPreferences.storage) private var samplerPreviewDB = 0.0
+    @WorkspacePreference(LibraryNote.storageKey, store: WorkspaceLayoutPreferences.storage) private var storedNotes = Data()
+    @WorkspacePreference("jaras.library.samplerCategories", store: WorkspaceLayoutPreferences.storage) private var storedSamplerCategories = Data()
+    @WorkspacePreference("jaras.library.midiCategories", store: WorkspaceLayoutPreferences.storage) private var storedMIDICategories = Data()
+    @WorkspacePreference("jaras.library.favorites", store: WorkspaceLayoutPreferences.storage) private var storedFavorites = Data()
+    @WorkspacePreference("jaras.library.samplerPreviewDB", store: WorkspaceLayoutPreferences.storage) private var samplerPreviewDB = 0.0
     @State private var instrumentsExpanded = false
     @State private var pluginsExpanded = false
     @State private var samplersExpanded = false

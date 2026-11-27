@@ -1279,7 +1279,7 @@ enum TrackMixerVU {
 struct TrackMixerVUButton: View {
     var size: CGFloat = 24
     @AppStorage(TrackMixerVU.preferenceKey) private var visible = false
-    @AppStorage(TrackMixerVU.styleKey) private var style = TrackMixerVU.Style.purple
+    @WorkspacePreference(TrackMixerVU.styleKey) private var style = TrackMixerVU.Style.purple
 
     var body: some View {
         Button { visible.toggle() } label: {
@@ -1304,7 +1304,7 @@ struct TrackMixerVUButton: View {
 
 struct ClassicVUMeter: View {
     let meter: TrackMeterLevel?
-    @AppStorage(TrackMixerVU.styleKey) private var style = TrackMixerVU.Style.purple
+    @WorkspacePreference(TrackMixerVU.styleKey) private var style = TrackMixerVU.Style.purple
     private static let marks = [-20, -10, -7, -5, -3, -2, -1, 0, 1, 2, 3]
     @State private var level = -20.0
 
@@ -1582,7 +1582,7 @@ struct TrackMixerRow: View, Equatable {
         patchTarget = TrackPanelTarget(project: project, track: track.id, targets: targets)
         #endif
     }
-    @AppStorage(JarasInterfaceTheme.preferenceKey) private var interfaceTheme = JarasInterfaceTheme.defaultTheme
+    @WorkspacePreference(JarasInterfaceTheme.preferenceKey) private var interfaceTheme = JarasInterfaceTheme.defaultTheme
     @AppStorage(MixerTrackStyle.trackMixerKey) private var trackStyle = MixerTrackStyle.defaultStyle
     private var usesStripe: Bool { trackStyle == .stripeOnly }
     private var stripeWidth: CGFloat { usesStripe ? MixerTrackStyle.trackStripeWidth : 0 }
@@ -2765,7 +2765,7 @@ enum MixerPanFace {
 #if os(macOS)
 import AppKit
 private struct DirectVolumeSlider: NSViewRepresentable {
-    @AppStorage(JarasInterfaceTheme.preferenceKey) private var interfaceTheme = JarasInterfaceTheme.defaultTheme
+    @WorkspacePreference(JarasInterfaceTheme.preferenceKey) private var interfaceTheme = JarasInterfaceTheme.defaultTheme
     var show: ShowController? = nil
     var groupValues: (() -> [UUID: Double])? = nil
     let identity: TrackControlIdentity
@@ -4159,7 +4159,7 @@ struct FooterMixerPanel: View {
     let active: Bool
     let maximumHeight: CGFloat
     var resizeCoordinator: FooterVerticalResizeCoordinator? = nil
-    @AppStorage("jaras.footerMixerHeight", store: WorkspaceLayoutPreferences.storage) private var storedHeight = Double(FooterHorizontalMixer.minimumDockHeight)
+    @WorkspacePreference("jaras.footerMixerHeight", store: WorkspaceLayoutPreferences.storage) private var storedHeight = Double(FooterHorizontalMixer.minimumDockHeight)
     @State private var resizeStart: CGFloat?
     @State private var resizeHeight: CGFloat?
     @State private var hovering = false
@@ -4340,13 +4340,13 @@ func mixerPanText(_ value: Double) -> String {
 }
 
 struct FooterHorizontalMixer: View {
-    @AppStorage(JarasInterfaceTheme.preferenceKey) private var interfaceTheme = JarasInterfaceTheme.defaultTheme
-    @AppStorage("catlive.barMixer.masterRight") private var masterRight = false
-    @AppStorage("catlive.barMixer.wideTracks") private var wideTracks = false
-    @AppStorage("catlive.barMixer.trackScope") private var scope = HozMixerTrackScope.all
-    @AppStorage("catlive.barMixer.signalFilters") private var signalFilters = 0
-    @AppStorage(HozMixerComponent.globalKey) private var hiddenComponents = 0
-    @AppStorage(HozMixerComponent.tracksKey) private var componentOverrides = Data()
+    @WorkspacePreference(JarasInterfaceTheme.preferenceKey) private var interfaceTheme = JarasInterfaceTheme.defaultTheme
+    @WorkspacePreference("catlive.barMixer.masterRight") private var masterRight = false
+    @WorkspacePreference("catlive.barMixer.wideTracks") private var wideTracks = false
+    @WorkspacePreference("catlive.barMixer.trackScope") private var scope = HozMixerTrackScope.all
+    @WorkspacePreference("catlive.barMixer.signalFilters") private var signalFilters = 0
+    @WorkspacePreference(HozMixerComponent.globalKey) private var hiddenComponents = 0
+    @WorkspacePreference(HozMixerComponent.tracksKey) private var componentOverrides = Data()
     #if os(macOS)
     static let minimumDockHeight: CGFloat = 360.57421875
     #else
@@ -4609,7 +4609,7 @@ private struct HozMixerNativeComponentsButton: UIViewRepresentable {
 #endif
 
 private struct FocusMixerStrips: View {
-    @AppStorage(JarasInterfaceTheme.preferenceKey) private var theme = JarasInterfaceTheme.defaultTheme
+    @WorkspacePreference(JarasInterfaceTheme.preferenceKey) private var theme = JarasInterfaceTheme.defaultTheme
     let show: ShowController
     let state: FooterMixerRenderState
 
@@ -4672,7 +4672,7 @@ private final class FooterMixerStripVersions {
     }
 }
 private struct FooterMixerContent: View, Equatable {
-    @AppStorage(JarasInterfaceTheme.preferenceKey) private var interfaceTheme = JarasInterfaceTheme.defaultTheme
+    @WorkspacePreference(JarasInterfaceTheme.preferenceKey) private var interfaceTheme = JarasInterfaceTheme.defaultTheme
     let show: ShowController
     let active: Bool
     let state: FooterMixerRenderState
@@ -5225,6 +5225,8 @@ private final class FooterMixerScrollView: NSView {
     private var contentWidth: CGFloat = 1
     private var makeContent: ((Range<Int>) -> AnyView)?
     private var retainStrip: (Int) -> Bool = { _ in false }
+    private var reserveRange = 0..<0
+    private var prefersLeadingReserve = false
     private var preparedRange: Range<Int> = 0..<0
     private var trackCount = 1
     private var trackStride: CGFloat = 153
@@ -5357,28 +5359,32 @@ private final class FooterMixerScrollView: NSView {
             cachedStrips.removeValue(forKey: cachedStripOrder.remove(at: victim))?.view.removeFromSuperview()
         }
     }
-    private func prepare(at x: CGFloat, force: Bool = false, beforeScroll: Bool = false) {
+    private func prepare(at x: CGFloat, force: Bool = false, beforeScroll: Bool = false, warmReserve: Bool = false) {
         guard !preparing, let makeContent else { return }
         let viewportWidth = max(1, scroll.contentSize.width > 0 ? scroll.contentSize.width : bounds.width)
         let first = max(0, min(trackCount - 1, Int(max(0, x) / trackStride)))
         let last = min(trackCount, Int(ceil((max(0, x) + viewportWidth) / trackStride)))
-        let margin = 2
-        // A narrowed window must release channels from its former wide viewport.
-        // Retain the usual scroll reserve, but never keep an arbitrarily larger
-        // set of SwiftUI roots in every later window layout pass.
-        if !force && preparedRange.lowerBound <= first && preparedRange.upperBound >= last,
-           preparedRange.count <= last - first + margin * 2 + 1 {
-            // A menu or fader may have finished since the preceding scroll.
-            // In ordinary scrolling the prepared range already owns every
-            // mounted strip. Only scan the hosts if there are retained extras.
+        reserveRange = max(0, first - 2)..<min(trackCount, last + 2)
+        if beforeScroll && x != scroll.contentView.bounds.minX {
+            prefersLeadingReserve = x < scroll.contentView.bounds.minX
+        }
+        // Mount the destination before scrolling. Keep the nearby channels that
+        // already exist, and fill spare positions one at a time between events.
+        let retained = preparedRange.clamped(to: reserveRange)
+        var lower = retained.isEmpty ? first : min(first, retained.lowerBound)
+        var upper = retained.isEmpty ? last : max(last, retained.upperBound)
+        if warmReserve {
+            if lower > reserveRange.lowerBound && (prefersLeadingReserve || upper == reserveRange.upperBound) { lower -= 1 }
+            else if upper < reserveRange.upperBound { upper += 1 }
+        }
+        let next = lower..<upper
+        if !force && next == preparedRange {
             if strips.count > preparedRange.count { releaseUnusedStrips() }
             if beforeScroll { layoutVisibleStrips(in: first..<last) }
             scheduleStripWarmup()
             return
         }
-        // Keep each channel's hosting tree stable. Scrolling must not diff and
-        // relayout an entire screen of controls at every virtualization boundary.
-        preparedRange = max(0, first - margin)..<min(trackCount, last + margin)
+        preparedRange = next
         preparing = true
         releaseUnusedStrips()
         for index in preparedRange {
@@ -5437,15 +5443,19 @@ private final class FooterMixerScrollView: NSView {
         }
     }
     private func scheduleStripWarmup() {
-        guard layoutWarmup == nil, window != nil, !pendingStripLayout.isEmpty else { return }
+        guard layoutWarmup == nil, window != nil,
+              !pendingStripLayout.isEmpty || preparedRange != reserveRange else { return }
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
             self.layoutWarmup = nil
-            guard self.window != nil, !self.isHiddenOrHasHiddenAncestor,
-                  let index = self.pendingStripLayout.min() else { return }
-            if self.strips[index]?.prepareChannelContent() == true {
-                self.pendingStripLayout.remove(index)
-                self.scheduleStripWarmup()
+            guard self.window != nil, !self.isHiddenOrHasHiddenAncestor else { return }
+            if let index = self.pendingStripLayout.min() {
+                if self.strips[index]?.prepareChannelContent() == true {
+                    self.pendingStripLayout.remove(index)
+                    self.scheduleStripWarmup()
+                }
+            } else if self.preparedRange != self.reserveRange {
+                self.prepare(at: self.scroll.contentView.bounds.minX, warmReserve: true)
             }
         }
         layoutWarmup = work
@@ -5676,7 +5686,7 @@ private struct FooterMixerStrip: View, Equatable {
         #endif
         return focused || wide || track == nil ? FooterMixerMetrics.masterWidth : FooterMixerMetrics.width
     }
-    @AppStorage(MixerTrackStyle.hozMixerKey) private var trackStyle = MixerTrackStyle.defaultStyle
+    @WorkspacePreference(MixerTrackStyle.hozMixerKey) private var trackStyle = MixerTrackStyle.defaultStyle
     private var usesStripe: Bool { track != nil && trackStyle == .stripeOnly }
     private var usesNeutralSurface: Bool { track == nil || usesStripe }
     private var nameInk: UInt32 { usesNeutralSurface ? MixerTrackStyle.surfaceTextHex : 0xffffff }
@@ -6626,7 +6636,7 @@ private struct FooterSlotSurface: View {
     static let height: CGFloat = 19
     static let powerWidth: CGFloat = 19
     let tone: Tone
-    @AppStorage(JarasInterfaceTheme.preferenceKey) private var theme = JarasInterfaceTheme.defaultTheme
+    @WorkspacePreference(JarasInterfaceTheme.preferenceKey) private var theme = JarasInterfaceTheme.defaultTheme
 
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: Self.radius)
