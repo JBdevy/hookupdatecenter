@@ -29,6 +29,35 @@ import Foundation
     library.refresh()
     precondition(library.installed.contains("astoria-grand") && library.downloaded.contains("astoria-grand"), "Reinstallation becomes available")
     print("INSTRUMENT_UNINSTALL_PRESERVES_PROJECT_AND_REFRESHES_CATALOG_OK")
+
+    let users = library.directory.appendingPathComponent("User", isDirectory: true)
+    let banks = bundled.deletingLastPathComponent()
+    try fm.createDirectory(at: users, withIntermediateDirectories: true)
+    let sharedID = "user-UGlhbm8" // Piano
+    let projectID = "user-QmFzcw" // Bass
+    let sharedFile = sharedID + ".sf2"
+    try bytes.write(to: users.appendingPathComponent(sharedFile))
+    try bytes.write(to: banks.appendingPathComponent(sharedFile))
+    try bytes.write(to: banks.appendingPathComponent(projectID + ".sf2"))
+    let mixedCaseBank = library.directory.appendingPathComponent("BrIGht-GrAnd.SF2")
+    try bytes.write(to: mixedCaseBank)
+    try fm.createSymbolicLink(at: library.file("c7-grand"), withDestinationURL: outside)
+    try fm.createSymbolicLink(at: library.file("cfx-premium"), withDestinationURL: root.appendingPathComponent("missing.sf2"))
+    library.setProjectDirectory(project)
+    precondition(Set(library.imported.map(\.id)) == [sharedID, projectID])
+    precondition(library.installed.contains(sharedID) && !library.installed.contains(projectID))
+    precondition(library.downloaded.contains(sharedID) && library.downloaded.contains(projectID))
+    precondition(library.resolvedFile(sharedID, projectDirectory: project) == banks.appendingPathComponent(sharedFile))
+    precondition(library.installed.contains("bright-grand") == fm.fileExists(atPath: library.file("bright-grand").path))
+    precondition(library.installed.contains("c7-grand") && !library.installed.contains("cfx-premium"))
+    try fm.removeItem(at: banks.appendingPathComponent(sharedFile))
+    library.refresh()
+    precondition(library.resolvedFile(sharedID, projectDirectory: project) == users.appendingPathComponent(sharedFile))
+    try fm.setAttributes([.posixPermissions: 0o111], ofItemAtPath: library.directory.path)
+    defer { try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: library.directory.path) }
+    library.refresh()
+    precondition(library.installed.contains("astoria-grand"), "An unlistable directory still resolves a known bank")
+    print("INSTRUMENT_REFRESH_CASE_SYMLINKS_PROJECT_PRECEDENCE_AND_SEARCH_ONLY_DIRECTORY_OK")
 }
 DispatchQueue.main.async { do { try run(); exit(0) } catch { print(error); exit(1) } }
 RunLoop.main.run()

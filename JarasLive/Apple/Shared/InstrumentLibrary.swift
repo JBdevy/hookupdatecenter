@@ -344,7 +344,10 @@ struct LibraryInstrument: Identifiable, Equatable {
     var entries: [LibraryInstrument] { Self.catalog + imported }
     @Published private(set) var installed: Set<String> = []
     @Published private(set) var progress: [String:Double] = [:]
-    @Published private(set) var sources: [String:URL] = [:]
+    private static let catalogSources = Dictionary(uniqueKeysWithValues: catalog.compactMap { instrument in
+        instrument.url.map { (instrument.id, $0) }
+    })
+    var sources: [String:URL] { Self.catalogSources }
     @Published var error = ""
     private var jobs: [String:Task<Void,Never>] = [:]
     private var projectDirectory: URL?
@@ -394,12 +397,37 @@ struct LibraryInstrument: Identifiable, Equatable {
         }
         let userInstruments = userBanks.values.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
         if imported != userInstruments { imported = userInstruments }
-        let local = Set(entries.filter { FileManager.default.fileExists(atPath: file($0.id).path) }.map(\.id))
+        let catalogIDs = Self.catalog.map(\.id)
+        let importedIDs = userInstruments.map(\.id)
+        let local = existingBanks(catalogIDs, in: directory).union(existingBanks(importedIDs, in: userFolder))
         if installed != local { installed = local }
-        let available = Set(entries.filter { resolvedFile($0.id, projectDirectory: projectDirectory) != nil }.map(\.id))
+        let bundled = projectBanks.map { folder in
+            existingBanks((catalogIDs + importedIDs).filter { !local.contains($0) }, in: folder)
+        } ?? []
+        let available = local.union(bundled)
         if downloaded != available { downloaded = available }
-        let catalogSources = Dictionary(uniqueKeysWithValues: Self.catalog.compactMap { instrument in instrument.url.map { (instrument.id, $0) } })
-        if sources != catalogSources { sources = catalogSources }
+    }
+
+    private func existingBanks(_ ids: [String], in folder: URL) -> Set<String> {
+        guard !ids.isEmpty else { return [] }
+        let manager = FileManager.default
+        let names: Set<String>?
+        do {
+            let files = try manager.contentsOfDirectory(atPath: folder.path)
+            guard !files.isEmpty else { return [] }
+            names = Set(files.map { $0.lowercased() })
+        } catch CocoaError.fileReadNoSuchFile {
+            return []
+        } catch {
+            // Search-only directories can still resolve a bank by its known name.
+            names = nil
+        }
+        return Set(ids.filter { id in
+            let filename = id + ".sf2"
+            guard names?.contains(filename.lowercased()) != false else { return false }
+            // Ask the volume to resolve the canonical spelling and follow symlinks.
+            return manager.fileExists(atPath: folder.appendingPathComponent(filename).path)
+        })
     }
 
     func importSoundFonts(_ files: [URL]) async {

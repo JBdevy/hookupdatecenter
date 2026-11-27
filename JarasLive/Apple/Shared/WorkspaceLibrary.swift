@@ -1544,16 +1544,17 @@ struct WorkspaceLibrary: View {
         .background(theme.mixerPanelBackground)
         .foregroundStyle(JarasTheme.text)
         .accessibilityIdentifier("workspace-library-panel")
-        .onAppear {
+        // Prepare each catalog when its folder is visible. Opening a collapsed
+        // Library during playback should only mount its navigation controls.
+        .task(id: samplersOnly || samplersExpanded) {
+            guard samplersOnly || samplersExpanded else { return }
             refreshPadSamples()
-            if samplersOnly {
-                if selection == nil {
-                    selection = samplerPickerEntries.first?.target
-                }
-            } else {
-                instruments.refresh(); loadPresets()
+            if samplersOnly && selection == nil {
+                selection = samplerPickerEntries.first?.target
             }
         }
+        .task(id: instrumentsExpanded) { if instrumentsExpanded { instruments.refresh() } }
+        .task(id: presetsExpanded) { if presetsExpanded { loadPresets() } }
         .onReceive(show.libraryTimelineSelection.openedPane) { pane in
             if pane == .dock && (selection == .regions || selection == .markers) { selection = nil }
         }
@@ -2277,7 +2278,11 @@ struct WorkspaceLibrary: View {
     }
 
     private func refreshPadSamples() {
-        hasPadSamples = !padSamplers().isEmpty
+        let files = try? FileManager.default.contentsOfDirectory(at: VinhetasController.shared.padSampleDirectory,
+            includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles])
+        hasPadSamples = files?.contains {
+            VinhetasPad.accepts($0) && (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+        } ?? false
         if !hasPadSamples && selection == .padSamplers { selection = nil }
         if selection == .padSamplers || selection == .favoriteSamplers { loadSamplers() }
     }

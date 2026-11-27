@@ -4913,7 +4913,8 @@ private struct FooterMixerStripGeometry: NSViewRepresentable {
     }
 }
 private final class FooterMixerStripGeometryView: NSView {
-    private let slots = FooterMixerHostingView(rootView: AnyView(EmptyView()))
+    private var slots: FooterMixerHostingView?
+    private var pendingSlots: AnyView?
     private let footer = FooterMixerHostingView(rootView: AnyView(EmptyView()))
     private var iconHeight: CGFloat = 0
     private var makeFooter: ((CGFloat) -> AnyView)?
@@ -4941,14 +4942,15 @@ private final class FooterMixerStripGeometryView: NSView {
         layer?.addSublayer(footerBand)
         bottomSelection.backgroundColor = NSColor.white.withAlphaComponent(0.65).cgColor
         layer?.addSublayer(bottomSelection)
-        for view in [slots, footer] {
-            if #available(macOS 13, *) { view.sizingOptions = [] }
-            if #available(macOS 13.3, *) { view.safeAreaRegions = [] }
-            view.autoresizingMask = []; view.wantsLayer = true; view.clipsToBounds = true
-            addSubview(view)
-        }
+        configureHost(footer)
+        addSubview(footer)
     }
     required init?(coder: NSCoder) { fatalError() }
+    private func configureHost(_ view: FooterMixerHostingView) {
+        if #available(macOS 13, *) { view.sizingOptions = [] }
+        if #available(macOS 13.3, *) { view.safeAreaRegions = [] }
+        view.autoresizingMask = []; view.wantsLayer = true; view.clipsToBounds = true
+    }
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation { draggingUpdated(sender) }
     override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
         libraryDrop?.operation(for: sender, in: self) ?? []
@@ -4983,11 +4985,11 @@ private final class FooterMixerStripGeometryView: NSView {
         guard contentKey == nil || self.contentKey != contentKey || self.iconHeight != iconHeight else { return }
         self.contentKey = contentKey
         self.iconHeight = iconHeight; makeFooter = footer
-        self.slots.rootView = AnyView(slots.workspaceControlsAppearActive()); controlsHeight = nil; needsLayout = true
+        pendingSlots = slots; controlsHeight = nil; needsLayout = true
     }
     func prepareForDisplay() {
         layoutSubtreeIfNeeded()
-        slots.layoutSubtreeIfNeeded()
+        if let slots, !slots.isHidden { slots.layoutSubtreeIfNeeded() }
         footer.layoutSubtreeIfNeeded()
     }
     override func layout() {
@@ -5005,8 +5007,26 @@ private final class FooterMixerStripGeometryView: NSView {
         let width = max(0, bounds.width - 2 * inset)
         let top = NSRect(x: inset, y: inset, width: width, height: layout.slotsHeight)
         let bottom = NSRect(x: inset, y: top.maxY, width: width, height: layout.controlsHeight + FooterMixerStripLayout.labelHeight + iconHeight)
-        if slots.isHidden != (top.height <= 0) { slots.isHidden = top.height <= 0 }
-        if slots.frame != top { slots.frame = top }
+        // Compact channels have no room for FX or sends. Install their nested
+        // controls the first time they can be seen and keep focus on later resizes.
+        let showsSlots = top.height > 0 && top.width > 0
+        if showsSlots, let pendingSlots {
+            let content = AnyView(pendingSlots.workspaceControlsAppearActive())
+            if let slots {
+                slots.rootView = content
+            } else {
+                let view = FooterMixerHostingView(rootView: content)
+                configureHost(view)
+                view.frame = top
+                addSubview(view, positioned: .below, relativeTo: footer)
+                slots = view
+            }
+            self.pendingSlots = nil
+        }
+        if let slots {
+            if slots.isHidden == showsSlots { slots.isHidden = !showsSlots }
+            if slots.frame != top { slots.frame = top }
+        }
         if footer.frame != bottom { footer.frame = bottom }
         updateDecorationFrames()
     }
