@@ -1814,6 +1814,8 @@ struct PitchFormantKernel {
 }
 @end
 
+#include "JarasConvolution.inc"
+
 BOOL JarasRequestNativePlaybackReset(AVAudioUnit *node) {
     AUAudioUnit *unit = node.AUAudioUnit;
     if ([unit isKindOfClass:JarasVoiceGainUnit.class]) {
@@ -1826,6 +1828,8 @@ BOOL JarasRequestNativePlaybackReset(AVAudioUnit *node) {
         ((JarasDynamicsAudioUnit *)unit)->kernel.resetRequested.store(true, std::memory_order_release);
     } else if ([unit isKindOfClass:JarasPitchFormantUnit.class]) {
         ((JarasPitchFormantUnit *)unit)->kernel.resetRequested.store(true, std::memory_order_release);
+    } else if ([unit isKindOfClass:JarasConvolutionUnit.class]) {
+        ((JarasConvolutionUnit *)unit)->kernel.resetRequested.store(true, std::memory_order_relaxed);
     } else if ([unit isKindOfClass:JarasCreativeAudioUnit.class]) {
         ((JarasCreativeAudioUnit *)unit)->kernel.resetRequested.store(true, std::memory_order_release);
     } else {

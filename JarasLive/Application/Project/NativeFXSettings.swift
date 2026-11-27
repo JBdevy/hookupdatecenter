@@ -307,6 +307,27 @@ public struct NativeArpeggiatorSettings: Codable, Equatable, Sendable {
     }
 }
 
+public struct NativeConvolutionSettings: Codable, Equatable, Sendable {
+    public static let presets = ["Room 1", "Room 2", "Hall 1", "Hall 2"]
+    public var preset = 0
+    public var mix = 20.0
+    public var impulsePath: String?
+    public init() {}
+
+    func validate() throws {
+        guard Self.presets.indices.contains(preset), (0...100).contains(mix) else {
+            throw ProjectError.invalid("Invalid convolution reverb settings.")
+        }
+        if let path = impulsePath {
+            guard !path.isEmpty, !path.hasPrefix("/"), !path.contains("\\"), !path.contains(":"),
+                  path.split(separator: "/", omittingEmptySubsequences: false).allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }),
+                  ["wav", "aif", "aiff"].contains(URL(fileURLWithPath: path).pathExtension.lowercased()) else {
+                throw ProjectError.invalid("Invalid impulse response path.")
+            }
+        }
+    }
+}
+
 public struct NativeFXSettings: Codable, Equatable, Sendable {
     public var instances: [NativeFXInstance]?
 
@@ -314,8 +335,15 @@ public struct NativeFXSettings: Codable, Equatable, Sendable {
     public var instrumentID: String?
     public var instrumentParameters: InstrumentParameters?
     public var inserted: [String] = []
-    public static let order = ["Instruments", "CatSynth", "Arpeggiator", "EQ", "Compressor", "Pitch", "Delay", "Reverb", "Limiter", "CatLive Trigger", "Cat Gate"] + DrummerPadKind.allCases.map(\.rawValue) + NativeCreativeEffect.allCases.map(\.rawValue)
+    public static let order = ["Instruments", "CatSynth", "Arpeggiator", "EQ", "Compressor", "Pitch", "Delay", "Reverb", reverbConvolution, "Limiter", "CatLive Trigger", "Cat Gate"] + DrummerPadKind.allCases.map(\.rawValue) + NativeCreativeEffect.allCases.map(\.rawValue)
     public static let stemSeparator = "CatStemSeparation 5"
+    public static let reverbConvolution = "Reverb-Convolution"
+    public var convolutionEnabled: Bool?
+    public var convolution: NativeConvolutionSettings?
+    public var convolutionParameters: NativeConvolutionSettings {
+        get { convolution ?? NativeConvolutionSettings() }
+        set { convolution = newValue }
+    }
     public var catSynth: CatSynthBank?
     public var catSynthEnabled: Bool?
     public var drummer16: DrummerPadKit?
@@ -457,6 +485,7 @@ public struct NativeFXSettings: Codable, Equatable, Sendable {
         try drummer16?.validate(.compact)
         try drummer48?.validate(.full)
         try trigger?.validate()
+        try convolution?.validate()
         try gate?.validate()
         try stemMix?.validate()
         try limiter?.validate()
@@ -595,12 +624,14 @@ extension NativeFXSettings {
     public func isEnabled(_ effect: String) -> Bool {
         if let instance = instances?.first(where: { $0.effectKey == effect }) { return instance.settings.isEnabled(instance.kind) }
         if let plugin = externalPlugins?.first(where: { $0.effectKey == effect }) { return !plugin.bypassed }
+        if effect == Self.reverbConvolution { return convolutionEnabled == true }
         if effect == NativeCreativeEffect.graphicEQ.rawValue { return graphicEQEnabled == true }
         switch effect { case "CatSynth": return catSynthEnabled == true; case "Drummer Pad 16": return drummer16Enabled == true; case "Drummer Pad 48": return drummer48Enabled == true; case "Arpeggiator": return arpeggiatorEnabled == true; case "Chorus": return chorusEnabled == true; case "Phaser": return phaserEnabled == true; case "Amp": return ampEnabled == true; case "Soft Clipper": return softClipperEnabled == true; case "Gate Divisor": return divisionGateEnabled == true; case "CatLive Trigger": return triggerEnabled == true; case "Cat Gate": return gateEnabled == true; case Self.stemSeparator: return false; case "Instruments": return instrumentID != nil && instrumentBypassed != true; case "EQ": return eqEnabled; case "Compressor": return compressorEnabled; case "Limiter": return limiterEnabled == true; case "Pitch": return pitchEnabled == true; case "Delay": return delayEnabled; case "Reverb": return reverbEnabled; default: return false }
     }
     public mutating func setEnabled(_ effect: String, enabled: Bool) {
         if let index = instances?.firstIndex(where: { $0.effectKey == effect }), let kind = instances?[index].kind { instances?[index].settings.setEnabled(kind, enabled: enabled); return }
         if let index = externalPlugins?.firstIndex(where: { $0.effectKey == effect }) { externalPlugins?[index].bypassed = !enabled; return }
+        if effect == Self.reverbConvolution { convolutionEnabled = enabled; return }
         if effect == NativeCreativeEffect.graphicEQ.rawValue { graphicEQEnabled = enabled; return }
         switch effect { case "CatSynth": catSynthEnabled = enabled; case "Drummer Pad 16": drummer16Enabled = enabled; case "Drummer Pad 48": drummer48Enabled = enabled; case "Arpeggiator": arpeggiatorEnabled = enabled; case "Chorus": chorusEnabled = enabled; case "Phaser": phaserEnabled = enabled; case "Amp": ampEnabled = enabled; case "Soft Clipper": softClipperEnabled = enabled; case "Gate Divisor": divisionGateEnabled = enabled; case "CatLive Trigger": triggerEnabled = enabled; case "Cat Gate": gateEnabled = enabled; case Self.stemSeparator:
             stemSeparatorEnabled = enabled
@@ -619,6 +650,11 @@ extension NativeFXSettings {
         if let creative = NativeCreativeEffect(rawValue: effect) {
             next.setEnabled(effect, enabled: draft.isEnabled(effect))
             next.setCreativeParameters(draft.creativeParameters(creative), for: creative)
+            return next
+        }
+        if effect == Self.reverbConvolution {
+            next.convolutionEnabled = draft.convolutionEnabled
+            next.convolution = draft.convolution
             return next
         }
         next.setChannels(draft.channels(for: effect), for: effect)
@@ -666,11 +702,13 @@ public extension NativeFXSettings {
     var samplePaths: Set<String> {
         var paths = Set<String>()
         if inserted.contains("CatLive Trigger"), let path = trigger?.samplePath { paths.insert(path) }
+        if inserted.contains(Self.reverbConvolution), let path = convolution?.impulsePath { paths.insert(path) }
         for instance in instances ?? [] where inserted.contains(instance.effectKey) { paths.formUnion(instance.settings.samplePaths) }
         return paths
     }
     mutating func remapSamples(_ mapping: [String:String]) {
         if let path = trigger?.samplePath, let replacement = mapping[path] { trigger?.samplePath = replacement }
+        if let path = convolution?.impulsePath, let replacement = mapping[path] { convolution?.impulsePath = replacement }
         for i in (instances ?? []).indices { instances?[i].settings.remapSamples(mapping) }
     }
 }

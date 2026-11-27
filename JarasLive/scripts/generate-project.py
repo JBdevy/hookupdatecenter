@@ -32,7 +32,7 @@ for name in ['LICENSE-stretch.txt','LICENSE-linear.txt']:
  macLegalRefs.append(add('signalsmith:'+name, f'isa = PBXFileReference; lastKnownFileType = text; path = {q("Windows/ThirdParty/Signalsmith/"+name)}; sourceTree = SOURCE_ROOT;'))
 smkFirmware=add('smkFirmware', 'isa = PBXFileReference; lastKnownFileType = folder; path = Resources/SMK37; sourceTree = SOURCE_ROOT;')
 smkTools=add('smkTools', 'isa = PBXFileReference; lastKnownFileType = folder; path = Apple/Resources/SMK37Tools; sourceTree = SOURCE_ROOT;')
-nativeAssets=[add('catliveAsset:'+name, f'isa = PBXFileReference; lastKnownFileType = folder; path = Resources/{name}; sourceTree = SOURCE_ROOT;') for name in ['NativeSamples','TrackIcons','ControlIcons','MIDIChords','Fonts/Inter']]
+nativeAssets=[add('catliveAsset:'+name, f'isa = PBXFileReference; lastKnownFileType = folder; path = Resources/{name}; sourceTree = SOURCE_ROOT;') for name in ['NativeSamples','TrackIcons','ControlIcons','MIDIChords','Fonts/Inter','ConvolutionIR']]
 toolbarSymbols=add('desktopToolbarSymbols', 'isa = PBXFileReference; lastKnownFileType = text; path = Resources/DesktopToolbarSymbols.def; sourceTree = SOURCE_ROOT;')
 nativeAssets.append(toolbarSymbols)
 stemWorker=add('stemWorker', 'isa = PBXFileReference; lastKnownFileType = folder; path = Apple/Resources/StemSeparation; sourceTree = SOURCE_ROOT;')

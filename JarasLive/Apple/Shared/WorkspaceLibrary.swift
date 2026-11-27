@@ -1262,7 +1262,7 @@ struct WorkspaceLibrary: View {
 
     private static let nativeTypes: [String: String] = [
         "EQ": "EQ", "Compressor": "Dynamics", "Pitch": "Pitch Shift", "Delay": "Delay",
-        "Reverb": "Reverb", "Limiter": "Dynamics", "CatLive Trigger": "Trigger", "Cat Gate": "Dynamics",
+        "Reverb": "Reverb", NativeFXSettings.reverbConvolution: "Reverb", "Limiter": "Dynamics", "CatLive Trigger": "Trigger", "Cat Gate": "Dynamics",
         "Chorus": "Modulation", "Phaser": "Modulation", "Amp": "Distortion", "Soft Clipper": "Dynamics", "Gate Divisor": "Dynamics", "Arpeggiator": "MIDI", "Drummer Pad 16": "Instrument", "Drummer Pad 48": "Instrument", "CatSynth": "Instrument", "EQ - 31 Band": "EQ"
     ]
 

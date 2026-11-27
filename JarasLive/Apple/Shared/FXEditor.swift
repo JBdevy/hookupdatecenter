@@ -34,6 +34,9 @@ struct FXEditor: View {
     @State private var choosingSample = false
     @State private var sampleBusy = false
     @State private var sampleError = ""
+    @State private var choosingImpulse = false
+    @State private var impulseBusy = false
+    @State private var impulseError = ""
     init(show: ShowController, track: UUID?, clip: UUID? = nil, clipChainEditor: Bool = false, effect: String, close: @escaping () -> Void) {
         self.show = show; self.track = track; self.clip = clip; self.clipChainEditor = clipChainEditor; self.close = close; effectKey = effect; project = show.snapshot.project.id
         let chain = clip.map { show.clipFXSettings($0) } ?? show.fxSettings(track)
@@ -63,7 +66,7 @@ struct FXEditor: View {
         #endif
     }
     private var audioTarget: UUID? { clip ?? track }
-    private var compactControls: Bool { page == "Delay" || page == "Reverb" || NativeCreativeEffect(rawValue: page) != nil }
+    private var compactControls: Bool { page == "Delay" || page == "Reverb" || page == NativeFXSettings.reverbConvolution || NativeCreativeEffect(rawValue: page) != nil }
     private func remove() {
         if let clip { show.removeClipFX(clip, effect: effectKey) }
         else { show.removeFX(track, effect: effectKey) }
@@ -150,6 +153,8 @@ struct FXEditor: View {
                 if let effect = NativeCreativeEffect(rawValue: page) { creativeEditor(effect) }
             case "EQ - 31 Band":
                 graphicEQEditor
+            case NativeFXSettings.reverbConvolution:
+                convolutionEditor
             default:
                 HStack {
                     Toggle(enabledTitle, isOn: $settings.reverbEnabled).toggleStyle(.switch).tint(JarasTheme.green).mapFXMIDI(.enabled, name: "Enabled", range: 0...1)
@@ -394,6 +399,65 @@ struct FXEditor: View {
                 FXKnob("Low-pass", value: Binding(get: { settings.gateParameters.lowPass }, set: { settings.gateParameters.lowPass = max($0, settings.gateParameters.highPass) }), range: 20...20000, unit: "Hz", logarithmic: true, reset: 20000, parameter: .gateLowPass)
             }
             }.padding(18).nativeFXRack()
+        }
+    }
+    private var convolutionEditor: some View {
+        let preset = Binding(
+            get: { settings.convolutionParameters.impulsePath == nil ? settings.convolutionParameters.preset : -1 },
+            set: { index in
+                guard NativeConvolutionSettings.presets.indices.contains(index) else { return }
+                settings.convolutionParameters.preset = index
+                settings.convolutionParameters.impulsePath = nil
+                impulseError = ""
+            })
+        return VStack(alignment: .leading, spacing: 12) {
+            Toggle(enabledTitle, isOn: Binding(get: { settings.convolutionEnabled == true },
+                                              set: { settings.convolutionEnabled = $0 }))
+                .toggleStyle(.switch).tint(JarasTheme.green)
+            HStack(spacing: 20) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Picker("Impulse response", selection: preset) {
+                        ForEach(NativeConvolutionSettings.presets.indices, id: \.self) { index in
+                            Text(verbatim: NativeConvolutionSettings.presets[index]).tag(index)
+                        }
+                        if let path = settings.convolutionParameters.impulsePath {
+                            Text(verbatim: URL(fileURLWithPath: path).lastPathComponent).tag(-1)
+                        }
+                    }
+                    Button("Load impulse response…") { choosingImpulse = true }.disabled(impulseBusy)
+                    if !impulseError.isEmpty { Text(verbatim: impulseError).foregroundStyle(.red) }
+                }
+                Spacer()
+                FXKnob("Mix", value: $settings.convolutionParameters.mix, range: 0...100, unit: "%", reset: 20)
+            }.padding(18).nativeFXRack()
+        }.fileImporter(isPresented: $choosingImpulse, allowedContentTypes: ["wav", "aiff", "aif"].compactMap { UTType(filenameExtension: $0) }) { result in
+            switch result {
+            case .success(let url): importImpulse(url)
+            case .failure(let error): impulseError = error.localizedDescription
+            }
+        }
+    }
+    private func importImpulse(_ source: URL) {
+        guard show.canControl(), let directory = drumAudio.mediaDirectory else {
+            impulseError = String(localized: "Save the project before loading an impulse response.")
+            return
+        }
+        impulseBusy = true
+        impulseError = ""
+        Task {
+            defer { impulseBusy = false }
+            do {
+                let path = try await Task.detached(priority: .userInitiated) {
+                    try ImpulseResponseImport.copy(source, to: directory)
+                }.value
+                let chain = clip.map { show.clipFXSettings($0) } ?? show.fxSettings(track)
+                guard show.canControl(), show.snapshot.project.id == project, chain.inserted.contains(effectKey),
+                      drumAudio.mediaDirectory == directory else {
+                    try? FileManager.default.removeItem(at: directory.appendingPathComponent(path))
+                    return
+                }
+                settings.convolutionParameters.impulsePath = path
+            } catch { impulseError = error.localizedDescription }
         }
     }
     private func importSample(_ source: URL) {

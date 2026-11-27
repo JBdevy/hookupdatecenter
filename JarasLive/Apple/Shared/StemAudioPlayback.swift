@@ -3937,7 +3937,7 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         guard let voice = voices.removeValue(forKey: key) else { return }
         if let position, voice.clip.muted != true, voice.clip.fxBypassed != true, (voice.clip.gain ?? 1) > 0,
            let settings = voice.clip.fx, voice.effects != nil {
-            var duration = voice.effects?.triggerTailDuration ?? 0
+            var duration = voice.effects?.sampleEffectTailDuration ?? 0
             if settings.delayEnabled && settings.delayMix > 0 {
                 let repeats = settings.feedback <= 0 ? 1 : max(1, ceil(log(0.001) / log(settings.feedback / 100)))
                 duration += min(120, settings.delayTime * repeats)

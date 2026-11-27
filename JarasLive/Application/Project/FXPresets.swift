@@ -34,6 +34,7 @@ public struct FXPreset: Codable, Equatable, Identifiable {
             isolated.inserted = [kind]; isolated.setEnabled(kind, enabled: true)
             // Samples belong to the current project, not the global parameter preset.
             if kind == "CatLive Trigger" { isolated.trigger?.samplePath = nil }
+            if kind == NativeFXSettings.reverbConvolution { isolated.convolution?.impulsePath = nil }
             try isolated.validate()
             native = isolated
         }

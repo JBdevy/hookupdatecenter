@@ -220,6 +220,11 @@ NS_ASSUME_NONNULL_BEGIN
 - (nullable NSData *)nextPacket;
 @end
 
+@interface JarasConvolution : NSObject
++ (AVAudioUnitEffect *)makeNode;
++ (void)configure:(AVAudioUnitEffect *)node enabled:(BOOL)enabled mix:(float)mix response:(nullable NSURL *)url;
+@end
+
 @interface JarasCreativeEffects : NSObject
 + (float)gainReduction:(AVAudioUnitEffect *)node;
 + (AVAudioUnitEffect *)makeEffect:(NSInteger)kind;

@@ -445,7 +445,7 @@ private final class FXChainEffectNameView: NSTextField {
                 content = host
             }
             let kind = settings.kind(of: effect)
-            let compactControls = kind == "Delay" || kind == "Reverb"
+            let compactControls = kind == "Delay" || kind == "Reverb" || kind == NativeFXSettings.reverbConvolution
             if kind == "CatSynth" {
                 let frame = NSRect(x: 0, y: 0, width: 1047, height: 713)
                 let minimum = panel?.contentRect(forFrameRect: frame).size ?? frame.size

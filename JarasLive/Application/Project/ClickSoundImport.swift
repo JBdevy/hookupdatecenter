@@ -21,6 +21,39 @@ public enum ClickSoundImport {
     }
 }
 
+public enum ImpulseResponseImport {
+    public static func copy(_ source: URL, to directory: URL) throws -> String {
+        let formats = ["wav", "aif", "aiff"]
+        guard formats.contains(source.pathExtension.lowercased()) else {
+            throw ProjectError.invalid("Choose a WAV or AIFF impulse response.")
+        }
+        let scoped = source.startAccessingSecurityScopedResource()
+        defer { if scoped { source.stopAccessingSecurityScopedResource() } }
+        let audio = try AVAudioFile(forReading: source, commonFormat: .pcmFormatFloat32, interleaved: false)
+        let rate = audio.processingFormat.sampleRate
+        let channels = Int(audio.processingFormat.channelCount)
+        guard audio.length > 0, (1...2).contains(channels), (8000...384000).contains(rate),
+              Double(audio.length) <= 10 * rate,
+              let buffer = AVAudioPCMBuffer(pcmFormat: audio.processingFormat, frameCapacity: 4096) else {
+            throw ProjectError.invalid("Choose a mono or stereo impulse response up to 10 seconds.")
+        }
+        var energy = 0.0
+        while audio.framePosition < audio.length {
+            try audio.read(into: buffer)
+            guard buffer.frameLength > 0, let samples = buffer.floatChannelData else { break }
+            for channel in 0..<channels {
+                for frame in 0..<Int(buffer.frameLength) {
+                    let sample = Double(samples[channel][frame])
+                    guard sample.isFinite else { throw ProjectError.invalid("The impulse response contains invalid samples.") }
+                    energy += sample * sample
+                }
+            }
+        }
+        guard energy > 1e-12 else { throw ProjectError.invalid("The impulse response is silent.") }
+        return try ClickSoundImport.copy(source, to: directory).path
+    }
+}
+
 public enum TriggerSampleImport {
     public static func copy(_ source: URL, to directory: URL) throws -> String {
         guard ["wav","mp3"].contains(source.pathExtension.lowercased()) else {

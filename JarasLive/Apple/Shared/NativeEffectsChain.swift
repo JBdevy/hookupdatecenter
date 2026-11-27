@@ -95,12 +95,19 @@ final class NativeEffectsChain {
             if mediaDirectory != oldValue { triggerSamplePaths.removeAll(); settings = nil }
         }
     }
-    var triggerTailDuration: Double {
+    var sampleEffectTailDuration: Double {
         guard let settings else { return 0 }
         return settings.effectKeys.reduce(0) { total, key in
-            guard settings.kind(of: key) == "CatLive Trigger", settings.isEnabled(key),
-                  let node = key == "CatLive Trigger" ? trigger : instanceNodes[key] as? AVAudioUnitEffect else { return total }
-            return total + JarasDynamics.triggerSampleDuration(node)
+            guard settings.isEnabled(key) else { return total }
+            switch settings.kind(of: key) {
+            case "CatLive Trigger":
+                guard let node = key == "CatLive Trigger" ? trigger : instanceNodes[key] as? AVAudioUnitEffect else { return total }
+                return total + JarasDynamics.triggerSampleDuration(node)
+            case NativeFXSettings.reverbConvolution:
+                return total + (creativeNodes[key]?.auAudioUnit.tailTime ?? 0)
+            default:
+                return total
+            }
         }
     }
     private var triggerSamplePaths: [String: String] = [:]
@@ -159,23 +166,49 @@ final class NativeEffectsChain {
     private var creativeNodes: [String: AVAudioUnitEffect] = [:]
     private func configureCreativeEffects(_ next: NativeFXSettings) {
         for key in next.effectKeys {
-            guard let kind = NativeCreativeEffect(rawValue: next.kind(of: key)) else { continue }
+            let name = next.kind(of: key)
+            let isConvolution = name == NativeFXSettings.reverbConvolution
+            let kind = NativeCreativeEffect(rawValue: name)
+            guard isConvolution || kind != nil else { continue }
             let value = next.settings(for: key)
             let node: AVAudioUnitEffect
             if let existing = creativeNodes[key] {
                 if settings?.settings(for: key) == value { continue }
                 node = existing
             } else {
-                guard let index = NativeCreativeEffect.allCases.firstIndex(of: kind) else { continue }
-                node = JarasCreativeEffects.makeEffect(index + 1)
+                if isConvolution { node = JarasConvolution.makeNode() }
+                else {
+                    guard let kind, let index = NativeCreativeEffect.allCases.firstIndex(of: kind) else { continue }
+                    node = JarasCreativeEffects.makeEffect(index + 1)
+                }
                 creativeNodes[key] = node
                 engine?.attach(node)
                 if kind == .divisionGate { JarasCreativeEffects.setTempoMap(node, points: externalTempoPoints) }
             }
-            let parameters = value.creativeParameters(kind) ?? [:]
-            JarasCreativeEffects.configure(node, enabled: value.isEnabled(kind.rawValue),
-                parameters: kind.parameters.map { NSNumber(value: parameters[$0.key] ?? $0.initial) })
+            if let kind {
+                let parameters = value.creativeParameters(kind) ?? [:]
+                JarasCreativeEffects.configure(node, enabled: value.isEnabled(kind.rawValue),
+                    parameters: kind.parameters.map { NSNumber(value: parameters[$0.key] ?? $0.initial) })
+            } else {
+                configureConvolution(node, settings: value)
+            }
         }
+    }
+    private static let convolutionPresets = NativeConvolutionSettings.presets.map {
+        Bundle.main.url(forResource: $0, withExtension: "wav", subdirectory: "ConvolutionIR")
+    }
+    private func configureConvolution(_ node: AVAudioUnitEffect, settings: NativeFXSettings) {
+        let parameters = settings.convolutionParameters
+        let response: URL?
+        if let path = parameters.impulsePath {
+            response = mediaDirectory?.appendingPathComponent(path, isDirectory: false)
+        } else if Self.convolutionPresets.indices.contains(parameters.preset) {
+            response = Self.convolutionPresets[parameters.preset]
+        } else {
+            response = nil
+        }
+        JarasConvolution.configure(node, enabled: settings.convolutionEnabled == true,
+                                   mix: Float(parameters.mix / 100), response: response)
     }
     var hasClockedEffects: Bool {
         #if os(macOS)
@@ -222,7 +255,8 @@ final class NativeEffectsChain {
     private func configureInstances(_ next: NativeFXSettings, rate: Double) {
         for instance in next.instances ?? [] where next.inserted.contains(instance.effectKey) {
             let key = instance.effectKey, value = instance.settings
-            guard DrummerPadKind(rawValue: instance.kind) == nil, instance.kind != "Arpeggiator", instance.kind != "CatSynth", NativeCreativeEffect(rawValue: instance.kind) == nil else { continue }
+            guard DrummerPadKind(rawValue: instance.kind) == nil, instance.kind != "Arpeggiator", instance.kind != "CatSynth",
+                  instance.kind != NativeFXSettings.reverbConvolution, NativeCreativeEffect(rawValue: instance.kind) == nil else { continue }
             let node: AVAudioNode
             if let existing = instanceNodes[key] { node = existing }
             else {

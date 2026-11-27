@@ -1,11 +1,12 @@
 import Foundation
 import AVFoundation
-@MainActor func render(_ settings: NativeFXSettings, rate: Double, frequency: Double? = 1000, duration: Double = 1, item: Bool = false, analysis: Bool = true, directDestination: Bool = false, creativeTempo: Double? = nil, minimumReduction: Double? = nil) throws -> [[Float]] {
+@MainActor func render(_ settings: NativeFXSettings, rate: Double, frequency: Double? = 1000, duration: Double = 1, item: Bool = false, analysis: Bool = true, directDestination: Bool = false, creativeTempo: Double? = nil, minimumReduction: Double? = nil, mediaDirectory: URL? = nil) throws -> [[Float]] {
     let engine = AVAudioEngine()
     let format = AVAudioFormat(standardFormatWithSampleRate: rate, channels: 2)!
     try engine.enableManualRenderingMode(.offline, format: format, maximumFrameCount: 512)
     let player = AVAudioPlayerNode(), chain = NativeEffectsChain(reorderable: !item)
     engine.attach(player)
+    chain.mediaDirectory = mediaDirectory
     chain.attach(to: engine, input: player, format: format,
                  destinations: directDestination ? [AVAudioConnectionPoint(node: engine.mainMixerNode, bus: 0)] : [])
     if !directDestination { engine.connect(chain.output, to: engine.mainMixerNode, format: format) }
@@ -1019,7 +1020,57 @@ func testSpectrumWorker(rate: Double) {
     print("LIVE_NATIVE_EFFECT_KNOBS_KEEP_CONNECTIONS_AND_LATENCY_OK")
 }
 
-try MainActor.assumeIsolated { try testLivePitchAndFormantLatency(); try testLiveNativeEffectParameterLatency(); try testChannelSelectionAndCreativeEffects(); try testEffectOutputSilenceFlags(); try testDefaultEQTrackFanout(); try testInlineLevelMeterPeaks(); try testDirectChainDestinationTails(); try testLiveSettledEQAndLazyCompressorMeters(); try testCombinedItemEQCompressor(); try run() }
+@MainActor func testConvolution() throws {
+    let kind = NativeFXSettings.reverbConvolution
+    let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+    var settings = NativeFXSettings()
+    settings.appendNative(kind)
+    settings.setEnabled(kind, enabled: true)
+    settings.convolutionParameters.mix = 100
+    var responses: [[Float]] = []
+    for (index, name) in NativeConvolutionSettings.presets.enumerated() {
+        settings.convolutionParameters.preset = index
+        settings.convolutionParameters.impulsePath = "Resources/ConvolutionIR/" + name + ".wav"
+        try settings.validate()
+        let rendered = try render(settings, rate: 48000, frequency: nil, analysis: false, mediaDirectory: root)
+        precondition(rms(rendered[0][6000...]) > 0.001, name + " must produce a tail at the graph's sample rate")
+        precondition(rendered[0] != rendered[1], "Stereo responses retain independent channels")
+        responses.append(rendered[0])
+    }
+    for index in responses.indices {
+        precondition(!responses[..<index].contains(responses[index]), "Each Bronze Keys response must sound distinct")
+    }
+
+    let project = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: project) }
+    let impulse = project.appendingPathComponent("External IR.wav")
+    let rate = 44100.0
+    let format = AVAudioFormat(standardFormatWithSampleRate: rate, channels: 1)!
+    let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 512)!
+    buffer.frameLength = 512
+    let samples = buffer.floatChannelData![0]
+    for frame in 0..<512 { samples[frame] = frame == 300 ? 1 : 0 }
+    do {
+        let file = try AVAudioFile(forWriting: impulse, settings: format.settings)
+        try file.write(from: buffer)
+    }
+    let path = try ImpulseResponseImport.copy(impulse, to: project)
+    settings.convolutionParameters.impulsePath = path
+    precondition(settings.samplePaths.contains(path), "Project packages must carry imported responses")
+    settings = try JSONDecoder().decode(NativeFXSettings.self, from: JSONEncoder().encode(settings))
+    let wet = try render(settings, rate: rate, frequency: nil, item: true, analysis: false, mediaDirectory: project)
+    let dryFrame = Int(rate * 0.1)
+    precondition(abs(wet[0][dryFrame]) < 0.0001 && abs(wet[0][dryFrame + 300] - 0.7) < 0.001,
+                 "The imported response must convolve the actual input with no additional latency")
+    precondition(abs(wet[1][dryFrame + 300] - 0.35) < 0.001, "Mono IR applies equally to both signal channels")
+    settings.setEnabled(kind, enabled: false)
+    let dry = try render(settings, rate: rate, frequency: nil, item: true, analysis: false, mediaDirectory: project)
+    precondition(abs(dry[0][dryFrame] - 1) < 0.001 && abs(dry[0][dryFrame + 300]) < 0.0001)
+    print("REVERB_CONVOLUTION_BRONZE_RESPONSES_EXTERNAL_IMPORT_ITEM_AUDIO_ROUND_TRIP_AND_BYPASS_OK")
+}
+
+try MainActor.assumeIsolated { try testConvolution(); try testLivePitchAndFormantLatency(); try testLiveNativeEffectParameterLatency(); try testChannelSelectionAndCreativeEffects(); try testEffectOutputSilenceFlags(); try testDefaultEQTrackFanout(); try testInlineLevelMeterPeaks(); try testDirectChainDestinationTails(); try testLiveSettledEQAndLazyCompressorMeters(); try testCombinedItemEQCompressor(); try run() }
 
 
 let spectrumStart = EQSpectrum(input: Array(repeating: -72, count: EQSpectrum.binCount), output: Array(repeating: -48, count: EQSpectrum.binCount))
