@@ -13,16 +13,18 @@ item.hasSelectableMediaHeader = true
 item.blackTitle = true
 item.selectedBlackTitle = true
 grid.updateLayout(GridSelectionLayout(items: [item]), pixelsPerSecond: 30)
-func pixels(scale: Int = 1) -> Data {
+func pixels(scale: Int = 1, dirty: CGRect? = nil, previous: Data? = nil) -> Data {
     let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 700 * scale, pixelsHigh: 300 * scale,
         bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
         colorSpaceName: .deviceRGB, bytesPerRow: 700 * scale * 4, bitsPerPixel: 32)!
+    if let previous { previous.copyBytes(to: bitmap.bitmapData!, count: previous.count) }
     NSGraphicsContext.saveGraphicsState()
     let context = NSGraphicsContext(bitmapImageRep: bitmap)!.cgContext
     context.scaleBy(x: CGFloat(scale), y: CGFloat(scale))
     context.translateBy(x: 0, y: 300); context.scaleBy(x: 1, y: -1)
     NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: true)
-    grid.draw(grid.bounds)
+    if let dirty { context.clip(to: dirty); context.clear(dirty) }
+    grid.draw(dirty ?? grid.bounds)
     NSGraphicsContext.restoreGraphicsState()
     window.displayIfNeeded()
     grid.needsDisplay = false
@@ -44,6 +46,20 @@ precondition(alphaAt(deselectedPixels, 116) > 0 && alphaAt(deselectedPixels, 115
 grid.updateSelection([])
 precondition(pixels() == deselectedPixels, "Clearing selection must restore the original header")
 print("GRID_HEADER_SELECTION_INVALIDATION_AND_RESTORE_OK")
+
+// AppKit can already have a narrow dirty strip when it restores the horizontal
+// scroll position. That strip cannot replace titles across the retained backing.
+grid.timelineOrigin.x = 240
+let partial = pixels(dirty: CGRect(x: 688, y: 76, width: 10, height: 200), previous: deselectedPixels)
+precondition(partial == deselectedPixels, "The dirty strip did not include the old title")
+precondition(grid.invalidateHeaderProjectionIfNeeded(),
+    "A partial paint at the restored origin must not certify stale titles across the retained backing")
+let restoredWithoutZoom = pixels()
+grid.timelineOrigin.x = 0
+_ = pixels()
+precondition(restoredWithoutZoom != deselectedPixels)
+print("GRID_HEADER_PARTIAL_REPAINT_DURING_RESTORE_OK")
+
 for scale in [1, 2] {
     grid.timelineOrigin = CGPoint(x: 900, y: 0)
     let reference = pixels(scale: scale)
@@ -207,3 +223,36 @@ precondition(HeaderProjectionProbe.titleBuilds == initialShapes,
     "Visible titles must retain their shaped text even when they exceed the global bitmap cache budget")
 print("DENSE_ZOOM_512_TITLES_30_FRAMES_NO_RESHAPING_SINGLE_PROJECTION_OK \(Int(denseZoomElapsed))ms")
 grid.updateLayout(GridSelectionLayout(items: []), pixelsPerSecond: 30); drawDenseHeaders()
+
+final class HeaderTestDocument: NSView { override var isFlipped: Bool { true } }
+let outer = NSScrollView(frame: CGRect(x: 0, y: 0, width: 700, height: 300))
+let tileColumn = HeaderTestDocument(frame: CGRect(x: 0, y: 0, width: 700, height: 900))
+let inner = NSScrollView(frame: tileColumn.bounds)
+let document = HeaderTestDocument(frame: CGRect(x: 0, y: 0, width: 2100, height: 900))
+window.contentView = outer
+outer.documentView = tileColumn
+tileColumn.addSubview(inner)
+inner.documentView = document
+grid.removeFromSuperview()
+document.addSubview(grid)
+grid.headerDocument = document
+grid.frame = CGRect(x: 128, y: 0, width: 828, height: 300)
+grid.headerHeight = 64
+grid.updateLayout(GridSelectionLayout(items: [
+    GridSelectionItem(id: UUID(), rect: CGRect(x: 245, y: 100, width: 220, height: 66), name: "14-PIANO LIVE-grudado")
+]), pixelsPerSecond: 1)
+inner.contentView.scroll(to: CGPoint(x: 128, y: 0))
+grid.observeHeaderScroll()
+_ = pixels()
+let tileProjections = HeaderProjectionProbe.projections
+for x in 129...245 {
+    inner.contentView.scroll(to: CGPoint(x: x, y: 0))
+    precondition(!grid.invalidateHeaderProjectionIfNeeded(), "Scrolling within the title tile keeps its document pixels")
+}
+precondition(HeaderProjectionProbe.projections == tileProjections, "Small horizontal pans must reuse the title projection")
+let firstTileInk = pixels()
+inner.contentView.scroll(to: CGPoint(x: 270, y: 0))
+grid.setFrameOrigin(CGPoint(x: 256, y: 0))
+grid.headerTileMoved()
+precondition(pixels() != firstTileInk, "Changing the title tile places the ink at its new document-relative position")
+print("GRID_HEADER_DOCUMENT_TILE_117_PANS_REUSE_ONE_PROJECTION_OK")

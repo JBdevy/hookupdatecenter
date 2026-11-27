@@ -2678,6 +2678,8 @@ final class NativeTimelinePinnedView: NSView {
     var hostHandlesInput = false
     var host: NSView?
     var pinHorizontally = false
+    var horizontalTileStep: CGFloat = 0
+    var hostOriginChanged: (() -> Void)?
     private weak var clip: NSClipView?
     private weak var horizontalClip: NSClipView?
     private var observer: NSObjectProtocol?
@@ -2727,11 +2729,14 @@ final class NativeTimelinePinnedView: NSView {
     }
     private func pin() {
         guard let host, let clip else { return }
-        let origin = NSPoint(x: max(0, horizontalClip?.bounds.minX ?? 0), y: max(0, clip.bounds.minY))
+        let left = max(0, horizontalClip?.bounds.minX ?? 0)
+        let x = horizontalTileStep > 0 ? floor(left / horizontalTileStep) * horizontalTileStep : left
+        let origin = NSPoint(x: x, y: max(0, clip.bounds.minY))
         guard host.frame.origin != origin else { return }
         // Direct AppKit positioning is immediate. A separate CA commit for
         // every scroll sample can flush the entire window between display frames.
         host.setFrameOrigin(origin)
+        hostOriginChanged?()
     }
     deinit {
         if let observer { NotificationCenter.default.removeObserver(observer) }

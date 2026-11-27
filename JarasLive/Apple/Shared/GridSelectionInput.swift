@@ -1034,6 +1034,16 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
         let fadeCurves: [Double]
     }
     private var drawnHeaderProjection: HeaderProjection?
+    weak var headerDocument: NSView?
+    private var fullHeaderDisplayPending = false
+    private var headerRepairScheduled = false
+
+    func headerTileMoved() {
+        // AppKit may already have invalidated just the newly exposed strip.
+        // A different document origin invalidates the whole retained title surface.
+        fullHeaderDisplayPending = true
+        needsDisplay = true
+    }
     private struct HeaderProjectionKey: Equatable {
         let viewport: CGRect
         let origin: CGPoint
@@ -1243,7 +1253,17 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
         guard let horizontal = scrolls.first, let vertical = scrolls.last, horizontal !== vertical else { return (bounds, timelineOrigin) }
         let viewport = convert(horizontal.contentView.bounds, from: horizontal.contentView)
             .intersection(convert(vertical.contentView.bounds, from: vertical.contentView))
+        if let headerDocument, !viewport.isNull {
+            return (viewport, convert(viewport.origin, to: headerDocument))
+        }
         return (viewport, CGPoint(x: horizontal.contentView.bounds.minX, y: vertical.contentView.bounds.minY))
+    }
+    private func headerCoordinates(for space: (viewport: CGRect, origin: CGPoint)) -> (viewport: CGRect, origin: CGPoint) {
+        guard let headerDocument, !space.viewport.isNull else { return space }
+        var viewport = space.viewport
+        viewport.origin.x = bounds.minX
+        viewport.size.width = bounds.width
+        return (viewport, convert(viewport.origin, to: headerDocument))
     }
     private func headerProjection(viewport: CGRect, origin: CGPoint) -> HeaderProjection {
         prepareHeaderProjection(viewport: viewport, origin: origin).pixels
@@ -1314,10 +1334,11 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
         return prepared
     }
     @discardableResult private func invalidateHeaderProjectionIfNeeded() -> Bool {
-        guard !needsDisplay else { return false }
-        let space = coordinates
+        guard !(fullHeaderDisplayPending && needsDisplay) else { return false }
+        let space = headerCoordinates(for: coordinates)
         if selectionRect != nil || heldItemGuide != nil || itemLayout.hasElasticPoints ||
             drawnHeaderProjection != headerProjection(viewport: space.viewport, origin: space.origin) {
+            fullHeaderDisplayPending = true
             needsDisplay = true
             return true
         }
@@ -2146,9 +2167,23 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
     @objc private func createContextRegion() { if let contextItem { createRegion?(contextItem) } }
     override func draw(_ dirtyRect: NSRect) {
         let space = coordinates
-        let headers = prepareHeaderProjection(viewport: space.viewport, origin: space.origin)
+        let headerSpace = headerCoordinates(for: space)
+        let headers = prepareHeaderProjection(viewport: headerSpace.viewport, origin: headerSpace.origin)
         drawHeaders(headers)
-        drawnHeaderProjection = headers.pixels
+        fullHeaderDisplayPending = false
+        let visibleHeaders = headers.pixels.viewport.intersection(visibleRect)
+        if !visibleHeaders.isEmpty && dirtyRect.contains(visibleHeaders) {
+            drawnHeaderProjection = headers.pixels
+        } else if !visibleHeaders.isEmpty, drawnHeaderProjection != headers.pixels, !headerRepairScheduled {
+            // A partial repaint can contain the new projection while the rest of the
+            // backing still contains the previous scroll position. Repair after this draw.
+            headerRepairScheduled = true
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.headerRepairScheduled = false
+                self.invalidateHeaderProjectionIfNeeded()
+            }
+        }
         let visibleTimeline = CGRect(origin: space.origin, size: space.viewport.size)
         let dx = space.viewport.minX - space.origin.x, dy = space.viewport.minY - space.origin.y
         if itemLayout.hasElasticPoints {

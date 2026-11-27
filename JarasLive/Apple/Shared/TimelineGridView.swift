@@ -4502,6 +4502,10 @@ private final class NativeTimelineBaseMountView: NSView {
         backdrop.moveInkToForeground()
         header.tempoHeadsChanged = { [weak self] heads in self?.ruler.setTempoHeads(heads) }
         selectionPin.pinHorizontally = true; selectionPin.hostHandlesInput = true
+        // Between tile boundaries AppKit scrolls the retained titles with their clips.
+        selectionPin.horizontalTileStep = 128
+        selection.headerDocument = selectionPin
+        selectionPin.hostOriginChanged = { [weak selection] in selection?.headerTileMoved() }
         selectionPin.host = selection; selectionPin.addSubview(selection)
         needlePin.hostHandlesInput = true
         needlePin.host = needles; needlePin.addSubview(needles)
@@ -4846,7 +4850,7 @@ private final class NativeTimelineBaseMountView: NSView {
             if needlePin.frame != fullFrame { needlePin.frame = fullFrame }
             // Native sidebar resizing changes the clip before SwiftUI publishes
             // its saved width. Keep the input surface aligned with those live pixels.
-            let selectionSize = CGSize(width: nativeBounds.width, height: vertical?.bounds.height ?? value.viewportSize.height)
+            let selectionSize = CGSize(width: nativeBounds.width + selectionPin.horizontalTileStep, height: vertical?.bounds.height ?? value.viewportSize.height)
             if selection.frame.size != selectionSize { selection.setFrameSize(selectionSize) }
             value.input.applyProjection(to: selection, pixelsPerSecond: pixelsPerSecond, itemGuide: value.itemGuide(pixelsPerSecond))
             let needleSize = CGSize(width: width, height: value.contentHeight)
