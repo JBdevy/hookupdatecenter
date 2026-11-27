@@ -160,7 +160,7 @@ struct MainView: View {
     @AppStorage("jaras.layout.setlist.placement", store: WorkspaceLayoutPreferences.storage) private var setlistPlacement: SetlistPlacement = .right
     @AppStorage("jaras.layout.setlist.dockSide", store: WorkspaceLayoutPreferences.storage) private var setlistDockPlacement: SetlistPlacement = .right
     @State private var keyboardSettings = false
-    @AppStorage("jaras.footerMixerHeight", store: WorkspaceLayoutPreferences.storage) private var footerMixerHeight = 303.0
+    @AppStorage("jaras.footerMixerHeight", store: WorkspaceLayoutPreferences.storage) private var footerMixerHeight = Double(FooterHorizontalMixer.minimumDockHeight)
     @State private var footerResizeCoordinator = FooterVerticalResizeCoordinator()
     private func maximumFooterHeight(workspaceHeight: CGFloat) -> CGFloat {
         min(161.046875, max(27, workspaceHeight - 150 - (keyboardOpen ? 108 : 0)

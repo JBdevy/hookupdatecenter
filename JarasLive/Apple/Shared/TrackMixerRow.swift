@@ -4159,7 +4159,7 @@ struct FooterMixerPanel: View {
     let active: Bool
     let maximumHeight: CGFloat
     var resizeCoordinator: FooterVerticalResizeCoordinator? = nil
-    @AppStorage("jaras.footerMixerHeight", store: WorkspaceLayoutPreferences.storage) private var storedHeight = 303.0
+    @AppStorage("jaras.footerMixerHeight", store: WorkspaceLayoutPreferences.storage) private var storedHeight = Double(FooterHorizontalMixer.minimumDockHeight)
     @State private var resizeStart: CGFloat?
     @State private var resizeHeight: CGFloat?
     @State private var hovering = false
@@ -4347,7 +4347,11 @@ struct FooterHorizontalMixer: View {
     @AppStorage("catlive.barMixer.signalFilters") private var signalFilters = 0
     @AppStorage(HozMixerComponent.globalKey) private var hiddenComponents = 0
     @AppStorage(HozMixerComponent.tracksKey) private var componentOverrides = Data()
+    #if os(macOS)
+    static let minimumDockHeight: CGFloat = 360.57421875
+    #else
     static let minimumDockHeight: CGFloat = 303
+    #endif
     static func focusWidth(hasSelectedTrack: Bool) -> CGFloat {
         FooterMixerMetrics.masterWidth * (hasSelectedTrack ? 2 : 1) + 12
     }
