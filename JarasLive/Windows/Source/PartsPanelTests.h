@@ -351,16 +351,20 @@ void addPartsPanelTests(const File &directory, Register &&test) {
             require((bool)get(left->diagnostics(),"secondaryTab"),"Reopening left Parts lost its selected bank");
             click("setlistParts");check(true,false);
             click("setlistParts");check(true,true);
-            click("railMixer");click("railKeyboard");check(true,true);
-            auto docked=workspace.diagnostics();
-            require((bool)get(docked,"mixerVisible") && (bool)get(docked,"keyboardVisible") &&
-                    (int)get(docked,"mixerDockHeight")>=232 && canvas->getHeight()<timelineHeight,
-                    "Parts docks prevented the lower mixer or keyboard from opening");
+            click("railMixer");check(true,true);
+            const auto mixerDocked=workspace.diagnostics();
+            require((bool)get(mixerDocked,"mixerVisible") &&
+                    (int)get(mixerDocked,"mixerDockHeight")>=232 && canvas->getHeight()<timelineHeight,
+                    "Parts docks prevented the lower mixer from opening");
+            click("railKeyboard");check(true,true);
+            const auto keyboardDocked=workspace.diagnostics();
+            require((bool)get(keyboardDocked,"keyboardVisible") && !(bool)get(keyboardDocked,"mixerVisible"),
+                    "Opening Keyboard must replace Hoz Mixer without closing the vertical Parts docks");
             for (const auto size:{Point<int>{1024,700},Point<int>{1366,768},Point<int>{1920,1080}}) {
                 workspace.setSize(size.x,size.y);check(true,true);
             }
             workspace.setSize(1366,900);
-            click("railMixer");click("railKeyboard");check(true,true);
+            click("railKeyboard");check(true,true);
             require(!(bool)get(workspace.diagnostics(),"mixerVisible") &&
                     !(bool)get(workspace.diagnostics(),"keyboardVisible") && canvas->getHeight()==timelineHeight,
                     "Closing lower panels retained a removed Parts footer or lost timeline height");

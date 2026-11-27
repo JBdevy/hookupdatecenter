@@ -8331,7 +8331,8 @@ void Workspace::layoutWorkspaceColumns(bool widthOnly) {
     const int mixerGap=mixerVisible?6:0;
     const int setlistGap=setlistVisible && setlistPlacement == SetlistPlacement::left ? 6 : 0;
     const int vuWidth = (bool)appearance.value(trackVUVisibleKey, false) ? meterDisplay::vuColumnWidth : 0;
-    const int activeTrackWidth = mixerVisible ? std::min(theme::trackMixerMaxWidth, mixerWidth + vuWidth) : 0;
+    const int activeTrackWidth = mixerVisible
+        ? jlimit(theme::trackMixerMinWidth, theme::trackMixerMaxWidth, mixerWidth + vuWidth) : 0;
     laidOutFocusWithSelection = focusVisible && !selectedTrack.empty();
     const int preferredFocusWidth = focusVisible ? MixerPanel::focusWidth(laidOutFocusWithSelection) : 0;
     const int editorGaps = 100 + timelineGrid::verticalScrollbarWidth + mixerGap + setlistGap;

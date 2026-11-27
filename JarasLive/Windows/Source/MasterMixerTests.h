@@ -80,11 +80,18 @@ template<typename Test> void registerTests(const File &directory,Test &test) {
         session.undo();require(fxchain::enabled(fxchain::settings(session,{}),"EQ"),"Master bypass Undo failed");
         slotClick(ModifierKeys::altModifier);require(list(get(fxchain::settings(session,{}),"inserted")).size()==1,"Master slot Alt removal failed");
         session.undo();require(list(get(fxchain::settings(session,{}),"inserted")).size()==2,"Master removal Undo failed");
+        session.configureEffects(song.tracks[0].id,effects);
         auto payload=object();put(payload,"type","catlive-fx-copy");put(payload,"project",text(p.id));put(payload,"source",text(song.tracks[0].id));put(payload,"effect","EQ");
-        DragAndDropTarget::SourceDetails details(payload,track,{20,20});
-        auto *drop=dynamic_cast<DragAndDropTarget*>(master);require(drop&&!drop->isInterestedInDragSource(details),"Master accepts dragged FX");
-        const auto original=JSON::toString(session.snapshot());drop->itemDropped(details);
-        require(JSON::toString(session.snapshot())==original,"Master applied a rejected effect drop");
+        DragAndDropTarget::SourceDetails details(payload,track,slot.toInt());
+        auto *drop=dynamic_cast<DragAndDropTarget*>(master);
+        require(drop&&drop->isInterestedInDragSource(details),"Master must accept FX dragged onto a slot");
+        drop->itemDropped(details);
+        const auto chain=list(get(fxchain::settings(session,{}),"inserted"));
+        const auto sourceChain=list(get(fxchain::settings(session,song.tracks[0].id),"inserted"));
+        require(chain.size()==3 && chain[0].toString().startsWith("Native:") && chain[1].toString()=="EQ" &&
+                sourceChain.size()==2 && sourceChain[0].toString()=="EQ",
+                "Dropping EQ must copy a new instance before the target slot and keep the source intact");
+        session.undo();mixer.refresh();
         master->mouseDown(event(slot,slot,ModifierKeys::leftButtonModifier));
         master->mouseDrag(event({80,12},slot,ModifierKeys::leftButtonModifier,true));
         require(!mixer.isDragAndDropActive()&&selected==0,"Master starts FX or track dragging");

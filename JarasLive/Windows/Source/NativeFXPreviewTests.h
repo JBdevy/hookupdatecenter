@@ -59,6 +59,10 @@ void run(Test test, Require require, const File &directory) {
                 put(settings, "divisionGate", gate);
             } else if (spec.kind == jaras::audio::CreativeEffect::softClipper) {
                 auto clipper = object(); put(clipper, "drive", 18.); put(settings, "softClipper", clipper);
+            } else if (spec.kind == jaras::audio::CreativeEffect::graphicEQ) {
+                auto graphicEQ = object();
+                put(graphicEQ, "band17", 6.);
+                put(settings, "graphicEQ", graphicEQ);
             }
             effect.prepare(settings, 48000);
             AudioBuffer<float> input(2, 2048), dry(2, 2048);

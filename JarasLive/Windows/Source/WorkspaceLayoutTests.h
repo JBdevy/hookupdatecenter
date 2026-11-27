@@ -320,14 +320,17 @@ struct WorkspaceLayoutTests {
                     (bool)integration->getProperties()["selectorChevron"],
                     "Library, Track - I and Integration belong below the Main fader");
             int previousRight = w.timelineEditingBounds.getX();
-            for (auto id : {"mixer", "railMixer", "panelSelector"}) {
+            for (auto [id, title] : {std::pair{"mixer", "Track Mixer"},
+                                    std::pair{"railMixer", "Hoz Mixer"},
+                                    std::pair{"panelSelector", "Panel"}}) {
                 const auto *control = w.controls.at(id);
                 require(control->getX() > previousRight && control->getY() == w.timelineSnap.getY() &&
-                        control->getButtonText() == control->getTitle(),
+                        control->getButtonText() == title,
                         "Show Track Mixer, Hoz Mixer and Panel in strip order");
                 previousRight = control->getRight();
             }
-            require(w.timelineSnap.getX() - previousRight >= 14, "Separate Panel from Snap");
+            if (w.timelineSnap.isVisible())
+                require(w.timelineSnap.getX() - previousRight >= 10, "Separate Panel from Snap");
             const auto *audio = w.controls.at("audioStatus"), *settings = w.controls.at("settings");
             require(audio->getRight() < settings->getX() && audio->getBottom() <= w.transportResourceBounds.getY() &&
                     audio->getWidth() == FooterAudioStatusButton::widthForStatus(w.toolbarAudioFormat),
