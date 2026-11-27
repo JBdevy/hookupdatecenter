@@ -6,8 +6,18 @@
 
 namespace jaras::playbackCapacity {
 inline constexpr std::size_t limit = 250;
+// In a free audio arrangement with no tempo map, a BPM edit only updates the clock.
+inline bool tempoChangesClockOnly(const Song& song) {
+    if (song.timeSettings.value_or(ProjectTimeSettings{}).timebase != ProjectTimebase::free || !song.parts.empty())
+        return false;
+    if (song.markers && std::any_of(song.markers->begin(), song.markers->end(),
+            [](const auto& marker) { return marker.tempoBPM.has_value(); })) return false;
+    return std::none_of(song.tracks.begin(), song.tracks.end(), [](const auto& track) {
+        return std::any_of(track.clips.begin(), track.clips.end(), [](const auto& clip) { return clip.midi.has_value(); });
+    });
+}
 inline constexpr const char* notice = "250+ — Not available";
-inline constexpr const char* openingNotice = "Your project contains more than 250 simultaneous audio voices at some points. At those points, Parts, real-time BPM changes and Repeat are unavailable.";
+inline constexpr const char* openingNotice = "Some passages exceed 250 simultaneous audio voices. Parts, quantized seeks, Repeat and certain live tempo changes are limited in those passages.";
 inline bool isFile(const Track& track, const AudioClip& clip) {
     const auto& file = clip.audioFile ? clip.audioFile : track.audioFile;
     return file && !file->path.empty() && file->path.rfind("Images/", 0) != 0 &&

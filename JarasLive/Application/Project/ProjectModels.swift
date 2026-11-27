@@ -1859,7 +1859,7 @@ public final class ProjectValidationCache {
 public enum PlaybackCapacity {
     public static let limit = 250
     public static let notice = "250+ — Not available"
-    public static let openingNotice = "Your project contains more than 250 simultaneous audio voices at some points. At those points, Parts, real-time BPM changes and Repeat are unavailable."
+    public static let openingNotice = "Some passages exceed 250 simultaneous audio voices. Parts, quantized seeks, Repeat and certain live tempo changes are limited in those passages."
     private static func isFile(_ clip: AudioClip, track: Track) -> Bool {
         guard let file = clip.audioFile ?? track.audioFile, !file.path.isEmpty, !clip.isImage else { return false }
         return clip.midi == nil || clip.frozenMIDI == true

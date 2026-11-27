@@ -1068,7 +1068,11 @@ void Session::publishTransport(bool preserveLatency, bool routingOnly, bool foll
             if(at) {
                 auto future=t;future.position=*at;future.playbackStartRegionId=jaras::playbackEntryRegion(*song(),*at);
                 future.ignoreNextAfter.reset();
-                destination.emplace();destination->playing=true;destination->subPlaying=true;
+                destination.emplace();
+                destination->playing = true;
+                // A quantized timeline seek moves only the main head. Preparing
+                // the same target on Subplay competes with its current stream.
+                destination->subPlaying = !t.beatSeek.has_value();
                 destination->position=*at;destination->subPosition=*at;
                 destination->scope[0]=destination->scope[1]=jaras::playbackScope(*song(),future);
             }
@@ -2816,7 +2820,8 @@ void Session::setTempo(double value) {
     if (busy || !song() || !std::isfinite(value)) return;
     if (audio.isRecording()) throw std::runtime_error("Conclua a gravação antes de alterar o andamento.");
     syncClock();
-    if (!tempoInputAllowed() && rejectOverCapacity()) return;
+    const bool freeClockOnly = jaras::playbackCapacity::tempoChangesClockOnly(*song());
+    if (!freeClockOnly && !tempoInputAllowed() && rejectOverCapacity()) return;
     const auto now = tempoEditClock();
     const auto requested = jlimit(60., 300., value);
     if (std::abs(requested - tempoBPM()) < 1e-9) return;
@@ -2827,12 +2832,6 @@ void Session::setTempo(double value) {
     value = jlimit(60., 300., value);
     if (std::abs(value - tempoBPM()) < .0000001) return;
     const auto& current = *song();
-    const bool freeClockOnly = current.timeSettings.value_or(jaras::ProjectTimeSettings{}).timebase == jaras::ProjectTimebase::free &&
-        current.parts.empty() && (!current.markers || std::none_of(current.markers->begin(), current.markers->end(),
-            [](const auto& marker) { return marker.tempoBPM.has_value(); })) &&
-        std::none_of(current.tracks.begin(), current.tracks.end(), [](const auto& track) {
-            return std::any_of(track.clips.begin(), track.clips.end(), [](const auto& clip) { return clip.midi.has_value(); });
-        });
     if (freeClockOnly) {
         auto previous = applyFreeTempo({current.id, value});
         undoHistory.emplace_back(std::move(previous));

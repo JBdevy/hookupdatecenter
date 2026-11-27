@@ -105,6 +105,19 @@ final class PlaybackCapacityTests: XCTestCase {
         XCTAssertEqual(executor.writes.count, writesBeforeRepeat)
         XCTAssertFalse(show.snapshot.transport.loop.enabled)
     }
+    @MainActor func testDenseFreeTempoWithAudioOnlyKeepsPlaybackAndItemTiming() throws {
+        var data = project(320)
+        data.songs[0].timeSettings = .legacy
+        let executor = CapacityExecutor()
+        let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: data)
+        executor.transport.playing = true
+        show.tick()
+        show.setTempo(135)
+        XCTAssertEqual(show.current?.bpm, 135)
+        XCTAssertTrue(show.isPlaying)
+        XCTAssertTrue(show.capacityWarning.isEmpty)
+        XCTAssertEqual(show.current?.tracks, data.songs[0].tracks)
+    }
     @MainActor func testRejectedControlNoticeExpiresAfterTwoSeconds() async throws {
         let executor = CapacityExecutor()
         executor.transport.playing = true

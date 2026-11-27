@@ -552,7 +552,9 @@ double Engine::setFreeTempo(const ID& id, double bpm) {
 }
 void Engine::setProjectTiming(double bpm, int beats, int unit, std::optional<ProjectTimeSettings> settings) {
     projectSync::requireWritable();
-    if (const auto* song = currentSong(); song && bpm != song->bpm && liveCapacityExceeded())
+    if (const auto* song = currentSong(); song && bpm != song->bpm &&
+        (settings.value_or(ProjectTimeSettings{}).timebase != ProjectTimebase::free || !playbackCapacity::tempoChangesClockOnly(*song)) &&
+        liveCapacityExceeded())
         throw std::invalid_argument(playbackCapacity::notice);
     if (!std::isfinite(bpm) || bpm < 60 || bpm > 300 || beats < 1 || beats > 32 ||
         unit < 1 || unit > 64 || (unit & (unit - 1)) != 0 ||
@@ -1222,7 +1224,7 @@ void Engine::execute(const Command& c) {
     const bool enablingLoop = c.kind == CommandKind::toggleLoop && !transport_.loop.enabled;
     const bool armingPart = c.kind == CommandKind::queueSection && transport_.playing &&
         transport_.queuedSectionMarkerId != std::optional<ID>(c.target);
-    if ((c.kind == CommandKind::tempo || armingPart) && liveCapacityExceeded())
+    if (armingPart && liveCapacityExceeded())
         throw std::invalid_argument(playbackCapacity::notice);
     if (enablingLoop) {
         auto candidate = transport_;

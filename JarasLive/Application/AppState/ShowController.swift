@@ -2413,7 +2413,8 @@ public final class ShowTrackSelectionPresentation: ObservableObject {
     }
     @discardableResult public func configureProjectTime(bpm: Double, beats: Int, unit: Int, settings: ProjectTimeSettings) -> Bool {
         guard canControl(), !finishing, let index = snapshot.project.songs.firstIndex(where: { $0.id == current?.id }) else { return false }
-        if bpm != current?.bpm, !tempoInputAllowed, rejectOverCapacity() { return false }
+        if bpm != current?.bpm, !tempoInputAllowed,
+           (settings.timebase != .free || current?.tempoChangesClockOnly != true), rejectOverCapacity() { return false }
         guard bpm.isFinite, TimelineTempo.bpmRange.contains(bpm), (1...32).contains(beats), TimelineTempo.beatUnits.contains(unit) else { return false }
         do {
             try settings.validate()
@@ -2446,7 +2447,7 @@ public final class ShowTrackSelectionPresentation: ObservableObject {
     }
     public func setTempo(_ bpm: Double) {
         guard bpm.isFinite, canControl(), !finishing else { return }
-        if !tempoInputAllowed, rejectOverCapacity() { return }
+        if !tempoInputAllowed, current?.tempoChangesClockOnly != true, rejectOverCapacity() { return }
         let value = min(300, max(60, bpm))
         guard abs(value - tempoControlBPM) > 1e-9,
               liveTempoEdits.accept(running: !tempoInputAllowed, at: tempoEditClock()) else { return }

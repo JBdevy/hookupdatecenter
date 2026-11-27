@@ -43,6 +43,27 @@ int main(){try {
         engine.execute({CommandKind::stopAll});engine.execute({CommandKind::tempo,{},140});
         check(engine.currentSong()->bpm==140,"Stopped tempo edits must remain available");
     }
+    auto clockOnly = project(320);
+    auto& clockSong = clockOnly.songs.front();
+    clockSong.parts.clear();
+    clockSong.markers.reset();
+    for (auto& track : clockSong.tracks) { track.mute = false; track.clips.front().muted = false; }
+    clockSong.markers = std::vector<TimelineMarker>{{"cue", "Cue", 1, 0}};
+    check(playbackCapacity::tempoChangesClockOnly(clockSong), "An ordinary cue should permit free BPM");
+    clockSong.markers->front().tempoBPM = 125;
+    check(!playbackCapacity::tempoChangesClockOnly(clockSong), "A tempo map needs the live guard");
+    clockSong.markers.reset();
+    clockSong.tracks.front().clips.front().midi.emplace();
+    check(!playbackCapacity::tempoChangesClockOnly(clockSong), "A MIDI source still depends on tempo");
+    clockSong.tracks.front().clips.front().midi.reset();
+    Engine clock;clock.loadProject(clockOnly);clock.execute({CommandKind::play});
+    check(clock.activeAudioFileCount()==320,"Expected 320 active files");
+    clock.execute({CommandKind::tempo,{},137});
+    check(clock.currentSong()->bpm==137 && clock.transport().playing,"Free BPM was blocked during playback");
+    for (const auto& track : clock.currentSong()->tracks)
+        check(track.clips.front().duration==30 && track.clips.front().playbackRate==1,"Free BPM altered an audio item");
+    ProjectTimeSettings relative;relative.timebase=ProjectTimebase::relative;
+    blocked([&]{ clock.setProjectTiming(138,4,4,relative); });
     Engine both;both.loadProject(project(126));both.execute({CommandKind::play});both.execute({CommandKind::subPlay});
     check(both.activeAudioFileCount()==252,"Total diagnostics count both playback heads");
     check(!both.liveCapacityExceeded(),"Play and Subplay each have their own250-voice allowance");

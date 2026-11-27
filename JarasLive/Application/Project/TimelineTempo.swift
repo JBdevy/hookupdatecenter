@@ -456,6 +456,10 @@ public extension Song {
         guard let original = markers else { return }
         for i in original.indices where original[i].isTempo { markers![i].tempoPlaybackRate = tempoPlaybackRate(for: original[i]) }
     }
+    var tempoChangesClockOnly: Bool {
+        projectTime.timebase == .free && parts.isEmpty && !(markers ?? []).contains(where: \.isTempo)
+            && !tracks.contains { $0.clips.contains { $0.midi != nil } }
+    }
     var tempoMarkersAffectAudio: Bool {
         (markers ?? []).contains { $0.isTempo && (($0.tempoTimebase ?? .global).resolved(project: projectTime.timebase) == .relative || $0.tempoPlaybackRate != nil) }
     }

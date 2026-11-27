@@ -4,6 +4,38 @@
 #include <iostream>
 #include <thread>
 
+static void verifyPCMChannels(AVAudioChannelCount channels) {
+    auto url = [[NSURL fileURLWithPath:NSTemporaryDirectory()] URLByAppendingPathComponent:
+        [NSString stringWithFormat:@"catlive-channel-memory-%@.wav", NSUUID.UUID.UUIDString]];
+    auto format = [[AVAudioFormat alloc] initStandardFormatWithSampleRate:48000 channels:channels];
+    constexpr unsigned frames = PreparedPCMCache::pageSize * 2;
+    auto pcm = [[AVAudioPCMBuffer alloc] initWithPCMFormat:format frameCapacity:frames];
+    pcm.frameLength = frames;
+    for (unsigned ch = 0; ch < channels; ++ch)
+        for (unsigned n = 0; n < frames; ++n) pcm.floatChannelData[ch][n] = .1f * std::sin(n * .057 + ch);
+    NSError *error = nil;
+    auto file = [[AVAudioFile alloc] initForWriting:url settings:format.settings error:&error];
+    assert(file && [file writeFromBuffer:pcm error:&error]);
+    file = nil;
+    auto reader = PreparedPCMReader::open(url, &error);
+    assert(reader);
+    const auto before = PreparedAudioMemory::pcmBytes.load();
+    PreparedClipKernel kernel(48000, 2);
+    kernel.cache = std::make_shared<PreparedPCMCache>(reader);
+    kernel.endFrame.store(frames);
+    assert(kernel.cache->prefetch(2) == PreparedPCMCache::Prefetch::ready);
+    const auto bytes = PreparedAudioMemory::pcmBytes.load() - before;
+    std::array<float, 8> left{}, right{};
+    const int start = PreparedPCMCache::pageSize - 4;
+    assert(kernel.read(start, 1, int(left.size()), left.data(), right.data()));
+    for (size_t i = 0; i < left.size(); ++i) {
+        assert(left[i] == pcm.floatChannelData[0][start + i]);
+        assert(right[i] == pcm.floatChannelData[channels - 1][start + i]);
+    }
+    [[NSFileManager defaultManager] removeItemAtURL:url error:nil];
+    std::cout << "CHANNEL_CACHE channels=" << channels << " bytes=" << bytes << std::endl;
+    assert(bytes == frames * channels * sizeof(float));
+}
 int main() {
     @autoreleasepool {
         NSURL *url = [[NSURL fileURLWithPath:NSTemporaryDirectory()] URLByAppendingPathComponent:
@@ -115,6 +147,8 @@ int main() {
         }
         assert([JarasPreparedClip memoryDiagnostics][@"stretchStates"].unsignedLongLongValue == 0);
         [[NSFileManager defaultManager] removeItemAtURL:url error:nil];
+        verifyPCMChannels(1);
+        verifyPCMChannels(2);
         std::cout << "PREPARED_ONE_HISTORY_THREE_WITH_TRANSITION_TEMPO_PITCH_NO_STARVATION_OK\n";
         std::cout << "PREPARED_IDLE_TRANSITION_TWO_HISTORIES_THIRD_ONLY_BEFORE_OVERLAP_OK\n";
     }

@@ -1,4 +1,5 @@
 #import <AVFoundation/AVFoundation.h>
+#include "../../Core/Audio/DiskIOActivity.hpp"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -285,6 +286,7 @@ static void testSlidingPageOwnership(NSURL *url) {
         auto first = cache->pageAt(page * 40, lease);
         assert(first);
         cache->releaseIdlePages();
+        assert(!cache->collectIdlePages()); // The worker retains pages until this render lease ends.
         assert(first->samples[0][0] == 0.25f && cache->pages.retiredCount() != 0);
         assert(cache->releaseRequested.load());
     }

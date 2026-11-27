@@ -1928,7 +1928,7 @@
   "The song changed. Open Full lyrics again.": "A música mudou. Abra Letra Completa novamente.",
   "Could not create the lyrics items.": "Não foi possível criar os itens da letra.",
   "250+ — Not available": "250+ — Não é possível",
-  "Your project contains more than 250 simultaneous audio voices at some points. At those points, Parts, real-time BPM changes and Repeat are unavailable.": "Seu projeto contém mais de 250 vozes simultâneas em alguns pontos da grade. Nesses pontos, não será possível engatilhar Parts, alterar o BPM em tempo real ou ativar Repeat.",
+  "Some passages exceed 250 simultaneous audio voices. Parts, quantized seeks, Repeat and certain live tempo changes are limited in those passages.": "Alguns trechos têm mais de 250 vozes de áudio simultâneas. Nesses trechos, há restrições para Parts, saltos quantizados, Repeat e determinadas mudanças de BPM ao vivo.",
   "Export ziplive": "Export ziplive",
   "Preparing project deletion…": "Preparando exclusão do projeto…",
   "Hold Shift and click − or + to adjust all listed items by the same amount.": "Segure Shift e clique em − ou + para aumentar ou diminuir proporcionalmente todos os itens da lista."

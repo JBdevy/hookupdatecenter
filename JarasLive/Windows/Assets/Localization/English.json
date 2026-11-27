@@ -1911,7 +1911,7 @@
   "The song changed. Open Full lyrics again.": "The song changed. Open Full lyrics again.",
   "Could not create the lyrics items.": "Could not create the lyrics items.",
   "250+ — Not available": "250+ — Not available",
-  "Your project contains more than 250 simultaneous audio voices at some points. At those points, Parts, real-time BPM changes and Repeat are unavailable.": "Your project contains more than 250 simultaneous audio voices at some points. At those points, Parts, real-time BPM changes and Repeat are unavailable.",
+  "Some passages exceed 250 simultaneous audio voices. Parts, quantized seeks, Repeat and certain live tempo changes are limited in those passages.": "Some passages exceed 250 simultaneous audio voices. Parts, quantized seeks, Repeat and certain live tempo changes are limited in those passages.",
   "Export ziplive": "Export ziplive",
   "Preparing project deletion…": "Preparing project deletion…",
   "Hold Shift and click − or + to adjust all listed items by the same amount.": "Hold Shift and click − or + to adjust all listed items by the same amount."

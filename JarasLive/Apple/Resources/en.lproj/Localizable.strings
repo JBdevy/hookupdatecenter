@@ -2406,7 +2406,7 @@
 
 "250+ — Not available" = "250+ — Not available";
 
-"Your project contains more than 250 simultaneous audio voices at some points. At those points, Parts, real-time BPM changes and Repeat are unavailable." = "Your project contains more than 250 simultaneous audio voices at some points. At those points, Parts, real-time BPM changes and Repeat are unavailable.";
+"Some passages exceed 250 simultaneous audio voices. Parts, quantized seeks, Repeat and certain live tempo changes are limited in those passages." = "Some passages exceed 250 simultaneous audio voices. Parts, quantized seeks, Repeat and certain live tempo changes are limited in those passages.";
 
 "Export ziplive" = "Export ziplive";
 
