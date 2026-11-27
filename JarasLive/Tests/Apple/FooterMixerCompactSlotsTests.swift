@@ -55,4 +55,20 @@ MainActor.assumeIsolated {
     precondition(geometry.subviews.count == 2 && slots.map { button($0)?.tag == 3 } == true,
                  "A hidden channel must reuse its existing host with updated controls when expanded")
     print("COMPACT_HOZ_CHANNEL_SKIPS_HIDDEN_FX_HOST_AND_RETAINS_EXPANDED_CONTROLS_OK")
+
+    var chosen: [String] = []
+    let submenu = NSMenu(title: "Reverb")
+    let source = FooterPluginSubmenu(entries: [("native:Reverb", "Reverb"), ("vst3:123", "Reverb")]) {
+        chosen.append($0)
+    }
+    submenu.delegate = source
+    precondition(submenu.numberOfItems == 0)
+    source.menuNeedsUpdate(submenu)
+    source.menuNeedsUpdate(submenu)
+    precondition(submenu.numberOfItems == 2)
+    for item in submenu.items {
+        precondition(NSApp.sendAction(item.action!, to: item.target, from: item))
+    }
+    precondition(chosen == ["native:Reverb", "vst3:123"])
+    print("HOZ_FX_SUBMENU_PRESERVES_ORDER_AND_DISTINCT_PLUGIN_IDENTITIES_OK")
 }

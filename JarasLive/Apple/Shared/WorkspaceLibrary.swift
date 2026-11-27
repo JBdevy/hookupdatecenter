@@ -1338,7 +1338,16 @@ struct WorkspaceLibrary: View {
     static func mixerPluginGroups() -> [PluginGroup] {
         #if os(macOS)
         let catalog = PluginCatalog.shared
-        let externalTypes = catalog.plugins.flatMap(\.types)
+        let plugins = catalog.matchingPlugins(query: "", type: "", vendor: "", allowsInstruments: true)
+        typealias Entry = (identity: String, name: String)
+        var allExternal: [Entry] = []
+        var externalByType: [String: [Entry]] = [:]
+        for plugin in plugins {
+            let entry = (identity: "vst3:" + plugin.classID, name: plugin.name)
+            allExternal.append(entry)
+            for type in Set(plugin.types) { externalByType[type, default: []].append(entry) }
+        }
+        let externalTypes = Array(externalByType.keys)
         #else
         let externalTypes: [String] = []
         #endif
@@ -1348,10 +1357,11 @@ struct WorkspaceLibrary: View {
                 return ("native:" + name, name == "Limiter" ? "CatLive Limiter" : name)
             }
             #if os(macOS)
-            if title != "Native" {
-                entries += catalog.matchingPlugins(query: "", type: title == "All" ? "" : title, vendor: "", allowsInstruments: true)
+            if title == "All" { entries += allExternal }
+            else if title == PluginCatalog.favoritesType {
+                entries += plugins.filter(catalog.isFavorite)
                     .map { ("vst3:" + $0.classID, $0.name) }
-            }
+            } else if title != "Native" { entries += externalByType[title] ?? [] }
             #endif
             return PluginGroup(title: title, entries: entries)
         }

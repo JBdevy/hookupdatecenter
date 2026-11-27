@@ -6904,6 +6904,30 @@ private struct FooterEffectContext: NSViewRepresentable {
         view.shiftClick = bypass; view.action = { [weak view] in view?.openMenu() }
     }
 }
+@MainActor private final class FooterPluginSubmenu: NSObject, NSMenuDelegate {
+    private let entries: [(identity: String, name: String)]
+    private let choose: (String) -> Void
+
+    init(entries: [(identity: String, name: String)], choose: @escaping (String) -> Void) {
+        self.entries = entries
+        self.choose = choose
+    }
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        guard menu.items.isEmpty else { return }
+        for entry in entries {
+            let item = NSMenuItem(title: entry.name, action: #selector(selectPlugin(_:)), keyEquivalent: "")
+            item.representedObject = entry.identity
+            item.target = self
+            menu.addItem(item)
+        }
+    }
+
+    @objc private func selectPlugin(_ item: NSMenuItem) {
+        if let identity = item.representedObject as? String { choose(identity) }
+    }
+}
+
 private final class FooterEffectContextView: RightClickTargetView, NSDraggingSource {
     override var priority: Int { 2 }
     var bypass: (() -> Void)?
@@ -7011,9 +7035,9 @@ private final class FooterEffectContextView: RightClickTargetView, NSDraggingSou
             let title = JarasLocalization.string(group.title)
             let category = NSMenuItem(title: title, action: nil, keyEquivalent: "")
             let submenu = NSMenu(title: title)
-            for plugin in group.entries {
-                add(plugin.name, to: submenu) { [weak self] in self?.choose?(plugin.identity) }
-            }
+            let source = FooterPluginSubmenu(entries: group.entries) { [weak self] in self?.choose?($0) }
+            category.representedObject = source
+            submenu.delegate = source
             menu.addItem(category); menu.setSubmenu(submenu, for: category)
         }
         if transfer != nil {
