@@ -54,13 +54,14 @@ namespace catlive {
         std::vector<std::unique_ptr<Row>> rows; SparseSet<int> selected; int anchor=-1;
         void changed(int row) { content.repaint();if(model)model->selectedRowsChanged(row); }
       public:
+        int regionCardHeight = 34;
         std::function<int(int)> heightForRow;
         std::function<String(int)> dragNameForRow;
         SetlistRows() { addAndMakeVisible(viewport);viewport.setViewedComponent(&content,false); }
         ~SetlistRows() override {viewport.setViewedComponent(nullptr,false);}
         void setModel(ListBoxModel *value){model=value;}
         ListBoxModel *getModel() const { return model; }
-        int getRowHeight(int row) const { return heightForRow ? heightForRow(row) : 38; }
+        int getRowHeight(int row) const { return heightForRow ? heightForRow(row) : regionCardHeight + 4; }
         void setRowHeight(int){}
         void setMultipleSelectionEnabled(bool){}
         void setOutlineThickness(int){}
@@ -83,7 +84,7 @@ namespace catlive {
             // Match the Mac's single title strip, even for a multi-selection.
             // Keeping the preview separate from the row painting leaves the
             // destination and insertion line visible beneath the pointer.
-            const int height = std::max(1, getRowHeight(sourceRow) - 4);
+            const int height = regionCardHeight;
             const int width=jlimit(80,300,rows[(size_t)sourceRow]->getWidth());
             scale=std::max(1.0,scale);
             Image preview(Image::ARGB,(int)std::ceil(width*scale),(int)std::ceil(height*scale),true);

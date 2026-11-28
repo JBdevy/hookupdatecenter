@@ -3890,7 +3890,16 @@ int runTests(const File &directory) {
             state.playing = false;
             expect(render(.75) == 0, "Sub Play alone never emits timecode");
             state.playing = true; song.tracks[0].mute = true; engine.setMixer(project,song);
-            expect(render(.75) == 0 && engine.trackPeak(track.id) == 0, "Mute stops LTC and resets its meter");
+            expect(render(.75) == 0, "Mute stops LTC on the first buffer");
+            float previousPeak = engine.trackPeak(track.id);
+            const int releaseBuffers = (int)std::ceil(audio::meterReleaseSeconds * rate / pcm.getNumSamples());
+            for (int n = 0; n <= releaseBuffers; ++n) {
+                expect(render(.75) == 0, "Muted LTC must remain silent");
+                const float peak = engine.trackPeak(track.id);
+                expect(peak <= previousPeak, "Muted LTC cannot feed a new meter peak");
+                previousPeak = peak;
+            }
+            expect(previousPeak == 0, "The LTC meter reaches zero after its release");
             song.tracks[0].mute = false; engine.setMixer(project,song);
             expect(render(.75) > .2f, "Unmute restores LTC");
         }

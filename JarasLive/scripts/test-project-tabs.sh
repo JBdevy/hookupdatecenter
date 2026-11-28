@@ -13,5 +13,5 @@ controller = source[start:end].replace('NSAlert()', 'TestAlert()')
 fixture = Path('Tests/Apple/ProjectTabsTests.swift').read_text()
 Path(sys.argv[1]).write_text(fixture.replace('// INSERT_PROJECT_TABS', controller))
 PY
-swiftc -swift-version 5 -parse-as-library "$build_dir/main.swift" -o "$build_dir/test"
+swiftc Application/Project/LinkedStemMedia.swift -swift-version 5 -parse-as-library "$build_dir/main.swift" -o "$build_dir/test"
 "$build_dir/test"

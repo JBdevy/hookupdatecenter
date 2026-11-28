@@ -23,7 +23,8 @@ def declaration(needle):
 def between(start, end):
     first = source.index(start)
     return source[first:source.index(end, first)]
-parts = [between('@MainActor private struct NativeTimelineAudioBodyConfiguration', '/// Structural data changes'),
+parts = [declaration('enum TimelineTrackHeightLimits {'),
+         between('@MainActor private struct NativeTimelineAudioBodyConfiguration', '/// Structural data changes'),
          between('private final class TimelineRenderMetadata {', '/// During a gain or fade gesture'),
          declaration('struct TimelineRenderKey:'),
          declaration('@MainActor private final class TimelineSelectionLayoutCache'),

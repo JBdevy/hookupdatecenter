@@ -41,6 +41,11 @@ private final class ProjectionFixtureController {
     let ruler = TimelineNativeRulerView()
     let header = ProjectionFixtureHeader()
     let selection = NSView()
+    final class SelectionClip: NSClipView {
+        var horizontalTileStep: CGFloat = 128
+    }
+    let selectionPin = SelectionClip()
+    init() { selectionPin.documentView = selection }
     var vertical: NSClipView? = nil
     var zoom = 0.1203
     var pixelsPerSecond: CGFloat { zoom * 10 }
@@ -56,6 +61,7 @@ PRODUCTION_DRAWING_INVALIDATION
         self.value = value
     }
     func project(_ viewport: CGRect) {
+        selectionPin.frame = CGRect(origin: .zero, size: viewport.size)
         let value = value, style = style
         let nativeBounds = viewport, left = viewport.minX
         let width = value.extent * pixelsPerSecond
@@ -181,10 +187,10 @@ for scale: CGFloat in [1, 2] {
         controller.project(viewport)
         precondition(controller.value.viewportSize.width == savedViewportWidth,
                      "a native divider drag does not publish the saved SwiftUI viewport per pixel")
-        precondition(controller.selection.frame.width == liveWidth && controller.selection.frame.height == controller.value.viewportSize.height,
+        precondition(controller.selection.frame.width == liveWidth + controller.selectionPin.horizontalTileStep && controller.selection.frame.height == controller.value.viewportSize.height,
                      "the selection input surface follows the actual clip even while the saved width is unchanged")
-        precondition(controller.selection.hitTest(CGPoint(x: liveWidth - 1, y: 10)) === controller.selection &&
-                     controller.selection.hitTest(CGPoint(x: liveWidth + 1, y: 10)) == nil,
+        precondition(controller.selectionPin.hitTest(CGPoint(x: liveWidth - 1, y: 10)) === controller.selection &&
+                     controller.selectionPin.hitTest(CGPoint(x: liveWidth + 1, y: 10)) == nil,
                      "newly exposed grid pixels accept input and the input surface stops at the real sidebar boundary")
         matchesFresh("native divider viewport")
     }

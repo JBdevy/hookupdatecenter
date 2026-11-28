@@ -30,5 +30,5 @@ extension TimelineAudioWaveform {
 (folder / 'TimelineAudioWaveform.swift').write_text(source)
 (folder / 'main.swift').write_text(Path('Tests/Apple/TimelineWaveformHeaderTests.swift').read_text())
 PY
-swiftc -O -swift-version 5 -target "$(uname -m)-apple-macos12.0" Application/Project/AudioFileRead.swift "$test_dir/TimelineAudioWaveform.swift" "$test_dir/main.swift" -o "$test_dir/test"
+swiftc Application/Project/LinkedStemMedia.swift -O -swift-version 5 -target "$(uname -m)-apple-macos12.0" Application/Project/AudioFileRead.swift "$test_dir/TimelineAudioWaveform.swift" "$test_dir/main.swift" -o "$test_dir/test"
 "$test_dir/test"

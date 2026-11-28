@@ -48,7 +48,7 @@ grid = Path('Apple/Shared/TimelineGridView.swift').read_text()
 rows = grid[grid.index('@MainActor private struct TrackRowLayout {'):grid.index('\nprivate struct TimelineHeader:')]
 Path(sys.argv[1]).write_text('import Foundation\nimport Combine\n' + recording + rows.replace('@MainActor private struct TrackRowLayout', '@MainActor struct TrackRowLayout'))
 PY
-swiftc Apple/Shared/TimelineRenderDiagnostics.swift -O -swift-version 5 \
+swiftc Application/Project/LinkedStemMedia.swift Apple/Shared/TimelineRenderDiagnostics.swift -O -swift-version 5 \
   Application/Project/OutputPatch.swift Application/Project/DrummerPadKit.swift Application/Project/NativeFXSettings.swift \
   Application/Project/TrackRouting.swift Application/Project/MultiLoop.swift \
   Application/Project/TrackAutomation.swift Application/Controls/NativeFXParameter.swift Application/Project/ProjectModels.swift Application/Project/MIDIItem.swift Application/Project/ItemFade.swift Application/Project/ItemFadeCurve.swift Application/Project/TimelineTempo.swift \

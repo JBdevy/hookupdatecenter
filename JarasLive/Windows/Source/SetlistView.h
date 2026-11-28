@@ -25,8 +25,8 @@ class Workspace::Setlist final : public Component,
         addAndMakeVisible(list);
         list.setComponentID("setlistRows");
         list.setModel(this);
-        regionCardHeight = w.appearance.setlistRegionHeight();
-        list.heightForRow = [this](int row) { return row >= 0 && row < (int)entries.size() && entries[(size_t)row].block ? 28 : regionCardHeight + 4; };
+        list.regionCardHeight = w.appearance.setlistRegionHeight();
+        list.heightForRow = [this](int row) { return row >= 0 && row < (int)entries.size() && entries[(size_t)row].block ? 28 : list.regionCardHeight + 4; };
         list.dragNameForRow = [this](int row) { return row >= 0 && row < (int)entries.size() ? entries[(size_t)row].name : String{}; };
         list.setColour(ListBox::backgroundColourId, theme::background);
         list.setMultipleSelectionEnabled(true);
@@ -473,7 +473,7 @@ class Workspace::Setlist final : public Component,
         put(result, "searching", searching);
         put(result, "searchQuery", search.getText());
         put(result, "footerVisible", footerVisible);
-        put(result, "regionRowHeight", regionCardHeight);
+        put(result, "regionRowHeight", list.regionCardHeight);
         put(result, "fontStyle", w.appearance.fontStyle());
         put(result, "fontFace", w.appearance.setlistFont().getTypefaceStyle());
         put(result, "regionIDs", w.appearance.regionIDs());
@@ -896,9 +896,8 @@ class Workspace::Setlist final : public Component,
     void apply(jaras::RegionSetlist state) {
         w.perform([&] { w.session.configureSetlist(std::move(state)); });
     }
-    int regionCardHeight = 34;
     void changeListenerCallback(ChangeBroadcaster *) override {
-        regionCardHeight = w.appearance.setlistRegionHeight();
+        list.regionCardHeight = w.appearance.setlistRegionHeight();
         footerVisible = (bool)w.appearance.value("catlive.setlist.footerVisible", true);
         resized();refresh();
     }

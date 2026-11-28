@@ -8646,11 +8646,10 @@ void Workspace::layoutWorkspaceColumns(bool widthOnly, bool togglingPanel) {
     const int mixerX = partsX + leftPartsWidth + focusWidth;
     const int trackTop = workspaceBounds.getY() + timeline->headerHeight();
     // Preserve row widths across collapse. A hidden mixer consumes no column space.
-    const int trackWidth = mixerVisible ? left : tracksViewport.getWidth();
     const int trackHeightAvailable = std::max(1, workspaceBounds.getHeight() - timeline->headerHeight());
-    const bool resizeRows = tracksViewport.getWidth() != trackWidth || tracksViewport.getHeight() != trackHeightAvailable;
+    const bool resizeRows = (mixerVisible && tracksContent.getWidth() != left) || tracksViewport.getHeight() != trackHeightAvailable;
     tracksViewport.setVisible(mixerVisible);
-    tracksViewport.setBounds(mixerX, trackTop, trackWidth, trackHeightAvailable);
+    tracksViewport.setBounds(mixerX, trackTop, left, trackHeightAvailable);
     if (resizeRows || (!widthOnly && !togglingPanel)) layoutTrackRows();
     const int addTrackX = mixerX + mixerBodyWidth - 37;
     const int rulerY = workspaceBounds.getY() + timeline->rulerTop();
@@ -8780,7 +8779,7 @@ void Workspace::layoutWorkspaceColumns(bool widthOnly, bool togglingPanel) {
     if(audioPreparationOverlay)audioPreparationOverlay->toFront(false);
 }
 void Workspace::layoutTrackRows() {
-    const int width = std::max(1, tracksViewport.getWidth());
+    const int width = std::max(1, mixerVisible ? tracksViewport.getWidth() : tracksContent.getWidth());
     tracksContent.setSize(width, std::max(tracksViewport.getHeight(), rowTop(rows.size()) + trackHeight * 2));
     for (int index = 0; index < rows.size(); ++index) {
         rows[index]->setVisible(!rowHidden(index));
