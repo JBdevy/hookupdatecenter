@@ -1407,7 +1407,8 @@ private struct TrackMixFeedbackPanel: View {
     @AppStorage("jaras.ipad.focus.open") private var nativeFocusOpen = false
     @State private var nativeFocusHasSelectedTrack = false
     @AppStorage("jaras.ipad.library.open") private var nativeLibraryOpen = false
-    @State private var nativeVideoDocked = false
+    @State private var nativeVideoPlacement: IpadVideoPlacement = .hidden
+    @State private var nativeVideoFullscreen = false
     @State private var nativeBPMEditing = false
     @State private var nativeBPMDraft = NativeTransportNumberDraft()
     @AppStorage(TransportPanelColor.key) private var panelColor = ""
@@ -1516,25 +1517,15 @@ private struct TrackMixFeedbackPanel: View {
         nativeFocusOpen = open
         guard open else { return }
         if !horizontalPartsOpen { nativeLeftPartsOpen = false }
-        if nativeVideoDocked {
-            nativeLibraryOpen = false
-            mixerHidden = true
-        }
     }
     private func setNativeLibrary(open: Bool) {
         nativeLibraryOpen = open
-        if open && nativeVideoDocked { nativeFocusOpen = false }
-    }
-    private func setNativeVideoDocked(_ docked: Bool) {
-        nativeVideoDocked = docked
-        if docked && nativeFocusOpen && (nativeLibraryOpen || !mixerCollapsed) { nativeFocusOpen = false }
     }
     private func toggleMainTrackMixer() {
         finishPanelResize()
         let expand = prompterPanel != nil || mixerCollapsed
         showPrompter(nil)
         mixerHidden = !expand
-        if expand && nativeVideoDocked { nativeFocusOpen = false }
     }
     private func toggleMainSetlist() {
         finishPanelResize()
@@ -2658,7 +2649,9 @@ private struct TrackMixFeedbackPanel: View {
                 setlistFraction: setlistFraction, reference: referenceSpace, available: panelSpace)
             let trackWidth = widths.track
             let normalSetlist = widths.setlist
-            let baseSetlist = prompterFullscreen ? 0 : prompterPanel == nil ? normalSetlist : max(1, contentWidth - 10) * prompterSetlistFraction
+            let setlistDividerWidth: CGFloat = local ? TimelineVerticalBar.width : 10
+            let prompterSpace = max(1, contentWidth - setlistDividerWidth)
+            let baseSetlist = prompterFullscreen ? 0 : prompterPanel == nil ? normalSetlist : prompterSpace * prompterSetlistFraction
             let gridWidth = widths.grid
             let resizeSetlist = { (translation: Double) in
                 let start = setlistResizeStart ?? normalSetlist
@@ -2668,7 +2661,7 @@ private struct TrackMixFeedbackPanel: View {
                 let fraction = width / referenceSpace
                 if setlistFraction != fraction { liveSetlistFraction = fraction }
             }
-            let freeSpace = prompterPanel == nil ? gridWidth : max(0, contentWidth - 10 - baseSetlist)
+            let freeSpace = prompterPanel == nil ? gridWidth : max(0, prompterSpace - baseSetlist)
             let rightPartsVisible = sectionsOpen && !horizontalPartsOpen && baseSetlist > 0 && !prompterFullscreen
             let nativeParts = RemoteNativePartsLayout(available: freeSpace,
                 leftRequested: liveNativeLeftPartsWidth ?? nativeLeftPartsWidth,
@@ -2684,6 +2677,7 @@ private struct TrackMixFeedbackPanel: View {
             let partsHeight = partsDockedHorizontally
                 ? min(192, geometry.size.height * 0.42) * min(1.5, max(1, horizontalPartsHeightScale)) : 0
             let editingBarHeight = local ? TimelineEditingBarMetrics.height : 0
+            let videoReplacesGrid = local && nativeVideoPlacement == .docked
             let dockAvailable = max(0, geometry.size.height - 250 - editingBarHeight - padsHeight - pianoHeight - partsHeight)
             let mixerDocked = local && hozMixerOpen && !nativeHozMixerDetached && !prompterFullscreen
             let mixerMinimum = CGFloat(Self.nativeHozMixerMinimum)
@@ -2699,22 +2693,22 @@ private struct TrackMixFeedbackPanel: View {
             let dockHeight = mixerDocked
                 ? min(maximumDockHeight, max(minimumDockHeight, initialDockHeight - mixerHeightTranslation)) : 0
             VStack(spacing: 1) {
+                if local || !prompterFullscreen { transportBar }
+                if !local && !prompterFullscreen { tabletToolbar(width: railButton) }
+                if local, let localShow {
+                    IpadTimelineEditingBar(show: localShow, scrolling: trackScrolling, zoom: trackScrolling.zoomControl,
+                                           tool: $nativeProTool, movingRegion: regionMovePreview != nil,
+                        mixerButtons: AnyView(HStack(spacing: 6) {
+                            tabletLibraryButtons(width: railButton, height: TimelineEditingBarMetrics.controlHeight)
+                            tabletMixerButtons(width: railButton, height: TimelineEditingBarMetrics.controlHeight)
+                            nativePanelMenu(height: TimelineEditingBarMetrics.controlHeight)
+                        }.environment(\.toolbarIconSurface, true)),
+                        utilityButtons: AnyView(nativeEscapeButton(height: TimelineEditingBarMetrics.controlHeight)
+                            .environment(\.toolbarIconSurface, true)),
+                        liveButtons: AnyView(nativePrompterTools(show: localShow, height: TimelineEditingBarMetrics.controlHeight)
+                            .environment(\.toolbarIconSurface, true)))
+                }
                 VStack(spacing: 1) {
-                    if local || !prompterFullscreen { transportBar }
-                    if !local && !prompterFullscreen { tabletToolbar(width: railButton) }
-                    if local, let localShow {
-                        IpadTimelineEditingBar(show: localShow, scrolling: trackScrolling, zoom: trackScrolling.zoomControl,
-                                               tool: $nativeProTool, movingRegion: regionMovePreview != nil,
-                            mixerButtons: AnyView(HStack(spacing: 6) {
-                                tabletLibraryButtons(width: railButton, height: TimelineEditingBarMetrics.controlHeight)
-                                tabletMixerButtons(width: railButton, height: TimelineEditingBarMetrics.controlHeight)
-                                nativePanelMenu(height: TimelineEditingBarMetrics.controlHeight)
-                            }.environment(\.toolbarIconSurface, true)),
-                            utilityButtons: AnyView(nativeEscapeButton(height: TimelineEditingBarMetrics.controlHeight)
-                                .environment(\.toolbarIconSurface, true)),
-                            liveButtons: AnyView(nativePrompterTools(show: localShow, height: TimelineEditingBarMetrics.controlHeight)
-                                .environment(\.toolbarIconSurface, true)))
-                    }
                     HStack(alignment: .top, spacing: 0) {
                         if let localShow, libraryWidth > 0 {
                             ResizableWorkspaceLibrary(theme: nativeInterfaceTheme, show: localShow,
@@ -2734,21 +2728,21 @@ private struct TrackMixFeedbackPanel: View {
                         VStack(spacing: 0) {
                             HStack(spacing: 0) {
                                 if let panel = prompterPanel {
-                                    let space = max(1, contentWidth - 10)
                                     RemoteNativeTeleprompterPanel(index: panel.rawValue, timer: timer,
                                         fullscreen: prompterFullscreen, toggleFullscreen: togglePrompterFullscreen,
                                         toggleSetlist: togglePrompterSetlist, setlistVisible: prompterSetlistFraction > 0, managesSubscription: false, remote: remote)
-                                        .frame(width: prompterFullscreen ? contentWidth : max(0, space * (1 - prompterSetlistFraction) - parts.total)).clipped()
+                                        .frame(width: prompterFullscreen ? contentWidth : max(0, prompterSpace - baseSetlist - parts.total)).clipped()
                                         .allowsHitTesting(prompterFullscreen || prompterSetlistFraction < 1)
                                         .accessibilityHidden(!prompterFullscreen && prompterSetlistFraction == 1)
-                                resizeHandle(label: "Ajustar largura do Setlist", changed: { translation in
-                                    let start = prompterResizeStart ?? prompterSetlistFraction
-                                    if prompterResizeStart == nil { prompterResizeStart = start }
-                                    let width = min(1, max(0, start - translation / space))
-                                    if prompterSetlistFraction != width { livePrompterSetlistFraction = width }
-                                }, ended: finishPrompterResize)
-                                    .frame(width: prompterFullscreen ? 0 : 10).clipped()
-                                    .allowsHitTesting(!prompterFullscreen).accessibilityHidden(prompterFullscreen)
+                                    if !prompterFullscreen {
+                                        resizeHandle(label: "Ajustar largura do Setlist", width: setlistDividerWidth,
+                                            tint: local ? JarasTheme.green : JarasTheme.secondary, changed: { translation in
+                                                let start = prompterResizeStart ?? prompterSetlistFraction
+                                                if prompterResizeStart == nil { prompterResizeStart = start }
+                                                let width = min(1, max(0, start - translation / prompterSpace))
+                                                if prompterSetlistFraction != width { livePrompterSetlistFraction = width }
+                                            }, ended: finishPrompterResize)
+                                    }
                             } else {
                                 if leftParts.total > 0 {
                                     remoteSections(placement: .left).frame(width: leftParts.content).clipped()
@@ -2767,6 +2761,7 @@ private struct TrackMixFeedbackPanel: View {
                                 trackMixer.frame(width: trackWidth).clipped()
                                     .allowsHitTesting(!mixerCollapsed).accessibilityHidden(mixerCollapsed)
                                 if trackResizeWidth > 0 { nativeTrackMixerDivider.frame(width: trackResizeWidth) }
+                                let timelineWidth = max(0, gridWidth - parts.total - leftParts.total)
                                 RemoteNativeTimeline(state: state, tracks: visibleTracks, scrolling: trackScrolling, region: gridRegion, position: displayedPosition, local: local, waveformPeaks: local ? [:] : remote.gridWaveforms, localShow: localShow, timelineFocus: timelineFocus, editorEnabled: nativeInputEnabled,
                                     touchItemEditing: editingTracks, regionDrag: $regionMovePreview, openRegionActions: openRegionActions, detectSelectionBPM: detectSelectionBPM, openItemMenu: openItemMenu, openSelectedItemMenu: openSelectedItemMenu, openItemFX: openItemFX, openMarkerEditor: { nativeMarker = $0 }, regionCommand: { id, command in
                                     if command == "bpm" { detectRegionBPM?(id) }
@@ -2789,9 +2784,21 @@ private struct TrackMixFeedbackPanel: View {
                                         scrubPosition = nil
                                         if TimelineEditPreferences.enabled(TimelineEditPreferences.native) { localShow?.send(TimelineEditPreferences.seekCommand(TimelineEditPreferences.native), value: position) }
                                         else { action(.seek, value: position) }
-                                    } : nil).frame(width: max(0, gridWidth - parts.total - leftParts.total)).clipped()
-                                        .allowsHitTesting(gridWidth > 0).accessibilityHidden(gridWidth == 0)
+                                    } : nil).frame(width: timelineWidth).clipped()
+                                        .allowsHitTesting(gridWidth > 0 && !videoReplacesGrid)
+                                        .accessibilityHidden(gridWidth == 0 || videoReplacesGrid)
                                         .environment(\.timelineSetlistResize, local ? TimelineSetlistResize(change: { resizeSetlist(Double($0)) }, finish: finishPanelResize) : nil)
+                                        .overlay {
+                                            if videoReplacesGrid && timelineWidth > 0 {
+                                                HStack(spacing: 0) {
+                                                    Color.clear
+                                                        .anchorPreference(key: IpadVideoDockBounds.self, value: .bounds) { $0 }
+                                                        .allowsHitTesting(false)
+                                                    resizeHandle(label: "Ajustar largura do Setlist", width: min(timelineWidth, setlistDividerWidth),
+                                                        tint: JarasTheme.green, changed: resizeSetlist, ended: finishPanelResize)
+                                                }
+                                            }
+                                        }
                                 if !local {
                                     resizeHandle(label: "Ajustar largura do Setlist", changed: resizeSetlist, ended: finishPanelResize)
                                 }
@@ -2845,7 +2852,7 @@ private struct TrackMixFeedbackPanel: View {
                                 }.frame(height: previewHeight, alignment: .top).clipped()
                             }
                         }.frame(width: max(0, contentWidth - libraryWidth - focusWidth - baseSetlist - parts.total - proWidth)).clipped()
-                        let setlistWidth = prompterFullscreen ? 0 : prompterPanel == nil ? normalSetlist : max(1, contentWidth - 10) * prompterSetlistFraction
+                        let setlistWidth = baseSetlist
                         // Clipping only hides drawing; constrain touches too so a narrow
                         // setlist cannot cover the teleprompter's toggle or the divider.
                         setlist.frame(width: setlistWidth).contentShape(Rectangle()).clipped()
@@ -2869,15 +2876,6 @@ private struct TrackMixFeedbackPanel: View {
                             remoteSections().frame(width: parts.content).clipped()
                         }
                         nativeProSidebar(width: proWidth)
-                    }.overlay {
-                        if local {
-                            IpadNativeVideoPanel(
-                                leading: prompterPanel == nil ? libraryWidth + focusWidth + trackWidth + trackResizeWidth + leftParts.total : 0,
-                                trailing: baseSetlist + parts.total + proWidth,
-                                onOpen: { mixerHidden = true },
-                                dockedChanged: setNativeVideoDocked
-                            ).padding(.bottom, dockHeight + partsHeight)
-                        }
                     }
                     if !local && partsDockedHorizontally {
                         horizontalPartsDock(defaultHeight: min(192, geometry.size.height * 0.42))
@@ -2895,8 +2893,13 @@ private struct TrackMixFeedbackPanel: View {
                     if !keyboardVisible && !prompterFullscreen { footer(setlistVisible: baseSetlist > 0) }
 
 
-                }.frame(width: contentWidth).disabled(state.projects?.busy == true)
-            }
+                }
+                .overlayPreferenceValue(IpadVideoDockBounds.self) { grid in
+                    if local && (nativeVideoPlacement == .docked || nativeVideoPlacement == .floating) {
+                        IpadNativeVideoPanel(placement: nativeVideoPlacement, dockAnchor: grid, fullscreen: $nativeVideoFullscreen)
+                    }
+                }
+            }.frame(width: contentWidth).disabled(state.projects?.busy == true)
             .overlay(alignment: .top) {
                 if local && nativeClockPositionOpen, let localShow {
                     NativeClockPosition(show: localShow, available: geometry.size) { nativeClockPositionOpen = false }
@@ -2923,6 +2926,12 @@ private struct TrackMixFeedbackPanel: View {
                             .environment(\.openFX, openNativeFX)
                     }
                 }
+            }
+            .onReceive(VideoPlayback.shared.$ipadPlacement.removeDuplicates()) { placement in
+                guard local else { return }
+                if placement == .docked && prompterPanel != nil { showPrompter(nil) }
+                nativeVideoPlacement = placement
+                if placement == .hidden || placement == .window { nativeVideoFullscreen = false }
             }
             .sheet(isPresented: $projectsOpen) {
                 NativeRemoteProjectsView(state: state, computerName: computerName,
@@ -3068,11 +3077,12 @@ private struct TrackMixFeedbackPanel: View {
                 }
             }
     }
-    private func resizeHandle(label: String, changed: @escaping (Double) -> Void, ended: @escaping () -> Void) -> some View {
+    private func resizeHandle(label: String, width: CGFloat = 10, tint: Color = JarasTheme.secondary,
+                              changed: @escaping (Double) -> Void, ended: @escaping () -> Void) -> some View {
         ZStack {
             JarasTheme.panel
-            RoundedRectangle(cornerRadius: 2).fill(JarasTheme.secondary).frame(width: 3, height: 36)
-        }.frame(width: 10).contentShape(Rectangle())
+            RoundedRectangle(cornerRadius: 2).fill(tint).frame(width: 3, height: 36)
+        }.frame(width: width).contentShape(Rectangle())
             // The divider moves as the panel grows. Local coordinates would
             // change the translation again during layout, feeding the width
             // update back into the gesture even with a stationary finger.

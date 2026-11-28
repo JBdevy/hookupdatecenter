@@ -34,6 +34,7 @@ import AVFoundation
     for window in NSApp.windows where window.title == "CatLive Video" { window.orderOut(nil) }
     var snapshot = ShowSnapshot(project: restored,transport: TransportState(playing: false,songId: restored.songs[0].id,position: 30,queue: QueueState(),loop: LoopState(enabled: false),subPlay: SubPlayState(playing: false,position: 0)))
     controller.update(snapshot)
+    precondition(controller.player.currentItem == nil, "Cold video preparation must yield the main actor before installing its player")
     for _ in 0..<100 {
         if controller.player.currentItem?.status == .readyToPlay { break }
         try await Task.sleep(nanoseconds: 20_000_000)
@@ -209,6 +210,10 @@ import AVFoundation
     try await Task.sleep(nanoseconds: 250_000_000)
     precondition(projections.allSatisfy { $0.player.currentItem == nil }, "late seeks cannot revive stopped media")
     snapshot.transport.editPosition = 30; publish()
+    for _ in 0..<100 {
+        if controller.player.currentItem?.status == .readyToPlay { break }
+        try await Task.sleep(nanoseconds: 20_000_000)
+    }
     tp2Controller.setProjectionEnabled(false)
     print("VIDEO_TP1_TP2_REAL_PLAYER_JUMPS_LOOPS_RATE_PAUSE_EDIT_CURSOR_AND_STALE_SEEKS_OK")
     snapshot.project.songs[0].tracks.removeAll { $0.id == teleprompterID }
@@ -227,6 +232,11 @@ import AVFoundation
     transitionSnapshot.transport.playing = true; transitionSnapshot.transport.paused = false
     transitionSnapshot.transport.position = 0
     transition.update(transitionSnapshot)
+    for _ in 0..<100 {
+        if transition.player.currentItem?.status == .readyToPlay { break }
+        try await Task.sleep(nanoseconds: 20_000_000)
+    }
+    precondition(transition.player.currentItem?.status == .readyToPlay)
     let outgoingPlayer = transition.player
     // Give the preloader time while leaving transport before the boundary.
     try await Task.sleep(nanoseconds: 2_000_000_000)

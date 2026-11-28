@@ -4,6 +4,11 @@
 <dict>
   <key>UIApplicationSupportsIndirectInputEvents</key>
   <true/>
+  <key>UIApplicationSceneManifest</key>
+  <dict>
+    <key>UIApplicationSupportsMultipleScenes</key>
+    <true/>
+  </dict>
 	<!-- Encryption is provided by Apple's CryptoKit and system networking. -->
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>

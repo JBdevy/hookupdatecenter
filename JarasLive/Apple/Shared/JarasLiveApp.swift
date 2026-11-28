@@ -114,6 +114,9 @@ import UIKit
             UIApplication.shared.isIdleTimerDisabled = phase == .active
             if phase == .active { JarasMobileApplicationDelegate.updateOrientations() }
         }
+        WindowGroup("CatLive Video", id: IpadVideoDetachedWindow.sceneID, for: UUID.self) { $request in
+            IpadVideoDetachedWindow(request: request)
+        }
         #endif
     }
 }
