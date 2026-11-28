@@ -3,6 +3,35 @@ import AVFoundation
 @testable import JarasApplication
 
 final class StemImportTests: XCTestCase {
+    func testLinkedStemsReopenFromTheirOwnFoldersAndKeepMatchingFileNamesIndependent() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let first = try fixture(root, folder: "Stems/Song A", file: "Kick.wav")
+        let second = try fixture(root, folder: "Song B", file: "Kick.wav", seconds: 0.2)
+        let directory = root.appendingPathComponent("Project")
+        let document = directory.appendingPathComponent("Show.jl")
+        let scan = try StemProjectImporter.scan([first,second])
+        let result = try StemProjectImporter.build(scan: scan, remove: "", base: .empty(name: "Links"),
+                                                   destination: document, copyMedia: false)
+        let paths = result.mediaPaths.sorted()
+        XCTAssertEqual(paths.count, 2)
+        let expected = Set([first,second].map { $0.appendingPathComponent("Kick.wav").standardizedFileURL.path })
+        let freshRegistry = LinkedStemMedia()
+        let files = paths.map { freshRegistry.resolve($0,in: directory) }
+        XCTAssertEqual(Set(files.map { $0.standardizedFileURL.path }), expected)
+        for (path,file) in zip(paths,files) {
+            XCTAssertTrue(LinkedStemMedia.isReference(path))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent(path).path))
+            XCTAssertEqual(freshRegistry.waveform(inSourceFolderOf: file)?.path, file.deletingLastPathComponent().appendingPathComponent("WF/Kick.wav.waveform").path)
+        }
+        let reopened = try ProjectDocumentCodec.decode(ProjectDocumentCodec.encode(result))
+        XCTAssertEqual(ProjectAudioRecovery.missingPaths(in: reopened,directory: directory), [])
+        let copied = try StemProjectImporter.build(scan: scan, remove: "", base: reopened, destination: document, copyMedia: true)
+        let newPaths = copied.mediaPaths.subtracting(result.mediaPaths)
+        XCTAssertEqual(newPaths.count, 2)
+        XCTAssertTrue(newPaths.allSatisfy { !LinkedStemMedia.isReference($0) && FileManager.default.fileExists(atPath: directory.appendingPathComponent($0).path) })
+    }
+
     func testImportedTracksUseTheirInstrumentIconAndKeepAnExistingCustomIcon() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

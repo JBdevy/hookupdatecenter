@@ -168,10 +168,12 @@ struct ExternalPluginEditor: View {
     private var pluginIdentifier: String?
     private var observing = false
     private var usesParameterEditor = false
+    var nativeEditorSize: NSSize? { usesParameterEditor ? nil : scroll.documentView?.frame.size }
     init(show: ShowController, clip: UUID, effect: String) {
         self.show = show; self.clip = clip; self.effect = effect; project = show.snapshot.project.id
         super.init(frame: NSRect(x: 0, y: 0, width: 700, height: 440))
         scroll.hasVerticalScroller = true; scroll.hasHorizontalScroller = true; scroll.autohidesScrollers = true
+        scroll.scrollerStyle = .overlay
         scroll.drawsBackground = false; addSubview(scroll)
         Self.hosts.add(self); resume()
     }
@@ -420,17 +422,19 @@ private final class FXChainEffectNameView: NSTextField {
         let content: NSView
         let size: NSSize
         if effect.hasPrefix("External:"), let clip {
-            content = ClipExternalPluginHostView(show: show, clip: clip, effect: effect)
-            size = NSSize(width: 740, height: 560)
-            panel?.contentMinSize = NSSize(width: sidebarWidth + 400, height: 320)
+            let host = ClipExternalPluginHostView(show: show, clip: clip, effect: effect)
+            content = host
+            size = host.nativeEditorSize ?? host.frame.size
+            panel?.contentMinSize = NSSize(width: sidebarWidth + 1, height: 64)
         } else if effect.hasPrefix("External:"), let native = ExternalPluginEditor.nativeEditor(show: show, track: track, effect: effect) {
             let viewport = NSScrollView()
+            viewport.scrollerStyle = .overlay
             viewport.hasVerticalScroller = true; viewport.hasHorizontalScroller = true
             viewport.autohidesScrollers = true; viewport.drawsBackground = false
             native.identifier = NSUserInterfaceItemIdentifier("catlive.managedPluginEditor")
             viewport.documentView = native
             content = viewport; size = native.frame.size
-            panel?.contentMinSize = NSSize(width: sidebarWidth + 400, height: 64)
+            panel?.contentMinSize = NSSize(width: sidebarWidth + 1, height: 64)
         } else {
             let language = UserDefaults.standard.string(forKey: "jaras.language") ?? "en"
             // editorArea supplies the frame; the panel below supplies the
@@ -450,6 +454,9 @@ private final class FXChainEffectNameView: NSTextField {
                 let frame = NSRect(x: 0, y: 0, width: 1047, height: 713)
                 let minimum = panel?.contentRect(forFrameRect: frame).size ?? frame.size
                 size = NSSize(width: minimum.width, height: minimum.height - (presetBar.isHidden ? 0 : 36))
+                panel?.contentMinSize = NSSize(width: sidebarWidth + size.width, height: size.height)
+            } else if kind == NativeFXSettings.waveLFOName {
+                size = NSSize(width: 520, height: 350)
                 panel?.contentMinSize = NSSize(width: sidebarWidth + size.width, height: size.height)
             } else if kind == "EQ - 31 Band" {
                 size = NSSize(width: 1000, height: 390)

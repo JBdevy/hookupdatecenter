@@ -37,8 +37,8 @@ private extension NativeTimelineRegionTargetsView {
     var selectionForTest: [UUID: CAShapeLayer] { mounted.mapValues { $0.selection } }
 }
 '''
-(p/'main.swift').write_text('import AppKit\nimport SwiftUI\nprivate enum JarasLocalization { static func string(_ s: String) -> String { s } }\n'+bands+gate+'\n'+editor+'\n'+grid+'\n'+probes+'\n'+(root/'Tests/Apple/TimelineRegionInputPoolTests.swift').read_text())
+(p/'main.swift').write_text('import AppKit\nimport SwiftUI\n'+bands+gate+'\n'+editor+'\n'+grid+'\n'+probes+'\n'+(root/'Tests/Apple/TimelineRegionInputPoolTests.swift').read_text())
 
 PY
-swiftc -O -swift-version 5 -target "$(uname -m)-apple-macos12.0" Apple/Shared/TimelineVisibleClipIndex.swift "$test_dir/main.swift" -o "$test_dir/test"
+swiftc -O -swift-version 5 -target "$(uname -m)-apple-macos12.0" Apple/Shared/NativeTooltips.swift Apple/Shared/TimelineVisibleClipIndex.swift "$test_dir/main.swift" -o "$test_dir/test"
 "$test_dir/test"

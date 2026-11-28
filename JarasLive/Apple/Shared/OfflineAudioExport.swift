@@ -214,7 +214,7 @@ final class OfflineAudioExport {
                           let audio = clip.audioFile ?? track.audioFile else { throw AudioExportFailure.invalidFormat }
                     if let cached = sourceChannels[audio.path] { settings.channels = cached }
                     else {
-                        let file = try AudioFileRead.openMedia(mediaDirectory.appendingPathComponent(audio.path))
+                        let file = try AudioFileRead.openMedia(mediaDirectory.projectMedia(audio.path))
                         settings.channels = Int(file.processingFormat.channelCount)
                         sourceChannels[audio.path] = settings.channels
                     }
@@ -404,9 +404,9 @@ final class OfflineAudioExport {
             let begin = max(start,clip.startTime), finish = min(end,clip.startTime+clip.duration)
             guard finish > begin else { return }
             let file: AVAudioFile
-            do { file = try AudioFileRead.openMedia(mediaDirectory.appendingPathComponent(audio.path)) }
+            do { file = try AudioFileRead.openMedia(mediaDirectory.projectMedia(audio.path)) }
             catch {
-                guard clip.isProjectionMedia, AudioFileRead.isVideoWithoutAudio(error) else { throw error }
+                guard writers.first?.job.clip == nil, clip.isProjectionMedia, AudioFileRead.isVideoWithoutAudio(error) else { throw error }
                 return
             }
             let player = AVAudioPlayerNode(), gain = AVAudioUnitEQ(numberOfBands: 0)
@@ -444,7 +444,8 @@ final class OfflineAudioExport {
             // Match the live item chain, including legacy fixed native stages.
             fx.inserted = fx.clipEffectKeys
             var itemEffects: NativeEffectsChain?
-            if overlap != nil || clip.phaseInverted == true || (clip.fadeIn ?? 0) > 0 || (clip.fadeOut ?? 0) > 0 || (clip.channelMode ?? 0) != 0 || (clip.normalizationGain ?? 1) != 1 || fx.eqEnabled || fx.compressorEnabled || fx.delayEnabled || fx.reverbEnabled || fx.pitchEnabled == true || fx.limiterEnabled == true || fx.triggerEnabled == true || fx.gateEnabled == true || fx.effectKeys.contains { DrummerPadKind(rawValue: fx.kind(of: $0)) != nil } || fx.hasCreativeEffects || fx.externalPlugins?.isEmpty == false || fx.instances?.isEmpty == false || fx.isEnabled(NativeFXSettings.stemSeparator) {
+            let trackWaveLFO = track.fx?.activeWaveLFO
+            if clip.effectiveWaveLFO(inheriting: trackWaveLFO) != nil || overlap != nil || clip.phaseInverted == true || (clip.fadeIn ?? 0) > 0 || (clip.fadeOut ?? 0) > 0 || (clip.channelMode ?? 0) != 0 || (clip.normalizationGain ?? 1) != 1 || fx.eqEnabled || fx.compressorEnabled || fx.delayEnabled || fx.reverbEnabled || fx.pitchEnabled == true || fx.limiterEnabled == true || fx.triggerEnabled == true || fx.gateEnabled == true || fx.effectKeys.contains { DrummerPadKind(rawValue: fx.kind(of: $0)) != nil } || fx.hasCreativeEffects || fx.externalPlugins?.isEmpty == false || fx.instances?.isEmpty == false || fx.isEnabled(NativeFXSettings.stemSeparator) {
                 let effects = NativeEffectsChain()
                 itemEffects = effects
                 effectChains.append(effects)
@@ -456,6 +457,7 @@ final class OfflineAudioExport {
                 #endif
                 effects.setSourcePolarity(clip.phaseInverted == true); effects.setSourceGain(clip.normalizationGain ?? 1); effects.setSourceChannelMode(clip.channelMode ?? 0)
                 transportClocks.append((effects, start))
+                effects.trackWaveLFO = trackWaveLFO
                 effects.setOverlapEnvelope(overlap)
                 effects.configureItemFade(clip, position: begin, sampleTime: (begin - start + Double(preroll) / format.sampleRate) * sourceFormat.sampleRate)
                 itemFades.append((effects, clip, begin, start, sourceFormat.sampleRate))
@@ -596,7 +598,7 @@ final class OfflineAudioExport {
                     "beats": Double(section.beats), "unit": Double(section.unit)]
             }
             guard !sections.isEmpty else { return }
-            let url = track.clickSound.map { mediaDirectory.appendingPathComponent($0.path) }
+            let url = track.clickSound.map { mediaDirectory.projectMedia($0.path) }
             if let url, !FileManager.default.fileExists(atPath: url.path) {
                 throw CocoaError(.fileReadNoSuchFile, userInfo: [NSFilePathErrorKey: url.path, NSURLErrorKey: url])
             }

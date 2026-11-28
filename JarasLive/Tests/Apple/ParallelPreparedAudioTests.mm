@@ -79,6 +79,22 @@ int main() {
                 }
                 coordinator.finish();
             }
+            // An AU may pull more than the per-voice scratch capacity. Compare
+            // a full pull to several short ones in dry and spectral playback.
+            for (double tuning : {0., 3.}) {
+                auto large = make(), split = make();
+                large->semitones.store(tuning); split->semitones.store(tuning);
+                const int total = 16385;
+                auto output = render(*large, total, 0);
+                int start = 0;
+                while (start < total) {
+                    const int count = std::min(4096, total - start);
+                    auto expected = render(*split, count, start);
+                    for (int i=0; i<count; ++i) assert(std::abs(output[start+i]-expected[i]) < 2e-6f);
+                    start += count;
+                }
+                assert(large->source == split->source && !large->misses.load() && !split->misses.load());
+            }
             // A disconnected/gated graph need not pull every scheduled source.
             // Ending that render must still release every preparation gate.
             jaras::realtimeClock = {1, 200000, 48000, 1e9};

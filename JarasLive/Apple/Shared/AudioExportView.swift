@@ -922,7 +922,7 @@ private enum MultitrackRenderer {
                         for clip in clips where clip.isProjectionMedia {
                             if cancellation.cancelled { throw CancellationError() }
                             guard let path = clip.audioFile?.path else { continue }
-                            let source = path.hasPrefix("/") ? URL(fileURLWithPath: path) : config.mediaDirectory.appendingPathComponent(path)
+                            let source = path.hasPrefix("/") ? URL(fileURLWithPath: path) : config.mediaDirectory.projectMedia(path)
                             let filename: String
                             if let copied = copiedAssets[source] { filename = copied }
                             else {

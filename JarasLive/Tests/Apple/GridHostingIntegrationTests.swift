@@ -714,13 +714,22 @@ precondition(retainedControl.count == 2, "the retained control continues editing
 resizeWindow.close()
 print("HOSTED_RESIZE_PRESERVES_NATIVE_CONTROLS_STATE_LIVE_ENVIRONMENT_ACTIONS_AND_DOCUMENT_GEOMETRY_OK")
 
-// Minimum zoom preserves the same overview duration at every viewport width.
+// The calibrated desktop scale also applies to navigation saved by older builds.
 for width: CGFloat in [0, 1, 511, 512, 513, 1024, 1025, 3840, 7680] {
-    let minimum = TimelineZoomLimits.minimumZoom(viewportWidth: width)
-    precondition(abs(max(1, Double(width)) / (10 * minimum) - 45 * 3600) < 0.00001,
-        "Maximum overview shows 45 hours regardless of viewport width")
+    precondition(abs(TimelineZoomLimits.minimumZoom(viewportWidth: width) - 0.03651216238088901) < 1e-12)
 }
-print("WINDOW_RESIZE_45_HOUR_OVERVIEW_OK")
+let currentDomain = "catlive-test-viewport-" + UUID().uuidString
+let legacyDomain = "catlive-test-viewport-" + UUID().uuidString
+let currentSettings = UserDefaults(suiteName: currentDomain)!, legacySettings = UserDefaults(suiteName: legacyDomain)!
+legacySettings.set(0.001, forKey: TimelineViewportPreferences.zoomKey)
+precondition(TimelineViewportPreferences.restoredZoom(from: currentSettings, legacy: legacySettings) == TimelineZoomLimits.minimum)
+currentSettings.set(1.5, forKey: TimelineViewportPreferences.zoomKey)
+precondition(TimelineViewportPreferences.restoredZoom(from: currentSettings, legacy: legacySettings) == 1.5)
+currentSettings.set(0.002, forKey: TimelineViewportPreferences.zoomKey)
+precondition(TimelineViewportPreferences.restoredZoom(from: currentSettings, legacy: legacySettings) == TimelineZoomLimits.minimum)
+currentSettings.removePersistentDomain(forName: currentDomain)
+legacySettings.removePersistentDomain(forName: legacyDomain)
+print("DESKTOP_CALIBRATED_ZOOM_RESTORE_OK")
 
 final class HeightZoomFixtureState: ObservableObject {
     @Published var height: CGFloat = 64

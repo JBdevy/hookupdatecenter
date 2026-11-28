@@ -77,7 +77,7 @@ void Workspace::performAction(const String &action, float value, int trackNumber
     } else if (action == "tapTempo") {
         if (value > 0) session.tapTempo(actions.eventTime());
     } else if (action == "tunerDown" || action == "tunerUp") {
-        if (!tuner->region())
+        if (!session.tunerInputAllowed() || !tuner->region())
             return;
         const auto region = tuner->region()->id;
         const int delta = action == "tunerUp" ? 1 : -1;

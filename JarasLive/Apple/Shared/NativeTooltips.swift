@@ -1,5 +1,12 @@
 import SwiftUI
 
+enum RegionDurationTooltip {
+    static func text(_ duration: TimeInterval) -> String {
+        let seconds = Int64(max(0, min(Double(Int32.max), duration.rounded())))
+        return String(format: "Duracao-%02lld:%02lld:%02lld", seconds / 3600, seconds / 60 % 60, seconds % 60)
+    }
+}
+
 /// AppKit menus use the app preference, independently of the system language.
 enum JarasLocalization {
     // Language resources are immutable for the lifetime of the app. Keep the
@@ -107,14 +114,20 @@ private struct DesktopIconTooltip: NSViewRepresentable {
         }
     }
     func present(_ text: String, owner: NSView, at point: NSPoint) {
-        self.owner = owner; bubble.text = text
+        let shouldOrderFront = self.owner !== owner || !panel.isVisible
+        self.owner = owner
+        if bubble.text != text {
+            bubble.text = text
+            bubble.setAccessibilityLabel(text)
+            bubble.needsDisplay = true
+        }
         let width = max(96, ceil((text as NSString).size(withAttributes: [.font: DesktopIconTooltipBubble.font]).width) + 18)
         let screen = owner.window?.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? .zero
         var frame = NSRect(x: point.x + 12, y: point.y + 8, width: width, height: 22)
         if frame.maxY > screen.maxY { frame.origin.y = point.y - 30 }
         frame.origin.x = min(max(screen.minX + 4, frame.minX), screen.maxX - width - 4)
-        panel.setFrame(frame, display: false); bubble.needsDisplay = true
-        panel.orderFront(nil)
+        if panel.frame != frame { panel.setFrame(frame, display: false) }
+        if shouldOrderFront { panel.orderFront(nil) }
     }
     func hide(owner: NSView) { if self.owner === owner { panel.orderOut(nil); self.owner = nil } }
 }

@@ -22,7 +22,7 @@ enum ItemNormalization {
     /// independent of transport and mixer effects. Never rewrite the source.
     static func measure(_ clip: AudioClip, directory: URL, mode: NormalizationMode, progress: (Double) -> Void = { _ in }) throws -> Double {
         guard let source = clip.audioFile else { throw ProjectError.invalid("Item has no audio file.") }
-        let file = try AVAudioFile(forReading: directory.appendingPathComponent(source.path))
+        let file = try AVAudioFile(forReading: directory.projectMedia(source.path))
         let rate = file.processingFormat.sampleRate, channels = Int(file.processingFormat.channelCount)
         let loopFirst = max(0, AVAudioFramePosition((clip.loopStart ?? 0) * rate))
         var loopEnd = min(file.length, loopFirst + AVAudioFramePosition((clip.loopLength ?? Double(file.length) / rate) * rate))

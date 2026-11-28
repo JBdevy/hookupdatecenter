@@ -131,18 +131,19 @@ int main(int argc,char**argv){@autoreleasepool{
     NSDictionary* monitorState=[NSJSONSerialization JSONObjectWithData:[core snapshotWithError:&error] options:0 error:&error];
     expect([monitorState[@"project"][@"songs"][0][@"tracks"][0][@"inputMonitoring"] isEqual:@NO], "Monitor Off persists independently of record mode");
     expect([core setInputMonitoring:midiTrack enabled:YES error:&error], "enable live audio monitoring");
+    NSString* gainClipID=original[@"songs"][0][@"tracks"][0][@"clips"][0][@"id"];
+    expect(![core executeCommand:@"clipPitch" target:gainClipID value:13 error:&error],"reject out of range item pitch while stopped");
+    expect([core executeCommand:@"clipPitch" target:gainClipID value:0 error:&error],"reset item pitch while stopped");
+    expect([core executeCommand:@"clipPitch" target:gainClipID value:-7.25 error:&error],"apply item pitch before Play");
     expect([core executeCommand:@"play" target:nil value:0 error:&error],"main play");
     [core executeCommand:@"subSeek" target:nil value:20 error:&error]; [core executeCommand:@"subPlay" target:nil value:0 error:&error]; [core advance:2];
     NSDictionary* playback=[NSJSONSerialization JSONObjectWithData:[core playbackSnapshotWithError:&error] options:0 error:&error];
     expect([playback[@"transport"][@"position"] doubleValue]==2,"main position");
     expect([playback[@"transport"][@"subPlay"][@"position"] doubleValue]==22,"secondary independent position");
-    NSString* gainClipID=original[@"songs"][0][@"tracks"][0][@"clips"][0][@"id"];
-    expect([core executeCommand:@"clipPitch" target:gainClipID value:-7.25 error:&error],"set item pitch without transport reset");
+    expect([core executeCommand:@"clipPitch" target:gainClipID value:5 error:&error],"ignore live Tuner command");
     snapshot=[NSJSONSerialization JSONObjectWithData:[core snapshotWithError:&error] options:0 error:&error];
     expect([snapshot[@"project"][@"songs"][0][@"tracks"][0][@"clips"][0][@"pitchSemitones"] doubleValue]==-7.25,"item pitch reaches bridge snapshot");
     expect(equalJSON(snapshot[@"transport"],playback[@"transport"]),"item pitch preserves live transport");
-    expect(![core executeCommand:@"clipPitch" target:gainClipID value:13 error:&error],"reject out of range item pitch");
-    expect([core executeCommand:@"clipPitch" target:gainClipID value:0 error:&error],"reset item pitch");
     expect([core executeCommand:@"clipGain" target:gainClipID value:0.25 error:&error],"set item gain without project serialization");
     snapshot=[NSJSONSerialization JSONObjectWithData:[core snapshotWithError:&error] options:0 error:&error];
     expect([snapshot[@"project"][@"songs"][0][@"tracks"][0][@"clips"][0][@"gain"] doubleValue]==0.25,"item gain reaches bridge snapshot");
@@ -161,7 +162,9 @@ int main(int argc,char**argv){@autoreleasepool{
     expect(equalJSON(snapshot,gainAfterUnknown),"unknown item gain target is atomic");
     NSMutableDictionary* itemFX = [original[@"songs"][0][@"tracks"][0][@"clips"][0][@"fx"] mutableCopy];
     itemFX[@"delayEnabled"] = @YES; itemFX[@"delayMix"] = @35;
-    itemFX[@"inserted"] = @[@"EQ", @"Delay", @"Reverb"];
+    itemFX[@"inserted"] = @[@"Wave LFO", @"EQ", @"Delay", @"Reverb"];
+    itemFX[@"waveLFOEnabled"] = @YES;
+    itemFX[@"waveLFO"] = @{@"attack": @0.2, @"decay": @0.1, @"sustain": @0.5, @"release": @0.2};
     error = nil;
     expect([core setClipFX:gainClipID data:[NSJSONSerialization dataWithJSONObject:itemFX options:0 error:&error] error:&error], "set effects directly on an item");
     NSDictionary* withItemFX = [NSJSONSerialization JSONObjectWithData:[core snapshotWithError:&error] options:0 error:&error];
@@ -297,13 +300,16 @@ int main(int argc,char**argv){@autoreleasepool{
     NSData* batch=[NSJSONSerialization dataWithJSONObject:@[imported] options:0 error:&error];
     expect([core insertAudioTracks:batch song:original[@"songs"][0][@"id"] error:&error],"import audio through bridge");
     snapshot=[NSJSONSerialization JSONObjectWithData:[core snapshotWithError:&error] options:0 error:&error];
-    // Re-placement computes new region membership; other import metadata is unchanged.
+    // Importing a second copy of the four Click items assigns new display names and region membership.
     NSMutableDictionary* importedResult=[[snapshot[@"project"][@"songs"][0][@"tracks"] lastObject] mutableCopy];
     NSMutableArray* importedClips=[NSMutableArray new];
     for(NSDictionary* value in importedResult[@"clips"]) { NSMutableDictionary* c=[value mutableCopy]; [c removeObjectForKey:@"regionOwnerID"]; [importedClips addObject:c]; }
     importedResult[@"clips"]=importedClips;
-    for(NSMutableDictionary* value in clips) [value removeObjectForKey:@"regionOwnerID"];
-    expect(equalJSON(importedResult,imported),"audio import preserves complete track and clip metadata except recomputed membership");
+    for (NSUInteger index = 0; index < clips.count; ++index) {
+        [clips[index] removeObjectForKey:@"regionOwnerID"];
+        clips[index][@"name"] = [NSString stringWithFormat:@"Click %03lu", (unsigned long)index + 1];
+    }
+    expect(equalJSON(importedResult,imported),"audio import numbers duplicate item names and preserves their other metadata");
     expect([snapshot[@"transport"][@"playing"] boolValue],"import preserves playback");
     NSMutableDictionary* recorded = [snapshot[@"project"][@"songs"][0][@"tracks"][0][@"clips"][0] mutableCopy];
     recorded[@"id"] = NSUUID.UUID.UUIDString; recorded[@"recordingLane"] = @4;

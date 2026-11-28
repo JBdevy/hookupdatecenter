@@ -482,8 +482,13 @@ private struct TimelineMP3ConversionView: View {
 private struct AdvancedSetlistColors: View {
     @AppStorage("jaras.setlist.idMode") private var idMode = "playlist"
     @AppStorage("jaras.setlist.fontStyle") private var fontStyle = 0
+    @AppStorage(SetlistDisplayMode.key) private var setlistMode = SetlistDisplayMode.normal
     var body: some View {
         VStack(spacing: 18) {
+            Picker("Setlist mode", selection: $setlistMode) {
+                Text(verbatim: "Normal").tag(SetlistDisplayMode.normal)
+                Text(verbatim: "Compact").tag(SetlistDisplayMode.compact)
+            }.accessibilityIdentifier("setlist-display-mode")
             Picker("Setlist ID mode", selection: $idMode) {
                 Text("Playlist ID").tag("playlist")
                 Text("Region ID").tag("region")

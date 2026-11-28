@@ -1,6 +1,7 @@
 #pragma once
 #include "FloatingControlTests.h"
 #include "PlaylistEditor.h"
+#include "DesktopToolbarSymbols.h"
 
 namespace catlive::setlistSearchTests {
 inline void require(bool value,const char *message) { if (!value) throw std::runtime_error(message); }
@@ -30,6 +31,28 @@ inline void click(Workspace &workspace,int row) {
     floatingControlTests::pump();
 }
 template <typename Test> void registerTests(const File &directory,Test &test) {
+    test("Setlist transport icon has three centred evenly spaced rows at scaled sizes",[&] {
+        for (const float side : {17.f, 21.25f, 25.5f, 34.f}) {
+            Image image(Image::ARGB, 48, 48, true, SoftwareImageType());
+            Graphics g(image);
+            g.setColour(Colours::white);
+            const auto bounds = juce::Rectangle<float>(side, side).withCentre({24.f, 24.f});
+            require(drawDesktopToolbarSymbol(g, "setlist", bounds), "Setlist transport artwork missing");
+            std::vector<double> centres;
+            double weighted = 0, coverage = 0;
+            for (int y = 0; y < image.getHeight(); ++y) {
+                const auto alpha = image.getPixelAt(26, y).getAlpha();
+                if (alpha) { weighted += (y + .5) * alpha; coverage += alpha; }
+                else if (coverage) {
+                    centres.push_back(weighted / coverage);
+                    weighted = coverage = 0;
+                }
+            }
+            require(centres.size() == 3 && std::abs(centres[1] - 24.) < .15 &&
+                    std::abs((centres[1]-centres[0]) - (centres[2]-centres[1])) < .15,
+                    "The Setlist rows shifted relative to the centre of the transport button");
+        }
+    });
     test("Search Enter returns focus to workspace instead of the inline timer",[&] {
         Session session;session.inspection=true;session.audio.prepareOffline(48000);
         session.restoreSnapshot(ProjectCodec::encode(fixture()));session.audio.setOffline(true);
@@ -148,6 +171,47 @@ template <typename Test> void registerTests(const File &directory,Test &test) {
             for(auto *child:c.getChildren())if(auto *box=findMode(*child))return box;return nullptr;
         };
         auto *mode=findMode(*advanced);require(mode,"Advanced ID mode selector missing");
+        auto *density=dynamic_cast<ComboBox*>(uiFeatureTests::find(*advanced,"jaras.setlist.mode"));
+        auto *blockColour=dynamic_cast<Button*>(uiFeatureTests::find(*advanced,"jaras.setlist.blockTextColor"));
+        require(density && density->getY()<mode->getY() && density->getItemText(0)=="Normal" && density->getItemText(1)=="Compact",
+                "Setlist mode must be the first setting with both display choices");
+        require(blockColour && blockColour->getParentComponent()->getLocalBounds().contains(blockColour->getBounds()) &&
+                blockColour->getName()==localization::translate("Block text color"),"Block text colour cannot be reached in Advanced");
+        auto *viewport = blockColour->findParentComponentOfClass<Viewport>();
+        require(viewport, "Setlist preferences viewport missing");
+        viewport->setViewPosition(0, blockColour->getBottom());
+        require(viewport->getViewArea().contains(blockColour->getBounds()), "Cannot scroll the block colour into view");
+        blockColour->onClick();
+        floatingControlTests::pump();
+        auto *picker = Component::getCurrentlyModalComponent();
+        auto *cyan = picker ? dynamic_cast<Button*>(uiFeatureTests::find(*picker,"nameColourSwatch13")) : nullptr;
+        auto *applyColour = picker ? dynamic_cast<Button*>(uiFeatureTests::find(*picker,"nameColourSave")) : nullptr;
+        require(cyan && applyColour, "Clicking block text colour did not open the colour picker");
+        cyan->onClick();
+        applyColour->onClick();
+        floatingControlTests::pump();
+        const auto chosen = Colour(0xff00c9c9u);
+        require(Appearance(preferences).colour("jaras.setlist.blockTextColor",0) == chosen,
+                "Block text colour was not persisted");
+        auto *blockRows = dynamic_cast<SetlistRows*>(uiFeatureTests::find(workspace,"setlistRows"));
+        require(blockRows && blockRows->getModel(), "Setlist rows missing after applying a colour");
+        const auto rowIDs = strings(get(state(),"rowIDs"));
+        const auto blockAt = std::find(rowIDs.begin(),rowIDs.end(),String("block"));
+        require(blockAt != rowIDs.end(), "Expected block row missing");
+        const int blockIndex = static_cast<int>(std::distance(rowIDs.begin(),blockAt));
+        Image painted(Image::RGB,320,28,true,SoftwareImageType());
+        Graphics paint(painted);
+        blockRows->getModel()->paintListBoxItem(blockIndex,paint,320,28,false);
+        bool colouredText = false;
+        for (int y = 0; y < 24 && !colouredText; ++y)
+            for (int x = 80; x < 310; ++x)
+                if (painted.getPixelAt(x,y) == chosen) { colouredText = true; break; }
+        require(colouredText, "Setlist block text did not use the confirmed colour");
+        density->setSelectedId(2,dontSendNotification);density->onChange();
+        require(Appearance(preferences).setlistRegionHeight()==24,"Compact selection was not applied");
+        density->setSelectedId(1,dontSendNotification);density->onChange();
+        require(Appearance(preferences).setlistRegionHeight()==34,"Normal selection was not restored");
+
         mode->setSelectedId(2,dontSendNotification);mode->onChange();floatingControlTests::pump();
         require(flag(state(),"regionIDs") && strings(get(state(),"displayedNumbers"))==std::vector<String>{"6","2","","1"},"Advanced did not immediately apply region IDs to the visible playlist");
         require(Appearance(preferences).regionIDs(),"Region ID mode was not persisted");

@@ -147,7 +147,7 @@
 "Review stems" = "Revisar stems";
 "Repeated names were found that may identify providers. Select suggestions or type names to remove." = "Foram encontrados nomes repetidos que podem identificar empresas. Selecione sugestões ou digite os nomes que deseja limpar.";
 "Names to remove, separated by commas" = "Nomes para limpar, separados por vírgula";
-"Original folders remain unchanged. Audio is copied beside the .jl project." = "As pastas originais serão preservadas. Os áudios serão copiados para junto do projeto .jl.";
+"Next, choose whether to copy the audio into the project or use the source folder." = "Na próxima etapa, escolha entre copiar os áudios para o projeto e usar a pasta de origem.";
 "Back" = "Voltar";
 "Create / Add" = "Criar / Adicionar";
 "Opening project…" = "Abrindo projeto…";
@@ -902,6 +902,7 @@
 "Playlist song text" = "Letras das músicas nas playlists";
 "Unified drawer song text" = "Letras das músicas dentro das gavetas";
 
+"Setlist mode" = "Modo do setlist";
 "Setlist font" = "Fonte do Setlist";
 
 "Regular" = "Padrão";
@@ -2471,7 +2472,7 @@
 
 "Opening backup…" = "Abrindo backup…";
 
-"Full lyrics" = "Letra Completa";
+"Full lyrics" = "Add Lyrics";
 
 "Create items" = "Criar itens";
 
@@ -2487,7 +2488,7 @@
 
 "The text track is no longer available." = "A pista de texto não existe mais.";
 
-"The song changed. Open Full lyrics again." = "A música mudou. Abra Letra Completa novamente.";
+"The song changed. Open Add Lyrics again." = "A música mudou. Abra Add Lyrics novamente.";
 
 "Could not create the lyrics items." = "Não foi possível criar os itens da letra.";
 
@@ -2823,6 +2824,7 @@
 "Bypass effect" = "Colocar em bypass";
 "Enable effect" = "Ativar efeito";
 
+"Set Random Color" = "Definir cor aleatória";
 "Set Track Color" = "Cor da Pista";
 "Set Track Icon" = "Ícone da Pista";
 
@@ -2886,3 +2888,14 @@
 "Enable Remote" = "Ativar Remote";
 "Remote device name" = "Nome no Remote";
 "Choose the project folder in Home before saving this session." = "Escolha a pasta dos projetos no Início antes de salvar esta sessão.";
+"Where should CatLive use the media files?" = "De onde o CatLive deve usar os arquivos de mídia?";
+"Copy to project" = "Copiar para o projeto";
+"Use source folder" = "Usar a pasta de origem";
+
+"Adjust BPM" = "Adjust BPM";
+"Render all audio items in this region at a fixed BPM? The following songs will move together." = "Renderizar todos os itens de áudio desta região em um BPM fixo? As músicas seguintes serão deslocadas juntas.";
+"Target BPM" = "BPM desejado";
+"Nenhum marcador de tempo encontrado." = "Nenhum marcador de tempo encontrado.";
+"A região precisa ter pelo menos dois BPMs diferentes." = "A região precisa ter pelo menos dois BPMs diferentes.";
+"The project changed during Adjust BPM." = "O projeto mudou durante o Adjust BPM.";
+"Stop playback and wait for the project to finish loading." = "Pare o transporte e aguarde o carregamento do projeto.";

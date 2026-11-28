@@ -20,7 +20,7 @@ inline int64 recentProjectStorageBytes(const File &document) {
     };
     add(document);
     for (const auto &path : mediaCleanup::references(project))
-        add(ProjectCodec::resolveMedia(document.getParentDirectory(), path, false));
+        add(ProjectCodec::mediaInput(document.getParentDirectory(), path));
     int64 total = 0;
     for (const auto &[key, file] : files) {
         const auto path = std::filesystem::path(file.getFullPathName().toWideCharPointer());

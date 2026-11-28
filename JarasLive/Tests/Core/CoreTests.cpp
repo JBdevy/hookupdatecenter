@@ -957,7 +957,12 @@ int main() try {
     ignore.advance(2); expect(!ignore.transport().playing && ignore.transport().position == 25, "late Ignore Next uses actual file end");
     ignore.execute({CommandKind::stopAll}); ignore.execute({CommandKind::selectRegion, "ignore-third"}); ignore.execute({CommandKind::play}); ignore.execute({CommandKind::ignoreNext});
     expect(!ignore.transport().ignoreNextAfter, "last drawer song cannot ignore a nonexistent next song");
-    ignore.setRegionPitch("ignore-first", 12, {"track"}, {});
+    ignore.setRegionPitch("ignore-first", 8, {"track"}, {});
+    expect(!ignore.project().songs[0].parts[1].pitchSemitones, "running transport ignores region Tuner");
+    ignore.execute({CommandKind::stopAll});
+    ignore.setRegionPitch("ignore-first", 12, {"track", "deleted-track"}, {"deleted-group"});
+    expect(ignore.project().songs[0].parts[1].pitchTrackIDs == std::vector<ID>{"track"} &&
+           ignore.project().songs[0].parts[1].pitchGroupIDs == std::vector<ID>{}, "ignore obsolete Tuner targets and preserve explicit selection");
     ignore.setRegionPitch("ignore-second", -12, {"track"}, {});
     expect(ignore.project().songs[0].parts[1].pitchSemitones == 12 && ignore.project().songs[0].parts[2].pitchSemitones == -12, "each drawer song owns its pitch settings");
     bool pitchRejected = false; try { ignore.setRegionPitch("ignore-first", 13, {"track"}, {}); } catch (...) { pitchRejected = true; }

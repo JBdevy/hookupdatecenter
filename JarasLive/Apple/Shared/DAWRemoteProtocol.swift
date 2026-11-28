@@ -480,6 +480,8 @@ struct DAWRemoteState: Codable, Equatable {
     var saving: Bool
     var message: String
     var transportPreparing: Bool? = nil
+    var tunerLocked: Bool? = nil
+    var tunerInputAllowed: Bool { !playing && !subPlaying && recording != true && transportPreparing != true && tunerLocked != true }
     var transportControlRunning: Bool { playing || paused || transportPreparing == true }
     var tempoNeedsRender: Bool? = nil
     var loopStart: Double? = nil
@@ -776,11 +778,11 @@ struct DAWRemoteControlFeedback {
         case .subPlay, .subStop: put(\.subPlaying, command.action == .subPlay, host: host, now: now)
         case .tempo: put(\.bpm, command.value, host: host, now: now)
         case .pitch:
-            guard let target, display.pitchRegion == target else { return false }
+            guard host.tunerInputAllowed, display.tunerInputAllowed, let target, display.pitchRegion == target else { return false }
             let semitones = Int(command.value)
             add(Key(field: \State.pitchSemitones, target: target), host: host, now: now,
-                matches: { $0.pitchRegion != target || $0.pitchSemitones == semitones },
-                apply: { if $0.pitchRegion == target { $0.pitchSemitones = semitones } })
+                matches: { !$0.tunerInputAllowed || $0.pitchRegion != target || $0.pitchSemitones == semitones },
+                apply: { if $0.tunerInputAllowed && $0.pitchRegion == target { $0.pitchSemitones = semitones } })
         case .masterMono: put(\.masterMono, !display.masterMono, host: host, now: now)
         case .mute, .solo, .volume, .pan, .resetMeterPeak, .setOutputRoutes:
             let gain = min(pow(10, 12.0 / 20), command.value)

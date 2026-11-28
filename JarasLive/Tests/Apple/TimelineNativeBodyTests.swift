@@ -154,7 +154,7 @@
     print("REGION_LANE_AND_OVERLAP_SAME_REVISION_MOVE_DELETE_SNAPSHOT_OK")
     let mixed = configuration(song)!
     precondition(mixed.itemIDs == Set([first.id, loop.id, missing.id, textTrack.clips[0].id]))
-    precondition(mixed.hasFallbackItems && !mixed.hasFallbackWaveforms,
+    precondition(mixed.hasFallbackItems,
         "audio, missing media and text use native bodies while MIDI/click/embedded waveforms retain Canvas")
     precondition(mixed.fallbackItems.count == 3 && mixed.decorations.count == 2,
         "only MIDI, click and the embedded waveform belong to hosted coverage")
@@ -423,7 +423,7 @@
     precondition(!timecodeTrack.clips[0].hasSelectableMediaHeader(on: timecodeTrack))
     let allNative = configuration(specials)!
     precondition(allNative.itemIDs == Set(specials.tracks.flatMap { $0.clips.map(\.id) }) &&
-        !allNative.hasFallbackItems && !allNative.hasFallbackWaveforms && allNative.fallbackItems.isEmpty,
+        !allNative.hasFallbackItems && allNative.fallbackItems.isEmpty,
         "all text/media/missing items must be retained without a hidden hosted fallback")
     let coverage = TimelineHostedItemCoverage(items: allNative.fallbackItems)
     for zoom in [0.01, 1, 80, 600, 10_000] {

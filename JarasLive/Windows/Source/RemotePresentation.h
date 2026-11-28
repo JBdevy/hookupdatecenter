@@ -390,6 +390,7 @@ class Presentation final {
         if (!fadeoutCommand.empty()) put(fade, "lastCommandID", wireID(fadeoutCommand));
         put(result, "fadeout", fade);
         put(result, "recording", session.audio.isRecording());
+        put(result, "tunerLocked", !session.tunerInputAllowed());
         put(result, "previewActive", stage.preview);
         put(result, "previewPage", stage.previewPage);
         put(result, "previewSlots", stage.previewSlots());
@@ -592,6 +593,7 @@ class Presentation final {
             return true;
         }
         if (a == "pitch") {
+            if (!session.tunerInputAllowed()) return false;
             const auto *part = regionPitch::target(*song, session.transport());
             // A delayed Remote packet must not transpose a previously selected
             // song after the host has advanced to another region.

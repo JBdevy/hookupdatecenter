@@ -526,18 +526,19 @@ final class NativeEffectsChain {
         JarasEqualizer.setOverlapEnvelope(equalizer, data: envelope)
     }
     private var itemFadeClock: (position: Double, host: UInt64, sample: Double) = (0, 0, 0)
+    var trackWaveLFO: WaveLFOEnvelope?
     func configureItemFade(_ clip: AudioClip, position: Double, hostTime: UInt64 = 0, sampleTime: Double = 0) {
         itemFadeClock = (position - (clip.fadeTimelineStart ?? clip.startTime), hostTime, sampleTime)
         updateItemFade(clip)
     }
     func updateItemFade(_ clip: AudioClip) {
-        let wave = clip.fxBypassed == true ? nil : clip.fx?.activeWaveLFO
+        let wave = clip.effectiveWaveLFO(inheriting: trackWaveLFO)
         JarasEqualizer.setInputFade(equalizer, fadeIn: clip.fadeIn ?? 0, fadeOut: clip.fadeOut ?? 0,
                                     fadeInCurve: clip.fadeInCurve ?? 0, fadeInSCurve: clip.fadeInSCurve ?? 1,
                                     fadeOutCurve: clip.fadeOutCurve ?? 0, fadeOutSCurve: clip.fadeOutSCurve ?? 1,
                                     duration: clip.fadeTimelineDuration ?? clip.duration, position: itemFadeClock.position,
                                     hostTime: itemFadeClock.host, sampleTime: itemFadeClock.sample,
-                                    waveEnabled: wave != nil, attack: wave?.attack ?? 0, decay: wave?.decay ?? 0,
+                                    waveEnabled: wave != nil, attack: wave?.attack ?? 0, hold: wave?.hold ?? 0, decay: wave?.decay ?? 0,
                                     sustain: wave?.sustain ?? 1, release: wave?.release ?? 0)
     }
     func setPlaybackBoundary(_ host: UInt64 = 0) { JarasEqualizer.setPlaybackBoundary(equalizer, hostTime: host) }

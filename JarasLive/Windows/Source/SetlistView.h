@@ -25,7 +25,8 @@ class Workspace::Setlist final : public Component,
         addAndMakeVisible(list);
         list.setComponentID("setlistRows");
         list.setModel(this);
-        list.heightForRow = [this](int row) { return row >= 0 && row < (int)entries.size() && entries[(size_t)row].block ? 28 : 38; };
+        regionCardHeight = w.appearance.setlistRegionHeight();
+        list.heightForRow = [this](int row) { return row >= 0 && row < (int)entries.size() && entries[(size_t)row].block ? 28 : regionCardHeight + 4; };
         list.dragNameForRow = [this](int row) { return row >= 0 && row < (int)entries.size() ? entries[(size_t)row].name : String{}; };
         list.setColour(ListBox::backgroundColourId, theme::background);
         list.setMultipleSelectionEnabled(true);
@@ -472,6 +473,7 @@ class Workspace::Setlist final : public Component,
         put(result, "searching", searching);
         put(result, "searchQuery", search.getText());
         put(result, "footerVisible", footerVisible);
+        put(result, "regionRowHeight", regionCardHeight);
         put(result, "fontStyle", w.appearance.fontStyle());
         put(result, "fontFace", w.appearance.setlistFont().getTypefaceStyle());
         put(result, "regionIDs", w.appearance.regionIDs());
@@ -576,7 +578,7 @@ class Workspace::Setlist final : public Component,
       public:
         DrawerButton button;
         RowDrawer() { setInterceptsMouseClicks(false, true); addAndMakeVisible(button); }
-        void resized() override { button.setBounds(getWidth() - 14, 0, 14, 34); }
+        void resized() override { button.setBounds(getWidth() - 14, 0, 14, std::max(0, getHeight() - 4)); }
     };
     struct Entry {
         ID id, sourceId;
@@ -894,7 +896,9 @@ class Workspace::Setlist final : public Component,
     void apply(jaras::RegionSetlist state) {
         w.perform([&] { w.session.configureSetlist(std::move(state)); });
     }
+    int regionCardHeight = 34;
     void changeListenerCallback(ChangeBroadcaster *) override {
+        regionCardHeight = w.appearance.setlistRegionHeight();
         footerVisible = (bool)w.appearance.value("catlive.setlist.footerVisible", true);
         resized();refresh();
     }
@@ -957,16 +961,18 @@ class Workspace::Setlist final : public Component,
             std::find(state.playedLiveRegionIDs->begin(), state.playedLiveRegionIDs->end(), entry.sourceId) != state.playedLiveRegionIDs->end();
         const bool prepareOnly = state.prepareWithoutPlayback.value_or(false);
         const int left = entry.child ? 18 : 0;
+        const int cardHeight = std::max(1, height - 4);
+        const int middle = cardHeight / 2;
         if (entry.drawerChild) {
             // Match the track-mixer group rail, inside the existing drawer gutter.
             // The final child closes its branch; standalone/duplicate entries have no rail.
             const bool last = row + 1 >= getNumRows() || !entries[(size_t)row + 1].drawerChild;
             const int x = left - 11;
             g.setColour(theme::green.withAlpha(.7f));
-            g.drawVerticalLine(x, 0, last ? 17.f : (float)height);
-            g.drawHorizontalLine(17, (float)x, (float)left - 4);
+            g.drawVerticalLine(x, 0, last ? float(middle) : (float)height);
+            g.drawHorizontalLine(middle, (float)x, (float)left - 4);
         }
-        auto bounds = juce::Rectangle<float>((float)left, 0, (float)width - left - (entry.block ? 0 : 14), 34);
+        auto bounds = juce::Rectangle<float>((float)left, 0, (float)width - left - (entry.block ? 0 : 14), float(cardHeight));
         g.setColour(active ? theme::liveOffRed : played ? Colour(0xff451010) : theme::display);
         g.fillRoundedRectangle(bounds, 5);
         if (!active && (queued || selected)) {
@@ -981,7 +987,7 @@ class Workspace::Setlist final : public Component,
             }
         }
         g.setColour(active ? Colours::red : queued ? (prepareOnly ? theme::green : theme::yellow) : entry.colour);
-        g.fillRoundedRectangle((float)left + 8, 7, 3, 20, 2);
+        g.fillRoundedRectangle((float)left + 8, cardHeight * .2f, 3, cardHeight * .6f, 2);
         g.setFont(theme::font(9));
         g.setColour(theme::secondary);
         const int number = w.appearance.regionIDs() ? entry.regionNumber : entry.number;
@@ -989,7 +995,7 @@ class Workspace::Setlist final : public Component,
         const auto numberLabel = String(number).paddedLeft('0', 2);
         const int numberWidth = (int)std::ceil(GlyphArrangement::getStringWidth(g.getCurrentFont(), numberLabel)) + 4;
         if (showNumber)
-            g.drawText(numberLabel, left + 17, 0, numberWidth, 34,
+            g.drawText(numberLabel, left + 17, 0, numberWidth, cardHeight,
                        Justification::centredLeft, false);
         const int nameX = left + (showNumber ? 23 + numberWidth : 18),
                   right = (int)bounds.getRight() - 8;
@@ -1002,19 +1008,19 @@ class Workspace::Setlist final : public Component,
         g.setFont(theme::mediumFont(9));
         g.setColour(Colours::white);
         if (!entry.block)
-            g.drawText(duration, right - durationWidth, 0, durationWidth, 34, Justification::centredRight);
+            g.drawText(duration, right - durationWidth, 0, durationWidth, cardHeight, Justification::centredRight);
         g.setFont(w.appearance.setlistFont());
         g.setColour(entry.block
                         ? Colours::white
                         : w.appearance.setlistColour(selectedPlaylist() != nullptr, entry.child));
         const int nameWidth = std::max(0, right - nameX - (entry.block ? 0 : durationWidth + 6));
-        g.drawText(entry.name, nameX, 0, nameWidth, 34, Justification::centredLeft, true);
-        if (played) g.drawHorizontalLine(17, (float)nameX, nameX + std::min((float)nameWidth,
+        g.drawText(entry.name, nameX, 0, nameWidth, cardHeight, Justification::centredLeft, true);
+        if (played) g.drawHorizontalLine(middle, (float)nameX, nameX + std::min((float)nameWidth,
             GlyphArrangement::getStringWidth(g.getCurrentFont(), entry.name)));
         if (active && entry.end > entry.start) {
             g.setColour(theme::green);
             g.fillRect(
-                bounds.getX(), 32.f,
+                bounds.getX(), bounds.getBottom() - 2.f,
                 bounds.getWidth() *
                     (float)jlimit(0.0, 1.0, (t.position - entry.start) / (entry.end - entry.start)),
                 2.f);

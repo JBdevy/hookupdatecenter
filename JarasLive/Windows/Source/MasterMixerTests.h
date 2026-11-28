@@ -142,6 +142,9 @@ template<typename Test> void registerTests(const File &directory,Test &test) {
         chain = keys();
         require(chain.size() == 3 && chain[0] == compressor && chain[1] == eq,
                 "A strip drop must append without changing occupied slots");
+        drop("native:Wave LFO", {20, strip->getHeight() - 12});
+        drop("native:Wave LFO", {20, strip->getHeight() - 12});
+        require(keys().size() == 4 && keys()[0] == "Wave LFO", "The empty track must persist one Wave LFO");
 
         std::vector<jaras::CommandKind> mapped;
         mixer.mapControl = [&](const ID &targetID, jaras::CommandKind kind) {

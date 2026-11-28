@@ -25,6 +25,7 @@ class Appearance final : public ChangeBroadcaster {
         const int style = (int)get(values, "jaras.setlist.fontStyle", 0);
         return isPositiveAndBelow(style, 7) ? style : 0;
     }
+    int setlistRegionHeight() const { return str(values, "jaras.setlist.mode", "normal") == "compact" ? 24 : 34; }
     bool regionIDs() const { return str(values, "jaras.setlist.idMode", "playlist") == "region"; }
     Font setlistFont() const { return theme::setlistFont(13, fontStyle()); }
     Colour colour(const String &key, uint32 defaultRGB) const {

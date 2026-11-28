@@ -418,20 +418,22 @@ private struct TPProjectionData: Equatable {
     @Published var previewActive = false
     @Published var previewBlocks = 0..<4
 }
+@MainActor private final class TPConfigSelection: ObservableObject {
+    @Published var slot = 1
+}
 private struct LocalizedTeleprompterConfig: View {
-    let initialSlot: Int
+    @ObservedObject var selection: TPConfigSelection
     let close: () -> Void
-    @State private var slot = 1
     @AppStorage("jaras.language") private var language = "en"
     var body: some View {
         VStack(spacing: 0) {
-            Picker("Teleprompter", selection: $slot) {
+            Picker("Teleprompter", selection: $selection.slot) {
                 Text("Teleprompter 1").tag(1)
                 Text("Teleprompter 2").tag(2)
                 Text("Messages").tag(3)
             }.pickerStyle(.segmented).padding(12)
-            TeleprompterConfig(showingNotices: slot == 3, showsClose: false, preferences: slot == 2 ? .second : .shared, close: close)
-        }.onAppear { slot = initialSlot }
+            TeleprompterConfig(showingNotices: selection.slot == 3, showsClose: false, preferences: selection.slot == 2 ? .second : .shared, close: close)
+        }
             .environment(\.locale, Locale(identifier: language)).preferredColorScheme(.dark)
     }
 }
@@ -447,6 +449,7 @@ private struct LocalizedTeleprompterConfig: View {
     private var window: ProjectionWindow?
     private var remoteConfiguration: NSPanel?
     private var configuration: NSPanel?
+    private let configSelection = TPConfigSelection()
     private weak var show: ShowController?
     private let display = TPProjectionDisplay()
     private let preferences: TeleprompterPreferences
@@ -624,17 +627,15 @@ private struct LocalizedTeleprompterConfig: View {
         showSettings(initialSlot: 1)
     }
     private func showSettings(initialSlot: Int) {
+        if configSelection.slot != initialSlot { configSelection.slot = initialSlot }
         if let configuration {
-            let host = NSHostingView(rootView: LocalizedTeleprompterConfig(initialSlot: initialSlot, close: { [weak configuration] in configuration?.close() }).interfaceScaled())
-            if #available(macOS 13, *) { host.sizingOptions = [] }
-            configuration.contentView = host
             ProjectionWindow.presentWorkspaceWindow(configuration)
             return
         }
         let panel = makeWorkspacePanel(title: JarasLocalization.string("Teleprompter settings"),
             size: NSSize(width: 760, height: 700), minimum: NSSize(width: 500, height: 520))
         panel.delegate = self
-        let host = NSHostingView(rootView: LocalizedTeleprompterConfig(initialSlot: initialSlot, close: { [weak panel] in panel?.close() }).interfaceScaled())
+        let host = NSHostingView(rootView: LocalizedTeleprompterConfig(selection: configSelection, close: { [weak panel] in panel?.close() }).interfaceScaled())
         if #available(macOS 13, *) { host.sizingOptions = [] }
         panel.contentView = host
         InterfaceScaling.shared.register(panel)
@@ -654,7 +655,9 @@ private struct LocalizedTeleprompterConfig: View {
         panel.title = JarasLocalization.string("TP Remoto"); panel.isReleasedWhenClosed = false
         panel.level = .normal
         panel.hidesOnDeactivate = false; panel.delegate = self
-        panel.contentView = NSHostingView(rootView: TeleprompterRemoteView(close: { [weak panel] in panel?.close() }, remote: TeleprompterRemote.panel(index)).interfaceScaled())
+        let host = NSHostingView(rootView: TeleprompterRemoteView(close: { [weak panel] in panel?.close() }, remote: TeleprompterRemote.panel(index)).interfaceScaled())
+        if #available(macOS 13, *) { host.sizingOptions = [] }
+        panel.contentView = host
         InterfaceScaling.shared.register(panel)
         remoteConfiguration = panel; panel.center(); ProjectionWindow.presentWorkspaceWindow(panel)
     }
@@ -672,13 +675,8 @@ private struct LocalizedTeleprompterConfig: View {
                 closed.contentView = nil
                 if let self, self.window == nil { self.video.setProjectionEnabled(false) }
             }
-        } else if closed === configuration {
-            configuration = nil
-            DispatchQueue.main.async { closed.contentView = nil }
-        } else if closed === remoteConfiguration {
-            remoteConfiguration = nil
-            DispatchQueue.main.async { closed.contentView = nil }
         }
+        // Configuration panels keep their controls and current channel between presentations.
     }
 }
 

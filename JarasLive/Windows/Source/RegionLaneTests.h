@@ -46,6 +46,43 @@ inline MouseEvent mouse(Component &canvas, Point<float> at, Point<float> anchor,
 }
 
 template <typename Test> void registerTests(const File &directory, Test &test) {
+    test("Region duration appears on either edge and after a stationary hover", [&] {
+        auto project = fixture();
+        auto &first = project.songs[0].parts[0];
+        first.startTime = 4; first.endTime = 16;
+        Session session; session.inspection = true; session.audio.prepareOffline(48000);
+        session.restoreSnapshot(ProjectCodec::encode(project)); session.audio.setOffline(true);
+        Auth auth; Lighting lighting(session);
+        auto settings = directory.getNonexistentChildFile("region-tooltip", ".json");
+        require(settings.replaceWithText(R"({"jaras.timeline.zoom":20})"), "Cannot seed saved viewport");
+        Workspace workspace(session, auth, lighting, false, settings);
+        workspace.setBounds(-6000, -6000, 1366, 768);
+        workspace.addToDesktop(ComponentPeer::windowIsTemporary);
+        workspace.setVisible(true);
+        workspace.projectOpened();
+        auto *canvas = uiFeatureTests::find(workspace, "timelineCanvas");
+        require(canvas, "Timeline canvas missing");
+        const auto state = get(workspace.diagnostics(), "timeline");
+        require(closeEnough(num(state, "zoom"),20), "Project must restore a valid saved zoom");
+        const auto rect = get(findEntry(get(state, "regions"), "first"), "bounds");
+        const float left = float(num(rect,"x") - num(state,"x")), width = float(num(rect,"width"));
+        const float y = float(num(rect,"y") - num(state,"y")) + 8;
+        const auto label = [&] { return str(get(workspace.diagnostics(),"timeline"), "regionDurationTooltip"); };
+        const Point<float> middle{left + width / 2, y};
+        canvas->mouseMove(mouse(*canvas, middle, middle, 0));
+        require(label().isEmpty(), "Ordinary hover should wait");
+        const auto start = Time::getMillisecondCounterHiRes();
+        while (Time::getMillisecondCounterHiRes() - start < 1150) floatingControlTests::pump();
+        require(label() == "Duracao-00:00:12", "Hovering the band must display the complete duration");
+        canvas->mouseExit(mouse(*canvas, middle, middle, 0));
+        require(label().isEmpty(), "Exiting the band must dismiss the duration");
+        for (float x : {left + 1, left + width - 1}) {
+            Point<float> point{x, y};
+            canvas->mouseDown(mouse(*canvas, point, point, ModifierKeys::leftButtonModifier));
+            require(label() == "Duracao-00:00:12", "Both edges show duration on press");
+            canvas->mouseUp(mouse(*canvas, point, point, 0));
+        }
+    });
     test("Alt-click region header confirms deletion on release and preserves items with Undo", [&] {
         auto project=fixture();
         project.songs[0].parts[1].startTime=10; // Exercise the second overlapping header lane.

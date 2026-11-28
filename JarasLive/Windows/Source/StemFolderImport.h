@@ -69,7 +69,7 @@ struct Folder {
     std::optional<multitrackData::Document> regionData;
     std::shared_ptr<const multitrackData::Drawer> drawer;
 };
-struct Scan {std::vector<Folder> folders;StringArray warnings;var suggestions;};
+struct Scan {std::vector<Folder> folders;StringArray warnings;var suggestions;bool copyMedia=true;};
 inline std::shared_ptr<Scan> scan(const Array<File>& directories) {
     auto result=std::make_shared<Scan>();StringArray seen;Array<var> names;
     Array<File> candidates;
@@ -152,7 +152,7 @@ inline bool prepareOverview(AudioFormatReader &reader, jaras::AudioClip &clip, d
 inline void restoreMultitrack(const Folder &folder, jaras::Song &arrangement, jaras::Part &region,
                               const File &projectDirectory, const std::vector<Source> &supplemental, const std::map<ID, ID> *drawerMarkerIDs,
                               const std::map<ID, std::set<ID>> &renderedTracks, Array<File> &owned,
-                              const std::function<void(String,double)> &progress) {
+                              const std::function<void(String,double)> &progress, bool copyMedia = true) {
     const auto &data = *folder.regionData;
     const auto &snapshot = data.arrangement();
     const auto &original = data.region();
@@ -212,12 +212,18 @@ inline void restoreMultitrack(const Folder &folder, jaras::Song &arrangement, ja
                 if (destination == copiedMedia.end()) {
                     const auto source = folder.directory.getChildFile(filename);
                     if (!source.existsAsFile() || source.isSymbolicLink()) continue;
-                    const auto container = projectDirectory.getChildFile("Videos");
-                    if (container.createDirectory().failed()) throw std::runtime_error("Could not create the Videos folder.");
-                    const auto file = container.getNonexistentChildFile(source.getFileNameWithoutExtension(), source.getFileExtension(), false);
-                    if (!source.copyFileTo(file)) throw std::runtime_error("Could not copy Multitrack media: " + utf8(filename));
-                    owned.add(file);
-                    destination = copiedMedia.emplace(filename, "Videos/" + file.getFileName()).first;
+                    String path;
+                    if (copyMedia) {
+                        const auto container = projectDirectory.getChildFile("Videos");
+                        if (container.createDirectory().failed()) throw std::runtime_error("Could not create the Videos folder.");
+                        const auto file = container.getNonexistentChildFile(source.getFileNameWithoutExtension(), source.getFileExtension(), false);
+                        if (!source.copyFileTo(file)) throw std::runtime_error("Could not copy Multitrack media: " + utf8(filename));
+                        owned.add(file); path = "Videos/" + file.getFileName();
+                    } else {
+                        path = LinkedStemMedia::shared().reference(source,true);
+                        WaveformCache::preload(source);
+                    }
+                    destination = copiedMedia.emplace(filename,path).first;
                 }
                 item.audioFile = jaras::AudioFile{utf8(destination->second), {}};
             }
@@ -476,13 +482,20 @@ inline jaras::Project build(const Scan& scan,const String& removal,jaras::Projec
                     const auto displayName = rendered != renderedFiles.end() ? source.file.getFileName() : stem["fileName"].toString();
                     const auto filename = File::createLegalFileName(displayName);
                     const auto extension = filename.fromLastOccurrenceOf(".", true, false);
-                    const auto target = media.getNonexistentChildFile(filename.dropLastCharacters(extension.length()), extension, false);
-                    if (!source.file.copyFileTo(target)) throw std::runtime_error("Could not copy audio: " + utf8(filename));
-                    owned.add(target);
+                    File target = source.file;
+                    String path;
+                    if (scan.copyMedia) {
+                        target = media.getNonexistentChildFile(filename.dropLastCharacters(extension.length()), extension, false);
+                        if (!source.file.copyFileTo(target)) throw std::runtime_error("Could not copy audio: " + utf8(filename));
+                        owned.add(target);
+                        path = target.getRelativePathFrom(destination.getParentDirectory()).replaceCharacter('\\','/');
+                    } else {
+                        path = LinkedStemMedia::shared().reference(target,false);
+                    }
                     std::unique_ptr<AudioFormatReader> reader(formats.createReaderFor(target));
                     jaras::AudioClip clip;
                     clip.id = uuid(); clip.name = utf8(displayName); clip.startTime = part.startTime; clip.duration = source.duration;
-                    clip.audioFile = jaras::AudioFile{utf8(target.getRelativePathFrom(destination.getParentDirectory()).replaceCharacter('\\', '/')), {}};
+                    clip.audioFile = jaras::AudioFile{utf8(path), {}};
                     if (metadata) clip.startTime += metadata->region().startTime;
                     if (rendered != renderedFiles.end()) {
                         clip.renderedTempo = true; clip.regionOwnerID = part.id;
@@ -494,8 +507,10 @@ inline jaras::Project build(const Scan& scan,const String& removal,jaras::Projec
                     }
                     double peak = 0;
                     if (!reader || !prepareOverview(*reader, clip, peak)) {
-                        reader.reset(); target.deleteFile(); owned.removeFirstMatchingValue(target);
+                        reader.reset();
+                        if (scan.copyMedia) { target.deleteFile(); owned.removeFirstMatchingValue(target); }
                     } else {
+                        if (!scan.copyMedia) WaveformCache::preload(target);
                         const auto name = stem["trackName"].toString();
                         if ((name == "Click" || name.startsWith("Click ") || name == String::fromUTF8("Regência") ||
                              name.startsWith(String::fromUTF8("Regência "))) && peak > 0) clip.gain = std::pow(10., -1./20) / peak;
@@ -548,7 +563,7 @@ inline jaras::Project build(const Scan& scan,const String& removal,jaras::Projec
                 const auto child = drawerChildren.find(region->id);
                 const auto *ids = child == drawerChildren.end() ? nullptr : &drawerMarkerIDs.at(child->second.parent);
                 restoreMultitrack(*exported->second, arrangement, *region, destination.getParentDirectory(),
-                    supplemental[songs[i]["folderPath"].toString()], ids, renderedTracks[region->id], owned, progress);
+                    supplemental[songs[i]["folderPath"].toString()], ids, renderedTracks[region->id], owned, progress, scan.copyMedia);
                 if (child != drawerChildren.end()) {
                     const auto &placement = child->second;
                     const auto parent = std::find_if(arrangement.parts.begin(), arrangement.parts.end(),
@@ -574,11 +589,16 @@ inline jaras::Project build(const Scan& scan,const String& removal,jaras::Projec
                 }
                 if (!source.videoTrack) continue;
                 const auto lane = *source.videoTrack;
-                if (videoFolder.createDirectory().failed()) throw std::runtime_error("Could not create the Videos folder.");
-                const auto target = videoFolder.getNonexistentChildFile(source.file.getFileNameWithoutExtension(),
-                    source.file.getFileExtension(), false);
-                if (!source.file.copyFileTo(target)) throw std::runtime_error("Could not copy video: " + utf8(source.file.getFileName()));
-                owned.add(target);
+                String videoPath;
+                if (scan.copyMedia) {
+                    if (videoFolder.createDirectory().failed()) throw std::runtime_error("Could not create the Videos folder.");
+                    const auto target = videoFolder.getNonexistentChildFile(source.file.getFileNameWithoutExtension(),source.file.getFileExtension(), false);
+                    if (!source.file.copyFileTo(target)) throw std::runtime_error("Could not copy video: " + utf8(source.file.getFileName()));
+                    owned.add(target); videoPath = "Videos/" + target.getFileName();
+                } else {
+                    videoPath = LinkedStemMedia::shared().reference(source.file,true);
+                    WaveformCache::preload(source.file);
+                }
                 jaras::Track *channel = nullptr;
                 if (lane != 0) channel = &jlLyrics::track(arrangement, lane);
                 else {
@@ -600,7 +620,7 @@ inline jaras::Project build(const Scan& scan,const String& removal,jaras::Projec
                 jaras::AudioClip clip;
                 clip.id = uuid(); clip.name = utf8(source.file.getFileNameWithoutExtension());
                 clip.startTime = at; clip.duration = source.duration; clip.regionOwnerID = region->id;
-                clip.audioFile = jaras::AudioFile{utf8("Videos/" + target.getFileName()), {}};
+                clip.audioFile = jaras::AudioFile{utf8(videoPath), {}};
                 channel->clips.push_back(std::move(clip));
                 at += source.duration;
                 arrangement.duration = std::max(arrangement.duration, at);
@@ -611,7 +631,7 @@ inline jaras::Project build(const Scan& scan,const String& removal,jaras::Projec
             if (arrangement.markers && std::any_of(arrangement.markers->begin(), arrangement.markers->end(),
                 [&](const auto &marker) { return marker.tempoBPM && marker.regionOwnerID == id; })) continue;
             if(progress)progress("Detecting BPM: "+text(part->name),1);
-            auto markers=clickTempo::markers(arrangement,*part,[&](const jaras::AudioFile& file){return clickTempo::transients(destination.getParentDirectory().getChildFile(text(file.path)));});
+            auto markers=clickTempo::markers(arrangement,*part,[&](const jaras::AudioFile& file){return clickTempo::transients(ProjectCodec::resolveMedia(destination.getParentDirectory(),file.path));});
             if(markers.empty())warnings.add(text(part->name)+": no valid Click found for BPM detection");else clickTempo::insert(arrangement,*part,markers);
         }
         for (auto &track : arrangement.tracks) for (auto &clip : track.clips)

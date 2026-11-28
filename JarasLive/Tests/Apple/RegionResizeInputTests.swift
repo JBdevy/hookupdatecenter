@@ -1,7 +1,9 @@
 import AppKit
 
+@MainActor private final class TooltipTestWindow: NSWindow { override var isKeyWindow: Bool { true } }
+
 @MainActor func run() {
-    let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 100), styleMask: .borderless, backing: .buffered, defer: false)
+    let window = TooltipTestWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 100), styleMask: .borderless, backing: .buffered, defer: false)
     let host = NSView(frame: NSRect(x: 0, y: 0, width: 500, height: 100))
     window.contentView = host
     let view = RegionRightClickView(frame: NSRect(x: 0, y: 0, width: 220, height: 24))
@@ -9,6 +11,33 @@ import AppKit
     func event(_ type: NSEvent.EventType, _ x: CGFloat, _ y: CGFloat = 1, flags: NSEvent.ModifierFlags = []) -> NSEvent {
         NSEvent.mouseEvent(with: type, location: NSPoint(x: x, y: y), modifierFlags: flags, timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
     }
+    func durationTip() -> String? {
+        NSApp.windows.lazy.filter { $0.isVisible }.compactMap { $0.contentView?.accessibilityLabel() }
+            .first { $0.hasPrefix("Duracao-") }
+    }
+    var duration: TimeInterval = 530
+    view.duration = { duration }
+    view.mouseMoved(with: event(.mouseMoved, 110, 12))
+    RunLoop.main.run(until: Date().addingTimeInterval(0.55))
+    precondition(durationTip() == nil)
+    RunLoop.main.run(until: Date().addingTimeInterval(0.6))
+    precondition(durationTip() == "Duracao-00:08:50", "One second over the middle of the band shows its duration")
+    view.mouseExited(with: event(.mouseMoved, 222))
+    precondition(durationTip() == nil)
+    for x: CGFloat in [2, 218] {
+        view.mouseDown(with: event(.leftMouseDown, x, 12))
+        precondition(durationTip() == "Duracao-00:08:50", "Either edge shows duration on press")
+        view.drag = { _, _, _ in }
+        view.mouseUp(with: event(.leftMouseUp, x, 12))
+    }
+    view.drag = { delta, _, side in duration = 530 + Double(delta) * Double(side) }
+    view.mouseDown(with: event(.leftMouseDown, 218, 12))
+    view.mouseDragged(with: event(.leftMouseDragged, 226, 12))
+    precondition(durationTip() == "Duracao-00:08:58", "Dragging shows the preview length")
+    view.mouseUp(with: event(.leftMouseUp, 226, 12))
+    view.mouseExited(with: event(.mouseMoved, 226))
+    view.duration = nil
+    view.drag = nil
     var selectionFlags: [NSEvent.ModifierFlags] = []
     view.select = { selectionFlags.append($0) }
     for flags: NSEvent.ModifierFlags in [.shift, .command, [.shift, .command]] {

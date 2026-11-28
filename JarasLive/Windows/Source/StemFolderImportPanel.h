@@ -14,17 +14,19 @@ class StemBPMQuestion final : public Component {
         }
     } yes,no,cancel;
 public:
-    explicit StemBPMQuestion(std::function<void(bool)> accept) {
+    String question;
+    explicit StemBPMQuestion(std::function<void(bool)> accept, bool chooseLocation=false)
+        : question(localization::translate(chooseLocation ? "Where should CatLive use the media files?" : "Detect BPM for each song?")) {
         getProperties().set("selfContainedSheet",true);getProperties().set("sheetCornerRadius",(double)confirmationStyle::radius);
         for(auto* b:{&yes,&no,&cancel})addAndMakeVisible(*b);
-        yes.primary=true;yes.setButtonText(localization::translate("Yes"));no.setButtonText(localization::translate("No"));cancel.setButtonText(localization::translate("Cancel"));
+        yes.primary=true;yes.setButtonText(localization::translate(chooseLocation ? "Copy to project" : "Yes"));no.setButtonText(localization::translate(chooseLocation ? "Use source folder" : "No"));cancel.setButtonText(localization::translate("Cancel"));
         auto finish=[this,accept](bool value){ModalSheet::dismiss(*this);MessageManager::callAsync([accept,value]{accept(value);});};
         yes.onClick=[finish]{finish(true);};no.onClick=[finish]{finish(false);};cancel.onClick=[this]{ModalSheet::dismiss(*this);};
     }
     void paint(Graphics& g) override {
         confirmationStyle::surface(g,getLocalBounds().toFloat());g.setColour(Colours::white);
         g.setFont(theme::semiboldFont(confirmationStyle::titleSize));
-        g.drawFittedText(localization::translate("Detect BPM for each song?"),20,20,getWidth()-40,36,Justification::centred,2);
+        g.drawFittedText(question,20,20,getWidth()-40,36,Justification::centred,2);
     }
     void resized() override {
         int y=68;
@@ -56,7 +58,11 @@ public:
         cancel.setButtonText(localization::translate("Cancel"));back.setButtonText(localization::translate("Back"));yes.setButtonText(localization::translate("Yes"));no.setButtonText(localization::translate("No"));
         all.onClick=[this]{if(selected.size()==scan->folders.size())selected.clear();else {selected.clear();for(size_t i=0;i<scan->folders.size();++i)selected.push_back(i);}refreshOrder();};
         back.onClick=[this]{ModalSheet::dismiss(*this);};
-        next.onClick=[this]{if(step==0){if(selected.empty())return;step=1;refreshStep();}else {auto safe=SafePointer<StemFolderImportPanel>(this);ModalSheet::open(*this,"",std::make_unique<StemBPMQuestion>([safe](bool bpm){if(safe)safe->finish(bpm);}),confirmationStyle::width,200);}};
+        next.onClick=[this]{if(step==0){if(selected.empty())return;step=1;refreshStep();}else {auto safe=SafePointer<StemFolderImportPanel>(this);ModalSheet::open(*this,"",std::make_unique<StemBPMQuestion>([safe](bool copy){
+            if (!safe) return;
+            safe->copyMedia=copy;
+            ModalSheet::open(*safe,"",std::make_unique<StemBPMQuestion>([safe](bool bpm){if(safe)safe->finish(bpm);}),confirmationStyle::width,200);
+        },true),confirmationStyle::width,200);}};
         yes.onClick=[this]{finish(true);};no.onClick=[this]{finish(false);};cancel.onClick=[this]{ModalSheet::dismiss(*this);};
         cleanup.setTextToShowWhenEmpty(localization::translate("Names to remove, separated by commas"),theme::secondary);
         for(auto* view:std::initializer_list<Component*>{&list,&preview,&search,&cleanup})addAndMakeVisible(*view);
@@ -91,7 +97,7 @@ public:
         if(step==0){g.setColour(theme::line);g.drawVerticalLine(getWidth()/2,156.f,(float)getHeight()-62);g.setColour(theme::secondary);g.drawText(String((int)selected.size())+" / "+String((int)scan->folders.size()),getWidth()-100,84,80,28,Justification::centredRight);g.drawText(localization::translate("Folders"),20,156,getWidth()/2-30,22,Justification::centredLeft);g.drawText(localization::translate("All regions preview"),getWidth()/2+10,156,getWidth()/2-30,22,Justification::centredLeft);
             g.drawFittedText(localization::translate(appending?"Songs will be added in this order after the last song in the open project.":"Folders will be placed on the grid in the order you check them."),20,120,getWidth()-40,28,Justification::centredLeft,2);
         }else if(step==1){int count=0;for(auto index:selected)count+=(int)scan->folders[index].files.size();g.setColour(Colours::white);g.drawText(String((int)selected.size())+" "+localization::translate("song folders")+String::fromUTF8(" · ")+String(count)+" "+localization::translate("audio files"),20,48,getWidth()-40,25,Justification::centredLeft);g.setColour(theme::secondary);g.drawFittedText(localization::translate("Repeated names were found that may identify providers. Select suggestions or type names to remove."),20,80,getWidth()-40,46,Justification::centredLeft,3);
-            g.drawFittedText(localization::translate("Original folders remain unchanged. Audio is copied beside the .jl project."),20,getHeight()-100,getWidth()-40,38,Justification::centredLeft,2);
+            g.drawFittedText(localization::translate("Next, choose whether to copy the audio into the project or use the source folder."),20,getHeight()-100,getWidth()-40,38,Justification::centredLeft,2);
         }
     }
     void resized() override {
@@ -120,8 +126,8 @@ private:
     void filter(){filtered.clear();for(size_t i=0;i<scan->folders.size();++i)if(scan->folders[i].directory.getFileName().containsIgnoreCase(search.getText()))filtered.push_back(i);list.updateContent();list.repaint();}
     void refreshOrder(){previewContent.names.clear();for(auto index:selected)previewContent.names.add(scan->folders[index].directory.getFileName());previewContent.setSize(std::max(1,preview.getWidth()-12),std::max(preview.getHeight(),(int)selected.size()*38));previewContent.repaint();all.setButtonText(localization::translate(selected.size()==scan->folders.size()?"Deselect all":"Select all"));next.setEnabled(!loading&&scanError.isEmpty()&&(step!=0||!selected.empty()));list.repaint();repaint();}
     void refreshStep(){for(auto* view:std::initializer_list<Component*>{&list,&preview,&search,&all})view->setVisible(step==0);cleanup.setVisible(step==1);suggestionViewport.setVisible(step==1);for(auto& button:suggestions)button->setVisible(step==1);back.setVisible(step>0);cancel.setVisible(step==0);next.setVisible(step<2);yes.setVisible(step==2);no.setVisible(step==2);next.setButtonText(localization::translate(step==0?"Continue":"Create / Add"));refreshOrder();resized();repaint();}
-    void finish(bool bpm){auto result=std::make_shared<stemImport::Scan>(*scan);result->folders.clear();for(auto index:selected)result->folders.push_back(scan->folders[index]);auto callback=complete;auto remove=cleanup.getText();auto safe=SafePointer<StemFolderImportPanel>(this);MessageManager::callAsync([callback,result,remove,bpm,safe]{if(safe)callback(result,remove,bpm,[safe]{if(safe)ModalSheet::dismiss(*safe);});});}
-    std::shared_ptr<stemImport::Scan> scan;Confirm complete;bool appending=false,loading=false;String scanError;int step=0;
+    void finish(bool bpm){auto result=std::make_shared<stemImport::Scan>(*scan);result->copyMedia=copyMedia;result->folders.clear();for(auto index:selected)result->folders.push_back(scan->folders[index]);auto callback=complete;auto remove=cleanup.getText();auto safe=SafePointer<StemFolderImportPanel>(this);MessageManager::callAsync([callback,result,remove,bpm,safe]{if(safe)callback(result,remove,bpm,[safe]{if(safe)ModalSheet::dismiss(*safe);});});}
+    std::shared_ptr<stemImport::Scan> scan;Confirm complete;bool appending=false,loading=false,copyMedia=true;String scanError;int step=0;
     std::vector<size_t> selected,filtered;ListBox list;TextEditor cleanup,search;Component suggestionContent;Viewport preview,suggestionViewport;TextButton all,back,cancel,next,yes,no;std::vector<std::unique_ptr<Suggestion>> suggestions;
 };
 }

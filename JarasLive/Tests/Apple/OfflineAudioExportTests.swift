@@ -48,6 +48,39 @@ func renderedPCM(_ url: URL) throws -> [Float] {
     return Array(UnsafeBufferPointer(start: data.floatChannelData![0], count: Int(data.frameLength)))
 }
 do {
+    var track = Track(id: UUID(), name: "Envelope", role: .other)
+    var parent = NativeFXSettings(); parent.appendNative(NativeFXSettings.waveLFOName)
+    parent.waveLFOParameters.attack = 0.1; parent.waveLFOParameters.hold = 0.10; parent.waveLFOParameters.decay = 0.15
+    parent.waveLFOParameters.sustain = 0.5; parent.waveLFOParameters.release = 0.2
+    track.fx = parent
+    let file = AudioFile(path: "a.wav")
+    let inherited = AudioClip(id: UUID(), name: "Inherited", startTime: 0, duration: 1, audioFile: file)
+    var independent = AudioClip(id: UUID(), name: "Independent", startTime: 1.2, duration: 1, audioFile: file)
+    var child = parent; child.waveLFOParameters.sustain = 0.25
+    independent.fx = child; track.clips = [inherited, independent]
+    var p = Project.empty(name: "Wave LFO"); p.songs[0].tracks = [track]
+    let song = p.songs[0], plan = AudioExportPlan(project: p, song: p.songs[0], source: .stems,
+        bounds: .project, template: "%stem", tracks: [], clips: Set(track.clips.map(\.id)), regions: [], format: .wav)
+    precondition(plan.jobs.count == 2)
+    for mode in [AudioItemExportProcessing.pre, .post] {
+        try OfflineAudioExport.run(project: p, song: mode.song(song), plan: plan, mediaDirectory: root,
+            outputDirectory: root.appendingPathComponent(mode.rawValue), sampleRate: 48000,
+            cancellation: AudioExportCancellation()) { _ in }
+    }
+    for job in plan.jobs {
+        let dry = try renderedPCM(root.appendingPathComponent(AudioItemExportProcessing.pre.rawValue).appendingPathComponent(job.fileName))
+        let wet = try renderedPCM(root.appendingPathComponent(AudioItemExportProcessing.post.rawValue).appendingPathComponent(job.fileName))
+        let sustain: Float = job.fileName.contains("Inherited") ? 0.5 : 0.25
+        precondition(dry.count == wet.count && dry.count >= 48000)
+        for (offset, expected) in [(2400, Float(0.5)), (7200, Float(1.0)), (19200, sustain), (43200, 0.5 * sustain)] {
+            let frame = (offset..<(offset + 32)).max(by: { abs(dry[$0]) < abs(dry[$1]) })!
+            precondition(abs(dry[frame]) > 0.05 && abs(wet[frame] / dry[frame] - expected) < 0.012,
+                         "Wave LFO export mismatch for \(job.fileName) at frame \(frame)")
+        }
+    }
+    print("WAVE_LFO_TRACK_AND_ITEM_PRE_POST_STEREO_RENDER_OK")
+}
+do {
     var source = Track(id: UUID(), name: "Send source", role: .keys)
     var target = Track(id: UUID(), name: "Send destination", role: .other)
     source.clips = [AudioClip(id: UUID(), name: "Tone", startTime: 0, duration: 1, audioFile: AudioFile(path: "b.wav"))]
@@ -815,3 +848,51 @@ try OfflineAudioExport.run(project: project, song: song, plan: replacementJob, m
 precondition(try! Data(contentsOf: replacementURL) != originalData)
 precondition(try! FileManager.default.contentsOfDirectory(atPath: replacementFolder.path) == ["existing.wav"])
 print("OFFLINE_EXPORT_REPLACEMENT_CONFIRMATION_AND_CANCEL_PRESERVE_ORIGINAL_OK")
+
+// "No audio" controls movie monitoring. An explicit item export reads the movie's own audio stream.
+do {
+    let media = root.appendingPathComponent("movie-item-export", isDirectory: true)
+    let videos = media.appendingPathComponent("Videos", isDirectory: true)
+    try FileManager.default.createDirectory(at: videos, withIntermediateDirectories: true)
+    let movies = try makeWaveformMovies(in: videos)
+    var project = Project.empty(name: "Movie item export")
+    for (index, source) in movies.movies.enumerated() {
+        var track = Track(id: UUID(), name: "Soundtracks", role: index == 0 ? .other : TrackRole(rawValue: "video"))
+        if let title = track.fixedName { track.name = title }
+        var clip = AudioClip(id: UUID(), name: "Movie-\(index)", startTime: 0, duration: 0.75,
+            audioFile: AudioFile(path: "Videos/" + source.lastPathComponent))
+        clip.gain = 0.5
+        track.clips = [clip]
+        project.songs[0].tracks.append(track)
+    }
+    let song = project.songs[0]
+    let plan = AudioExportPlan(project: project, song: song, source: .stems, bounds: .project, template: "%stem",
+        tracks: [], clips: Set(song.tracks.flatMap { $0.clips.map(\.id) }), regions: [], format: .wav)
+    precondition(plan.jobs.count == movies.movies.count)
+    let previous = VideoMediaSettings.shared.noAudio
+    defer { VideoMediaSettings.shared.noAudio = previous }
+    for processing in [AudioItemExportProcessing.pre, .post] {
+        var reference: [[Float]] = []
+        for muted in [false, true] {
+            VideoMediaSettings.shared.noAudio = muted
+            let folder = media.appendingPathComponent("\(processing.rawValue)-\(muted)")
+            try OfflineAudioExport.run(project: project, song: processing.song(song), plan: plan, mediaDirectory: media,
+                outputDirectory: folder, sampleRate: 48000, encoding: AudioExportEncoding(format: .wav, bitDepth: 24, channels: 0),
+                cancellation: AudioExportCancellation()) { _ in }
+            for (index, job) in plan.jobs.enumerated() {
+                let file = try AVAudioFile(forReading: folder.appendingPathComponent(job.fileName))
+                let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: AVAudioFrameCount(file.length))!
+                try file.read(into: buffer)
+                precondition(file.length == 36000 && buffer.format.channelCount == 2)
+                var samples: [Float] = []
+                for channel in 0..<Int(buffer.format.channelCount) {
+                    samples.append(contentsOf: UnsafeBufferPointer(start: buffer.floatChannelData![channel], count: Int(buffer.frameLength)))
+                }
+                precondition(samples.contains { abs($0) > 0.05 }, "Video item export must contain audible samples")
+                if muted { precondition(samples == reference[index], "Monitoring changed the exported samples") }
+                else { reference.append(samples) }
+            }
+        }
+        print("ITEM_MOVIE_EXPORT_NO_AUDIO_ON_OFF_IDENTICAL_PCM \(processing.rawValue)")
+    }
+}

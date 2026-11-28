@@ -10,27 +10,23 @@ final class TrackTouchTests:XCTestCase {
   for name in ["04  TP 1", "05  TP 2"] {
    let title = app.staticTexts[name]
    XCTAssertTrue(title.exists)
-   guard let lyrics = app.buttons.matching(identifier: "Full lyrics").allElementsBoundByIndex.last(where: {
-    $0.frame.maxY <= title.frame.minY + 1
-   }), let addText = app.buttons.matching(identifier: "Add text").allElementsBoundByIndex.last(where: {
-    $0.frame.maxY <= lyrics.frame.minY + 1
-   }), let patch = app.buttons.matching(identifier: "Patch").allElementsBoundByIndex.min(by: {
-    abs($0.frame.midY - addText.frame.midY) < abs($1.frame.midY - addText.frame.midY)
-   }), let knob = app.descendants(matching: .any).matching(identifier: "Track volume").allElementsBoundByIndex.min(by: {
-    abs($0.frame.midY - addText.frame.midY) < abs($1.frame.midY - addText.frame.midY)
-   }) else {
-    XCTFail("Missing a Teleprompter control on " + name)
-    continue
+   func closestButtonAboveTitle(_ name: String) -> XCUIElement? {
+    app.buttons.matching(identifier: name).allElementsBoundByIndex
+     .filter { $0.frame.maxY <= title.frame.minY + 1 }
+     .max { $0.frame.midY < $1.frame.midY }
    }
-   XCTAssertEqual(knob.frame.midY, addText.frame.midY, accuracy: 1, "The volume knob aligns with Add text")
-   XCTAssertLessThan(knob.frame.midX, addText.frame.minX)
-   XCTAssertEqual(patch.frame.midY, addText.frame.midY, accuracy: 1, "Patch aligns with Add text")
-   XCTAssertEqual(addText.frame.minX, lyrics.frame.minX, accuracy: 1, "Text actions share one column")
-   XCTAssertLessThanOrEqual(lyrics.frame.minY - addText.frame.maxY, 4)
+   guard let lyrics = closestButtonAboveTitle("Add Lyrics"), let addText = closestButtonAboveTitle("Add Text"),
+         let patch = closestButtonAboveTitle("Patch") else {
+    XCTFail("Missing a Teleprompter control on " + name); continue
+   }
+   XCTAssertEqual(patch.frame.midY, addText.frame.midY, accuracy: 1)
+   XCTAssertEqual(addText.frame.midY, lyrics.frame.midY, accuracy: 1)
+   XCTAssertLessThanOrEqual(patch.frame.maxX, addText.frame.minX + 1)
+   XCTAssertLessThanOrEqual(addText.frame.maxX, lyrics.frame.minX + 1)
    XCTAssertGreaterThanOrEqual(title.frame.height, 13)
    XCTAssertGreaterThanOrEqual(title.frame.minY + 1, lyrics.frame.maxY)
   }
-  app.buttons["Full lyrics"].firstMatch.tap()
+  app.buttons["Add Lyrics"].firstMatch.tap()
   XCTAssertEqual(app.staticTexts["event"].label, "tp-lyrics")
   app.staticTexts["04  TP 1"].press(forDuration: 0.8)
   XCTAssertTrue(app.buttons["Add media"].waitForExistence(timeout: 3))

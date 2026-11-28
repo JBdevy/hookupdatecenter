@@ -57,6 +57,75 @@ inline void zoomInForInspection(Workspace &workspace) {
 }
 
 template <typename Test> void registerTests(const File &directory, Test &test) {
+    test("Wave LFO editor redraws the amplitude envelope when Sustain changes", [&] {
+        auto project = floatingControlTests::fixture();
+        const auto track = project.songs.front().tracks.front().id;
+        Session session; session.inspection = true; session.audio.prepareOffline(48000);
+        session.restoreSnapshot(ProjectCodec::encode(project)); session.audio.setOffline(true);
+        require(session.insertLibraryEffect(track, "native:Wave LFO", {}) == "Wave LFO", "Cannot insert the track envelope");
+        EffectsPanel panel(session, track, [](String error) { throw std::runtime_error(utf8(error)); }, false, "Wave LFO");
+        panel.setSize(720, 480);
+        fxui::Knob* sustain = nullptr;
+        for (auto* child : panel.getChildren())
+            if (auto* knob = dynamic_cast<fxui::Knob*>(child); knob && knob->slider.getMaximum() == 100) sustain = knob;
+        require(sustain != nullptr, "Missing Sustain control");
+        auto changedGraph = [&](double value) {
+            sustain->slider.setValue(value, sendNotificationSync);
+            const auto band = panel.getLocalBounds().withY(sustain->getY() - 70).withHeight(66).reduced(25, 0);
+            return panel.createComponentSnapshot(band);
+        };
+        const auto high = changedGraph(85), low = changedGraph(15);
+        int changed = 0;
+        for (int y = 0; y < high.getHeight(); ++y)
+            for (int x = 0; x < high.getWidth(); ++x)
+                if (std::abs(high.getPixelAt(x,y).getGreen() - low.getPixelAt(x,y).getGreen()) > 25) ++changed;
+        require(changed > 90, "The displayed ADSR curve did not follow the knob");
+        require(std::abs(WaveLFOParameters::read(fxchain::settings(session,track)).sustain - .15) < .0001,
+                "The graph and the saved audio parameter differ");
+    });
+    test("Wave LFO Library drop distinguishes an audio item from its track", [&] {
+        auto project = floatingControlTests::fixture();
+        auto& track = project.songs.front().tracks.front();
+        jaras::AudioClip first; first.id = uuid(); first.name = "First"; first.startTime = 3; first.duration = 3;
+        first.audioFile = jaras::AudioFile{"Stems/source.wav", {}};
+        auto next = first; next.id = uuid(); next.name = "Second"; next.startTime = 10;
+        track.clips = {first, next};
+        Session session; session.inspection = true; session.audio.prepareOffline(48000);
+        session.restoreSnapshot(ProjectCodec::encode(project)); session.audio.setOffline(true);
+        Auth auth; Lighting lighting(session);
+        Workspace workspace(session, auth, lighting, false, directory.getNonexistentChildFile("wave-drop", ".json"));
+        workspace.setSize(1366, 768); zoomInForInspection(workspace);
+        auto* canvas = uiFeatureTests::find(workspace, "timelineCanvas");
+        auto* target = dynamic_cast<DragAndDropTarget*>(canvas);
+        require(target != nullptr, "Timeline drop target is missing");
+        auto rect = [&](const ID& id) {
+            const auto bounds = get(itemState(workspace, id), "bounds");
+            const juce::Rectangle<int> inWorkspace(roundToInt(num(bounds, "x")), roundToInt(num(bounds, "y")),
+                roundToInt(num(bounds, "width")), roundToInt(num(bounds, "height")));
+            return canvas->getLocalArea(&workspace, inWorkspace).toFloat();
+        };
+        auto drop = [&](Point<int> point) {
+            auto payload = object(); put(payload, "type", "catlive-library-effect");
+            put(payload, "project", text(project.id)); put(payload, "identity", "native:Wave LFO");
+            DragAndDropTarget::SourceDetails drag(payload, &workspace, point);
+            require(target->isInterestedInDragSource(drag), "Timeline refused the Library effect");
+            target->itemDragEnter(drag); target->itemDragMove(drag); target->itemDropped(drag);
+        };
+        const auto itemPoint = rect(first.id).getCentre().roundToInt();
+        drop(itemPoint);
+        const auto wave = [](const auto& json) {
+            return json && WaveLFOParameters::read(JSON::parse(text(*json))).enabled;
+        };
+        const auto& a = session.song()->tracks.front();
+        require(wave(a.clips[0].fxJSON), "The audio item must accept the Wave LFO insert through the shared core");
+        require(!wave(a.fxJSON) && !wave(a.clips[1].fxJSON), "Item drop leaked to another destination");
+        const auto left = rect(first.id), right = rect(next.id);
+        drop({roundToInt((left.getRight() + right.getX()) / 2), roundToInt(left.getCentreY())});
+        const auto restored = ProjectCodec::decode(ProjectCodec::encode(session.project()));
+        const auto& saved = restored.songs.front().tracks.front();
+        require(wave(saved.fxJSON) && wave(saved.clips[0].fxJSON) && !wave(saved.clips[1].fxJSON),
+                "Reopened document lost the distinction between the track and its item");
+    });
     test("Playback needle paints and clears its left-hand trail", [&] {
         const auto render = [](float x, float width) {
             Image image(Image::ARGB, 128, 60, true, SoftwareImageType{});
@@ -160,13 +229,13 @@ template <typename Test> void registerTests(const File &directory, Test &test) {
             }
         }
     });
-    test("Minimum zoom displays 45 hours on every viewport", [&] {
+    test("Desktop minimum zoom uses the calibrated Mac scale on every viewport", [&] {
         for (const double width : {320., 800., 1440., 3840., 7680.}) {
             const double scale = timelineGrid::minimumZoom(width);
-            require(std::abs(width / scale - 45 * 3600) < .00001,
-                    "Maximum overview must use the drawable grid width");
+            require(std::abs(scale - .3651216238088901) < 1.e-12,
+                    "Minimum zoom must match the saved Mac calibration");
             jaras::Song song; song.bpm=120;
-            const auto ticks = timelineGrid::ticks(song,0,45*3600,scale);
+            const auto ticks = timelineGrid::ticks(song,0,width/scale,scale);
             require(ticks.size() < size_t(width), "Distant grid must retain bounded tick density");
         }
     });

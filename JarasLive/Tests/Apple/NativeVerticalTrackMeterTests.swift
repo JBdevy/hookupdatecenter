@@ -39,8 +39,12 @@ import Foundation
     precondition(abs(vu.vuLevel) <= 0.2, "The -18 dBFS reference reaches 0 VU in about 300 ms")
     for _ in 0..<70 { vu.updateVU(meanMagnitude: tone, elapsed: 0.01) }
     precondition(vu.vuLevel == 0, "The synthetic reference tone settles on 0 VU")
-    vu.updateVU(meanMagnitude: 0, elapsed: 0.3)
-    precondition(vu.vuLevel == -20, "The pointer returns to the bottom of the scale")
+    for _ in 0..<30 { vu.updateVU(meanMagnitude: 0, elapsed: 0.01) }
+    precondition(abs(vu.vuLevel + 2) <= 0.2)
+    for _ in 0..<120 { vu.updateVU(meanMagnitude: 0, elapsed: 0.01) }
+    precondition(abs(vu.vuLevel + 10) <= 0.2)
+    for _ in 0..<155 { vu.updateVU(meanMagnitude: 0, elapsed: 0.01) }
+    precondition(vu.vuLevel == -20, "The VU needle takes about three seconds to return from zero")
     print("ANALOG_VU_REFERENCE_TONE_AND_BALLISTICS_OK")
     let measuredMeter = TrackMeterLevel()
     for frequency in [30.0, 60.0, 120.0] {
@@ -48,12 +52,14 @@ import Foundation
         measuredMeter.update(left: 1, right: 0.1, elapsed: 0)
         precondition(measuredMeter.levels == SIMD2(1, 0.1), "Attack must remain immediate")
         for _ in 0..<Int(frequency / 10) { measuredMeter.update(left: 0, right: 0, elapsed: 1 / frequency) }
-        precondition(abs(20 * log10(measuredMeter.levels.x) + 4) < 0.001, "Fall starts immediately and reaches -4 dB after 100 ms")
+        precondition(abs(20 * log10(measuredMeter.levels.x) + 2) < 0.001, "Fall starts immediately and reaches -2 dB after 100 ms")
         precondition(abs(measuredMeter.levels.x / measuredMeter.levels.y - 10) < 0.001, "Stereo channels fall independently")
-        for _ in 0..<Int(frequency * 1.3) { measuredMeter.update(left: 0, right: 0, elapsed: 1 / frequency) }
-        precondition(measuredMeter.levels.x > 0, "The meter should still be falling after 1.4 s")
+        for _ in 0..<Int(frequency * 1.4) { measuredMeter.update(left: 0, right: 0, elapsed: 1 / frequency) }
+        precondition(abs(20 * log10(measuredMeter.levels.x) + 30) < 0.001, "The meter is halfway down the scale at 1.5 s")
+        for _ in 0..<Int(frequency * 1.4) { measuredMeter.update(left: 0, right: 0, elapsed: 1 / frequency) }
+        precondition(measuredMeter.levels.x > 0 && measuredMeter.levels.y == 0)
         for _ in 0..<Int(frequency * 0.2) { measuredMeter.update(left: 0, right: 0, elapsed: 1 / frequency) }
-        precondition(measuredMeter.levels == .zero, "The meter clears by 1.6 s")
+        precondition(measuredMeter.levels == .zero, "The meter reaches the floor at about three seconds")
         measuredMeter.update(left: 0.8, right: 0.2, elapsed: 1 / frequency)
         precondition(measuredMeter.levels == SIMD2(0.8, 0.2))
     }
@@ -122,11 +128,11 @@ import Foundation
     meter.bind(level, showScale: false)
     level.reset(); precondition(coloredPixels(2) == 0 && coloredPixels(7) == 0, "silence clears both cached channels")
     // The gradient remains anchored to the entire range; a -30 dB signal
-    // exposes only its lower half and must not stretch red into quiet levels.
+    // exposes the bottom 30 dB of the 72 dB range, which includes 12 dB of headroom.
     level.reset(); level.update(left: pow(10, -30.0 / 20), right: 1, elapsed: 1)
     let leftClip = meterLayer("meter-level-0"), rightClip = meterLayer("meter-level-1")
     let leftGradient = leftClip.sublayers!.first as! CAGradientLayer
-    precondition(abs(leftClip.frame.height - 40) < 0.001 && rightClip.frame.height == 80)
+    precondition(abs(leftClip.frame.height - 80 * 30 / 72) < 0.001 && abs(rightClip.frame.height - 80 * 60 / 72) < 0.001)
     precondition(leftGradient.frame.height == 80 && leftGradient.locations == MixerMeterStyle.gradientStops.map { NSNumber(value: Double($0)) })
     precondition(rightClip.sublayers!.last!.isHidden, "A zero dB signal must stay yellow")
     level.update(left: pow(10, -30.0 / 20), right: pow(10, 0.1 / 20), elapsed: 1)
@@ -282,9 +288,9 @@ import Foundation
         "Resetting the held peak keeps the area transparent")
     meter.setFrameSize(NSSize(width: 52, height: 56)); meter.layoutSubtreeIfNeeded()
     level.reset(); level.update(left: 1, right: 0.1, elapsed: 1)
-    precondition(meterLayer("meter-level-0").frame.height == 56
+    precondition(abs(meterLayer("meter-level-0").frame.height - 56 * 60 / 72) < 0.001
         && meterLayer("meter-level-0").sublayers!.first!.frame.height == 56,
-        "Levels and the fixed gradient retain the full bar height")
+        "Unity retains the 12 dB headroom below the top of the fixed gradient")
     level.peakHold.clear(); level.peakHold.record(pow(10, -24.0 / 20))
     let compactPeak = (meterLayer("meter-peak") as! CATextLayer).string as! NSAttributedString
     precondition((compactPeak.attribute(.font, at: 0, effectiveRange: nil) as? NSFont)?.pointSize == 8,
@@ -335,7 +341,7 @@ import Foundation
     meter.setFrameSize(NSSize(width: 32, height: 80))
     replacement.reset(); replacement.update(left: pow(10, -30.0 / 20), right: 1, elapsed: 1)
     meter.setFrameSize(NSSize(width: 32, height: 120)); meter.layoutSubtreeIfNeeded()
-    precondition(abs(meterLayer("meter-level-0").frame.height - 60) < 0.001 && meterLayer("meter-level-1").frame.height == 120)
+    precondition(meterLayer("meter-level-0").frame.height == 50 && meterLayer("meter-level-1").frame.height == 100)
     precondition(meterLayer("meter-level-0").sublayers!.first!.frame.height == 120,
                  "resizing the track updates the fixed gradient and preserves the current dB fraction")
     meter.setFrameSize(NSSize(width: 32, height: 80)); meter.layoutSubtreeIfNeeded()
@@ -357,7 +363,7 @@ import Foundation
     window.setContentSize(NSSize(width: 80, height: 100))
     meter.setFrameSize(NSSize(width: 32, height: 120)); meter.layoutSubtreeIfNeeded()
     precondition(meter.geometryUpdatesForTest == resizeGeometry + 1 &&
-        meterLayer("meter-level-0").frame.height == 60 && meterLayer("meter-level-1").frame.height == 120,
+        meterLayer("meter-level-0").frame.height == 50 && meterLayer("meter-level-1").frame.height == 100,
         "An actual meter resize still rebuilds once and immediately applies the cached dB levels")
     NotificationCenter.default.post(name: NSWindow.didResizeNotification, object: window)
     precondition(meter.geometryUpdatesForTest == resizeGeometry + 1)
@@ -378,7 +384,7 @@ import Foundation
     revealWindow.contentView?.layoutSubtreeIfNeeded()
     NotificationCenter.default.post(name: NSWindow.didResizeNotification, object: revealWindow)
     let revealedRight = revealMeter.layer!.sublayers!.first { $0.name == "meter-level-1" }!
-    precondition(!revealMeter.visibleRect.isEmpty && revealedRight.frame.height == 80,
+    precondition(!revealMeter.visibleRect.isEmpty && abs(revealedRight.frame.height - 80 * 60 / 72) < 0.001,
         "Expanding the window reveals the latest offscreen meter amplitude without another audio tick")
     revealWindow.orderOut(nil)
     print("NATIVE_METER_WINDOW_RESIZE_REVEALS_PENDING_LEVEL_WITHOUT_AUDIO_TICK_OK")
@@ -427,7 +433,7 @@ import Foundation
     masterWindow.orderFront(nil)
     RunLoop.main.run(until: Date().addingTimeInterval(0.02))
     let masterLevel = masterView.layer!.sublayers!.first { $0.name == "meter-level-1" }!
-    precondition(masterLevel.frame.height == masterView.bounds.height && masterLevel.frame.height > 0,
+    precondition(abs(masterLevel.frame.height - masterView.bounds.height * 60 / 72) < 0.001 && masterLevel.frame.height > 0,
                  "Master created while its window is hidden appears on reveal without changing screen")
     masterWindow.orderOut(nil); window.orderOut(nil)
     print("NATIVE_MASTER_METER_WINDOW_REVEAL_AND_BACKING_LAYER_RECOVERY_OK")

@@ -293,7 +293,7 @@ void Projection::prepareNextVideo(const jaras::AudioClip &current, double at, bo
     if (!next || next->id == current.id || !next->audioFile || next->text) return;
     if (preparedClip != next->id) {
         try {
-            auto file = ProjectCodec::resolveMedia(session.mediaDirectory, next->audioFile->path);
+            auto file = ProjectCodec::resolveMedia(session.mediaDirectory, projectionPath(*next));
             if (file.hasFileExtension("png;jpg;jpeg;bmp;gif;tif;tiff")) return;
             preparedDecoder->reset(); preparedClip = next->id; preparedFile = file;
         } catch (...) { return; }
@@ -333,12 +333,19 @@ void Projection::timerCallback() {
                        dontSendNotification);
         return;
     }
+    std::optional<jaras::AudioClip> visual;
+    if(clip->adjustedVideo){
+        const auto clock=projectionClock(*clip,at);visual=*clip;
+        visual->sourceOffset=clock.first-(at-clip->startTime)*clock.second;visual->playbackRate=clock.second;
+        visual->loopStart=clip->adjustedVideo->loopStart;visual->loopLength=clip->adjustedVideo->loopLength;
+        clip=&*visual;
+    }
     const auto opacity = (float)jaras::itemFadeGain(*clip, at);
     if (opacity != mediaOpacity) { mediaOpacity = opacity; if(videoSurface)InvalidateRect(videoSurface,nullptr,FALSE);repaint(); }
-    if (clip->id != clipID || (clip->text && text(*clip->text) != lyrics)) {
+    if (clip->id != clipID || (clip->adjustedVideo && std::abs(clip->playbackRate-itemRate)>1e-8) || (clip->text && text(*clip->text) != lyrics)) {
         File incomingFile;
         if (clip->audioFile) {
-            try { incomingFile = ProjectCodec::resolveMedia(session.mediaDirectory, clip->audioFile->path); }
+            try { incomingFile = ProjectCodec::resolveMedia(session.mediaDirectory, projectionPath(*clip)); }
             catch (...) {}
         }
         const double boundary = itemStart + itemDuration;
@@ -370,7 +377,7 @@ void Projection::timerCallback() {
             textView.setVisible(false);
             try {
                 auto file =
-                    ProjectCodec::resolveMedia(session.mediaDirectory, clip->audioFile->path);
+                    ProjectCodec::resolveMedia(session.mediaDirectory, projectionPath(*clip));
                 if (file.hasFileExtension("png;jpg;jpeg;bmp;gif")) {
                     image = ImageFileFormat::loadFrom(file);
                     if (!image.isValid())

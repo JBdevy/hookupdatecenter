@@ -110,8 +110,8 @@ public struct AudioExportPlan: Sendable {
                                        fileNameStem: stem, minimumClipStart: region?.parentRegionID == nil ? nil : region?.startTime))
         }
         if source == .stems {
-            for track in song.tracks where track.kind == .standard {
-                for clip in track.clips where selectedClips.contains(clip.id) && clip.midi == nil && (clip.audioFile != nil || track.audioFile != nil) {
+            for track in song.tracks {
+                for clip in track.clips where selectedClips.contains(clip.id) && clip.audioMedia(on: track) != nil {
                     append(track: track, clip: clip, region: song.parts.first { clip.startTime >= $0.startTime && clip.startTime < $0.endTime }, start: clip.startTime, end: clip.startTime + clip.duration)
                 }
             }

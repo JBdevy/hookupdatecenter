@@ -287,7 +287,7 @@ struct CatSynthEditor: View {
 
     private func envelope(_ name: String, _ first: Int) -> some View {
         module(name) {
-            CatSynthEnvelopeShape(attack: Double(patch[first]), decay: Double(patch[first + 1]),
+            ADSREnvelopeGraph(attack: Double(patch[first]), decay: Double(patch[first + 1]),
                           sustain: Double(patch[first + 2]), release: Double(patch[first + 3]), color: accent)
                 .frame(height: 24)
             HStack(spacing: 2) {
@@ -415,22 +415,28 @@ struct CatSynthEditor: View {
     }
 }
 
-private struct CatSynthEnvelopeShape: View {
-    let attack, decay, sustain, release: Double
+struct ADSREnvelopeGraph: View {
+    let envelope: WaveLFOEnvelope
     let color: Color
+    var duration: Double?
+
+    init(attack: Double, decay: Double, sustain: Double, release: Double, color: Color) {
+        var wave = WaveLFOEnvelope()
+        wave.attack = attack; wave.decay = decay; wave.sustain = sustain; wave.release = release
+        envelope = wave; self.color = color
+    }
+    init(wave: WaveLFOEnvelope, color: Color, duration: Double? = nil) {
+        envelope = wave; self.color = color; self.duration = duration
+    }
     var body: some View {
         Canvas { context, size in
-            let total = attack + decay + release + 0.4
-            let peak = size.width * attack / total
-            let fall = peak + size.width * decay / total
-            let sustainEnd = fall + size.width * 0.4 / total
-            let height = size.height - 2
+            let e = envelope
+            let total = max(0.000001, duration ?? (e.attack + e.hold + e.decay + e.release + 0.4))
+            let height = max(0, size.height - 4)
             var path = Path()
-            path.move(to: CGPoint(x: 0, y: height))
-            path.addLine(to: CGPoint(x: peak, y: 2))
-            path.addLine(to: CGPoint(x: fall, y: height - sustain * (height - 2)))
-            path.addLine(to: CGPoint(x: sustainEnd, y: height - sustain * (height - 2)))
-            path.addLine(to: CGPoint(x: size.width, y: height))
+            path.addLines(e.vertices(duration: total).map {
+                CGPoint(x: size.width * $0.time / total, y: 2 + height * (1 - $0.gain))
+            })
             context.stroke(path, with: .color(color.opacity(0.82)), lineWidth: 1.4)
         }.accessibilityHidden(true)
     }

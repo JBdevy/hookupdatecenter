@@ -11,9 +11,10 @@ inline Paths references(const jaras::Project &project) {
                 result.insert(track.audioFile->path);
             if (track.clickSound)
                 result.insert(track.clickSound->path);
-            for (const auto &clip : track.clips)
-                if (clip.audioFile)
-                    result.insert(clip.audioFile->path);
+            for (const auto &clip : track.clips) {
+                if (clip.audioFile) result.insert(clip.audioFile->path);
+                if (clip.adjustedVideo) result.insert(clip.adjustedVideo->path);
+            }
         }
     dynamicsAssets::collect(project, result);
     return result;
@@ -98,9 +99,76 @@ inline void remember(const jaras::Project &project, const File &document, const 
         !file.replaceWithText(JSON::toString(data)))
         throw std::runtime_error("Não foi possível salvar o inventário de mídia.");
 }
+struct CloseRemovalHandle {
+    void operator()(void* handle) const noexcept { CloseHandle(handle); }
+};
+struct PendingRemoval {
+    File file;
+    std::unique_ptr<void, CloseRemovalHandle> handle;
+    DWORD attributes;
+};
+inline std::runtime_error removalError(const File& root, const File& file, DWORD code) {
+    auto message = String::fromUTF8("Não foi possível excluir ") + file.getRelativePathFrom(root) + ". ";
+    if (code == ERROR_SHARING_VIOLATION || code == ERROR_LOCK_VIOLATION)
+        message += String::fromUTF8("O arquivo está em uso. Feche a prévia ou o programa que o está usando e tente novamente.");
+    else if (code == ERROR_ACCESS_DENIED || code == ERROR_WRITE_PROTECT)
+        message += String::fromUTF8("O Windows negou a exclusão. Verifique a permissão de escrita e a proteção da unidade.");
+    else
+        message += String::fromUTF8("O Windows informou o erro ") + String(static_cast<int64>(code)) + ".";
+    return std::runtime_error(utf8(message));
+}
+// Reserve deletion access before discarding snapshots. Keep each handle until
+// commit so a short-lived reader cannot cause a partial cleanup midway through.
+inline std::vector<PendingRemoval> prepareRemovals(const File& root, std::vector<File> files,
+                                                    StringArray* inUse = nullptr) {
+    std::vector<PendingRemoval> pending;
+    pending.reserve(files.size());
+    for (int attempt = 0; !files.empty(); ++attempt) {
+        std::vector<File> retry;
+        for (const auto& file : files) {
+            if (!plainPath(root, file, true)) throw removalError(root, file, ERROR_ACCESS_DENIED);
+            const HANDLE handle = CreateFileW(file.getFullPathName().toWideCharPointer(), DELETE | FILE_READ_ATTRIBUTES,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+            if (handle == INVALID_HANDLE_VALUE) {
+                const auto error = GetLastError();
+                if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND) continue;
+                if (error == ERROR_SHARING_VIOLATION || error == ERROR_LOCK_VIOLATION) {
+                    if (attempt < 4) { retry.push_back(file); continue; }
+                    if (inUse) { inUse->add(file.getRelativePathFrom(root)); continue; }
+                }
+                throw removalError(root, file, error);
+            }
+            std::unique_ptr<void, CloseRemovalHandle> owner(handle);
+            BY_HANDLE_FILE_INFORMATION info{};
+            if (!GetFileInformationByHandle(handle, &info)) throw removalError(root, file, GetLastError());
+            if (info.dwFileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY))
+                throw removalError(root, file, ERROR_ACCESS_DENIED);
+            pending.push_back({file, std::move(owner), info.dwFileAttributes});
+        }
+        files = std::move(retry);
+        if (!files.empty()) Thread::sleep(50 << attempt);
+    }
+    return pending;
+}
+inline void commitRemoval(const File& root, PendingRemoval& entry) {
+    if (entry.attributes & FILE_ATTRIBUTE_READONLY) {
+        // Imported files sometimes inherit this flag. Deleting the approved
+        // link by handle leaves permissions on other hard links untouched.
+        FILE_DISPOSITION_INFO_EX disposition{FILE_DISPOSITION_FLAG_DELETE | FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE};
+        if (!SetFileInformationByHandle(entry.handle.get(), FileDispositionInfoEx, &disposition, sizeof(disposition)))
+            throw removalError(root, entry.file, GetLastError());
+    } else {
+        FILE_DISPOSITION_INFO disposition{TRUE};
+        if (!SetFileInformationByHandle(entry.handle.get(), FileDispositionInfo, &disposition, sizeof(disposition)))
+            throw removalError(root, entry.file, GetLastError());
+    }
+    entry.handle.reset();
+}
 inline int removeDeleted(const jaras::Project &project, const var &raw, const File &document,
                          const Paths &known, const std::function<void(double)> &progress = {},
-                         const std::set<String> &activeFiles = {}) {
+                         const std::set<String> &activeFiles = {}, StringArray* retained = nullptr,
+                         bool* changedOnDisk = nullptr) {
     auto report = [&](double value) {
         if (progress)
             progress(value);
@@ -156,21 +224,25 @@ inline int removeDeleted(const jaras::Project &project, const var &raw, const Fi
     }
     // Retain archive ownership if a later deletion fails and cleanup is retried.
     remember(project, document, owned);
-    // All backups have been validated. Delete only this project's snapshots
-    // before removing sources, so no surviving own backup points at deleted media.
-    for (size_t index = 0; index < backups.size(); ++index) {
-        if (!plainPath(root, backups[index]) || !backups[index].deleteFile())
-            throw std::runtime_error("Não foi possível excluir um backup antigo. As mídias foram mantidas.");
-        report(.2 + .3 * (index + 1) / backups.size());
+    StringArray inUse;
+    auto media = prepareRemovals(root, std::move(candidates), &inUse);
+    if (retained) *retained = inUse;
+    // When every obsolete source is in use leave its recovery snapshots available
+    // too. The inventory also retains skipped paths for the user's next cleanup.
+    if (media.empty() && !inUse.isEmpty()) { report(1); return 0; }
+    auto snapshots = prepareRemovals(root, backups);
+    for (size_t index = 0; index < snapshots.size(); ++index) {
+        commitRemoval(root, snapshots[index]);
+        if (changedOnDisk) *changedOnDisk = true;
+        report(.2 + .3 * (index + 1) / snapshots.size());
     }
     report(.5);
     int removed = 0;
-    for (const auto &source : candidates) {
-        if (!plainPath(root, source) || !source.deleteFile())
-            throw std::runtime_error(
-                "Não foi possível excluir uma mídia. A limpeza não foi concluída.");
+    for (auto& entry : media) {
+        commitRemoval(root, entry);
+        if (changedOnDisk) *changedOnDisk = true;
         ++removed;
-        report(.5 + .49 * removed / candidates.size());
+        report(.5 + .49 * removed / media.size());
     }
     report(1);
     return removed;

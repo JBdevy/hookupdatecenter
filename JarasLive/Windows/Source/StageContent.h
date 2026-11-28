@@ -1,4 +1,5 @@
 #pragma once
+#include "ProjectionSelection.h"
 #include "ItemTextColors.h"
 #include "Session.h"
 #include "StageState.h"
@@ -51,10 +52,10 @@ struct StageContent {
                 const bool target=track.role.id==(index==2?"teleprompt2":"teleprompt");
                 const jaras::AudioClip *active=nullptr;
                 for(const auto &clip:track.clips) if(!clip.muted) {
-                    const bool projection=clip.audioFile && clip.audioFile->path.rfind("Videos/",0)==0;
+                    const bool projection=projectionMedia(clip);
                     if (target && projection && !media && mediaPosition >= clip.startTime && mediaPosition < clip.startTime + clip.duration) {
                         static const StringArray imageExtensions{"png", "jpg", "jpeg", "gif", "bmp", "webp", "heic"};
-                        const auto extension = text(clip.audioFile->path).fromLastOccurrenceOf(".", false, false);
+                        const auto extension = text(projectionPath(clip)).fromLastOccurrenceOf(".", false, false);
                         if (!imageOnly || imageExtensions.contains(extension, true)) media = &clip;
                     }
                     if(!projection && clip.text && position>=clip.startTime && position<clip.startTime+clip.duration && (!active||clip.startTime>active->startTime))active=&clip;
@@ -67,11 +68,11 @@ struct StageContent {
             if(progressClip && progressClip->duration>0 && flag(settings,"progressEnabled"))
                 progress=std::round(jlimit(0.,1.,(position-progressClip->startTime)/progressClip->duration)*1000)/1000;
             if(media && !preview) {
-                result.media=ProjectCodec::resolveMedia(session.mediaDirectory,media->audioFile->path,false);
+                result.media=ProjectCodec::mediaInput(session.mediaDirectory,projectionPath(*media));
                 put(out,"mediaID",text(media->id));put(out,"imageID",text(media->id));put(out,"mediaName",text(media->name));
                 put(out,"mediaKind",result.media.hasFileExtension("png;jpg;jpeg;gif;bmp;webp;heic")?"image":"video");
-                put(out,"mediaTime",std::max(0.,media->sourceOffset+(mediaPosition-media->startTime)*media->playbackRate));
-                put(out,"mediaRate",transport.playing?media->playbackRate:0);
+                put(out,"mediaTime",std::max(0.,projectionClock(*media,mediaPosition).first));
+                put(out,"mediaRate",transport.playing?projectionClock(*media,mediaPosition).second:0);
             }
             std::vector<std::pair<ID,const jaras::Part*>> roots;
             const auto &setlist=session.project().regionSetlist;

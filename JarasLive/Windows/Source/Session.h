@@ -97,7 +97,7 @@ class Session final : private Timer {
     void setReductionDraft(const var &);
     void saveReductionDraft();
     void renameProject(String);
-    void cleanTimelineMedia(std::function<void(String)> completed);
+    void cleanTimelineMedia(std::function<void(String, bool)> completed);
     jaras::projectSync::Frame projectSyncFrame() { syncClock(); return core.projectSyncFrame(); }
     void applyProjectSync(const jaras::projectSync::Frame &, double elapsed, bool first, std::optional<ID> focused = {});
     void command(jaras::CommandKind, const ID &target = {}, double value = 0);
@@ -124,6 +124,7 @@ class Session final : private Timer {
     void resetTapTempo() { tempoTaps = {}; }
     void tapTempo(double time = Time::getMillisecondCounterHiRes() / 1000., const ID& source = {});
     bool tempoInputAllowed() const { return !transport().playing && !transport().subPlay.playing; }
+    bool tunerInputAllowed() const { return core.tunerInputAllowed() && !countingIn && !audio.isRecording(); }
     void setTypedTempo(double bpm) { if (tempoInputAllowed()) setTempo(bpm); }
     std::function<double()> tempoEditClock = [] { return Time::getMillisecondCounterHiRes() / 1000.; };
     void configureTiming(double bpm, int beats, int unit, jaras::ProjectTimeSettings);
@@ -135,8 +136,10 @@ class Session final : private Timer {
     String insertLibraryEffect(const ID &destination, const String &identity, const String &presetID,
                                const String &before = {}, bool itemTarget = false);
     void edit(const std::function<void(jaras::Project &)> &, bool rebuild = true, bool allowTimingEdit = false, bool regionOperation = false);
+    void setSelectedTrackHeights(const ID& song, const std::map<ID,double>& scales, bool continueGesture);
     void setTrackHeight(const ID& song, const std::optional<ID>& track, double scale);
     std::function<void()> trackHeightChanged;
+    void randomizeTrackColors(const std::set<ID>&);
     void setTrackMixerComponents(const std::map<ID, int> &);
     std::function<void()> trackMixerComponentsChanged;
     void setTrackInstrumentIcon(const std::set<ID> &, std::optional<std::string>);
@@ -161,6 +164,7 @@ class Session final : private Timer {
     void exportMultitrack(std::vector<MultitrackExportProject>, std::function<void()> onCompleted);
     AudioExportProgress exportProgress() const { const ScopedLock guard(exportProgressLock); return exportPreview; }
     bool exportFailed = false;
+    void adjustRegionBPM(ID, double, std::function<void(String)>);
     void renderItems(std::set<ID>, bool glue = false, int midiChannels = 0, std::function<void(std::set<ID>)> completed = {});
     void separateAudioItem(ID, std::function<void(std::set<ID>)> completed = {}, std::set<int> instruments = {});
     void detectRegionBPM(std::set<ID>);
@@ -232,6 +236,7 @@ class Session final : private Timer {
     std::set<ID> splitClips(const std::set<ID> &, double);
     void addMarker(String, double, bool section = false);
     void addRegion(String, double, double);
+    void renameTimelineLabel(const ID&, bool region, String name);
     void reorderTrack(ID, ID);
     void reorderSong(ID, int);
     void makeInspectionProject(bool withAudioFixture = false);
@@ -259,6 +264,7 @@ class Session final : private Timer {
     void applyTimelineHistory(const TimelineHistory &, bool recordHistory);
     void insertRecordedTakes(const ID& songID, std::vector<std::pair<ID, jaras::AudioClip>>& takes, bool loop,
                              const std::set<ID>& affected);
+    struct TimelineNameHistory { ID song; std::map<ID, std::string> regions, markers; };
     struct MarkerHistory { ID song; std::optional<std::vector<jaras::TimelineMarker>> markers; };
     struct ItemHistory { std::map<ID, std::vector<jaras::AudioClip>> tracks; };
     ItemHistory itemHistory(const ItemHistory &) const;
@@ -280,11 +286,15 @@ class Session final : private Timer {
     struct TrackHeightHistory { ID song; std::map<ID, double> scales; };
     TrackHeightHistory applyTrackHeights(const TrackHeightHistory&);
     void notifyTrackHeight();
+    struct TrackColorHistory { ID song; jaras::Engine::TrackColors colors; };
+    void restoreTrackColors(TrackColorHistory&);
     struct TrackMixerComponentsHistory { ID song; std::map<ID, int> masks; };
     TrackMixerComponentsHistory applyTrackMixerComponents(const TrackMixerComponentsHistory &);
     void notifyTrackMixerComponents();
     struct HistoryEntry {
         var project;
+        std::optional<TimelineNameHistory> names;
+        HistoryEntry(TimelineNameHistory value) : names(std::move(value)) {}
         std::optional<FreeTempoHistory> freeTempo;
         HistoryEntry(FreeTempoHistory value) : freeTempo(std::move(value)) {}
         std::optional<TimelineHistory> timeline;
@@ -296,6 +306,8 @@ class Session final : private Timer {
         std::optional<ItemTimingHistory> itemTiming;
         std::optional<ItemHistory> items;
         std::optional<TrackHierarchyHistory> hierarchy;
+        std::optional<TrackColorHistory> colors;
+        HistoryEntry(TrackColorHistory value) : colors(std::move(value)) {}
         std::optional<TrackMixerComponentsHistory> components;
         std::optional<TrackHeightHistory> heights;
         HistoryEntry(TrackHeightHistory value) : heights(std::move(value)) {}

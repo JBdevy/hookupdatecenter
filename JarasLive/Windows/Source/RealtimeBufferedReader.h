@@ -7,12 +7,28 @@ namespace catlive {
 // no mutex, file I/O, allocation, deletion, notification or waiting at timeout 0.
 class RealtimeBufferedReader final : public AudioFormatReader, private TimeSliceClient {
 public:
-    RealtimeBufferedReader(AudioFormatReader *reader,TimeSliceThread &worker,int capacity)
+    RealtimeBufferedReader(AudioFormatReader *reader,TimeSliceThread &worker,int capacity,
+                           int64 startFrame = 0, const AudioBuffer<float> *decodedOnset = nullptr)
         : AudioFormatReader(nullptr,reader->getFormatName()),source(reader),thread(worker),
-          pageCount(std::max(4,(capacity+pageFrames-1)/pageFrames+3)),pages(std::make_unique<Page[]>(size_t(pageCount))) {
+          pageCount(std::max(4,(capacity+pageFrames-1)/pageFrames+3)),pages(std::make_unique<Page[]>(size_t(pageCount))),
+          requested(std::max<int64>(0,startFrame)) {
         sampleRate=source->sampleRate;lengthInSamples=source->lengthInSamples;
         numChannels=source->numChannels;bitsPerSample=32;usesFloatingPointData=true;
         for(int i=0;i<pageCount;++i)pages[size_t(i)].pcm.setSize(int(numChannels),pageFrames);
+        if (startFrame >= 0 && decodedOnset && decodedOnset->getNumChannels() == int(numChannels)) {
+            // The transport worker has already decoded the onset. Publish its complete
+            // pages before starting read-ahead so a seek does not decode them twice.
+            const int firstOffset = int((pageFrames - startFrame % pageFrames) % pageFrames);
+            const int end = std::min(decodedOnset->getNumSamples() - firstOffset, pageCount * pageFrames);
+            for (int offset = 0; offset + pageFrames <= end; offset += pageFrames) {
+                const int64 first = startFrame + firstOffset + offset;
+                auto &page = pages[size_t((first / pageFrames) % pageCount)];
+                for (int channel = 0; channel < int(numChannels); ++channel)
+                    page.pcm.copyFrom(channel, 0, *decodedOnset, channel, firstOffset + offset, pageFrames);
+                page.decoded = true;
+                page.first.store(first, std::memory_order_relaxed);
+            }
+        }
         thread.addTimeSliceClient(this);
     }
     ~RealtimeBufferedReader()override {thread.removeTimeSliceClient(this);}

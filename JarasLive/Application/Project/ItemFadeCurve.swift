@@ -26,17 +26,34 @@ public struct ItemFadeCurve: Equatable, Sendable {
 
 public struct WaveLFOEnvelope: Codable, Equatable, Hashable, Sendable {
     public static let name = "Wave LFO"
-    public var attack = 0.05, decay = 0.20, sustain = 0.75, release = 0.25
+    public var attack = 0.05, hold = 0.0, decay = 0.20, sustain = 0.75, release = 0.25
     public init() {}
 
+    private enum CodingKeys: String, CodingKey { case attack, hold, decay, sustain, release }
+    public init(from decoder: Decoder) throws {
+        let data = try decoder.container(keyedBy: CodingKeys.self)
+        attack = try data.decode(Double.self, forKey: .attack)
+        hold = try data.decodeIfPresent(Double.self, forKey: .hold) ?? 0
+        decay = try data.decode(Double.self, forKey: .decay)
+        sustain = try data.decode(Double.self, forKey: .sustain)
+        release = try data.decode(Double.self, forKey: .release)
+    }
+
     public func fitted(to duration: Double) -> Self {
-        let total = attack + decay + release
+        let total = attack + hold + decay + release
         guard total > duration, total > 0 else { return self }
         let scale = max(0, duration) / total
         var copy = self
         copy.attack *= scale
+        copy.hold *= scale
         copy.decay *= scale
         copy.release *= scale
         return copy
+    }
+
+    public func vertices(duration: Double) -> [(time: Double, gain: Double)] {
+        let e = fitted(to: duration)
+        return [(0, 0), (e.attack, 1), (e.attack + e.hold, 1),
+                (e.attack + e.hold + e.decay, e.sustain), (duration - e.release, e.sustain), (duration, 0)]
     }
 }

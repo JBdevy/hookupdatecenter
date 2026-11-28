@@ -730,6 +730,10 @@ public extension Project {
         for id in ids { ungroupTrack(id) }
         for song in songs.indices {
             songs[song].tracks.removeAll { ids.contains($0.id) }
+            for part in songs[song].parts.indices {
+                songs[song].parts[part].pitchTrackIDs?.removeAll { ids.contains($0) }
+                songs[song].parts[part].pitchGroupIDs?.removeAll { ids.contains($0) }
+            }
             for index in songs[song].tracks.indices {
                 guard var routing = songs[song].tracks[index].routing else { continue }
                 routing.receives = routing.receives.map { $0.flatMap { ids.contains($0) ? nil : $0 } }
@@ -863,7 +867,10 @@ public extension Project {
         paths.formUnion(masterFX?.samplePaths ?? [])
         for track in songs.flatMap(\.tracks) {
             paths.formUnion(track.fx?.samplePaths ?? [])
-            for clip in track.clips { paths.formUnion(clip.fx?.samplePaths ?? []) }
+            for clip in track.clips {
+                paths.formUnion(clip.fx?.samplePaths ?? [])
+                if let video = clip.adjustedVideo { paths.insert(video.path) }
+            }
         }
         return paths
     }
@@ -964,8 +971,12 @@ private extension Track {
 /// Bounded project history: no PCM or source-file copies, no work on audio callbacks.
 public struct ProjectEditHistory {
     private var baseline: Project
-    private var past: [Project] = []
-    private var future: [Project] = []
+    private struct Entry {
+        var project: Project
+        var editsTuner: Bool
+    }
+    private var past: [Entry] = []
+    private var future: [Entry] = []
     public var canUndo: Bool { !past.isEmpty }
     public var canRedo: Bool { !future.isEmpty }
     public init(_ project: Project) { baseline = project }
@@ -981,15 +992,20 @@ public struct ProjectEditHistory {
             }
         }
         update(&baseline)
-        for index in past.indices { update(&past[index]) }
-        for index in future.indices { update(&future[index]) }
+        for index in past.indices { update(&past[index].project) }
+        for index in future.indices { update(&future[index].project) }
+    }
+    /// The first frame of a continuous edit already retained its undo baseline.
+    mutating func continueMetadataGesture(_ project: Project) {
+        baseline = project
+        future.removeAll()
     }
     public mutating func record(_ project: Project, preservingMediaStorage: Bool = false,
-                                knownChanged: Bool = false) {
+                                knownChanged: Bool = false, editsTuner: Bool = false) {
         // A mixer gesture has already compared its scalar values. Comparing
         // every clip and waveform again can pause the UI in large projects.
         guard knownChanged || project != baseline else { return }
-        past.append(baseline); if past.count > 100 { past.removeFirst() }
+        past.append(Entry(project: baseline, editsTuner: editsTuner)); if past.count > 100 { past.removeFirst() }
         // Mixer controls already retain immutable clip/waveform storage.
         // Preserve that storage directly instead of visiting every project item.
         if preservingMediaStorage { baseline = project; future.removeAll(); return }
@@ -1009,13 +1025,17 @@ public struct ProjectEditHistory {
         }
         baseline = compact; future.removeAll()
     }
-    public mutating func undo() -> Project? {
-        guard let project = past.popLast() else { return nil }
-        future.append(baseline); baseline = project; return project
+    public mutating func undo(allowsTuner: Bool = true) -> Project? {
+        guard allowsTuner || past.last?.editsTuner != true, let entry = past.popLast() else { return nil }
+        future.append(Entry(project: baseline, editsTuner: entry.editsTuner))
+        baseline = entry.project
+        return entry.project
     }
-    public mutating func redo() -> Project? {
-        guard let project = future.popLast() else { return nil }
-        past.append(baseline); baseline = project; return project
+    public mutating func redo(allowsTuner: Bool = true) -> Project? {
+        guard allowsTuner || future.last?.editsTuner != true, let entry = future.popLast() else { return nil }
+        past.append(Entry(project: baseline, editsTuner: entry.editsTuner))
+        baseline = entry.project
+        return entry.project
     }
 }
 
@@ -1058,7 +1078,7 @@ public enum ProjectAudioRecovery {
     public static func missingPaths(in project: Project, directory: URL) -> [String] {
         let paths = project.mediaPaths
         return paths.filter { path in
-            let url = directory.appendingPathComponent(path)
+            let url = directory.projectMedia(path)
             return (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) != true
         }.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
     }

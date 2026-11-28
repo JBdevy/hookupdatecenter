@@ -1,6 +1,26 @@
 import Foundation
 @main struct TimelineBulkUndoTests {
+    @MainActor static func selectedTrackHeights() throws {
+        var project = Project.empty(name: "Selected track heights")
+        var tracks = ["Bass", "Keys", "Vocals"].map { Track(id: UUID(), name: $0, role: .other) }
+        tracks[2].heightScale = 1.5
+        project.songs[0].tracks = tracks
+        let show = try ShowController(executor: LocalCommandExecutor(), persistence: MemoryProjectStore(), initialProject: project)
+        let song = project.songs[0].id
+        func scales() -> [Double] { tracks.map { id in show.current!.tracks.first { $0.id == id.id }!.heightScale ?? 1 } }
+        show.setTrackHeightScales([tracks[0].id: 1.1, tracks[2].id: 1.6], project: project.id, song: song)
+        show.setTrackHeightScales([tracks[0].id: 1.2, tracks[2].id: 1.7], project: project.id, song: song)
+        precondition(scales() == [1.2, 1, 1.7])
+        show.undo(); precondition(scales() == [1, 1, 1.5])
+        show.redo(); precondition(scales() == [1.2, 1, 1.7])
+        show.setTrackHeightScales([tracks[2].id: 1.35], project: project.id, song: song)
+        precondition(scales() == [1.2, 1, 1.35])
+        show.resetTrackHeightScales(project: project.id, song: song)
+        precondition(scales() == [1, 1, 1])
+        print("SELECTED_TRACK_HEIGHTS_MULTI_SINGLE_UNDO_GLOBAL_RESET_OK")
+    }
     @MainActor static func main() throws {
+        try selectedTrackHeights()
         for kind in TimelineBulkDeletion.allCases {
             var project = Project.empty(name: "Bulk undo")
             let root = Part(id: UUID(), name: "Unified", startTime: 0, endTime: 20)

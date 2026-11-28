@@ -330,7 +330,7 @@ public struct NativeConvolutionSettings: Codable, Equatable, Sendable {
 
 extension WaveLFOEnvelope {
     public func validate() throws {
-        guard [attack, decay, release].allSatisfy({ (0...60).contains($0) }),
+        guard [attack, hold, decay, release].allSatisfy({ (0...60).contains($0) }),
               (0...1).contains(sustain) else { throw ProjectError.invalid("Invalid Wave LFO envelope") }
     }
 }

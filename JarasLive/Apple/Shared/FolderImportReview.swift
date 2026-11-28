@@ -4,7 +4,7 @@ import SwiftUI
 struct NativeStemImportReview: View {
     @ObservedObject var documents: ProjectDocuments
     let scan: StemScan
-    @State private var askingForBPM = false
+    @State private var askingForMediaLocation = false
     @FocusState private var focusedField: Field?
     private enum Field: Hashable { case name, cleanup }
     private var count: Int { scan.folders.reduce(0) { $0 + $1.files.count } }
@@ -73,7 +73,7 @@ struct NativeStemImportReview: View {
                     dismissKeyboard()
                     if !documents.adding && documents.nativeProjectName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         focusedField = .name
-                    } else { askingForBPM = true }
+                    } else { askingForMediaLocation = true }
                 } label: {
                     Label(LocalizedStringKey(documents.adding ? "Add to project" : "Create Project"), systemImage: "checkmark")
                         .frame(minHeight: 36).contentShape(Rectangle())
@@ -81,10 +81,11 @@ struct NativeStemImportReview: View {
                     .accessibilityIdentifier("native-stems-confirm")
             }.buttonStyle(IpadDialogButtonStyle()).fixedSize(horizontal: false, vertical: true)
         }.background(RemoteKeyboardDismissal(active: focusedField != nil, dismiss: dismissKeyboard))
-            .alert("Detect BPM for each song?", isPresented: $askingForBPM) {
-                Button("Yes") { documents.confirmNativeStemImport(detectBPM: true) }
-                Button("No") { documents.confirmNativeStemImport(detectBPM: false) }
-                Button("Cancel", role: .cancel) {}
+            .sheet(isPresented: $askingForMediaLocation) {
+                StemImportOptions { bpm, copy in
+                    askingForMediaLocation = false
+                    documents.confirmNativeStemImport(detectBPM: bpm, copyMedia: copy)
+                }
             }
     }
     private func dismissKeyboard() {
@@ -257,6 +258,30 @@ struct NativeStemFolderBrowser: View {
     }
 }
 #endif
+
+struct StemImportOptions: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var copyMedia: Bool?
+    let confirm: (Bool, Bool) -> Void
+
+    var body: some View {
+        VStack(spacing: 14) {
+            if let copyMedia {
+                Text("Detect BPM for each song?").font(.jarasHeadline)
+                Button("Yes") { confirm(true, copyMedia) }.keyboardShortcut(.defaultAction)
+                Button("No") { confirm(false, copyMedia) }
+            } else {
+                Text("Where should CatLive use the media files?").font(.jarasHeadline)
+                Button("Copy to project") { copyMedia = true }.keyboardShortcut(.defaultAction)
+                Button("Use source folder") { copyMedia = false }
+            }
+            Button("Cancel", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction)
+        }
+        .buttonStyle(.bordered)
+        .padding(24)
+        .frame(minWidth: 280)
+    }
+}
 
 struct FolderImportReview: View {
     @State private var selection: FolderImportSelection

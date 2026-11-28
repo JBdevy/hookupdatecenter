@@ -30,6 +30,7 @@ extension Font { static var jarasBody: Font { .body } }
     let show: ShowController
     let auth: Int, backend: Int
     @ObservedObject var documents: ProjectDocuments
+    var showProjects: (Bool) -> Void = { _ in }
     var body: some View { Text(show.snapshot.project.name) }
 }
 @MainActor struct TrackedTitle: NSViewRepresentable {
@@ -50,7 +51,7 @@ extension Font { static var jarasBody: Font { .body } }
         VStack {
             DesktopProjectTabName(documents: documents).frame(height: 20)
             ZStack {
-                DesktopWorkspaceView(container: container)
+                DesktopWorkspaceView(container: container, browserVisible: false, showProjects: { _ in })
                 if !documents.ready { Text("Loading") }
             }
         }

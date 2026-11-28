@@ -263,7 +263,7 @@ enum AppStartupPresentation {
             show.itemSourceInfo = { [weak audio] file in
                 let url: URL
                 if file.path.hasPrefix("/") { url = URL(fileURLWithPath: file.path) }
-                else if let directory = audio?.mediaDirectory { url = directory.appendingPathComponent(file.path) }
+                else if let directory = audio?.mediaDirectory { url = directory.projectMedia(file.path) }
                 else { return nil }
                 let header = TimelineAudioWaveform.shared.header(url)
                 return (url, header.flatMap { $0.rate > 0 ? Double($0.frames) / $0.rate : nil })
@@ -594,7 +594,7 @@ enum AppStartupPresentation {
                 protected.formUnion(project.projectAudio.activeMediaURLs)
                 if let directory = project.documents.currentURL?.deletingLastPathComponent() {
                     protected.formUnion(project.show.snapshot.project.mediaPaths.map {
-                        directory.appendingPathComponent($0).standardizedFileURL.resolvingSymlinksInPath()
+                        directory.projectMedia($0).standardizedFileURL.resolvingSymlinksInPath()
                     })
                 }
             }

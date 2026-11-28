@@ -4,12 +4,12 @@
 #include <limits>
 #include "TimelineMovementLock.h"
 #include "TimelineSnapping.h"
+#include "TimelineScale.h"
 namespace catlive::timelineGrid {
 inline constexpr int verticalScrollbarWidth = 14;
 inline constexpr double maximumVisibleDuration = 45. * 60 * 60, maximumZoom = 81920.;
-// Points/second: the complete grid viewport can display 45 hours at any size.
 inline double minimumZoom(double viewportWidth) {
-    return std::max(1., viewportWidth) / maximumVisibleDuration;
+    return std::max(minimumPointsPerSecond, viewportWidth / maximumVisibleDuration);
 }
 struct Tick { double time; bool primary; String label; bool drawsInGrid; };
 

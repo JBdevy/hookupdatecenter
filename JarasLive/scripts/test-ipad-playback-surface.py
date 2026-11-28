@@ -20,10 +20,11 @@ with tempfile.TemporaryDirectory(prefix='catlive-ipad-playback-') as temporary:
     headers = (root / 'Apple/Shared/IpadItemHeader.swift').read_text()
     headers = headers[headers.index('final class IpadItemHeaderViewport:'):headers.index('enum IpadItemMixParameter')]
     grid = (root / 'Apple/Shared/TimelineGridView.swift').read_text()
+    limits = grid[grid.index('enum TimelineZoomLimits {'):grid.index('enum TimelineTrackHeightLimits')]
     needle = grid[grid.index('enum TimelineNeedleHead {'):grid.index('struct TimelineHeaderBands:')]
     tests = (root / 'Tests/Apple/IpadTimelinePlaybackTests.swift').read_text()
     swift = directory / 'Fixture.swift'
-    swift.write_text('import UIKit\nimport SwiftUI\nimport Combine\npublic struct MultiLoopTrack: Codable, Equatable, Sendable {}\n' + '\n'.join([transport, multi, presentation, viewport, headers, needle, surface, tests]))
+    swift.write_text('import UIKit\nimport SwiftUI\nimport Combine\npublic struct MultiLoopTrack: Codable, Equatable, Sendable {}\n' + '\n'.join([transport, multi, presentation, limits, viewport, headers, needle, surface, tests]))
     sdk = subprocess.check_output(['xcrun', '--sdk', 'iphonesimulator', '--show-sdk-path'], text=True).strip()
     subprocess.run(['xcrun', 'swiftc', '-parse-as-library', '-swift-version', '5', '-sdk', sdk, '-target',
         'arm64-apple-ios16.0-simulator', str(swift), '-o', str(app / 'PlaybackFixture')], check=True)

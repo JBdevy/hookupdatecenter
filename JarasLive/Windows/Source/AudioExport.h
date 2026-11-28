@@ -2,6 +2,7 @@
 #include "AudioEngine.h"
 #include "MP3Writer.h"
 #include "AiffFloatWriter.h"
+#include "ProjectionSelection.h"
 namespace catlive {
 struct ExportEncoding {
     String format = "WAV";
@@ -33,6 +34,15 @@ struct AudioExportProgress {
     std::array<float, 600> waveform{};
 };
 namespace audioExport {
+// The selected item's soundtrack is available even when video playback is muted.
+inline bool canExportItem(const jaras::Track &track, const jaras::AudioClip &clip) {
+    const auto &media = clip.audioFile ? clip.audioFile : track.audioFile;
+    if (!media || clip.midi) return false;
+    const auto file = File::getCurrentWorkingDirectory().getChildFile(text(media->path));
+    if (file.hasFileExtension("png;jpg;jpeg;gif;heic;heif;tif;tiff;bmp;webp;avif;ico;svg")) return false;
+    return jaras::fixedTrackName(track.role).empty() || projectionMedia(clip) ||
+           (track.role.id == "video" && file.hasFileExtension("mov;mp4;m4v;avi;mkv;webm;mpg;mpeg;wmv;mts;m2ts"));
+}
 // Work on a render copy: the document, sources and selected time interval stay intact.
 inline jaras::Song itemProcessingSong(jaras::Song song,bool preProcessing) {
     if(!preProcessing)return song;
@@ -115,18 +125,17 @@ inline std::vector<ExportJob> plan(const jaras::Project &project, const jaras::S
     };
     if (source == 3) {
         for (const auto &track : song.tracks)
-            if (jaras::fixedTrackName(track.role).empty())
-                for (const auto &clip : track.clips)
-                    if (clips.count(clip.id) && !clip.midi && (clip.audioFile || track.audioFile)) {
-                        const jaras::Part *region = nullptr;
-                        for (const auto &part : song.parts)
-                            if (clip.startTime >= part.startTime && clip.startTime < part.endTime) {
-                                region = &part;
-                                break;
-                            }
-                        append(&track, &clip, region, clip.startTime,
-                               clip.startTime + clip.duration);
-                    }
+            for (const auto &clip : track.clips)
+                if (clips.count(clip.id) && canExportItem(track, clip)) {
+                    const jaras::Part *region = nullptr;
+                    for (const auto &part : song.parts)
+                        if (clip.startTime >= part.startTime && clip.startTime < part.endTime) {
+                            region = &part;
+                            break;
+                        }
+                    append(&track, &clip, region, clip.startTime,
+                           clip.startTime + clip.duration);
+                }
     } else {
         auto range = [&](const jaras::Part *region, double start, double end) {
             if (source != 1)
@@ -231,7 +240,7 @@ inline void render(const jaras::Project &project, const jaras::Song &original, c
         engine.prepareOffline(encoding.rate);
         engine.prepareSong(song, media,
                            renderProject.masterFXJSON ? JSON::parse(text(*renderProject.masterFXJSON)) : var(),
-                           &renderProject);
+                           &renderProject, nullptr, job.clip);
         engine.setOffline(true);
         engine.setMixer(renderProject, song);
         engine.setExportCapture(job.track);
@@ -337,6 +346,7 @@ inline void render(const jaras::Project &project, const jaras::Song &original, c
         mp3.reset();
         if (request.diagnostics) {
             auto measured=object();put(measured,"preparation",engine.preparationDiagnostics);
+            if (!job.clip.empty()) put(measured, "item", text(job.clip));
             put(measured,"render",engine.callbackMetrics.snapshot());request.diagnostics(measured);
         }
         if (engine.getUnderruns())

@@ -21,6 +21,7 @@ struct Session {
     ID requestedRegion;
     std::vector<ID> requestedTracks,requestedGroups;
     const jaras::TransportState &transport() const { return state; }
+    bool tunerInputAllowed() const { return !state.playing && !state.subPlay.playing; }
     void setTempo(double value) { ++tempoCalls;requestedTempo=value; }
     void setRegionPitch(const ID &region,int value,std::vector<ID> tracks,std::vector<ID> groups) {
         ++pitchCalls;requestedRegion=region;requestedPitch=value;
@@ -79,10 +80,15 @@ int main() {
     session.state.playing=true;session.state.position=32;
     assert(std::get<std::string>(remote.snapshot().at("pitchRegion"))=="child-b");
     assert(!remote.apply("pitch",{"child-a",2}));
-    assert(remote.apply("pitch",{"child-b",2}));
+    const auto callsBefore = session.pitchCalls;
+    assert(!remote.apply("pitch",{"child-b",2}));
     session.state.ignoreNextRegionId="child-a";
     assert(std::get<std::string>(remote.snapshot().at("pitchRegion"))=="child-a");
-    assert(remote.apply("pitch",{"child-a",2}));
+    assert(!remote.apply("pitch",{"child-a",2}));
+    session.state.playing=false;session.state.subPlay.playing=true;
+    assert(!remote.apply("pitch",{"child-a",2}) && session.pitchCalls==callsBefore);
+    session.state.subPlay.playing=false;
+    assert(remote.apply("pitch",{"child-a",2}) && session.pitchCalls==callsBefore+1);
     for(double bpm:{141.,142.,141.}) assert(remote.apply("tempo",{{},bpm}));
     assert(session.tempoCalls==3 && session.requestedTempo==141);
     std::cout << "WINDOWS_REMOTE_TUNER_SNAPSHOT_TARGETS_UNIFIED_PLAYBACK_STALE_GUARDS_AND_TEMPO_ROUTING_OK\n";

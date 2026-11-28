@@ -5,6 +5,14 @@
 #include <cmath>
 
 namespace catlive::audio {
+inline constexpr double meterReleaseSeconds = 3.;
+inline float meterReleaseFactor(double elapsed, double scaleDB = 60.) noexcept {
+    return static_cast<float>(std::pow(10., -scaleDB * std::max(0., elapsed) / (20. * meterReleaseSeconds)));
+}
+inline float releasedMeterLevel(float previous, float input, float factor, float floor = .001f) noexcept {
+    const auto level = std::max(std::isfinite(input) ? input : 0.f, previous * factor);
+    return level < floor ? 0.f : level;
+}
 // Independent of the renderer, DSP graph and device backend. The control
 // thread owns lifetime; the audio callback only accesses the atomic payload.
 static_assert(std::atomic<float>::is_always_lock_free,
@@ -30,7 +38,7 @@ inline float meanMagnitude(const float *samples, int count) noexcept {
 }
 
 class AnalogVU {
-    double displacement = 0, velocity = 0;
+    double displacement = 0, velocity = 0, displayed = -20.;
 public:
     float update(double mean, double elapsed) noexcept {
         if (std::isfinite(elapsed) && elapsed > 0) {
@@ -46,7 +54,10 @@ public:
         }
         // Mean absolute level of a sine whose peak is -18 dBFS.
         constexpr double reference = 0.08014568090841664;
-        return float(std::round(std::clamp(20 * std::log10(std::max(.000001, displacement) / reference), -20., 3.) * 10) / 10);
+        const auto target = std::clamp(20 * std::log10(std::max(.000001, displacement) / reference), -20., 3.);
+        if (std::isfinite(elapsed) && elapsed > 0.)
+            displayed = std::max(target, displayed - 20. / meterReleaseSeconds * elapsed);
+        return float(std::round(displayed * 10.) / 10.);
     }
 };
 struct TrackMeterState {

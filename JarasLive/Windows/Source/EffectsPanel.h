@@ -433,7 +433,8 @@ class EffectsPanel final : public Component, public DragAndDropContainer, public
   public:
     static constexpr int minimumContentWidth = 840, minimumContentHeight = 600;
     static constexpr int externalPresetBarHeight = 36;
-    static constexpr int externalMinimumWidth = 420, externalMinimumHeight = externalPresetBarHeight + 80;
+    static constexpr int externalMinimumWidth = 1, externalMinimumHeight = externalPresetBarHeight + 80;
+    bool opensWaveEditor() const { return singleEffect == "Wave LFO"; }
     bool opensExternalEditor() const { return singleEffect.startsWith("External:"); }
     std::function<bool(const KeyPress &)> globalKey;
     std::function<void(bool)> globalKeyState;
@@ -585,8 +586,22 @@ class EffectsPanel final : public Component, public DragAndDropContainer, public
         presets.onChange = [this] { loadPreset(); };
         savePreset.onClick = [this] { saveCurrentPreset(); };
         defaultPreset.onClick = [this] { makePresetDefault(); };
+        presetActions.setButtonText("...");
+        presetActions.setTitle("Preset actions");
+        addChildComponent(presetActions);
+        presetActions.onClick = [this] { showPresetActions(); };
         refreshPresets(); resized();
         startTimerHz(20);
+    }
+    void showPresetActions() {
+            PopupMenu menu;
+            const std::array<TextButton*,4> buttons{&savePreset,&defaultPreset,&undoParameters,&redoParameters};
+            for (size_t i = 0; i < buttons.size(); ++i)
+                menu.addItem(int(i + 1), buttons[i]->getButtonText(), buttons[i]->isEnabled());
+            menu.showMenuAsync(PopupMenu::Options().withTargetComponent(&presetActions),
+                [safe=SafePointer<EffectsPanel>(this), buttons](int id) {
+                    if (safe && id >= 1 && id <= int(buttons.size())) buttons[size_t(id - 1)]->triggerClick();
+                });
     }
     void selectEffect(const String &preferred) {
         const int index = list(get(settings, "inserted")).indexOf(var(preferred));
@@ -668,6 +683,13 @@ class EffectsPanel final : public Component, public DragAndDropContainer, public
             fxui::paintRack(g, juce::Rectangle<int>(r.getX(), rackY, r.getWidth(), rackHeight).toFloat());
             if (kind() == "Arpeggiator") {
                 paintArpeggio(g, {r.getX() + 16, rackY + 8, r.getWidth() - 32, rackHeight - 16});
+            } else if (kind() == "Wave LFO") {
+                const auto wave = WaveLFOParameters::read(settings);
+                const auto bounds = juce::Rectangle<int>(r.getX() + 16, rackY + 8, r.getWidth() - 32, 66);
+                g.setColour(Colour(0xff161020));
+                g.fillRoundedRectangle(bounds.toFloat(), 7.f);
+                const auto duration = std::max(.000001, waveItemDuration.value_or(wave.attack + wave.hold + wave.decay + wave.release + .4));
+                drawEnvelopeGraph(g, bounds.reduced(8), wave.prepared(duration), wave.enabled ? theme::green : theme::secondary);
             } else if (!thresholdMeter) {
                 paintMeters(g);
             }
@@ -680,18 +702,8 @@ class EffectsPanel final : public Component, public DragAndDropContainer, public
         auto r = content();
         const bool eq = kind() == "EQ", graphicEQ = kind() == "EQ - 31 Band",
                    compressor = kind() == "Compressor";
-        rackHeight = compressor ? 308 : 180;
-        auto presetRow = juce::Rectangle<int>(sidebarWidth() + 10, 6, std::max(0, getWidth() - sidebarWidth() - 20), 24);
-        const bool compactPresets = presetRow.getWidth() < 465;
-        redoParameters.setBounds(presetRow.removeFromRight(compactPresets ? 38 : 52));
-        presetRow.removeFromRight(4);
-        undoParameters.setBounds(presetRow.removeFromRight(compactPresets ? 38 : 52));
-        presetRow.removeFromRight(4);
-        defaultPreset.setBounds(presetRow.removeFromRight(compactPresets ? 122 : 140));
-        presetRow.removeFromRight(4);
-        savePreset.setBounds(presetRow.removeFromRight(compactPresets ? 104 : 114));
-        presetRow.removeFromRight(4);
-        presets.setBounds(presetRow);
+        rackHeight = compressor ? 308 : kind() == "Wave LFO" ? 222 : 180;
+        layoutPresetButtons();
         headerY = (eq || graphicEQ || instrumentEditor) ? 52 : std::max(60, (getHeight() - (rackHeight + 124)) / 2);
         rackY = headerY + 118;
         removeEffect.setBounds(r.getRight() - 100, headerY + 42, 100, 22);
@@ -723,10 +735,10 @@ class EffectsPanel final : public Component, public DragAndDropContainer, public
             rooms[i]->setBounds(r.getX() + r.getWidth() / 2 - 105 + i * 70, headerY + 43, 70, 24);
         if (thresholdMeter) thresholdMeter->setBounds(r.getX() + 10, rackY + (rackHeight-200)/2, 123, 200);
         const int count = knobs.size(), columns = compressor ? 2 : std::max(1, count),
-                  left = r.getX() + (compressor ? 145 : 128), usable = r.getRight() - left - 12;
+                  left = r.getX() + (kind() == "Wave LFO" ? 12 : compressor ? 145 : 128), usable = r.getRight() - left - 12;
         for (int i = 0; i < count; ++i) {
-            int row = compressor ? i / columns : 0, col = compressor ? i % columns : i;
-            knobs[i]->setBounds(left + col * usable / columns, rackY + (kind() == "Gate Divisor" ? 23 : 16) + row * 146,
+            const int row = i / columns, col = i % columns;
+            knobs[i]->setBounds(left + col * usable / columns, rackY + (kind() == "Wave LFO" ? 78 : kind() == "Gate Divisor" ? 23 : 16) + row * 146,
                                 usable / columns, 130);
         }
         if (graphicEQ) {
@@ -756,7 +768,7 @@ class EffectsPanel final : public Component, public DragAndDropContainer, public
     var settings;
     uint64 loadedRevision = ~uint64(0);
     ListBox chain;
-    TextButton add, remove, removeEffect, savePreset, defaultPreset, undoParameters, redoParameters;
+    TextButton add, remove, removeEffect, savePreset, defaultPreset, undoParameters, redoParameters, presetActions;
     struct ParameterHistory {
         std::vector<var> undo, redo;
         var last;
@@ -822,6 +834,7 @@ class EffectsPanel final : public Component, public DragAndDropContainer, public
     std::unique_ptr<fxui::DynamicsThresholdMeter> thresholdMeter;
     fxui::EQGraph graph;
     std::unique_ptr<CatStemEditor> stemEditor;
+    std::optional<double> waveItemDuration;
     int selected = -1, headerY = 24, rackY = 140, rackHeight = 180;
     int sidebarWidth() const { return singleEffect.isEmpty() ? 190 : 0; }
     juce::Rectangle<int> content() const { return {sidebarWidth() + 20, 0, std::max(200, getWidth() - sidebarWidth() - 40), getHeight()}; }
@@ -830,7 +843,7 @@ class EffectsPanel final : public Component, public DragAndDropContainer, public
         settings = var();
         if (item) {
             for(const auto &song:session.project().songs) for(const auto &t:song.tracks) for(const auto &clip:t.clips)
-                if(clip.id==track) { trackName=text(clip.name); if(clip.fxJSON) settings=JSON::parse(text(*clip.fxJSON)); }
+                if(clip.id==track) { waveItemDuration=clip.duration; trackName=text(clip.name); if(clip.fxJSON) settings=JSON::parse(text(*clip.fxJSON)); }
         } else if (track.empty()) {
             if (session.project().masterFXJSON)
                 settings = JSON::parse(text(*session.project().masterFXJSON));
@@ -1184,6 +1197,7 @@ class EffectsPanel final : public Component, public DragAndDropContainer, public
             auto value = current();
             if (!get(value, "waveLFO").isObject()) put(value, "waveLFO", WaveLFOParameters{}.json());
             knob("Attack", "attack", 0, 60, .001, " s", 1, "waveLFO");
+            knob("Hold", "hold", 0, 60, .001, " s", 1, "waveLFO");
             knob("Decay", "decay", 0, 60, .001, " s", 1, "waveLFO");
             knob("Sustain", "sustain", 0, 100, .1, " %", 100, "waveLFO");
             knob("Release", "release", 0, 60, .001, " s", 1, "waveLFO");
@@ -1252,6 +1266,7 @@ class EffectsPanel final : public Component, public DragAndDropContainer, public
             [this, property, multiplier, group](double value) {
                 auto s = group.isNotEmpty() ? get(current(), Identifier(group)) : current();
                 put(s, Identifier(property), value / multiplier);
+                if (group == "waveLFO") repaint();
                 session.audio.previewNativeParameters(track,key(),kind(),current(),settings);
             },
             [this] { commit(); }));
@@ -1342,11 +1357,32 @@ class EffectsPanel final : public Component, public DragAndDropContainer, public
         }
         return fxpresets::capture(kind(), value, "Factory");
     }
+    void layoutPresetButtons() {
+        auto presetRow = juce::Rectangle<int>(sidebarWidth() + 10, 6, std::max(0, getWidth() - sidebarWidth() - 20), 24);
+        const bool narrow = presetRow.getWidth() < 365;
+        const bool available = presets.isVisible();
+        presetActions.setVisible(available && narrow);
+        for (auto* b : {&savePreset, &defaultPreset, &undoParameters, &redoParameters}) b->setVisible(available && !narrow);
+        if (narrow) {
+            presetActions.setBounds(presetRow.removeFromRight(42));
+            presets.setBounds(presetRow.withTrimmedRight(4));
+            return;
+        }
+        const bool compactPresets = presetRow.getWidth() < 465;
+        redoParameters.setBounds(presetRow.removeFromRight(compactPresets ? 38 : 52));
+        presetRow.removeFromRight(4);
+        undoParameters.setBounds(presetRow.removeFromRight(compactPresets ? 38 : 52));
+        presetRow.removeFromRight(4);
+        defaultPreset.setBounds(presetRow.removeFromRight(compactPresets ? 122 : 140));
+        presetRow.removeFromRight(4);
+        savePreset.setBounds(presetRow.removeFromRight(compactPresets ? 104 : 114));
+        presetRow.removeFromRight(4);
+        presets.setBounds(presetRow);
+    }
     void refreshPresets(bool reload = false, const var &live = {}) {
         const auto type = kind();
         const bool available = !drummer::count(type) && !fxpresets::fields(type).isEmpty();
-        presets.setVisible(available); savePreset.setVisible(available); defaultPreset.setVisible(available);
-        undoParameters.setVisible(available); redoParameters.setVisible(available);
+        presets.setVisible(available); layoutPresetButtons();
         if (!available) return;
         const auto value = live.isVoid() ? current() : live;
         const auto history = parameterHistory.find(key());

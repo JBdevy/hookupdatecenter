@@ -455,22 +455,29 @@ void AdvancedPanel::select(int index) {
         toggle("Preto e branco", "jaras.video.grayscale", false, 136);
         toggle(String::fromUTF8("Sem áudio"), "jaras.video.noAudio", true, 172);
     } else if (index == 5) {
-        label(localization::translate("Modo ID do Setlist"), 174, 58, 130);
+        label(localization::translate("Setlist mode"), 174, 58, 126);
+        auto &density = choice("Setlist mode", {"Normal", "Compact"}, appearance.setlistRegionHeight() == 24 ? 2 : 1,
+                               300, 59, 134, [this](int id) { save("jaras.setlist.mode", id == 2 ? "compact" : "normal"); });
+        density.setComponentID("jaras.setlist.mode");
+        density.getProperties().set("preserveNames", true);
+        label(localization::translate("Modo ID do Setlist"), 174, 100, 130);
         choice("Setlist ID mode", {"ID da playlist", String::fromUTF8("ID da região")},
-               appearance.regionIDs() ? 2 : 1, 308, 59, 126,
+               appearance.regionIDs() ? 2 : 1, 308, 101, 126,
                [this](int id) { save("jaras.setlist.idMode", id == 2 ? "region" : "playlist"); });
-        label(localization::translate("Fonte do Setlist"), 180, 100, 120);
+        label(localization::translate("Fonte do Setlist"), 180, 140, 120);
         choice("Setlist font",
                {String::fromUTF8("Padrão"), "Negrito", String::fromUTF8("Negrito itálico"),
                 "Inter ExtraBold", "Inter Black", "Archivo Black", "Bungee"},
-               appearance.fontStyle() + 1, 300, 101, 134,
+               appearance.fontStyle() + 1, 300, 141, 134,
                [this](int id) { save("jaras.setlist.fontStyle", id - 1); });
         const StringArray names{String::fromUTF8("Letras das músicas em All Regions"),
                                 String::fromUTF8("Letras das músicas nas playlists"),
                                 String::fromUTF8("Letras das músicas dentro das gavetas"),
                                 "Block text color"};
+        const int firstColourY = 182, rowSpacing = 40;
         for (int i = 0; i < names.size(); ++i)
-            colourRow(names[i], colourKeys[i], colourDefaults[i], 142 + i * 40);
+            colourRow(localization::translate(names[i]), colourKeys[i], colourDefaults[i], firstColourY + i * rowSpacing);
+        contentHeight = firstColourY + names.size() * rowSpacing;
     }
     if (index == 6) {
         const bool compact = presentation == Presentation::keyboard;

@@ -207,6 +207,30 @@ inline void retirementDuringRead(const File& directory, bool slowOpen = false) {
 }
 template <typename Register>
 void registerTests(const File& directory, Register&& test) {
+    test("Prepared onset pages preserve stereo PCM before the disk worker runs", [&] {
+        constexpr int page = 16384;
+        for (const int start : {20 * page, 20 * page + 731}) {
+            Fixture fixture;
+            TimeSliceThread heldWorker("Delayed continuation fill");
+            AudioBuffer<float> onset(2, 3 * page + 149);
+            for (int i = 0; i < onset.getNumSamples(); ++i) {
+                onset.setSample(0, i, Reader::sample(start + i));
+                onset.setSample(1, i, -Reader::sample(start + i));
+            }
+            RealtimeBufferedReader reader(new Reader(nullptr, fixture), heldWorker, 131072, start, &onset);
+            const int firstPage = ((start + page - 1) / page) * page;
+            AudioBuffer<float> samples(2, 512);
+            require(reader.read(&samples, 0, 512, firstPage + page - 128, true, true),
+                    "Two already decoded pages must be readable without another file read");
+            for (int n = 0; n < 512; ++n) {
+                const auto expected = Reader::sample(firstPage + page - 128 + n);
+                require(samples.getSample(0,n) == expected && samples.getSample(1,n) == -expected,
+                        "Prepared stereo samples changed at the page boundary");
+            }
+            require(!reader.read(&samples, 0, 512, firstPage - 1, true, true),
+                    "A partially covered page was published as complete");
+        }
+    });
     test("Realtime PCM pages never wait for a blocked decoder", [&] {
         Fixture fixture; TimeSliceThread worker("Blocked decoder fixture");worker.startThread();
         fixture.holdReadAt=49152;fixture.holdRead=true;

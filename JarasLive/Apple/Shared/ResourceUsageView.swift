@@ -159,15 +159,11 @@ struct TransportResourceMeters: View {
         Group {
             switch placement {
             case .desktop:
-                HStack(spacing: 9) {
-                    VStack(spacing: 2) {
-                        cpuMeter
-                        ramMeter
-                    }
-                    VStack(spacing: 2) {
-                        diskMeter
-                        midiMeter
-                    }
+                HStack(spacing: 8) {
+                    cpuMeter
+                    ramMeter
+                    diskMeter
+                    midiMeter
                 }
             case .remote, .nativeTransport:
                 HStack(spacing: 9) {
@@ -180,7 +176,7 @@ struct TransportResourceMeters: View {
                     midiMeter
                 }
             }
-        }.frame(width: Self.width).contentShape(Rectangle())
+        }.frame(width: placement == .desktop ? 248 : Self.width).contentShape(Rectangle())
             .contextMenu {
                 if placement == .desktop || placement == .nativeTransport {
                     ForEach(TransportPanelColor.allCases, id: \.self) { color in

@@ -1,4 +1,5 @@
 #pragma once
+#include "ADSREnvelopeGraph.h"
 #include "AudioEngine.h"
 #include "CatSynthState.h"
 #include "Appearance.h"
@@ -364,16 +365,7 @@ class CatSynthEditor final : public Component, public DragAndDropContainer, publ
     void drawEnvelope(Graphics &g, juce::Rectangle<int> area, unsigned first) const {
         const auto values = synthState::patch(bank);
         const float attack = values[first], decay = values[first+1], sustain = values[first+2], release = values[first+3];
-        const float total = attack + decay + release + .4f;
-        if (total <= 0) return;
-        const float left = (float)area.getX(), top = (float)area.getY() + 2.f, bottom = (float)area.getBottom()-2.f;
-        const float peak = left + area.getWidth()*attack/total;
-        const float fall = peak + area.getWidth()*decay/total;
-        const float sustainY = bottom-(bottom-top)*sustain;
-        Path path; path.startNewSubPath(left,bottom); path.lineTo(peak,top);
-        path.lineTo(fall,sustainY); path.lineTo(fall+area.getWidth()*.4f/total,sustainY);
-        path.lineTo((float)area.getRight(),bottom);
-        g.setColour(accent.withAlpha(.82f)); g.strokePath(path,PathStrokeType(1.4f));
+        drawADSREnvelope(g, area, attack, decay, sustain, release, accent);
     }
     int presetAt(Point<int> point) const {
         for (size_t i = 0; i < presets.size(); ++i) if (presets[i].getBounds().contains(point)) return int(i);

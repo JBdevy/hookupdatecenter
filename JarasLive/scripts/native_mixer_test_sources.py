@@ -14,6 +14,8 @@ def native_mixer_sources(*, control_marker=True, timeline_rows=True, scroll_stub
         'static let displayHex:', 'static let lightDarkBackgroundHex:', 'static let workspaceToolbar =', 'static let transportControlGroup =')))
     project=Path('Application/Project/ProjectModels.swift').read_text()
     parts.append(project[project.index('public enum TrackHeightGeometry'):project.index('public struct TrackLinkOriginal')])
+    parts.append(project[project.index('public enum TrackKind:'):project.index('public struct TimecodeSettings:')])
+    parts.append(Path('Apple/Shared/WorkspacePreference.swift').read_text())
     parts.append(theme[theme.index('enum JarasInterfaceTheme:'):theme.index('enum JarasTheme {')])
     parts.append(theme[theme.index('extension Color {'):theme.index('#if os(macOS)\nenum DesktopToolbarTone')])
     parts.append(theme[theme.index('private struct ToolbarIconSurfaceKey:'):theme.index('struct StageButtonStyle:')])

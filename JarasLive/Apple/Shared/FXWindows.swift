@@ -312,7 +312,7 @@ private struct WorkspaceToolContent<Content: View>: View {
         bind(show)
         do {
             let target = try FullLyricsTarget(show: show, track: track)
-            present(.fullLyrics, title: "Full lyrics", size: NSSize(width: 620, height: 460)) { panel in
+            present(.fullLyrics, title: TeleprompterTrackButtons.lyricsTitle, size: NSSize(width: 620, height: 460)) { panel in
                 FullLyricsEditor(show: show, target: target, close: { [weak panel] in panel?.close() })
             }
         } catch { show.message = error.localizedDescription }

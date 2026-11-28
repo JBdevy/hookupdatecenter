@@ -13,7 +13,9 @@ struct PreparedStretchKey {
 };
 struct PreparedStretchState {
     signalsmith::stretch::SignalsmithStretch<float> pitch{0};
-    static constexpr int maximumFrames = 16384;
+    // Large device pulls are split by the source renderer. Keep scratch per voice
+    // and history bounded to a single render batch, including inactive transition voices.
+    static constexpr int maximumFrames = 4096;
     std::array<std::array<float, maximumFrames>, 2> output{};
     PreparedStretchKey key;
     uint64_t owner = 0, run = 0;

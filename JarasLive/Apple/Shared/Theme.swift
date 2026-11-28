@@ -638,6 +638,7 @@ struct BPMDetectionProgress: View {
 }
 
 struct JarasProgressBarStyle: ProgressViewStyle {
+    var height: CGFloat = 6
     func makeBody(configuration: Configuration) -> some View {
         GeometryReader { geometry in
             let width = geometry.size.width
@@ -653,7 +654,7 @@ struct JarasProgressBarStyle: ProgressViewStyle {
                     }
                 }
             }.clipShape(Capsule())
-        }.frame(height: 6)
+        }.frame(height: height)
     }
 }
 

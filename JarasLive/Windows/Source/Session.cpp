@@ -2,9 +2,10 @@
 #include "PlaylistOccurrences.h"
 #include "Localization.h"
 #include "Session.h"
+#include "LinkedStemMedia.h"
 #include "MediaSource.h"
 #include "ProjectionSelection.h"
-#include "ItemRender.h"
+#include "RegionBPM.h"
 #include "AudioSeparation.h"
 #include "MultitrackExport.h"
 #include "ItemLayout.h"
@@ -18,6 +19,7 @@
 #include "RecordingProject.h"
 #include "TrackEditing.h"
 #include "TimelineMovementLock.h"
+#include "TimelineRegionLabels.h"
 #include "FXPresets.h"
 #include "FXDefaults.h"
 #include "VST3Catalog.h"
@@ -462,7 +464,7 @@ void Session::loadAsync(const File &file, std::function<void(String, double)> pr
                 for (const auto &clip : track.clips) {
                     const auto source = clip.audioFile ? clip.audioFile : track.audioFile;
                     if (source && !clip.midi && !projectionMedia(clip) && track.role.id != "video" && !jaras::isTeleprompterRole(track.role))
-                        files.insert(ProjectCodec::resolveMedia(prepared->mediaDirectory, source->path, false).getFullPathName());
+                        files.insert(ProjectCodec::mediaInput(prepared->mediaDirectory, source->path).getFullPathName());
                 }
             AudioEngine::PreparationControl control;
             int done = 0; const auto total = (int)files.size();
@@ -717,6 +719,7 @@ void Session::writeSave(ProjectSave &operation) {
         for (const auto &path : paths) if (!legacyNames.count(path)) reserved.insert(text(path).toLowerCase());
         for (const auto &path : paths) {
             auto source = ProjectCodec::resolveMedia(operation.sourceDirectory, path);
+            if (LinkedStemMedia::isReference(text(path)) && !source.isAChildOf(operation.sourceDirectory)) continue;
             std::string relative = path;
             if (const auto legacy = legacyNames.find(path); legacy != legacyNames.end()) {
                 const auto base = "Stems/" + legacy->second, ext = source.getFileExtension();
@@ -727,7 +730,7 @@ void Session::writeSave(ProjectSave &operation) {
                 relative = utf8(candidate);
                 operation.renamedMedia.emplace(path, relative);
             }
-            addAsset(source, ProjectCodec::resolveMedia(targetDir, relative));
+            addAsset(source, ProjectCodec::resolveMedia(targetDir, relative, false));
         }
     }
     int64 totalBytes = 0, finishedBytes = 0;
@@ -873,7 +876,7 @@ void Session::saveAsync(const File &file, std::function<void(String)> completed)
         });
     });
 }
-void Session::cleanTimelineMedia(std::function<void(String)> completed) {
+void Session::cleanTimelineMedia(std::function<void(String, bool)> completed) {
     if (busy || audio.isRecording())
         throw std::runtime_error("Conclua a gravação antes de limpar as mídias.");
     if (!document.existsAsFile())
@@ -886,14 +889,14 @@ void Session::cleanTimelineMedia(std::function<void(String)> completed) {
     const auto activeFiles = audio.activeMediaPaths();
     busy = true;
     importProgress = 0;
-    undoHistory.clear();
-    redoHistory.clear();
     message = String::fromUTF8("Limpando mídias excluídas da timeline…");
     notify();
     const auto weak = std::weak_ptr<int>(alive);
     worker.addJob([this, weak, projectCopy, raw, file, known, activeFiles, completed] {
         String failure;
         int removed = 0;
+        StringArray retained;
+        bool changedOnDisk = false;
         try {
             removed = mediaCleanup::removeDeleted(
                 projectCopy, raw, file, known, [this, weak](double progress) {
@@ -903,22 +906,25 @@ void Session::cleanTimelineMedia(std::function<void(String)> completed) {
                             notify();
                         }
                     });
-                }, activeFiles);
+                }, activeFiles, &retained, &changedOnDisk);
         } catch (const std::exception &e) {
             failure = String::fromUTF8(e.what());
         }
-        MessageManager::callAsync([this, weak, removed, failure, completed] {
+        MessageManager::callAsync([this, weak, removed, retained, changedOnDisk, failure, completed] {
             if (weak.expired())
                 return;
             busy = false;
             importProgress = 0;
-            message = failure.isEmpty()
-                          ? String(removed) +
-                                String::fromUTF8(" arquivo(s) removido(s). Backups antigos excluídos.")
-                          : failure;
+            if (changedOnDisk || (failure.isEmpty() && retained.isEmpty())) { undoHistory.clear(); redoHistory.clear(); }
+            if (failure.isEmpty()) {
+                message = String(removed) + String::fromUTF8(" arquivo(s) removido(s).");
+                if (retained.isEmpty()) message += String::fromUTF8(" Backups antigos excluídos.");
+                else message += " " + String(retained.size()) + String::fromUTF8(" arquivo(s) em uso, mantido(s), incluindo ") +
+                    retained[0] + String::fromUTF8(". Feche quem estiver usando esses arquivos e repita a limpeza.");
+            } else { message = failure; }
             notify();
             if (completed)
-                completed(failure);
+                completed(failure.isEmpty() && !retained.isEmpty() ? message : failure, failure.isNotEmpty());
         });
     });
 }
@@ -1168,6 +1174,7 @@ bool Session::controlAllowedDuringSave(jaras::CommandKind kind) const {
     }
 }
 void Session::command(jaras::CommandKind kind, const ID &target, double value) {
+    if (kind == jaras::CommandKind::clipPitch && !tunerInputAllowed()) return;
     if ((kind == jaras::CommandKind::clipGain && timelineGrid::itemVolumeLocked(project())) ||
         (kind == jaras::CommandKind::clipPan && timelineGrid::itemPanLocked(project())) ||
         (kind == jaras::CommandKind::clipMute && timelineGrid::itemMuteLocked(project()))) return;
@@ -2329,23 +2336,32 @@ void Session::edit(const std::function<void(jaras::Project &)> &change, bool reb
     notify();
 }
 Session::TrackHeightHistory Session::applyTrackHeights(const TrackHeightHistory& entry) {
-    TrackHeightHistory inverse{entry.song, {}};
     for (const auto& grid : project().songs) if (grid.id == entry.song) {
-        for (const auto& row : grid.tracks) {
-            const auto value = entry.scales.find(row.id);
-            if (value == entry.scales.end()) continue;
-            inverse.scales.emplace(row.id, row.heightScale.value_or(1.));
-            core.setTrackHeight(grid.id, row.id, value->second);
-        }
-        break;
+        std::map<ID,double> existing;
+        for (const auto& row : grid.tracks) if (auto it=entry.scales.find(row.id); it!=entry.scales.end()) existing.insert(*it);
+        return {entry.song,core.setTrackHeights(entry.song,existing)};
     }
-    return inverse;
+    return {entry.song,{}};
 }
 void Session::notifyTrackHeight() {
     dirty = true;
     ++revision;
     if (trackHeightChanged) trackHeightChanged();
     else if (changed) changed();
+}
+void Session::setSelectedTrackHeights(const ID& songID, const std::map<ID,double>& scales, bool continueGesture) {
+    if (scales.empty() || busy || jaras::projectSync::readOnly() || !song() || song()->id != songID) return;
+    auto previous=core.setTrackHeights(songID,scales);
+    if (previous.empty()) return;
+    if (continueGesture && !undoHistory.empty() && undoHistory.back().heights && undoHistory.back().heights->song==songID) {
+        auto& original=undoHistory.back().heights->scales;
+        original.insert(previous.begin(),previous.end());
+    } else {
+        undoHistory.emplace_back(TrackHeightHistory{songID,std::move(previous)});
+        if (undoHistory.size()>40) undoHistory.pop_front();
+    }
+    redoHistory.clear();
+    notifyTrackHeight();
 }
 void Session::setTrackHeight(const ID& songID, const std::optional<ID>& track, double scale) {
     const auto* grid = song();
@@ -2370,6 +2386,20 @@ void Session::notifyTrackMixerComponents() {
     ++revision;
     if (trackMixerComponentsChanged) trackMixerComponentsChanged();
     else if (changed) changed();
+}
+void Session::restoreTrackColors(TrackColorHistory& entry) {
+    core.exchangeTrackColors(entry.song, entry.colors);
+    dirty = true;
+}
+void Session::randomizeTrackColors(const std::set<ID>& targets) {
+    if (busy || jaras::projectSync::readOnly() || !song() || targets.empty()) return;
+    TrackColorHistory entry{song()->id, core.randomTrackColors(song()->id, targets)};
+    if (entry.colors.empty()) return;
+    restoreTrackColors(entry);
+    undoHistory.emplace_back(std::move(entry));
+    if (undoHistory.size() > 40) undoHistory.pop_front();
+    redoHistory.clear();
+    notifyMixer();
 }
 void Session::setTrackMixerComponents(const std::map<ID, int> &masks) {
     if (busy || jaras::projectSync::readOnly() || !song() || masks.empty()) return;
@@ -2565,14 +2595,15 @@ String Session::insertLibraryEffect(const ID &destination, const String &identit
         const auto kind = identifier.upToFirstOccurrenceOf(":", false, false);
         if (fxpresets::fields(kind).isEmpty()) return {};
         if (kind == "Wave LFO") {
-            if (!itemTarget) return {};
-            bool eligible = false;
-            for (const auto& row : song()->tracks) {
+            bool eligible = !itemTarget && track != song()->tracks.end();
+            if (itemTarget) for (const auto& row : song()->tracks) {
                 if (!jaras::fixedTrackName(row.role).empty()) continue;
-                for (const auto& clip : row.clips) if (clip.id == destination && !clip.midi && (clip.audioFile || row.audioFile)) eligible = true;
+                for (const auto& clip : row.clips)
+                    if (clip.id == destination && WaveLFOParameters::supports(clip, row)) eligible = true;
             }
             if (!eligible) return {};
-            if (chain.contains(var(kind))) return kind;
+            if (chain.contains(var(kind)) && preset.isVoid()) return kind;
+            chain.removeAllInstancesOf(var(kind));
             put(result, "waveLFO", WaveLFOParameters{}.json());
             fxui::enable(kind, result, true);
             if (!preset.isVoid()) fxpresets::apply(kind, result, preset);
@@ -2714,7 +2745,7 @@ void Session::applyItemPitchHistory(ItemPitchHistory state, bool recordHistory) 
     dirty = true; message.clear(); notifyTiming(false);
 }
 void Session::setItemPitch(const ID &id, double semitones) {
-    if (busy || jaras::projectSync::readOnly()) return;
+    if (!tunerInputAllowed() || busy || jaras::projectSync::readOnly()) return;
     auto state = itemPitchHistory(id); state.semitones = semitones;
     applyItemPitchHistory(std::move(state), true);
 }
@@ -2728,7 +2759,10 @@ void Session::applyPitchHistory(PitchHistory state, bool recordHistory) {
     const auto before = pitchHistory(state.region);
     if (before.semitones == state.semitones && before.tracks == state.tracks && before.groups == state.groups) return;
     core.setRegionPitchState(state.region, state.semitones, std::move(state.tracks), std::move(state.groups));
-    try { audio.refreshRegionPitch(*song(), state.region); }
+    try {
+        if (graphCancellation) prepareLiveGraph();
+        else audio.refreshRegionPitch(*song(), state.region);
+    }
     catch (...) { core.setRegionPitchState(before.region, before.semitones, before.tracks, before.groups); throw; }
     if (recordHistory) {
         undoHistory.emplace_back(before);
@@ -2738,7 +2772,7 @@ void Session::applyPitchHistory(PitchHistory state, bool recordHistory) {
     dirty = true; message.clear(); notifyTiming(false);
 }
 void Session::setRegionPitch(const ID &id, int semitones, std::vector<ID> tracks, std::vector<ID> groups) {
-    if (busy || !song() || jaras::projectSync::readOnly()) return;
+    if (!tunerInputAllowed() || busy || !song() || jaras::projectSync::readOnly()) return;
     applyPitchHistory({id, semitones, std::move(tracks), std::move(groups)}, true);
 }
 double Session::tempoBPM() const {
@@ -2898,7 +2932,24 @@ void Session::undo() {
         return;
     if (audio.isRecording())
         throw std::runtime_error("Pare para desfazer alterações.");
+    if (!tunerInputAllowed() && (undoHistory.back().pitch || undoHistory.back().itemPitch)) return;
     auto value = undoHistory.back();
+    if (value.names) {
+        auto &names = *value.names;
+        core.exchangeTimelineNames(names.song, names.regions, names.markers);
+        redoHistory.emplace_back(std::move(names));
+        undoHistory.pop_back();
+        dirty = true;
+        notify();
+        return;
+    }
+    if (value.colors) {
+        restoreTrackColors(*value.colors);
+        redoHistory.emplace_back(std::move(*value.colors));
+        undoHistory.pop_back();
+        notifyMixer();
+        return;
+    }
     if (value.freeTempo) {
         redoHistory.emplace_back(applyFreeTempo(*value.freeTempo));
         undoHistory.pop_back();
@@ -2944,7 +2995,24 @@ void Session::redo() {
         return;
     if (audio.isRecording())
         throw std::runtime_error("Pare para refazer alterações.");
+    if (!tunerInputAllowed() && (redoHistory.back().pitch || redoHistory.back().itemPitch)) return;
     auto value = redoHistory.back();
+    if (value.names) {
+        auto &names = *value.names;
+        core.exchangeTimelineNames(names.song, names.regions, names.markers);
+        undoHistory.emplace_back(std::move(names));
+        redoHistory.pop_back();
+        dirty = true;
+        notify();
+        return;
+    }
+    if (value.colors) {
+        restoreTrackColors(*value.colors);
+        undoHistory.emplace_back(std::move(*value.colors));
+        redoHistory.pop_back();
+        notifyMixer();
+        return;
+    }
     if (value.freeTempo) {
         undoHistory.emplace_back(applyFreeTempo(*value.freeTempo));
         redoHistory.pop_back();
@@ -3130,6 +3198,45 @@ void Session::exportMix(const File &destination, int bits) {
     job.end = song()->duration;
     request.jobs = {job};
     exportAudio(std::move(request));
+}
+void Session::adjustRegionBPM(ID id,double bpm,std::function<void(String)> done) {
+    if(busy || !song() || !tunerInputAllowed() || jaras::projectSync::readOnly())
+        throw std::runtime_error("Stop playback and wait for the project to finish loading.");
+    if(canPlay && !canPlay())throw std::runtime_error("Valide sua licença para renderizar áudio.");
+    if(!mediaDirectory.isDirectory())throw std::runtime_error("Salve o projeto antes de renderizar itens.");
+    jaras::regionTempo::Plan plan(*song(),regionBPM::region(*song(),id),bpm);
+    auto source=project();captureExternalProjectState(audio,source);
+    const auto songID=song()->id;const auto directory=mediaDirectory;
+    exportCancelled=false;busy=true;importProgress=0;message="Adjust BPM";notify();
+    const auto weak=std::weak_ptr<int>(alive);
+    worker.addJob([this,weak,source=std::move(source),songID,id,directory,plan=std::move(plan),done=std::move(done)]() mutable {
+        auto result=std::make_shared<regionBPM::Rendered>();String error;
+        try {
+            auto song=std::find_if(source.songs.begin(),source.songs.end(),[&](const auto& s){return s.id==songID;});
+            *result=regionBPM::render(source,*song,id,std::move(plan),directory,exportCancelled,waveform,[this,weak](double value,String file){
+                MessageManager::callAsync([this,weak,value,file]{if(!weak.expired() && busy){importProgress=value;message=file;}});
+            });
+        }catch(const std::exception& e){error=String::fromUTF8(e.what());}
+        MessageManager::callAsync([this,weak,result,error,projectID=source.id,songID,done]() mutable {
+            if(weak.expired()){result->discard();return;}
+            busy=false;
+            const bool cancelled=exportCancelled.load();
+            if(error.isEmpty() && (cancelled || project().id!=projectID || !song() || song()->id!=songID || !tunerInputAllowed()))
+                error="Operation cancelled.";
+            if(error.isEmpty())try{
+                const auto cursor=transport().editPosition;
+                edit([&](jaras::Project& p){
+                    auto s=std::find_if(p.songs.begin(),p.songs.end(),[&](const auto& value){return value.id==songID;});
+                    *s=std::move(result->song);
+                    jaras::automationTiming::map(p.masterAutomationJSON,[&](double t){return result->time.position(t);});
+                    if(p.savedCursor && p.savedCursor->songID==songID)p.savedCursor->position=result->time.position(p.savedCursor->position);
+                },true,true);
+                command(jaras::CommandKind::editSeek,{},result->time.position(cursor));
+            }catch(const std::exception& e){error=String::fromUTF8(e.what());}
+            if(error.isNotEmpty())result->discard();
+            message=cancelled?String():error;importProgress=error.isEmpty()?1:0;notify();if(done)done(message);
+        });
+    });
 }
 void Session::renderItems(std::set<ID> ids,bool glue,int midiChannels,std::function<void(std::set<ID>)> completed) {
     if(busy || !song() || ids.empty())return;
@@ -3445,6 +3552,39 @@ void Session::removeClips(const std::set<ID> &ids) {
         next.tracks.emplace(track.id, std::move(clips));
     }
     if (!next.tracks.empty()) applyItemHistory(next, true);
+}
+void Session::renameTimelineLabel(const ID &id, bool region, String name) {
+    const auto *grid = song();
+    name = name.trim();
+    if (!grid || name.isEmpty() || busy || jaras::projectSync::readOnly()) return;
+    TimelineNameHistory names{grid->id, {}, {}};
+    const auto value = utf8(name);
+    auto regionID = region ? std::optional<ID>(id) : std::nullopt;
+    if (!region && grid->markers) {
+        for (const auto &marker : *grid->markers) {
+            if (marker.id != id || !timelineRegionLabels::isNavigationMarker(marker)) continue;
+            regionID = marker.sourceRegionID;
+            if (!regionID) {
+                const auto limited = utf8(name.substring(0, 256));
+                if (marker.name != limited) names.markers[id] = limited;
+            }
+            break;
+        }
+    }
+    if (regionID) {
+        const auto part = std::find_if(grid->parts.begin(), grid->parts.end(), [&](const auto& p) { return p.id == *regionID; });
+        if (part == grid->parts.end()) return;
+        if (part->name != value) names.regions[*regionID] = value;
+        if (grid->markers) for (const auto &linked : *grid->markers)
+            if (linked.sourceRegionID == regionID && linked.name != value) names.markers[linked.id] = value;
+    }
+    if (names.regions.empty() && names.markers.empty()) return;
+    core.exchangeTimelineNames(names.song, names.regions, names.markers);
+    undoHistory.emplace_back(std::move(names));
+    if (undoHistory.size() > 40) undoHistory.pop_front();
+    redoHistory.clear();
+    dirty = true;
+    notify();
 }
 void Session::addMarker(String name, double position, bool section) {
     auto id = song() ? song()->id : ID{};

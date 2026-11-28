@@ -384,7 +384,7 @@
 "Review stems" = "Review stems";
 "Repeated names were found that may identify providers. Select suggestions or type names to remove." = "Repeated names were found that may identify providers. Select suggestions or type names to remove.";
 "Names to remove, separated by commas" = "Names to remove, separated by commas";
-"Original folders remain unchanged. Audio is copied beside the .jl project." = "Original folders remain unchanged. Audio is copied beside the .jl project.";
+"Next, choose whether to copy the audio into the project or use the source folder." = "Next, choose whether to copy the audio into the project or use the source folder.";
 "Back" = "Back";
 "Create / Add" = "Create / Add";
 "Opening project…" = "Opening project…";
@@ -901,6 +901,7 @@
 "Playlist song text" = "Playlist song text";
 "Unified drawer song text" = "Songs inside unified regions";
 
+"Setlist mode" = "Setlist mode";
 "Setlist font" = "Setlist font";
 
 "Regular" = "Regular";
@@ -2384,7 +2385,7 @@
 
 "Opening backup…" = "Opening backup…";
 
-"Full lyrics" = "Full lyrics";
+"Full lyrics" = "Add Lyrics";
 
 "Create items" = "Create items";
 
@@ -2400,7 +2401,7 @@
 
 "The text track is no longer available." = "The text track is no longer available.";
 
-"The song changed. Open Full lyrics again." = "The song changed. Open Full lyrics again.";
+"The song changed. Open Add Lyrics again." = "The song changed. Open Add Lyrics again.";
 
 "Could not create the lyrics items." = "Could not create the lyrics items.";
 
@@ -2762,3 +2763,14 @@
 "Enable Remote" = "Enable Remote";
 "Remote device name" = "Remote device name";
 "Choose the project folder in Home before saving this session." = "Choose the project folder in Home before saving this session.";
+"Where should CatLive use the media files?" = "Where should CatLive use the media files?";
+"Copy to project" = "Copy to project";
+"Use source folder" = "Use source folder";
+
+"Adjust BPM" = "Adjust BPM";
+"Render all audio items in this region at a fixed BPM? The following songs will move together." = "Render all audio items in this region at a fixed BPM? The following songs will move together.";
+"Target BPM" = "Target BPM";
+"Nenhum marcador de tempo encontrado." = "No tempo marker found.";
+"A região precisa ter pelo menos dois BPMs diferentes." = "The region needs at least two different tempos.";
+"The project changed during Adjust BPM." = "The project changed during Adjust BPM.";
+"Stop playback and wait for the project to finish loading." = "Stop playback and wait for the project to finish loading.";

@@ -81,6 +81,48 @@ inline float expected(const AudioBuffer<float> &source,double rate,const jaras::
 }
 template <typename Test> void registerTests(const File &directory,Test &test) {
 
+    test("Windows Tuner returns to original stereo PCM during playback without reopening", [&] {
+        constexpr int rate=48000, block=256;
+        auto pcm=samples(2,rate*4);
+        for(int n=0;n<pcm.getNumSamples();++n) {
+            pcm.setSample(0,n,float(.4*std::sin(2*MathConstants<double>::pi*440.*n/rate)));
+            pcm.setSample(1,n,float(.3*std::sin(2*MathConstants<double>::pi*660.*n/rate)));
+        }
+        jaras::Song song;song.id=uuid();song.duration=4;
+        jaras::Part part;part.id=uuid();part.startTime=0;part.endTime=4; song.parts.push_back(part);
+        jaras::Track track;track.id=uuid();track.role.id="other";
+        jaras::AudioClip clip;clip.id=uuid();clip.duration=4;clip.regionOwnerID=part.id;
+        track.clips.push_back(clip);song.tracks.push_back(track);
+        for(bool pooled:{false,true}) {
+            auto owner=pooled ? std::make_shared<int>(1) : std::shared_ptr<int>{};
+            Reader reader(pcm,rate);
+            AudioBuffer<float> scratch(2,65536), output(2,block);
+            int cursor=0;
+            song.parts[0].pitchSemitones=3;
+            ClipAudio processor(song,track,clip,rate,true,nullptr,owner);
+            for(int pitch:{3,0,-4,0}) {
+                song.parts[0].pitchSemitones=pitch;
+                ClipAudio mapping(song,track,clip,rate,false,nullptr,owner);
+                processor.adoptTiming(mapping);
+                double maxDifference=0;int crossings=0;float last=0;
+                for(int n=0;n<96;++n,cursor+=block) {
+                    require(processor.render(reader,scratch,output,0,double(cursor)/rate,block),"Tuner sample read failed");
+                    for(int i=0;i<block;++i) {
+                        if(n>=32 && last<=0 && output.getSample(0,i)>0)++crossings;
+                        last=output.getSample(0,i);
+                        for(int ch=0;ch<2;++ch) maxDifference=std::max(maxDifference,
+                            std::abs(double(output.getSample(ch,i))-pcm.getSample(ch,cursor+i)));
+                    }
+                }
+                if(!pitch) require(maxDifference<.000001, "At zero semitones both channels must immediately match the dry PCM, max error "+String(maxDifference,6));
+                else {
+                    const double frequency=double(crossings)*rate/(64*block);
+                    require(std::abs(frequency-440*std::exp2(pitch/12.))<5,"Tuner did not produce the selected pitch");
+                }
+            }
+        }
+    });
+
     test("Item rate reset preserves project codec references and renders original PCM after tempo edits",[&] {
         jaras::Project project;project.id=uuid();project.name="Rate reset";
         jaras::Song song;song.id=uuid();song.duration=8;song.timeSettings=jaras::ProjectTimeSettings{};
@@ -397,18 +439,30 @@ template <typename Test> void registerTests(const File &directory,Test &test) {
         clip.audioFile=jaras::AudioFile{"source.wav",{}};clip.loopStart=0;clip.loopLength=.125;
         clip.sourceOffset=.001;clip.fadeIn=.03;clip.fadeOut=.04;clip.gain=.8;clip.normalizationGain=.75;
         clip.phaseInverted=true;clip.pan=-.3;track.clips={clip};song.tracks={track};project.songs={song};
-        for (bool waveEnabled : {false, true}) {
-            if (waveEnabled) {
+        enum class Scope { none, item, track, both, disabledItem, bypassedItem };
+        for (const auto scope : {Scope::none, Scope::item, Scope::track, Scope::both, Scope::disabledItem, Scope::bypassedItem}) {
+            auto& row = song.tracks[0];
+            auto& item = row.clips[0];
+            row.fxJSON.reset(); item.fxJSON.reset(); item.fxBypassed = scope == Scope::bypassedItem;
+            const bool hasTrack = scope != Scope::none && scope != Scope::item;
+            const bool waveEnabled = scope != Scope::none && scope != Scope::disabledItem;
+            const double sustain = scope == Scope::item || scope == Scope::both ? .25 : .5;
+            if (scope != Scope::none) {
                 auto settings = fxschema::defaults();
                 put(settings, "inserted", Array<var>{"Wave LFO"});
                 put(settings, "waveLFOEnabled", true);
                 auto wave = object();
-                put(wave, "attack", .02); put(wave, "decay", .04);
+                put(wave, "attack", .02); put(wave, "hold", .01); put(wave, "decay", .04);
                 put(wave, "sustain", .5); put(wave, "release", .03);
                 put(settings, "waveLFO", wave);
-                song.tracks[0].clips[0].fxJSON = utf8(JSON::toString(settings));
-                project.songs[0] = song;
+                if (hasTrack) row.fxJSON = utf8(JSON::toString(settings));
+                if (scope != Scope::track) {
+                    put(wave, "sustain", .25); put(settings, "waveLFO", wave);
+                    put(settings, "waveLFOEnabled", scope != Scope::disabledItem);
+                    item.fxJSON = utf8(JSON::toString(settings));
+                }
             }
+            project.songs[0] = song;
             auto engine=std::make_unique<AudioEngine>(48000,true);
             engine->prepareSong(song,folder,{},&project);engine->setMixer(project,song);engine->setOffline(true);
             AudioEngine::State state;state.playing=true;engine->transport(state);
@@ -421,9 +475,10 @@ template <typename Test> void registerTests(const File &directory,Test &test) {
                     double waveGain = 1;
                     if (waveEnabled && local >= 0 && local < clip.duration) {
                         if (local < .02) waveGain = local / .02;
-                        else if (local < .06) waveGain = 1 - .5 * (local - .02) / .04;
-                        else if (local < .17) waveGain = .5;
-                        else waveGain = .5 * (.2 - local) / .03;
+                        else if (local < .03) waveGain = 1;
+                        else if (local < .07) waveGain = 1 - (1 - sustain) * (local - .03) / .04;
+                        else if (local < .17) waveGain = sustain;
+                        else waveGain = sustain * (.2 - local) / .03;
                     }
                     const auto value=local<0||local>=clip.duration?0:expected(pcm,48000,clip,local,ch)*gain*waveGain;
                     require(std::abs(output.getSample(ch,n)-value)<.000003,

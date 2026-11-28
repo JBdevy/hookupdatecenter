@@ -371,6 +371,7 @@ setInterval(()=>{if(!current)return;const s=current.settings;
     @Published private(set) var qrCode: CGImage?
     private var server: TeleprompterHTTPServer?
     private var listeningPort: UInt16?
+    private var networkUpdate: Task<Void, Never>?
     private var refresh: (() -> Void)?
     private var directory: URL?
     private var payload = TeleprompterRemotePayload()
@@ -384,6 +385,7 @@ setInterval(()=>{if(!current)return;const s=current.settings;
     func setEnabled(_ value: Bool) {
         guard value != enabled else { return }
         if !value {
+            networkUpdate?.cancel(); networkUpdate = nil
             enabled = false; server?.stop(); server = nil; listeningPort = nil
             heartbeat?.invalidate(); heartbeat = nil; link = ""; qrCode = nil; message = ""
             payload = TeleprompterRemotePayload(); mediaURL = nil
@@ -411,12 +413,19 @@ setInterval(()=>{if(!current)return;const s=current.settings;
         refresh?(); publish()
     }
     private func updateNetworkLink() {
-        guard enabled, let port = listeningPort else { return }
-        let address = Self.networkAddress()
-        let next = address.map { "http://\($0):\(port)" } ?? ""
-        if link != next { link = next; qrCode = next.isEmpty ? nil : Self.qr(next) }
-        let nextMessage = address == nil ? "Connect to a local network to use TP Remote." : ""
-        if message != nextMessage { message = nextMessage }
+        guard enabled, let port = listeningPort, networkUpdate == nil else { return }
+        let previous = link
+        networkUpdate = Task { [weak self] in
+            let (link, image) = await Task.detached(priority: .utility) {
+                let next = Self.networkAddress().map { "http://\($0):\(port)" } ?? ""
+                return (next, next.isEmpty || next == previous ? nil : Self.qr(next))
+            }.value
+            guard !Task.isCancelled, let self else { return }
+            self.networkUpdate = nil
+            if self.link != link { self.link = link; self.qrCode = image }
+            let message = link.isEmpty ? "Connect to a local network to use TP Remote." : ""
+            if self.message != message { self.message = message }
+        }
     }
     func clear() { payload = TeleprompterRemotePayload(); mediaURL = nil; publish() }
     func update(text: String, chords: String, song: String, queued: String, progress: Double, preview: Bool, blocks: [TeleprompterRemoteBlock], snapshot: ShowSnapshot) {
@@ -436,7 +445,7 @@ setInterval(()=>{if(!current)return;const s=current.settings;
                return UTType(filenameExtension: (path as NSString).pathExtension)?.conforms(to: .image) == true
            }),
            let file = clip.audioFile {
-            mediaURL = directory.appendingPathComponent(file.path)
+            mediaURL = directory.projectMedia(file.path)
             payload.mediaID = clip.id.uuidString
             payload.mediaKind = "image"
         }
@@ -469,13 +478,14 @@ setInterval(()=>{if(!current)return;const s=current.settings;
         lastPublish = ProcessInfo.processInfo.systemUptime
         server?.publish(payload, mediaURL: mediaURL, image: noticeImageData)
     }
-    private static func qr(_ link: String) -> CGImage? {
+    private nonisolated static let qrContext = CIContext(options: [.cacheIntermediates: false])
+    private nonisolated static func qr(_ link: String) -> CGImage? {
         guard let filter = CIFilter(name: "CIQRCodeGenerator") else { return nil }
         filter.setValue(Data(link.utf8), forKey: "inputMessage"); filter.setValue("M", forKey: "inputCorrectionLevel")
-        guard let output = filter.outputImage, let bitmap = CIContext().createCGImage(output, from: output.extent) else { return nil }
+        guard let output = filter.outputImage, let bitmap = qrContext.createCGImage(output, from: output.extent) else { return nil }
         return bitmap
     }
-    private static func networkAddress() -> String? {
+    private nonisolated static func networkAddress() -> String? {
         var addresses: UnsafeMutablePointer<ifaddrs>?
         guard getifaddrs(&addresses) == 0 else { return nil }
         defer { freeifaddrs(addresses) }

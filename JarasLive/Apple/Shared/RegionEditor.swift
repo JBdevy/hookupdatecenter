@@ -479,21 +479,24 @@ struct RegionRightClick: NSViewRepresentable {
     let edit: () -> Void
     var unify: (() -> Void)? = nil
     var detectBPM: (() -> Void)? = nil
+    var adjustBPM: (() -> Void)? = nil
     var disunify: (() -> Void)? = nil
     var delete: (() -> Void)? = nil
     var exportMultitrack: (() -> Void)? = nil
     var exportAudio: (() -> Void)? = nil
     var resizable = true
+    var duration: (() -> TimeInterval)? = nil
     var seek: (() -> Void)? = nil
     var select: ((NSEvent.ModifierFlags) -> Void)? = nil
     var cancelDrag: (() -> Void)? = nil
     var drag: (CGFloat, Bool, Int) -> Void = { _, _, _ in }
     func makeNSView(context: Context) -> RegionRightClickView { RegionRightClickView() }
-    func updateNSView(_ view: RegionRightClickView, context: Context) { view.edit = edit; view.detectBPM = detectBPM; view.unify = unify; view.disunify = disunify; view.delete = delete; view.exportAudio = exportAudio; view.exportMultitrack = exportMultitrack; view.drag = drag; view.resizable = resizable; view.seek = seek; view.select = select; view.cancelDrag = cancelDrag }
+    func updateNSView(_ view: RegionRightClickView, context: Context) { view.edit = edit; view.detectBPM = detectBPM; view.adjustBPM = adjustBPM; view.unify = unify; view.disunify = disunify; view.delete = delete; view.exportAudio = exportAudio; view.exportMultitrack = exportMultitrack; view.drag = drag; view.resizable = resizable; view.duration = duration; view.seek = seek; view.select = select; view.cancelDrag = cancelDrag }
 }
 final class RegionRightClickView: NSView, NativeTimelineInputObserver {
     var edit: (() -> Void)?
     var detectBPM: (() -> Void)?
+    var adjustBPM: (() -> Void)?
     var unify: (() -> Void)?
     var disunify: (() -> Void)?
     var delete: (() -> Void)?
@@ -503,9 +506,41 @@ final class RegionRightClickView: NSView, NativeTimelineInputObserver {
     var seek: (() -> Void)?
     var select: ((NSEvent.ModifierFlags) -> Void)?
     var cancelDrag: (() -> Void)?
+    var duration: (() -> TimeInterval)?
+    var bandPadding: CGFloat = 0
+    var regionBandBounds: CGRect {
+        regionRect.insetBy(dx: bandPadding, dy: bandPadding > 0 ? 4 : 0).intersection(projectedInputBounds)
+    }
+    private var durationHover: Timer?
+    private var durationPoint: NSPoint?
+    private var durationVisible = false
+    private func hideDuration() {
+        durationHover?.invalidate(); durationHover = nil
+        durationPoint = nil
+        if durationVisible { DesktopIconTooltipWindow.shared.hide(owner: self); durationVisible = false }
+    }
+    private func showDuration(at point: NSPoint) {
+        guard let window, inputAvailable, let seconds = duration?(), seconds.isFinite else { hideDuration(); return }
+        durationHover?.invalidate(); durationHover = nil
+        durationPoint = point; durationVisible = true
+        DesktopIconTooltipWindow.shared.present(RegionDurationTooltip.text(seconds), owner: self, at: window.convertPoint(toScreen: point))
+    }
+    private func hoverDuration(at point: NSPoint) {
+        guard duration != nil, let window, regionBandBounds.intersection(visibleRect).contains(point) else { hideDuration(); return }
+        let location = convert(point, to: nil)
+        guard durationPoint != location else { return }
+        hideDuration()
+        durationPoint = location
+        let timer = Timer(timeInterval: 1, repeats: false) { [weak self, weak window] _ in
+            guard let self, window?.isKeyWindow == true, self.durationPoint == location else { return }
+            self.showDuration(at: location)
+        }
+        durationHover = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
     var resizable = true { didSet {
         if resizable != oldValue {
-            if !resizable { hoverEdge = 0; if edge != 0 { startX = nil; activeDrag = nil; edge = 0 } }
+            if !resizable { hoverEdge = 0; if edge != 0 { timelineInputGateChanged(blocked: true); edge = 0 } }
             if !usesStableNativeFrame { window?.invalidateCursorRects(for: self) }
         }
     } }
@@ -530,6 +565,7 @@ final class RegionRightClickView: NSView, NativeTimelineInputObserver {
     }
     func timelineInputGateChanged(blocked: Bool) {
         if blocked {
+            hideDuration()
             let cancellation = didDrag ? cancelDrag : nil
             startX = nil; activeDrag = nil; activeSeek = nil; activeDelete = nil; didDrag = false
             cancellation?()
@@ -565,6 +601,7 @@ final class RegionRightClickView: NSView, NativeTimelineInputObserver {
         nativeGrip.isHidden = true
         nativeGrip.path = nil
         edit = nil; detectBPM = nil; unify = nil; disunify = nil; delete = nil; exportAudio = nil; exportMultitrack = nil
+        hideDuration(); duration = nil
         drag = nil; seek = nil; select = nil; cancelDrag = nil
         guard !presentingProjectedMenu else { return false }
         timelineInputGateChanged(blocked: true)
@@ -597,7 +634,8 @@ final class RegionRightClickView: NSView, NativeTimelineInputObserver {
         guard startX == nil || point == nil else { return }
         if let point, inputAvailable, projectedInputBounds.intersection(visibleRect).contains(point) {
             hoverEdge = edge(at: point.x)
-        } else { hoverEdge = 0 }
+            hoverDuration(at: point)
+        } else { hoverEdge = 0; hideDuration() }
         let cursor = hoverEdge != 0 ? NSCursor.resizeLeftRight : NSCursor.arrow
         if NSCursor.current !== cursor { cursor.set() }
     }
@@ -683,7 +721,7 @@ final class RegionRightClickView: NSView, NativeTimelineInputObserver {
         updateProjectedPointer(at: convert(event.locationInWindow, from: nil))
     }
     override func mouseExited(with event: NSEvent) {
-        if startX == nil { hoverEdge = 0; NSCursor.arrow.set() }
+        if startX == nil { updateProjectedPointer(at: nil) }
     }
     override func draw(_ dirtyRect: NSRect) {
         guard let gripRect else { return }
@@ -705,6 +743,7 @@ final class RegionRightClickView: NSView, NativeTimelineInputObserver {
         register(NSRect(x: regionRect.maxX - edgeWidth, y: regionRect.minY, width: edgeWidth, height: regionRect.height), cursor: .resizeLeftRight)
     }
     override func rightMouseDown(with event: NSEvent) {
+        hideDuration()
         let reserved = usesStableNativeFrame
         if reserved { presentingProjectedMenu = true }
         defer {
@@ -723,6 +762,7 @@ final class RegionRightClickView: NSView, NativeTimelineInputObserver {
         }
         add("Editar região", #selector(editSelected))
         if detectBPM != nil { add("Detect BPM…", #selector(detectSelected)) }
+        if adjustBPM != nil { add("Adjust BPM", #selector(adjustSelected)) }
         if unify != nil { add("Unify", #selector(unifySelected)) }
         if disunify != nil { add("Disunify", #selector(disunifySelected)) }
         if exportMultitrack != nil { add("Export Multitrack", #selector(exportMultitrackSelected)) }
@@ -732,6 +772,7 @@ final class RegionRightClickView: NSView, NativeTimelineInputObserver {
     }
     @objc private func exportMultitrackSelected() { exportMultitrack?() }
     @objc private func exportAudioSelected() { exportAudio?() }
+    @objc private func adjustSelected() { adjustBPM?() }
     @objc private func detectSelected() { detectBPM?() }
     @objc private func deleteSelected() { delete?() }
     @objc private func unifySelected() { unify?() }
@@ -743,12 +784,14 @@ final class RegionRightClickView: NSView, NativeTimelineInputObserver {
         // click. The same press can begin a free region move or edge resize.
         if event.modifierFlags.contains(.control) { startX = nil; activeDrag = nil; activeSeek = nil; activeDelete = nil; rightMouseDown(with: event) }
         else {
+            hideDuration()
             startX = event.locationInWindow.x
             startY = event.locationInWindow.y
             let x = convert(event.locationInWindow, from: nil).x
             let deleting = event.modifierFlags.contains(.option)
             edge = deleting ? 0 : edge(at: x)
             hoverEdge = edge
+            if edge != 0 { showDuration(at: event.locationInWindow) }
             activeDelete = deleting ? delete : nil
             activeDrag = deleting ? nil : drag
             if deleting { activeSeek = nil }
@@ -762,7 +805,10 @@ final class RegionRightClickView: NSView, NativeTimelineInputObserver {
         if let startX {
             let delta = (event.locationInWindow.x - startX) / max(0.01, abs(convert(NSSize(width: 1, height: 1), to: nil).width))
             if abs(delta) >= (edge == 0 ? 3 : 0.5) || abs(event.locationInWindow.y - startY) >= 3 { didDrag = true }
-            if didDrag { activeDrag?(delta, false, edge) }
+            if didDrag {
+                activeDrag?(delta, false, edge)
+                if edge != 0 { showDuration(at: event.locationInWindow) }
+            }
         }
     }
     override func mouseUp(with event: NSEvent) {

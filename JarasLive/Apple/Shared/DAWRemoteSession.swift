@@ -153,7 +153,7 @@ enum DAWRemoteSnapshotComparison {
         if candidate.position != current.position || candidate.subPlayPosition != current.subPlayPosition ||
             candidate.editPosition != current.editPosition || candidate.playing != current.playing ||
             candidate.paused != current.paused || candidate.transportPreparing != current.transportPreparing ||
-            candidate.subPlaying != current.subPlaying ||
+            candidate.subPlaying != current.subPlaying || candidate.tunerLocked != current.tunerLocked ||
             candidate.loop != current.loop || candidate.currentRegion != current.currentRegion ||
             candidate.queuedRegion != current.queuedRegion || candidate.focusedRegion != current.focusedRegion ||
             candidate.currentPlaylistEntryId != current.currentPlaylistEntryId || candidate.queuedPlaylistEntryId != current.queuedPlaylistEntryId ||
@@ -1314,6 +1314,7 @@ final class DAWRemoteSession: NSObject, ObservableObject {
         channel.start()
     }
     func send(_ command: DAWRemoteCommand) {
+        if command.action == .pitch, remoteState?.tunerInputAllowed != true || confirmedState?.tunerInputAllowed == false || predictedTransportRunning == true { return }
         if isLocalWorkspace {
             guard enabled, command.valid, command.project == remoteState?.project else { return }
             if command.action == .remotePanel { requestedPanel = Int(command.value) }

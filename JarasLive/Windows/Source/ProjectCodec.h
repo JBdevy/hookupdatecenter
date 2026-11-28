@@ -12,6 +12,7 @@ class ProjectCodec {
     static void saveWithBackup(const File &, const var &, bool savingCurrentDocument = false);
     static MemoryBlock seal(const String &);
     static String unseal(const MemoryBlock &);
+    static File mediaInput(const File &directory, const std::string &relative);
     static File resolveMedia(const File &directory, const std::string &relative, bool resolveExisting = true);
   private:
     static void writeDocument(const File &, const var &, bool savingCurrentDocument, bool backup);

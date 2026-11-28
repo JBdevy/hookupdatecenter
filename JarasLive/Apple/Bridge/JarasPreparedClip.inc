@@ -4,12 +4,7 @@
 // Keep history ready for live rate/pitch edits. Changed spectra use Apple's
 // vectorized FFT on both Intel and ARM. The portable implementation remains
 // available to Windows; the CatLive warmup optimizations below are opt-in.
-#define SIGNALSMITH_USE_ACCELERATE 1
-#define CATLIVE_SIGNALSMITH_NEUTRAL_WARMUP 1
-#define CATLIVE_SIGNALSMITH_BATCH_OUTPUT 1
-#define CATLIVE_SIGNALSMITH_NEUTRAL_SYNTHESIS 1
-#define CATLIVE_SIGNALSMITH_STATE_COPY 1
-#include "../../Windows/ThirdParty/Signalsmith/signalsmith-stretch.h"
+#include "../../Core/Audio/CatLiveStretch.hpp"
 #include <thread>
 #include <mutex>
 #include <condition_variable>

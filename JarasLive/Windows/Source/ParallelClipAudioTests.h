@@ -20,9 +20,13 @@ inline void run(const File &directory) {
         jaras::AudioClip clip;clip.id=uuid();clip.duration=5;clip.startTime=i*.001;clip.sourceOffset=.02;
         clip.playbackRate=1.17;clip.audioFile=jaras::AudioFile{name.toStdString(),{}};track.clips={clip};song.tracks.push_back(track);
     }
-    // One duplicated source must remain safe while independent sources run concurrently.
-    auto duplicate=song.tracks.front();duplicate.id=uuid();duplicate.clips[0].id=uuid();duplicate.clips[0].gain=.5;
-    song.tracks.push_back(duplicate);
+    // Every file repeats later in the arrangement, including an overlapping
+    // copy with distinct settings. Shared readers must keep serial PCM order.
+    for (size_t i=0, originals=song.tracks.size(); i<originals; ++i) {
+        auto duplicate=song.tracks[i];duplicate.id=uuid();duplicate.clips[0].id=uuid();
+        duplicate.clips[0].gain=.5;duplicate.clips[0].startTime+=i==0 ? .001 : 3.;
+        song.tracks.push_back(std::move(duplicate));
+    }
     const auto previous=SystemStats::getEnvironmentVariable("CATLIVE_CLIP_WORKERS",{});
     struct Restore {String value;~Restore(){SetEnvironmentVariableW(L"CATLIVE_CLIP_WORKERS",value.isEmpty()?nullptr:value.toWideCharPointer());}} restore{previous};
     auto serial=std::make_unique<AudioEngine>(),parallel=std::make_unique<AudioEngine>();

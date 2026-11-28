@@ -140,6 +140,15 @@ for precise in [false, true] {
     precondition(abs(mixerHeightRouting.last!.0 - heights.last!) < 1e-12,
                  "animation routing must not change the height sensitivity")
 }
+var selectedWheelPackets = 0
+let selectedBefore = (heights.count, mixerHeightRouting.count)
+event.modifiers = .option; event.delta = 2; event.gesturePhase = .began; event.momentum = []
+wheel.changeSelectedHeight = { _ in selectedWheelPackets += 1; return true }
+mixerHeightInput.changeSelected = { _ in selectedWheelPackets += 1; return true }
+precondition(wheel.handleWheelEvent(event) && mixerHeightInput.handle(event))
+precondition(selectedWheelPackets == 2 && heights.count == selectedBefore.0 && mixerHeightRouting.count == selectedBefore.1)
+wheel.changeSelectedHeight = nil; mixerHeightInput.changeSelected = nil
+event.modifiers = .command
 let beforeHeightMomentum = (heights.count, mixerHeightRouting.count)
 event.momentum = .changed
 _ = wheel.handleWheelEvent(event); _ = mixerHeightInput.handle(event)
@@ -960,7 +969,9 @@ precondition(boundedScroll.contentView.bounds.minX == 0 && boundedScroll.content
 print("GRID_SCROLL_BOUNDED_ON_BOTH_AXES_OK")
 print("NATIVE_MODAL_GATE_IMMEDIATE_ZOOM_FRAME_COALESCING_REVERSAL_ZOOM_INERTIA_AND_CMD_CTRL_TRACK_HEIGHT_OK")
 
-precondition(TimelineZoomLimits.minimum > 0 && TimelineZoomLimits.minimum < 0.02 && TimelineZoomLimits.maximum > 16, "distance stops at the chosen overview while proximity remains available")
+precondition(abs(TimelineZoomLimits.minimum - 0.03651216238088901) < 1e-12 &&
+             TimelineZoomLimits.minimumZoom(viewportWidth: 1024) == TimelineZoomLimits.minimum &&
+             TimelineZoomLimits.maximum > 16, "distance stops at the chosen overview while proximity remains available")
 let fullRange = log(TimelineZoomLimits.maximum / TimelineZoomLimits.minimum)
 for sign in [-1.0, 1.0] {
     var response = TimelineZoomResponse(), movement = 0.0, amount = 0.0

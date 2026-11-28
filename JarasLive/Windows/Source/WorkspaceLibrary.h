@@ -1273,7 +1273,7 @@ class WorkspaceLibrary final : public Component, public FileDragAndDropTarget, p
         return true;
     }
     void navigateTimeline(const Row &row, bool deferred) {
-        if (!canNavigateTimeline()) return;
+        if (!session.song() || session.busy || jaras::projectSync::readOnly() || !selectTimelineEntry) return;
         const auto songID = session.song()->id;
         const auto projectID = session.project().id;
         if (store->timelineSong != songID) {
@@ -1286,8 +1286,13 @@ class WorkspaceLibrary final : public Component, public FileDragAndDropTarget, p
         contents.repaint();
         if (timelineSelectionChanged) timelineSelectionChanged();
         const auto version = ++timelineNavigationVersion;
+        if (!canNavigateTimeline()) return;
         if (!deferred) {
-            selectTimelineEntry(utf8(row.key), region, double(row.payload));
+            MessageManager::callAsync([safe = SafePointer<WorkspaceLibrary>(this), projectID, songID, version, row, region] {
+                if (safe && safe->timelineNavigationVersion == version && safe->canNavigateTimeline() &&
+                    safe->session.project().id == projectID && safe->session.song()->id == songID)
+                    safe->selectTimelineEntry(utf8(row.key), region, double(row.payload));
+            });
             return;
         }
         finishTimelineNavigation(projectID, songID, version, row, region);
@@ -1348,22 +1353,7 @@ class WorkspaceLibrary final : public Component, public FileDragAndDropTarget, p
                 if (!safe || !safe->session.song() || safe->session.project().id != project ||
                     safe->session.song()->id != songID || value == next) return;
                 try {
-                    safe->session.edit([&](auto &draft) {
-                        for (auto &song : draft.songs) if (song.id == songID) {
-                            jaras::TimelineMarker *selected = nullptr;
-                            if (!region && song.markers)
-                                for (auto &marker : *song.markers)
-                                    if (marker.id == id && timelineRegionLabels::isNavigationMarker(marker)) { selected = &marker; break; }
-                            const auto regionID = region ? std::optional<ID>{id} : selected ? selected->sourceRegionID : std::nullopt;
-                            const auto source = std::find_if(song.parts.begin(), song.parts.end(),
-                                [&](const auto &part) { return part.id == regionID; });
-                            if (source != song.parts.end()) {
-                                source->name = utf8(next);
-                                if (song.markers) for (auto &marker : *song.markers)
-                                    if (marker.sourceRegionID == source->id) marker.name = utf8(next);
-                            } else if (selected) selected->name = utf8(next.substring(0, 256));
-                        }
-                    }, false);
+                    safe->session.renameTimelineLabel(id, region, next);
                 } catch (const std::exception &error) { safe->warn(String::fromUTF8(error.what())); }
             });
     }

@@ -67,6 +67,15 @@ let snapshot = row.makeMenu()
 row.patch = { replacementPatch += 1 }; row.fx = { replacementFX += 1 }
 snapshot.actions[0].invoke(); snapshot.actions[1].invoke()
 precondition(originalPatch == 1 && originalFX == 1 && replacementPatch == 0 && replacementFX == 0, "a menu retains the handlers of the track that opened it")
+var colorTargets = [UUID]()
+row.randomColor = { colorTargets.append(originalTrack) }
+let colorMenu = row.makeMenu()
+row.randomColor = { colorTargets.append(newTrack) }
+let colorIndex = colorMenu.menu.indexOfItem(withTitle: JarasLocalization.string("Set Random Color"))
+precondition(colorIndex >= 0)
+withExtendedLifetime(colorMenu.actions) { colorMenu.menu.performActionForItem(at: colorIndex) }
+precondition(colorTargets == [originalTrack], "Random color must retain the targets that opened the menu")
+row.randomColor = nil
 var originalDuplicates = 0, recycledDuplicates = 0
 row.duplicateTracks = { originalDuplicates += 1 }; row.deleteTrackCount = 2
 let duplicateMenu = row.makeMenu()
@@ -162,7 +171,7 @@ heightInput.flushHeightPreview()
 precondition(heightPreviews.last == 240.0 / 64)
 heightInput.mouseDragged(with: heightPointer(.leftMouseDragged, 100, -1000))
 heightInput.flushHeightPreview()
-precondition(heightPreviews.last == 24.0 / 64)
+precondition(heightPreviews.last == TrackHeightGeometry.desktopMinimumLaneHeight / 64)
 heightInput.mouseUp(with: heightPointer(.leftMouseUp, 100, -1000))
 precondition(heightCommits == 2 && NSCursor.current === cursorBeforeHeightDrag)
 heightInput.configure(project: row.project, song: UUID(), tracks: [newTrack], offsets: [0], heights: [89.6],
@@ -177,7 +186,7 @@ heightInput.flushHeightPreview()
 precondition(abs(heightPreviews.last! - 168 / (64 * 0.7)) < 1e-12)
 heightInput.mouseDragged(with: heightPointer(.leftMouseDragged, 100, -1000))
 heightInput.flushHeightPreview()
-precondition(abs(heightPreviews.last! - 26 / (64 * 0.7)) < 1e-12)
+precondition(abs(heightPreviews.last! - TrackHeightGeometry.laneLimits(count: 2, desktop: true).lowerBound / (64 * 0.7)) < 1e-12)
 precondition(TimelineTrackHeightResizeView.cancelActiveDrag(in: window) && heightCommits == 2)
 precondition(NSCursor.current === cursorBeforeHeightDrag)
 precondition(!TimelineTrackHeightResizeView.handlesPointer(heightPointer(.leftMouseDown, 300, 108)), "the mixer divider retains width resizing")
@@ -207,6 +216,7 @@ flippedRow.select = { flippedSelections += 1 }
 wheelRoot.addSubview(flippedRow)
 let border = TimelineTrackHeightResizeView(frame: wheelRoot.bounds)
 let borderTracks = [UUID(), UUID()]
+border.compactRows = [true, true]
 border.configure(project: UUID(), song: UUID(), tracks: borderTracks, offsets: [0, 64], heights: [64, 64],
                  laneCounts: [1, 1], scales: [1, 1], baseHeight: 64, top: 20,
                  verticalOffset: 0, mixerWidth: 290, blocked: false)

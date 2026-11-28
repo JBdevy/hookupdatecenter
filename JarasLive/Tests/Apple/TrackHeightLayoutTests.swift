@@ -3,24 +3,24 @@ MainActor.assumeIsolated {
     let cache = TrackLayoutCache(), key = TimelineRenderKey(revision: 1)
     let initial = cache.layout(tracks, height: 64, key: key)
     precondition(initial.lanes.map(\.count) == [1, 2, 1])
-    precondition(zip(initial.heights, [66.0, 184.8, 198]).allSatisfy { abs($0 - $1) < 1e-9 })
-    precondition(zip(initial.offsets, [0.0, 66, 250.8]).allSatisfy { abs($0 - $1) < 1e-9 })
-    precondition(initial.globalLimits == 132...160)
-    precondition(initial.uniformLimits == 66...240, "global controls must be usable even when an individual track reaches its limit")
+    precondition(zip(initial.heights, [34.0, 95.2, 102]).allSatisfy { abs($0 - $1) < 1e-9 })
+    precondition(zip(initial.offsets, [0.0, 34, 129.2]).allSatisfy { abs($0 - $1) < 1e-9 })
+    precondition(initial.globalLimits == 68...160)
+    precondition(initial.uniformLimits == 34...240, "global controls must be usable even when an individual track reaches its limit")
     for frame in 0..<50 {
         let rows = cache.layout(tracks, height: CGFloat(24 + frame * 6), key: key)
         precondition(rows.lanes == initial.lanes && LaneBuildCounter.count == 3, "zoom shares expensive lane maps")
         precondition(abs(rows.heights[0] / rows.heights[2] - 1.0 / 3) < 1e-12)
         precondition(abs(rows.heights[1] / rows.heights[2] - 89.6 / 96) < 1e-12)
         precondition(rows.laneHeights.enumerated().allSatisfy { index, height in
-            let limits = TrackHeightGeometry.laneLimits(count: rows.lanes[index].count)
+            let limits = TrackHeightGeometry.laneLimits(count: rows.lanes[index].count, desktop: true)
             return limits.contains(Double(height))
         })
     }
     tracks[1].heightScale = 1.5
     let resized = cache.layout(tracks, height: 64, key: key)
-    precondition(zip(resized.heights, [66.0, 277.2, 198]).allSatisfy { abs($0 - $1) < 1e-9 })
-    precondition(zip(resized.offsets, [0.0, 66, 343.2]).allSatisfy { abs($0 - $1) < 1e-9 })
+    precondition(zip(resized.heights, [34.0, 142.8, 102]).allSatisfy { abs($0 - $1) < 1e-9 })
+    precondition(zip(resized.offsets, [0.0, 34, 176.8]).allSatisfy { abs($0 - $1) < 1e-9 })
     precondition(LaneBuildCounter.count == 3 && resized.lanes == initial.lanes, "individual preview does not rebuild lanes")
     let uniformCache = TrackLayoutCache()
     let pair = [Track(), Track()]
@@ -29,12 +29,12 @@ MainActor.assumeIsolated {
     precondition(uniform.heights == [80, 80] && individual.heights == [120, 80])
     precondition(pair[0].heightScale == nil && individual.lanes == uniform.lanes)
     precondition(uniformCache.layout(pair, height: 96, key: key).heights == [96, 96])
-    tracks = [Track(heightScale: 1), Track(heightScale: 240.0 / 66)]
+    tracks = [Track(heightScale: 1), Track(heightScale: 240.0 / 34)]
     let extreme = cache.layout(tracks, height: 64, key: TimelineRenderKey(revision: 2))
-    precondition(extreme.heights[0] == 66 && abs(extreme.heights[1] - 240) < 1e-9 && extreme.globalLimits == 66...66)
+    precondition(extreme.heights[0] == 34 && abs(extreme.heights[1] - 240) < 1e-9 && extreme.globalLimits == 34...34)
     for height: CGFloat in [24, 48, 120, 240] {
         let rows = cache.layout(tracks, height: height, key: TimelineRenderKey(revision: 2))
-        precondition(rows.heights[0] == 66 && abs(rows.heights[1] - 240) < 1e-9 && rows.baseHeight == 66, "a full-range pair stops shared zoom without changing ratios")
+        precondition(rows.heights[0] == 34 && abs(rows.heights[1] - 240) < 1e-9 && rows.baseHeight == 34, "a full-range pair stops shared zoom without changing ratios")
     }
     let takeCache = TrackLayoutCache()
     var session = (0..<200).map { _ in Track(clips: [AudioClip(startTime: 0, duration: 1)]) }
@@ -108,7 +108,7 @@ MainActor.assumeIsolated {
     let reordered = snapshotCache.layout([third, first, second], height: 64, key: unchangedKey)
     precondition(reordered.lanes == [afterInsert.lanes[2], afterInsert.lanes[0], afterInsert.lanes[1]], "equal scales and row count do not identify the track order")
     let reduced = snapshotCache.layout([second], height: 64, key: unchangedKey)
-    precondition(reduced.lanes == [beforeInsert.lanes[1]] && reduced.offsets == [0] && reduced.heights == [66])
+    precondition(reduced.lanes == [beforeInsert.lanes[1]] && reduced.offsets == [0] && reduced.heights == [64])
     let replaced = snapshotCache.layout([third], height: 64, key: unchangedKey)
     precondition(replaced.lanes == [afterInsert.lanes[2]], "switching the only track must replace its lane map")
     let empty = snapshotCache.layout([], height: 64, key: unchangedKey)
@@ -119,14 +119,14 @@ MainActor.assumeIsolated {
     var clipEdit = first
     clipEdit.clips.removeLast()
     let removedClip = snapshotCache.layout([clipEdit, second], height: 64, key: unchangedKey)
-    precondition(removedClip.lanes[0].count == 1 && removedClip.lanes[0].lanes.count == 1 && removedClip.heights == [66, 66],
+    precondition(removedClip.lanes[0].count == 1 && removedClip.lanes[0].lanes.count == 1 && removedClip.heights == [64, 64],
         "Removing an overlapping item must retire its lane before the render revision changes")
     clipEdit.clips = first.clips.reversed()
     let reorderedClips = snapshotCache.layout([clipEdit, second], height: 64, key: unchangedKey)
     precondition(reorderedClips.lanes == beforeInsert.lanes)
     clipEdit.clips[0].startTime = 20
     let movedClip = snapshotCache.layout([clipEdit, second], height: 64, key: unchangedKey)
-    precondition(movedClip.lanes[0].count == 1 && movedClip.heights == [66, 66],
+    precondition(movedClip.lanes[0].count == 1 && movedClip.heights == [64, 64],
         "Equal clip counts and IDs cannot keep overlap geometry after a position edit")
     _ = snapshotCache.layout([first, second], height: 64, key: unchangedKey)
     print("TRACK_ROW_CACHE_SAME_REVISION_CLIP_DELETE_REORDER_RELOCATE_EXACT_GEOMETRY_OK")

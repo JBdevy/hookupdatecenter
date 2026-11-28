@@ -171,6 +171,7 @@ import Combine
     @State private var settingsSection: SettingsView.Section = .general
     @State private var metronomeOpen = false
     @State private var regionActions: UUID?
+    @State private var adjustingBPM: (region: UUID, project: UUID)?
     @State private var detectingRegion: UUID?
     @State private var selectionTempoRequest: SelectionTempoRequest?
     @State private var homeOpen = false
@@ -200,7 +201,7 @@ import Combine
         _local = StateObject(wrappedValue: IpadStandalonePresentation(show: show, documents: documents))
     }
     private var dialogOpen: Bool {
-        homeOpen || clickSoundTrack != nil || remoteTeleprompter != nil || patch != nil || sends != nil || settingsOpen || metronomeOpen || regionActions != nil || detectingRegion != nil || selectionTempoRequest != nil || sharingProject || advancedOpen || matrixOpen || addingTrack || regionLoops != nil || itemMenu != nil || editingTextItem != nil || fullLyricsTarget != nil || trackEdit != nil || fx != nil || automationTrack != nil
+        homeOpen || clickSoundTrack != nil || remoteTeleprompter != nil || patch != nil || sends != nil || settingsOpen || metronomeOpen || regionActions != nil || adjustingBPM != nil || detectingRegion != nil || selectionTempoRequest != nil || sharingProject || advancedOpen || matrixOpen || addingTrack || regionLoops != nil || itemMenu != nil || editingTextItem != nil || fullLyricsTarget != nil || trackEdit != nil || fx != nil || automationTrack != nil
     }
     var body: some View {
         VStack(spacing: 0) {
@@ -247,7 +248,7 @@ import Combine
         .onDisappear { local.stop(); IpadItemContextMenu.commands = { _, _ in [] }; IpadTimelinePointerContextMenu.contains = { _ in false } }
         .disabled(dialogOpen || audio.localSessionReconfiguring).accessibilityHidden(dialogOpen)
         .overlay { workspaceDialogs }
-        .onChange(of: show.projectSessionID) { _ in selectionTempoRequest = nil; sends = nil }
+        .onChange(of: show.projectSessionID) { _ in selectionTempoRequest = nil; adjustingBPM = nil; sends = nil }
         .overlay(alignment: .bottom) {
             if audio.localSessionReconfiguring && !audio.error.isEmpty {
                 Text(verbatim: audio.error).font(.jarasCallout).multilineTextAlignment(.center)
@@ -273,6 +274,14 @@ import Combine
         .environment(\.multitrackAction, documents.openMultitrackExport)
         .environment(\.nativeGridFileDrop, documents.dropAtNativeGrid)
         .modifier(MultitrackSheet(presentation: documents.multitrack))
+        .onReceive(show.$adjustBPMRegion) { region in
+            guard let region else { return }
+            DispatchQueue.main.async {
+                guard show.adjustBPMRegion == region else { return }
+                show.adjustBPMRegion = nil
+                adjustingBPM = (region, show.snapshot.project.id)
+            }
+        }
         .fullScreenCover(isPresented: $exportingAudio) {
             ScrollView {
                 AudioExportView(project: show.snapshot.project, song: show.current,
@@ -345,7 +354,7 @@ import Combine
             if ids.count == 1, AudioSeparation.accepts(clip, on: track) {
                 actions.append(command("Separation audio", { open("separate") }))
             }
-            actions.append(command("Tuner", { open("tuner") }))
+            actions.append(IpadItemMenuCommand(title: "Tuner", enabled: show.tunerInputAllowed) { if show.tunerInputAllowed { open("tuner") } })
             for (mode, title) in [(4, "Swap - LR"), (1, "Convert Mono - L"), (2, "Convert Mono - R"), (3, "Convert Mono L-R"), (0, "Convert Stereo")] {
                 actions.append(command(title, { _ = show.convertItems(ids, mode: mode) }))
             }
@@ -361,7 +370,15 @@ import Combine
     }
 
     @ViewBuilder private var workspaceDialogs: some View {
-        if homeOpen {
+        if let request = adjustingBPM {
+            IpadCompactModal {
+                RegionBPMSheet(show: show, documents: documents, region: request.region, projectID: request.project,
+                               close: { adjustingBPM = nil })
+                    .frame(maxWidth: 390)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("native-adjust-bpm-card")
+            }
+        } else if homeOpen {
             IpadCompactModal(preferredSize: CGSize(width: 840, height: 640)) {
                 VStack(spacing: 0) {
                     IpadModalHeader(title: "Home", close: { homeOpen = false })
@@ -675,19 +692,25 @@ struct IpadTimelineFocus: Equatable {
 }
 
 struct IpadTimelineViewport: Equatable {
-    // Allow a ten-hour overview while retaining the useful initial song scale.
     static let minimumSpan = 0.25
-    static let maximumSpan = 10.0 * 60 * 60
+    var maximumSpan = Self.maximumSpan(width: 1024)
+    static func maximumSpan(width: CGFloat) -> Double {
+        max(minimumSpan, Double(width) / (10 * TimelineZoomLimits.minimumZoom(viewportWidth: width)))
+    }
     var start = 0.0
     var span = 60.0
     var leadingFraction = 0.0
     var minimumStart: Double { -span * leadingFraction }
     var end: Double { start + span }
     mutating func reset(duration: Double) {
-        span = min(300, max(30, duration.isFinite ? duration : 30)); start = minimumStart
+        span = min(maximumSpan, 300, max(30, duration.isFinite ? duration : 30)); start = minimumStart
     }
     mutating func resizeLeadingSpace(_ margin: Double, width: Double) {
+        guard width.isFinite, width > 1 else { return }
         let atBeginning = start <= minimumStart
+        let middle = start + span / 2
+        maximumSpan = Self.maximumSpan(width: width)
+        if span > maximumSpan { span = maximumSpan; center(on: middle) }
         leadingFraction = min(0.25, margin / max(1, width))
         start = atBeginning ? minimumStart : max(minimumStart, start)
     }
@@ -700,12 +723,12 @@ struct IpadTimelineViewport: Equatable {
         start = min(604800 - span, max(minimumStart, time - span * 0.25))
     }
     mutating func center(on time: Double) {
-        guard time.isFinite else { return }
+        guard time.isFinite, time != start + span / 2 else { return }
         start = min(604800 - span, max(minimumStart, time - span / 2))
     }
     mutating func zoom(factor: Double, centeredOn time: Double) {
         guard factor.isFinite, factor > 0, time.isFinite else { return }
-        span = min(Self.maximumSpan, max(Self.minimumSpan, span / factor))
+        span = min(maximumSpan, max(Self.minimumSpan, span / factor))
         center(on: time)
     }
     mutating func pan(pixels: Double, width: Double) {
@@ -714,8 +737,10 @@ struct IpadTimelineViewport: Equatable {
     }
     mutating func zoom(factor: Double, anchor: Double) {
         guard factor.isFinite, factor > 0, anchor.isFinite else { return }
+        let next = min(maximumSpan, max(Self.minimumSpan, span / factor))
+        guard next != span else { return }
         let fraction = min(1, max(0, anchor)), position = start + fraction * span
-        span = min(Self.maximumSpan, max(Self.minimumSpan, span / factor))
+        span = next
         start = min(604800 - span, max(minimumStart, position - fraction * span))
     }
 }
@@ -1780,7 +1805,7 @@ struct IpadLeadOptions: View {
             do {
                 let detection = try await Task.detached(priority: .utility) {
                     try ClickTempoDetector.markersWithMeter(song: song, region: part) { file in
-                        try TimelineAudioWaveform.clickTransients(directory.appendingPathComponent(file.path)).map {
+                        try TimelineAudioWaveform.clickTransients(directory.projectMedia(file.path)).map {
                             ClickTempoDetector.Transient(position: $0.position, peak: $0.peak, shape: $0.shape)
                         }
                     }
@@ -1843,7 +1868,7 @@ private struct IpadClickSoundDesigner: View {
             do {
                 let file = try await Task.detached(priority: .userInitiated) {
                     let file = try ClickSoundImport.copy(source, to: directory)
-                    do { _ = try ClickAudioSample.load(sampleRate: 48000, url: directory.appendingPathComponent(file.path)) }
+                    do { _ = try ClickAudioSample.load(sampleRate: 48000, url: directory.projectMedia(file.path)) }
                     catch { try? FileManager.default.removeItem(at: directory.appendingPathComponent(file.path)); throw error }
                     return file
                 }.value

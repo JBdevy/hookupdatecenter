@@ -195,10 +195,7 @@ class StageConfigPanel final : public Component {
             b->setColour(TextButton::buttonColourId, Colour(0xff333333));
             b->setColour(TextButton::buttonOnColourId, Colour(0xff64b64a));
             b->setColour(TextButton::textColourOnId, Colours::white);
-            b->onClick = [this, i] {
-                index = i + 1;
-                build();
-            };
+            b->onClick = [this, i] { selectChannel(i + 1); };
         }
         for (auto *b : {&night, &day, &close})
             addAndMakeVisible(b);
@@ -232,6 +229,11 @@ class StageConfigPanel final : public Component {
         addAndMakeVisible(viewport);
         viewport.setViewedComponent(&content, false);
         viewport.setScrollBarsShown(true, false);
+        build();
+    }
+    void selectChannel(int target) {
+        if (index == target && isShowing()) return;
+        index = target;
         build();
     }
     void paint(Graphics &g) override {
@@ -309,13 +311,12 @@ class StageConfigPanel final : public Component {
     }
     class Card final : public Component {
       public:
-        Card(StageConfigPanel &p, var definition)
+        Card(StageConfigPanel &p, var definition, const var &settings)
             : parent(p), field(std::move(definition)), key(str(field, "id")),
               kind(str(field, "kind")) {
             addAndMakeVisible(label);
             label.setText(localization::translate(str(field, "title")), dontSendNotification);
             label.setFont(theme::font(13));
-            const auto settings = parent.current();
             if (kind == "color") {
                 addAndMakeVisible(swatch);
                 updatePreviewColor(str(settings, "previewRegionColorSource", "region"));
@@ -442,8 +443,6 @@ class StageConfigPanel final : public Component {
         day.setVisible(index != 3);
         night.setToggleState(state.preset(index) == "night", dontSendNotification);
         day.setToggleState(state.preset(index) == "day", dontSendNotification);
-        auto fields = list(JSON::parse(
-            String::fromUTF8(BinaryData::StageFields_json, BinaryData::StageFields_jsonSize)));
         if (index == 3) {
             noticeSettings = std::make_unique<NoticeAppearancePanel>(state);
             content.addAndMakeVisible(*noticeSettings);
@@ -453,6 +452,9 @@ class StageConfigPanel final : public Component {
             repaint();
             return;
         }
+        static const auto fields = list(JSON::parse(
+            String::fromUTF8(BinaryData::StageFields_json, BinaryData::StageFields_jsonSize)));
+        const auto settings = current();
         int y = 0;
         for (auto type : {"color", "range", "choice", "toggle"}) {
             const int groupStart = y;
@@ -471,7 +473,7 @@ class StageConfigPanel final : public Component {
             const int height = String(type) == "color" || String(type) == "toggle" ? 48 : 70;
             for (auto field : fields)
                 if (str(field, "kind") == type) {
-                    auto *card = cards.add(new Card(*this, field));
+                    auto *card = cards.add(new Card(*this, field, settings));
                     content.addAndMakeVisible(card);
                     positions.push_back({n % 2, y + (n / 2) * (height + 8), height});
                     ++n;

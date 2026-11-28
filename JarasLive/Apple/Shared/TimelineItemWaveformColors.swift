@@ -19,7 +19,7 @@ enum TimelineItemWaveformColors {
             emphasized: selected && !silenced && !inverted) == 0
     }
     static func hasWaveform(_ clip: AudioClip, track: Track) -> Bool {
-        guard !clip.isProjectionMedia, !clip.isImage else { return false }
+        if clip.isProjectionMedia || track.kind == .video { return clip.audioMedia(on: track) != nil }
         return track.kind == .click || (track.kind == .standard && (clip.midi == nil || clip.frozenMIDI == true))
     }
     static func ink(rgb: SIMD4<Float>, silenced: Bool) -> SIMD4<Float> {

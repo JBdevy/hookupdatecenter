@@ -128,7 +128,8 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
         std::set<String> unavailableMediaPaths;
     };
     void prepareSong(const jaras::Song &, const File &directory, const var &masterSettings = {},
-                     const jaras::Project *project = nullptr, const PreparationControl *control = nullptr);
+                     const jaras::Project *project = nullptr, const PreparationControl *control = nullptr,
+                     const ID &exportedClip = {});
     bool preparesOffline() const { return offlineMode; }
     bool hasLiveDevice() const { return attached || externalRenderDriven; }
     // A native host (or the driver-free callback harness) owns render calls.
@@ -454,7 +455,8 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
         AudioBuffer<float> processed[2];
         AudioBuffer<float> stemInput[2]{{2,4096},{2,4096}};
         std::unique_ptr<ClipAudio> clipAudio;
-        bool parallelEligible=false,parallelReady=false,parallelOK=false;
+        bool uniqueReader=false,parallelReady=false,parallelOK=false;
+        size_t parallelSource=0;
         int parallelHead=0,parallelFrames=0;
         double parallelLocal=0;
         NativeFX fx[2];
@@ -480,6 +482,7 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
                       int dest, int count, bool running);
     struct SendSettings { jaras::TrackSendTap tap = jaras::TrackSendTap::postFader; float gain = 1.f; };
     struct Bus {
+        WaveLFOParameters waveLFO;
         ID id;
         audio::RealtimeLatestValue<Update> mixerUpdates;
         float volume = 1, pan = 0;
@@ -641,7 +644,8 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     audio::PreparedAudioEdits preparedEdits;
     State current;
     jaras::audio::StopTransition stopTransition;
-    struct ParallelClipJob { Voice *voice=nullptr;AudioFormatReader *reader=nullptr;int head=0,frames=0;double local=0; };
+    struct ParallelClipJob { Voice *voice=nullptr;AudioFormatReader *reader=nullptr;int head=0,frames=0;double local=0;int next=-1; };
+    std::vector<int> parallelSourceTails, parallelGroupStarts;
     std::vector<ParallelClipJob> parallelClipJobs;
     std::unique_ptr<ParallelAudioWork> parallelClips;
     std::atomic<uint64> parallelClipBlocks{0},parallelClipTasks{0};

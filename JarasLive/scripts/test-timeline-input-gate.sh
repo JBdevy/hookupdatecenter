@@ -20,6 +20,9 @@ transfer=Path('Apple/Shared/VinhetasPanel.swift').read_text()
 diagnostics+='\nimport UniformTypeIdentifiers\ntypealias MixerDividerView = NSView\n'
 diagnostics+=scroll[scroll.index('private protocol TimelineSetlistResizeHost:'):scroll.index('private final class WorkspaceSplitView<')]
 diagnostics+=transfer[transfer.index('enum LibrarySamplerTransfer {'):transfer.index('enum PadAudioBuffer {')]
+importer=Path('Application/Project/StemProjectImporter.swift').read_text()
+diagnostics+=importer[importer.index('enum GridMediaFileFilter {'):importer.index('/// Runs on a worker task')]
+diagnostics+='\n@MainActor enum NativeLibraryTrackDrop { static let type = NSPasteboard.PasteboardType("com.catlive.library-effect") }\n'
 models=Path('Application/Project/ProjectModels.swift').read_text()
 geometry=models[models.index('public enum TrackHeightGeometry'):models.index('public struct TrackLinkOriginal')]
 limits=grid[grid.index('enum TimelineZoomLimits'):grid.index('\nenum TimelineSnapPreference')]

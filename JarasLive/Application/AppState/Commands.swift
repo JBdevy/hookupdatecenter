@@ -38,9 +38,11 @@ public protocol CommandExecutor {
     func insertAudioTracks(_ tracks: [Track], song: UUID) throws
     func replaceAudioClip(_ clip: AudioClip, track: UUID) throws
     func addRecordedClip(_ clip: AudioClip, track: UUID) throws
+    func setTrackHeights(_ song: UUID, scales: [UUID: Double]) throws
     func setTrackHeight(_ song: UUID, track: UUID?, scale: Double) throws
     func setTimelineLocks(locked: Bool, options: Int) throws
     func editMasterColor(_ color: UInt32) throws
+    func randomizeTrackColors(_ song: UUID, tracks: Set<UUID>) throws -> [UUID: UInt32]
     func setTrackMixerComponents(_ song: UUID, masks: [UUID: Int]) throws
     func editTrack(_ id: UUID, name: String, color: UInt32) throws
     func renameTrack(_ id: UUID, name: String) throws
@@ -48,6 +50,7 @@ public protocol CommandExecutor {
     func setRegionInit(_ id: UUID, count: Int, bars: Bool) throws
     func setRegionPitch(_ id: UUID, semitones: Int, tracks: [UUID], groups: [UUID]) throws
     func editRegion(_ id: UUID, name: String, color: UInt32, uppercaseName: Bool) throws
+    func setTimelineNames(_ song: UUID, regions: [UUID: String], markers: [UUID: String]) throws
     func moveClip(_ id: UUID, start: Double, track: UUID?) throws
     func regionFromClip(_ id: UUID) throws
     func regionsFromClips(_ ids: [UUID]) throws
@@ -90,6 +93,20 @@ public extension CommandExecutor {
         try setTempoMarkers(markers)
     }
     func pasteItems(_ entries: [GridItemClipboard.Entry], song: UUID, moving: Bool) throws { throw BackendFailure.notConfigured }
+    func setTrackHeights(_ song: UUID, scales: [UUID: Double]) throws {
+        var project = try snapshot().project
+        guard let index = project.songs.firstIndex(where: { $0.id == song }),
+              scales.values.allSatisfy(TrackHeightGeometry.isValidScale),
+              Set(scales.keys).isSubset(of: Set(project.songs[index].tracks.map(\.id))) else {
+            throw ProjectError.invalid("Invalid track height")
+        }
+        for row in project.songs[index].tracks.indices {
+            if let value = scales[project.songs[index].tracks[row].id] {
+                project.songs[index].tracks[row].heightScale = value == 1 ? nil : value
+            }
+        }
+        try applyProjectEdit(project)
+    }
     /// A nil track restores every row in the song to the shared height.
     func setTrackHeight(_ song: UUID, track: UUID?, scale: Double) throws {
         var project = try snapshot().project
@@ -133,6 +150,7 @@ public extension CommandExecutor {
     func insertAudioTracks(_ tracks: [Track], song: UUID) throws { throw BackendFailure.notConfigured }
     func addRecordedClip(_ clip: AudioClip, track: UUID) throws { throw BackendFailure.notConfigured }
     func editMasterColor(_ color: UInt32) throws { throw BackendFailure.notConfigured }
+    func randomizeTrackColors(_ song: UUID, tracks: Set<UUID>) throws -> [UUID: UInt32] { throw BackendFailure.notConfigured }
     func setTrackMixerComponents(_ song: UUID, masks: [UUID: Int]) throws { throw BackendFailure.notConfigured }
     func editTrack(_ id: UUID, name: String, color: UInt32) throws { throw BackendFailure.notConfigured }
     func renameTrack(_ id: UUID, name: String) throws { throw BackendFailure.notConfigured }
@@ -147,6 +165,12 @@ public extension CommandExecutor {
     func setRegionInit(_ id: UUID, count: Int, bars: Bool) throws { throw BackendFailure.notConfigured }
     func setRegionPitch(_ id: UUID, semitones: Int, tracks: [UUID], groups: [UUID]) throws { throw BackendFailure.notConfigured }
     func editRegion(_ id: UUID, name: String, color: UInt32, uppercaseName: Bool) throws { throw BackendFailure.notConfigured }
+    func setTimelineNames(_ song: UUID, regions: [UUID: String], markers: [UUID: String]) throws {
+        var project = try snapshot().project
+        guard let index = project.songs.firstIndex(where: { $0.id == song }) else { throw ProjectError.invalid("Unknown song") }
+        project.songs[index].setTimelineNames(regions: regions, markers: markers)
+        try applyProjectEdit(project)
+    }
     func moveClip(_ id: UUID, start: Double, track: UUID?) throws { throw BackendFailure.notConfigured }
     func regionFromClip(_ id: UUID) throws { throw BackendFailure.notConfigured }
     func regionsFromClips(_ ids: [UUID]) throws { throw BackendFailure.notConfigured }

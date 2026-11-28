@@ -57,7 +57,7 @@ extension NativeTimelineAudioBodyView {
     var inkValuesForTest: [String] {
         inkForTest.map { item in
             switch item.content {
-            case .text(let text, _), .label(let text): return text.string
+            case .text(let text, _), .label(let text), .movie(let text): return text.string
             case .emptyWaveform(let channels): return "channels:\(channels)"
             }
         }
@@ -79,7 +79,7 @@ preflight = preflight.replace('private func prepareHostedViewport', 'func prepar
 preflightTests = Path('Tests/Apple/TimelineNativeBodyPreflightTests.swift').read_text().replace('__NATIVE_BODY_PREFLIGHT_METHOD__', preflight)
 text_colors = Path('Apple/Shared/TextItemEditor.swift').read_text()
 text_colors = text_colors[text_colors.index('extension ItemTextColors {'):]
-tests = Path('Tests/Apple/TimelineNativeBodyTests.swift').read_text() + '\n' + preflightTests
+tests = Path('Tests/Apple/TimelineNativeBodyTests.swift').read_text() + '\n' + Path('Tests/Apple/TimelineMovieBodyTests.swift').read_text() + '\n' + preflightTests
 if os.environ.get('CATLIVE_ZOOM_BENCHMARK') == '1':
     tests = Path('Tests/Apple/TimelineZoomBodyPerformanceTests.swift').read_text()
 out.joinpath('main.swift').write_text(stubs + text_colors + '\n'.join(parts) + probes + tests)
@@ -118,7 +118,7 @@ swiftc -O -swift-version 5 -target "$(uname -m)-apple-macos12.0" \
   Application/Project/OutputPatch.swift Application/Project/DrummerPadKit.swift Application/Project/NativeFXSettings.swift \
   Application/Project/TrackRouting.swift Application/Project/MultiLoop.swift \
   Application/Project/TrackAutomation.swift Application/Controls/NativeFXParameter.swift Application/Project/ProjectModels.swift Application/Project/MIDIItem.swift Application/Project/ItemFade.swift Application/Project/ItemFadeCurve.swift Application/Project/TimelineTempo.swift \
-  Application/Project/ClipRepetition.swift Application/Project/AudioFileRead.swift \
+  Application/Project/ClipRepetition.swift Application/Project/AudioFileRead.swift Application/Project/ProjectDocumentCodec.swift Tests/Apple/VideoWaveformFixtures.swift \
   Apple/Shared/Theme.swift Apple/Shared/NativeTooltips.swift Apple/Shared/NativeTimelineInputGate.swift \
   Apple/Shared/TimelineItemWaveformColors.swift Apple/Shared/ItemWaveformPreview.swift "$test_dir/TimelineAudioWaveform.swift" \
   "$test_dir/MetalWaveformRenderer.swift" Apple/Shared/TimelineMetalWaveforms.swift \

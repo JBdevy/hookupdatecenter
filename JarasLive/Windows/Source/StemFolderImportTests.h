@@ -3,6 +3,33 @@
 #include "MediaImportTests.h"
 namespace catlive::stemImportTests {
 template<class Test> void registerTests(const File& directory,Test test) {
+ test("Linked stems use their original folders for audio and WF through reopen and append",[&]{
+    using mediaImportTests::require;
+    const auto root=directory.getNonexistentChildFile("linked-stems","");
+    const auto first=root.getChildFile("Stems/Song A"), second=root.getChildFile("Song B");
+    mediaImportTests::source(first,"Kick.wav",4800); mediaImportTests::source(second,"Kick.wav",2400);
+    auto scan=stemImport::scan({first,second});scan->copyMedia=false;
+    StringArray warnings;Array<File> owned;
+    const auto doc=root.getChildFile("Project/Show.jl"), folder=doc.getParentDirectory();
+    auto project=stemImport::build(*scan,"",Session::makeEmptyProject("Links"),doc,false,{},warnings,&owned);
+    require(owned.isEmpty(),"Original files were recorded as project-owned");
+    ProjectCodec::write(doc,ProjectCodec::encode(project));
+    const auto reopened=ProjectCodec::decode(ProjectCodec::read(doc));
+    std::set<String> files;
+    for(const auto &track:reopened.songs.front().tracks)for(const auto &clip:track.clips)if(clip.audioFile){
+        const auto path=clip.audioFile->path;
+        require(LinkedStemMedia::isReference(text(path)),"Source stem was copied");
+        require(!ProjectCodec::resolveMedia(folder,path,false).existsAsFile(),"A linked input became a project output");
+        files.insert(ProjectCodec::resolveMedia(folder,path).getFullPathName());
+    }
+    for(const auto &source:{first,second}) {
+        require(files.count(source.getChildFile("Kick.wav").getFullPathName())==1,"Wrong source for duplicate basename");
+        require(source.getChildFile("WF/Kick.wav.waveform").existsAsFile(),"Original folder has no waveform");
+    }
+    scan->copyMedia=true;
+    stemImport::build(*scan,"",reopened,doc,false,{},warnings,&owned);
+    require(owned.size()==2 && owned[0].isAChildOf(folder.getChildFile("Stems")),"Copy to project did not materialize both stems");
+ });
  test("Stem create and append number new grid items while preserving legacy duplicates",[&]{
     using mediaImportTests::require;
     const auto root=directory.getNonexistentChildFile("stem-item-numbering", "");

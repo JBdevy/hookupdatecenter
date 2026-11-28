@@ -1368,6 +1368,7 @@ struct TrackInputMonitorButton: View {
     let track: Track
     var width: CGFloat = 22
     var height: CGFloat = 21
+    var fillsRow = false
 
     var body: some View {
         let enabled = !track.receivesMain && track.inputMonitoring == true
@@ -1376,7 +1377,8 @@ struct TrackInputMonitorButton: View {
         } label: {
             Text(verbatim: "I").font(.jarasSystem(size: 10, weight: .semibold))
                 .foregroundStyle(enabled ? Color.black : Color.white)
-                .frame(width: width, height: height)
+                .frame(width: width, height: fillsRow ? nil : height)
+                .frame(maxHeight: fillsRow ? .infinity : nil)
                 .background(enabled ? JarasTheme.green : TrackMixerButtonAppearance.trackControl,
                             in: RoundedRectangle(cornerRadius: TrackMixerButtonAppearance.radius))
                 .contentShape(Rectangle())
@@ -1392,14 +1394,16 @@ struct TrackRecordButton: View {
     let track: Track
     var touchHeight: CGFloat = 28
     var touchWidth: CGFloat = 28
+    let fillsRow: Bool
     private let recorder: TrackRecording
     @ObservedObject private var indicator: TrackArmIndicator
     @State private var editingMode = false
-    @MainActor init(show: ShowController, track: Track, touchHeight: CGFloat = 28, touchWidth: CGFloat = 28) {
+    @MainActor init(show: ShowController, track: Track, touchHeight: CGFloat = 28, touchWidth: CGFloat = 28, fillsRow: Bool = false) {
         self.show = show
         self.track = track
         self.touchHeight = touchHeight
         self.touchWidth = touchWidth
+        self.fillsRow = fillsRow
         let recorder = TrackRecording.shared
         self.recorder = recorder
         _indicator = ObservedObject(wrappedValue: recorder.indicator(for: track.id))
@@ -1422,7 +1426,7 @@ struct TrackRecordButton: View {
                     Text(verbatim: "A").font(.jarasSystem(size: 11, weight: .bold))
                 } else { Image(systemName: "record.circle") }
             }.frame(width: 22, height: min(21, touchHeight))
-        }.buttonStyle(RecordingButtonStyle(active: indicator.state.active))
+        }.buttonStyle(RecordingButtonStyle(active: indicator.state.active, fillsRow: fillsRow))
         #if os(macOS)
         .background(TrackControlSelectionExclusion())
         .immediateRightClick { editingMode = true }
@@ -1513,12 +1517,14 @@ struct RecordingButtonStyle: ButtonStyle {
     var transport = false
     var idleTransportBackground = JarasTheme.yellow
     var idleTransportForeground = Color.black
+    var fillsRow = false
     private let red = Color(red: 1, green: 0.12, blue: 0.12)
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.jarasSystem(size: fontSize, weight: .semibold))
             .lineLimit(1).minimumScaleFactor(0.75)
-            .frame(width: width, height: height)
+            .frame(width: width, height: fillsRow ? nil : height)
+            .frame(maxHeight: fillsRow ? .infinity : nil)
             .foregroundStyle(active ? Color.black : transport ? idleTransportForeground : Color.red)
             .background {
                 transport ? (active ? JarasTheme.liveOffRed : idleTransportBackground).opacity(configuration.isPressed ? 0.85 : 1) :

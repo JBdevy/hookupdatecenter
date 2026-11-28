@@ -57,6 +57,9 @@ struct FXKnob: View {
         self.title = title; _value = value; self.range = range; self.unit = unit
         self.multiplier = multiplier; self.logarithmic = logarithmic; self.reset = reset; self.parameter = parameter; self.dialOnly = dialOnly
     }
+    private var valueText: String {
+        String(format: unit == "s" && logarithmic ? "%.3f %@" : "%.1f %@", value * multiplier, unit)
+    }
     private var fraction: Double {
         let offset = range.lowerBound == 0 ? 0.001 : 0
         let amount = logarithmic ? log((max(range.lowerBound,value)+offset)/(range.lowerBound+offset))/log((range.upperBound+offset)/(range.lowerBound+offset)) : (value-range.lowerBound)/(range.upperBound-range.lowerBound)
@@ -102,10 +105,10 @@ struct FXKnob: View {
                     set((origin ?? fraction) - translation.height / 180)
                 }, ended: { origin = nil }, reset: { value = reset }))
                 #endif
-                .accessibilityElement().accessibilityLabel(Text(verbatim: title)).accessibilityValue(String(format: "%.1f %@",value*multiplier,unit))
+                .accessibilityElement().accessibilityLabel(Text(verbatim: title)).accessibilityValue(valueText)
                 .accessibilityAdjustableAction { set(fraction + ($0 == .increment ? 0.01 : -0.01)) }
             if !dialOnly {
-                Text(verbatim: String(format: "%.1f %@", value * multiplier, unit))
+                Text(verbatim: valueText)
                 .font(.jarasSystem(size: 11, weight: .semibold, design: .monospaced)).monospacedDigit()
                 .foregroundStyle(accent).padding(.horizontal, 7).padding(.vertical, 2)
                 .background(Color.black.opacity(0.30), in: RoundedRectangle(cornerRadius: 4))
@@ -192,6 +195,7 @@ struct DynamicsThresholdMeter: View {
     let compressor: Bool
     @State private var input = SIMD2<Double>.zero
     @State private var reduction = 0.0
+    @State private var lastMeterTime = ProcessInfo.processInfo.systemUptime
     @State private var clock = Timer.publish(every: 1.0/30, on: .main, in: .common).autoconnect()
     private var floorDB: Double { compressor ? -60 : -80 }
     private let railHeight: CGFloat = 152
@@ -268,7 +272,9 @@ struct DynamicsThresholdMeter: View {
             let engine = StemAudioPlayback.shared
             let peaks = engine.effectPeaks(track, effect: effect)
             guard peaks.count >= 2 else { return }
-            let decay = pow(10.0, -TrackMeterLevel.releaseDecibelsPerSecond / (30 * 20))
+            let now = ProcessInfo.processInfo.systemUptime
+            let decay = pow(10.0, floorDB * (now - lastMeterTime) / (20 * TrackMeterLevel.releaseSeconds))
+            lastMeterTime = now
             var next = input * decay
             for channel in 0..<2 {
                 next[channel] = max(next[channel], Double(peaks[channel]))
@@ -302,6 +308,7 @@ struct EffectVerticalMeters: View {
     let effect: String
     @StateObject private var input = TrackMeterLevel()
     @StateObject private var output = TrackMeterLevel()
+    @State private var lastMeterTime = ProcessInfo.processInfo.systemUptime
     @State private var clock = Timer.publish(every: 1.0/30,on: .main,in: .common).autoconnect()
     var body: some View {
         HStack(spacing: 9) {
@@ -311,8 +318,11 @@ struct EffectVerticalMeters: View {
         }.frame(width: 104,height: 145)
         .onReceive(clock) { _ in
             let values = StemAudioPlayback.shared.effectPeaks(track,effect: effect)
-            input.update(left: Double(values[0]),right: Double(values[1]),elapsed: 1.0/30)
-            output.update(left: Double(values[2]),right: Double(values[3]),elapsed: 1.0/30)
+            let now = ProcessInfo.processInfo.systemUptime
+            let elapsed = now - lastMeterTime
+            lastMeterTime = now
+            input.update(left: Double(values[0]),right: Double(values[1]),elapsed: elapsed)
+            output.update(left: Double(values[2]),right: Double(values[3]),elapsed: elapsed)
         }
     }
     private func bars(_ values: SIMD2<Double>, title: String) -> some View {

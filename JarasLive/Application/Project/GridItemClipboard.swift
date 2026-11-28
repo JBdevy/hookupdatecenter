@@ -151,7 +151,7 @@ public struct GridItemMediaTransfer: Sendable {
         do {
             for (index, path) in paths.sorted().enumerated() {
                 try Task.checkCancellation()
-                let input = path.hasPrefix("/") ? URL(fileURLWithPath: path) : source.appendingPathComponent(path)
+                let input = path.hasPrefix("/") ? URL(fileURLWithPath: path) : source.projectMedia(path)
                 let folder = (path.hasPrefix("Videos/") ? "Videos/" : "Stems/") + batch
                 let relative = folder + "/\(index)-" + input.lastPathComponent
                 let directory = destination.appendingPathComponent(folder, isDirectory: true)

@@ -152,6 +152,7 @@ private final class LibraryRowDragView: NSView, NSDraggingSource {
     var data: (() -> Data?)?
     var click: (() -> Void)?
     private var pressedAt: NSPoint?
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     override func mouseDown(with event: NSEvent) { pressedAt = event.locationInWindow }
     override func mouseUp(with event: NSEvent) {
         defer { pressedAt = nil }
@@ -752,7 +753,7 @@ struct DesktopLibraryPane: View {
         .onChange(of: visible) { visibilityChanges.send($0) }
     }
 }
-private struct SamplerPaneIdentity: Hashable {
+struct WorkspaceDockContentIdentity: Hashable {
     let project: UUID
     let controller: ObjectIdentifier
     let theme: JarasInterfaceTheme
@@ -766,7 +767,7 @@ struct DesktopSamplerPane: View {
     var body: some View {
         GeometryReader { geometry in
             RetainedWorkspacePane(width: geometry.size.width, visible: visible,
-                identity: AnyHashable(SamplerPaneIdentity(project: show.snapshot.project.id,
+                identity: AnyHashable(WorkspaceDockContentIdentity(project: show.snapshot.project.id,
                     controller: ObjectIdentifier(show), theme: theme))) {
                 WorkspaceLibrary(theme: theme, show: show, samplersOnly: true, visibilityChanges: visibilityChanges)
             }
@@ -2545,9 +2546,12 @@ struct WorkspaceLibrary: View {
                 guard let rawKind = parts.first else { return nil }
                 let kind = String(rawKind)
                 if kind == NativeFXSettings.waveLFOName {
-                    guard let clip, let owner = show.current?.tracks.first(where: { $0.clips.contains { $0.id == clip } }),
-                          owner.kind == .standard, let item = owner.clips.first(where: { $0.id == clip }),
-                          item.midi == nil, (item.audioFile ?? owner.audioFile) != nil else { return nil }
+                    if let clip {
+                        guard let owner = show.current?.tracks.first(where: { $0.clips.contains { $0.id == clip } }),
+                              owner.kind == .standard, let item = owner.clips.first(where: { $0.id == clip }),
+                              !item.isImage, item.midi == nil, (item.audioFile ?? owner.audioFile) != nil else { return nil }
+                    } else if track == nil { return nil }
+                    if original.inserted.contains(kind), presetID == nil { return kind }
                 } else if !NativeFXSettings.order.contains(kind) { return nil }
                 if kind == "Instruments" {
                     guard parts.count == 2, !isVinhetas(track, show: show) else { return nil }
@@ -2574,7 +2578,7 @@ struct WorkspaceLibrary: View {
                 return nil
                 #endif
             }
-            guard !original.inserted.contains(key) else { return nil }
+            guard !original.inserted.contains(key) || key == NativeFXSettings.waveLFOName else { return nil }
             let library = try FXPresetStore.shared.read()
             if let presetID {
                 guard let preset = library.presets.first(where: { $0.id == presetID }) else { throw ProjectError.invalid("Preset not found for this plugin") }
@@ -2582,7 +2586,7 @@ struct WorkspaceLibrary: View {
             } else {
                 settings = try library.applyingDefault(to: settings, effect: key)
             }
-            if let target, let index = original.inserted.firstIndex(of: target) {
+            if key != NativeFXSettings.waveLFOName, let target, let index = original.inserted.firstIndex(of: target) {
                 settings.inserted.removeAll { $0 == key }
                 settings.inserted.insert(key, at: index)
             }
@@ -2637,8 +2641,15 @@ struct WorkspaceLibrary: View {
     @State private var entries: [Entry] = []
     @State private var songID: UUID?
     @State private var editing: UUID?
-    @State private var draft = ""
-    @State private var original = ""
+    private final class RenameDraft {
+        var original = ""
+        var text = ""
+    }
+    // AppKit and UIKit maintain the field editor. Typing does not invalidate the list.
+    @State private var draft = RenameDraft()
+    private var nameBinding: Binding<String> {
+        Binding(get: { draft.text }, set: { draft.text = $0 })
+    }
 
     init(show: ShowController, regions: Bool, docked: Bool) {
         self.show = show; self.regions = regions; self.docked = docked
@@ -2657,8 +2668,9 @@ struct WorkspaceLibrary: View {
         if regions {
             values = song.parts.map { Entry(id: $0.id, name: $0.name, label: $0.displayName, position: $0.startTime) }
         } else {
+            let parts = Dictionary(uniqueKeysWithValues: song.parts.map { ($0.id, $0) })
             values = (song.markers ?? []).filter(\.isNavigationMarker).map { marker in
-                let source = marker.sourceRegionID.flatMap { id in song.parts.first { $0.id == id } }
+                let source = marker.sourceRegionID.flatMap { parts[$0] }
                 return Entry(id: marker.id, name: source?.name ?? marker.name,
                              label: source?.displayName ?? marker.name, position: marker.position)
             }
@@ -2751,7 +2763,7 @@ struct WorkspaceLibrary: View {
         let next = rows[nextIndex]
         if let editing {
             commitDraft(editing)
-            original = next.name; draft = next.name; self.editing = next.id
+            draft.original = next.name; draft.text = next.name; self.editing = next.id
         }
         show.browseLibraryTimelineEntry(next.id, region: regions, commitAfterDelay: !keyboardTarget.holdingArrow)
         return true
@@ -2799,13 +2811,13 @@ struct WorkspaceLibrary: View {
         #else
         UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
         #endif
-        show.selectLibraryTimelineEntry(row.id, region: regions, includesUnified: true)
+        show.clickLibraryTimelineEntry(row.id, region: regions)
     }
 
     private func begin(_ row: Entry) {
         if let editing, editing != row.id { finish(editing) }
         guard show.canControl() else { return }
-        original = row.name; draft = row.name; editing = row.id
+        draft.original = row.name; draft.text = row.name; editing = row.id
     }
 
     private func finish(_ id: UUID, save: Bool = true) {
@@ -2815,7 +2827,7 @@ struct WorkspaceLibrary: View {
     }
 
     private func commitDraft(_ id: UUID) {
-        if draft != original { show.renameTimelineLabel(id, name: draft, region: regions, includesUnified: true) }
+        if draft.text != draft.original { show.renameTimelineLabel(id, name: draft.text, region: regions, includesUnified: true) }
     }
 
     private func nameInput(for row: Entry, rows: [Entry]) -> some View {
@@ -2824,9 +2836,9 @@ struct WorkspaceLibrary: View {
             _ = step(direction, in: rows)
         }
         #if os(macOS)
-        return LibraryTimelineNameInput(text: $draft, keyboardTarget: keyboardTarget, finish: { finish(row.id, save: $0) }, move: move)
+        return LibraryTimelineNameInput(text: nameBinding, keyboardTarget: keyboardTarget, finish: { finish(row.id, save: $0) }, move: move)
         #else
-        return InlineNameInput(text: $draft, compact: false, finish: { finish(row.id) }, move: move,
+        return InlineNameInput(text: nameBinding, compact: false, finish: { finish(row.id) }, move: move,
                         accessibilityName: regions ? "Region name" : "Marker name")
         #endif
     }

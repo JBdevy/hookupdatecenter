@@ -1,5 +1,6 @@
 #pragma once
 #include "Common.h"
+#include "../../Core/Audio/MeterState.hpp"
 namespace catlive::fxui {
 inline Colour dialAccent(const String &kind) {
     if (kind == "EQ" || kind == "Arpeggiator" || kind == "Pitch") return Colour(0xffc2a8f7);
@@ -111,14 +112,17 @@ class DynamicsThresholdMeter final : public Component, private Timer {
     Input input;
     bool compressor;
     std::array<float, 3> displayed{};
+    double lastMeterTime = Time::getMillisecondCounterHiRes() / 1000.;
     std::function<std::array<float, 3>()> poll;
     juce::Rectangle<int> rail() const { return {7, 24, 60, std::max(1, getHeight() - 49)}; }
     void timerCallback() override {
         if (!isShowing() || !poll) return;
         auto next = poll();
+        const auto now = Time::getMillisecondCounterHiRes() / 1000.;
+        const auto factor = audio::meterReleaseFactor(now - lastMeterTime, compressor ? 60. : 80.);
+        lastMeterTime = now;
         for (size_t ch = 0; ch < 2; ++ch) {
-            next[ch] = std::max(next[ch], displayed[ch] * .858f);
-            if (next[ch] < .0001f) next[ch] = 0;
+            next[ch] = audio::releasedMeterLevel(displayed[ch], next[ch], factor, compressor ? .001f : .0001f);
         }
         next[2] = std::max(next[2], displayed[2] - 1.4f);
         if (next != displayed) { displayed = next; repaint(); }

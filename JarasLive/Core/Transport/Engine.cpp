@@ -464,19 +464,23 @@ void Engine::setRegionPitch(const ID& id, int semitones, std::vector<ID> tracks,
 }
 void Engine::setRegionPitchState(const ID& id, std::optional<int> semitones,
                                 std::optional<std::vector<ID>> tracks, std::optional<std::vector<ID>> groups) {
+    if (!tunerInputAllowed()) return;
     projectSync::requireWritable();
     if (semitones && (*semitones < -12 || *semitones > 12)) throw std::invalid_argument("Invalid region pitch");
     for (auto& song : project_.songs) if (song.id == transport_.songId) {
-        std::unordered_set<std::string_view> requested;
-        for (const auto* targets : {&tracks, &groups}) {
-            if (*targets) requested.insert((*targets)->begin(), (*targets)->end());
+        std::unordered_map<std::string_view, bool> available;
+        for (const auto& track : song.tracks)
+            available.emplace(track.id, fixedTrackName(track.role).empty());
+        for (auto* targets : {&tracks, &groups}) {
+            if (!*targets) continue;
+            auto& ids = **targets;
+            ids.erase(std::remove_if(ids.begin(), ids.end(), [&](const ID& target) {
+                const auto found = available.find(target);
+                if (found == available.end()) return true;
+                if (!found->second) throw std::invalid_argument("Invalid pitch track");
+                return false;
+            }), ids.end());
         }
-        for (const auto& track : song.tracks) {
-            if (requested.empty()) break;
-            if (requested.find(track.id) != requested.end() && fixedTrackName(track.role).empty())
-                requested.erase(track.id);
-        }
-        if (!requested.empty()) throw std::invalid_argument("Invalid pitch track");
         for (auto& part : song.parts) if (part.id == id) {
             part.pitchSemitones = semitones; part.pitchTrackIDs = std::move(tracks); part.pitchGroupIDs = std::move(groups); return;
         }
@@ -495,6 +499,25 @@ void Engine::editRegion(const ID& id, std::string name, unsigned color, bool upp
             return;
         }
     throw std::invalid_argument("Unknown region");
+}
+void Engine::exchangeTimelineNames(const ID& songID, std::map<ID, std::string>& regions,
+                                   std::map<ID, std::string>& markers) {
+    projectSync::requireWritable();
+    auto song = std::find_if(project_.songs.begin(), project_.songs.end(), [&](const auto& item) { return item.id == songID; });
+    if (song == project_.songs.end()) throw std::invalid_argument("Unknown song");
+    auto matched = [](const auto& entries, const auto& names) {
+        return size_t(std::count_if(entries.begin(), entries.end(), [&](const auto& entry) { return names.count(entry.id) != 0; })) == names.size();
+    };
+    if (!matched(song->parts, regions) || (!markers.empty() && (!song->markers || !matched(*song->markers, markers))))
+        throw std::invalid_argument("Unknown timeline label");
+    auto exchange = [](auto& entries, auto& names) {
+        for (auto& entry : entries) {
+            auto name = names.find(entry.id);
+            if (name != names.end()) entry.name.swap(name->second);
+        }
+    };
+    exchange(song->parts, regions);
+    if (song->markers) exchange(*song->markers, markers);
 }
 void Engine::moveClip(const ID& clipId, double start, const ID& destination) {
     projectSync::requireWritable();
@@ -739,6 +762,13 @@ void Engine::setMarkers(const std::vector<TimelineMarker>& markers, const std::v
         if(transport_.multiLoop) {transport_.multiLoop->start=map->position(transport_.multiLoop->start);transport_.multiLoop->end=map->position(transport_.multiLoop->end);}
     }
 }
+static unsigned randomArrangementColor() {
+    static thread_local std::mt19937 generator(std::random_device{}());
+    std::uniform_int_distribution<unsigned> channel(70, 235);
+    const auto red = channel(generator);
+    const auto green = channel(generator);
+    return (red << 16) | (green << 8) | channel(generator);
+}
 void Engine::regionFromClip(const ID& clipId, ID regionId) {
     projectSync::requireWritable();
     regionsFromClips({{clipId, std::move(regionId)}});
@@ -749,8 +779,6 @@ void Engine::regionsFromClips(const std::vector<std::pair<ID, ID>>& items) {
     Project next = project_;
     auto song = std::find_if(next.songs.begin(), next.songs.end(), [&](const auto& value) { return value.id == transport_.songId; });
     if (song == next.songs.end()) throw std::invalid_argument("No current arrangement");
-    static std::mt19937 colors(std::random_device{}());
-    std::uniform_int_distribution<unsigned> channel(70, 235);
     for (const auto& [clipId, regionId] : items) {
         const AudioClip* source = nullptr;
         for (const auto& track : song->tracks) for (const auto& clip : track.clips) if (clip.id == clipId) {
@@ -769,7 +797,7 @@ void Engine::regionsFromClips(const std::vector<std::pair<ID, ID>>& items) {
             }
         }
         if (name.empty()) name = source->name;
-        const unsigned rgb = (channel(colors) << 16) | (channel(colors) << 8) | channel(colors);
+        const unsigned rgb = randomArrangementColor();
         song->parts.push_back({regionId, name, source->startTime, source->startTime + source->duration, rgb});
         for (auto& track : song->tracks) for (auto& clip : track.clips) if (clip.id == clipId) clip.regionOwnerID = regionId;
     }
@@ -822,6 +850,7 @@ void Engine::setClipFXBypass(const ID& id, bool bypassed) {
     throw std::invalid_argument("Unknown FX item");
 }
 void Engine::setClipPitchState(const ID& id, std::optional<double> semitones) {
+    if (!tunerInputAllowed()) return;
     projectSync::requireWritable();
     if (semitones && (!std::isfinite(*semitones) || *semitones < -12 || *semitones > 12))
         throw std::invalid_argument("Invalid item pitch");
@@ -983,6 +1012,24 @@ void Engine::addRecordedClip(const ID& id, AudioClip clip, bool replacing) {
     }
     throw std::invalid_argument("Unknown recording track");
 }
+std::map<ID,double> Engine::setTrackHeights(const ID& songID, const std::map<ID,double>& scales) {
+    projectSync::requireWritable();
+    for (const auto& entry : scales)
+        if (!std::isfinite(entry.second) || entry.second < .1 || entry.second > 10.)
+            throw std::invalid_argument("Invalid track height");
+    auto song = std::find_if(project_.songs.begin(), project_.songs.end(), [&](const Song& s){ return s.id == songID; });
+    if (song == project_.songs.end()) throw std::invalid_argument("Unknown grid");
+    std::map<ID,double> previous;
+    size_t found = 0;
+    for (const auto& row : song->tracks) if (auto it = scales.find(row.id); it != scales.end()) {
+        ++found;
+        if (row.heightScale.value_or(1.) != it->second) previous.emplace(row.id, row.heightScale.value_or(1.));
+    }
+    if (found != scales.size()) throw std::invalid_argument("Unknown track");
+    for (auto& row : song->tracks) if (auto it = scales.find(row.id); it != scales.end())
+        row.heightScale = it->second == 1. ? std::nullopt : std::optional<double>(it->second);
+    return previous;
+}
 void Engine::setTrackHeight(const ID& songID, const std::optional<ID>& id, double scale) {
     projectSync::requireWritable();
     if (!std::isfinite(scale) || scale < 0.1 || scale > 10 || (!id && scale != 1))
@@ -1006,6 +1053,29 @@ void Engine::editMasterColor(unsigned color) {
     projectSync::requireWritable();
     if (color > 0xffffff) throw std::invalid_argument("Invalid master color");
     project_.masterColor = color;
+}
+Engine::TrackColors Engine::randomTrackColors(const ID& songID, const std::set<ID>& tracks) const {
+    TrackColors result;
+    const auto* song = currentSong();
+    if (!song || song->id != songID) return result;
+    std::set<unsigned> assigned;
+    for (const auto& track : song->tracks) if (tracks.count(track.id)) {
+        unsigned color;
+        do { color = randomArrangementColor(); } while (track.color == color || !assigned.insert(color).second);
+        result.emplace(track.id, color);
+    }
+    return result;
+}
+void Engine::exchangeTrackColors(const ID& songID, TrackColors& colors) {
+    projectSync::requireWritable();
+    const auto song = std::find_if(project_.songs.begin(), project_.songs.end(), [&](const auto& row) { return row.id == songID; });
+    if (song == project_.songs.end()) throw std::invalid_argument("Unknown grid");
+    for (const auto& entry : colors)
+        if (entry.second && *entry.second > 0xffffff) throw std::invalid_argument("Invalid track color");
+    for (auto& track : song->tracks) {
+        const auto entry = colors.find(track.id);
+        if (entry != colors.end()) track.color.swap(entry->second);
+    }
 }
 void Engine::editTrack(const ID& id, std::string name, std::optional<unsigned> color) {
     projectSync::requireWritable();
@@ -1402,6 +1472,7 @@ void Engine::execute(const Command& c) {
             }
         throw std::invalid_argument("Unknown clip");
     case CommandKind::clipPitch:
+        if (!tunerInputAllowed()) return;
         if (!std::isfinite(c.value) || c.value < -12 || c.value > 12) throw std::invalid_argument("Invalid item pitch");
         for (auto& song : project_.songs) for (auto& track : song.tracks) for (auto& clip : track.clips)
             if (clip.id == c.target) {

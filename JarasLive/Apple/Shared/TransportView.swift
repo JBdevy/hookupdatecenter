@@ -36,7 +36,7 @@ enum TimelineEditPreferences {
 #if os(macOS)
 final class DesktopTimelineToolbar: ObservableObject {
     struct Limits: Equatable {
-        var zoom = 0.001...TimelineZoomLimits.maximum
+        var zoom = TimelineZoomLimits.minimum...TimelineZoomLimits.maximum
         var tracks = Double(TimelineTrackHeightLimits.minimum)...Double(TimelineTrackHeightLimits.maximum)
     }
 
@@ -151,7 +151,7 @@ struct TransportView: View {
     static func desktopHeight(width: CGFloat, remote: Bool, multipleProjects: Bool) -> CGFloat {
         if remote { return 86 }
         let panelWidth = width - 16 - 6 - TransportControlMetrics.desktopMainWidth
-        return DesktopTransportLayout(width: panelWidth, multipleProjects: multipleProjects).compact ? 121 : 91
+        return DesktopTransportLayout(width: panelWidth, multipleProjects: multipleProjects).compact ? 101 : 71
     }
 
     #endif
@@ -467,6 +467,18 @@ private struct TransportDisplaysLive<Actions: View, Playback: View>: View {
         _updates = StateObject(wrappedValue: show.presentationObserver)
     }
 
+    private func legacyTitle<Title: View>(_ title: Title, width: CGFloat, sideWidth: CGFloat) -> some View {
+        ZStack(alignment: .leading) {
+            title.frame(width: width, height: 27)
+                .transportTitleMenu(selection: $titleMode)
+                .frame(maxWidth: .infinity)
+                .accessibilityLabel(Text(verbatim: titleMode.rawValue))
+            TransportTimeDisplay(show: show)
+                .frame(width: sideWidth - 8, alignment: .leading)
+                .padding(.leading, 8)
+        }
+    }
+
     var body: some View {
         let transport = show.snapshot.transport
         let displays = TransportSongDisplays(song: show.current, transport: transport,
@@ -477,60 +489,30 @@ private struct TransportDisplaysLive<Actions: View, Playback: View>: View {
             let sideWidth = max(132, titleInset)
             let noticeWidth = min(210, max(0, geometry.size.width / 2 - 224))
             let centeredTitleWidth = max(0, geometry.size.width - 2 * sideWidth - 16)
-            #if os(macOS)
-            let titleFont = NSFont.jarasSystemFont(ofSize: TransportControlMetrics.readoutSize, weight: .semibold)
-            let expandTitle = proMode && (name as NSString).size(withAttributes: [.font: titleFont]).width > centeredTitleWidth
-            #else
-            let expandTitle = false
-            #endif
-            let rightInset = TransportResourceMeters.width + 16
-            let titleWidth = expandTitle ? max(0, geometry.size.width - sideWidth - rightInset) : centeredTitleWidth
             let songTitle = Text(verbatim: name)
                 .font(.jarasSystem(size: TransportControlMetrics.readoutSize, weight: .semibold))
                 .foregroundStyle(transport.playing ? JarasTheme.green : JarasTheme.text)
                 .lineLimit(1).truncationMode(.tail)
-            let title = ZStack(alignment: .leading) {
-                songTitle.frame(width: titleWidth, height: 27)
-                    .transportTitleMenu(selection: $titleMode)
-                    .padding(.leading, expandTitle ? sideWidth : 0)
-                    .padding(.trailing, expandTitle ? rightInset : 0)
-                    .frame(maxWidth: .infinity)
-                    .accessibilityLabel(Text(verbatim: titleMode.rawValue)).accessibilityValue(name)
-                HStack(spacing: 9) {
-                    #if os(macOS)
-                    if proMode {
-                        VStack(alignment: .leading, spacing: 4) {
-                            ProTimelinePosition(show: show)
-                            if let timerReadout { timerReadout }
-                        }
-                    } else if desktopLayout != nil {
-                        TimelineNavigationControls(show: show)
-                        TransportTimeDisplay(show: show)
-                    } else {
-                        TransportTimeDisplay(show: show)
-                    }
-                    #else
-                    TransportTimeDisplay(show: show)
-                    #endif
-                }
-                    .frame(width: sideWidth - 8, alignment: .topLeading)
-                    #if os(macOS)
-                    .foregroundStyle(JarasTheme.licenseTitleGreen)
-                    #else
-                    .foregroundStyle(JarasTheme.text)
-                    #endif
-                    .padding(.leading, desktopLayout == nil ? 8 : 4)
-            }.frame(height: statusControls == nil ? 27 : 47, alignment: .top)
+            let title = HStack(spacing: 8) {
                 #if os(macOS)
-                .overlay(alignment: .topTrailing) {
-                    if proMode {
-                        VStack(alignment: .trailing, spacing: 2) {
-                            if let statusControls { statusControls }
-                            TransportResourceMeters()
-                        }.padding(.trailing, 8)
-                    }
+                if proMode {
+                    ProTimelinePosition(show: show).fixedSize()
+                    songTitle.frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle()).transportTitleMenu(selection: $titleMode)
+                        .accessibilityLabel(Text(verbatim: titleMode.rawValue)).accessibilityValue(name)
+                    if let timerReadout { timerReadout.fixedSize() }
+                    TransportResourceMeters()
+                    if let statusControls { statusControls.fixedSize() }
+                } else {
+                    legacyTitle(songTitle, width: centeredTitleWidth, sideWidth: sideWidth)
                 }
+                #else
+                legacyTitle(songTitle, width: centeredTitleWidth, sideWidth: sideWidth)
                 #endif
+            }
+            .padding(.leading, proMode ? 4 : 0)
+            .padding(.trailing, proMode ? 8 : 0)
+            .frame(height: 27)
             let details = HStack(spacing: TransportControlMetrics.groupSpacing) {
                 MetronomeModeButton()
                 MetronomeControl()

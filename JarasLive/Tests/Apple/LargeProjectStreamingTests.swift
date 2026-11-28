@@ -1,5 +1,4 @@
-// Opt-in hardware benchmark. Inputs are a local decoded project JSON and its
-// original media directory; the fixture never writes into either location.
+// Opt-in hardware benchmark using a saved project and its original media.
 import AVFoundation
 import Foundation
 import Darwin
@@ -17,15 +16,20 @@ func footprint() -> UInt64 {
 }
 @MainActor func run() async throws {
     let env = ProcessInfo.processInfo.environment
-    guard let json = env["CATLIVE_STRESS_PROJECT_JSON"], let folder = env["CATLIVE_STRESS_MEDIA_DIRECTORY"] else {
-        fatalError("Set CATLIVE_STRESS_PROJECT_JSON and CATLIVE_STRESS_MEDIA_DIRECTORY")
+    guard let path = env["CATLIVE_STRESS_PROJECT"] ?? env["CATLIVE_STRESS_PROJECT_JSON"] else {
+        fatalError("Set CATLIVE_STRESS_PROJECT to a saved .jl file")
     }
-    let project = try JSONDecoder().decode(Project.self, from: Data(contentsOf: URL(fileURLWithPath: json)))
+    let document = URL(fileURLWithPath: path)
+    let folder = env["CATLIVE_STRESS_MEDIA_DIRECTORY"].map { URL(fileURLWithPath: $0) } ?? document.deletingLastPathComponent()
+    let project = try ProjectDocumentCodec.decode(Data(contentsOf: document))
     guard let song = project.songs.first else { fatalError("The project must contain a song") }
     let position = Double(env["CATLIVE_STRESS_START_SECONDS"] ?? "0") ?? 0
     let seconds = max(5, min(120, Double(env["CATLIVE_STRESS_SECONDS"] ?? "20") ?? 20))
     let loopSeconds = max(0, Double(env["CATLIVE_STRESS_LOOP_SECONDS"] ?? "0") ?? 0)
     let baseline = env["CATLIVE_PREPARED_PLAYER_BASELINE"] == "1"
+    // The app loads the device catalog asynchronously while its window opens.
+    // Bind the selected output before measuring the headless transport.
+    AudioDeviceSettings.shared.refresh()
     let engine = AVAudioEngine()
     let audio = StemAudioPlayback(engine: engine, auxiliarySelectedHardware: true)
     audio.setLicenseAllowed(false) // Silence physical output, retaining the graph's actual processing.
@@ -33,7 +37,7 @@ func footprint() -> UInt64 {
     audio.onError = { failures.append($0.localizedDescription) }
     try audio.startDeviceSession()
     let opening = ProcessInfo.processInfo.systemUptime
-    try await audio.openPreparedProject(directory: URL(fileURLWithPath: folder), project: project)
+    try await audio.openPreparedProject(directory: folder, project: project)
     print("LARGE_OPEN_MS", (ProcessInfo.processInfo.systemUptime - opening) * 1000)
     var state = ShowSnapshot(project: project, transport: TransportState(playing: false,
         songId: song.id, position: position, queue: QueueState(), loop: LoopState(enabled: loopSeconds > 0, start: position, end: position + loopSeconds),
@@ -50,6 +54,7 @@ func footprint() -> UInt64 {
     var capturedFrames = 0, nonzeroFrames = 0
     var silentFrames = 0, longestSilence = 0
     var capturedPeak: Float = 0
+    var firstObservedSignal: TimeInterval?
     func drainCapture() {
         while true {
             let frames = samples.withUnsafeMutableBufferPointer { capture.readFrames($0.baseAddress!, maximum: 16384) }
@@ -58,7 +63,10 @@ func footprint() -> UInt64 {
             for n in 0..<Int(frames) {
                 let level = max(abs(samples[n * 2]), abs(samples[n * 2 + 1]))
                 capturedPeak = max(capturedPeak, level)
-                if level > 0.000001 { nonzeroFrames += 1; silentFrames = 0 }
+                if level > 0.000001 {
+                    if firstObservedSignal == nil { firstObservedSignal = ProcessInfo.processInfo.systemUptime }
+                    nonzeroFrames += 1; silentFrames = 0
+                }
                 else if nonzeroFrames > 0 {
                     silentFrames += 1; longestSilence = max(longestSilence, silentFrames)
                 }
@@ -95,6 +103,7 @@ func footprint() -> UInt64 {
     }
     print("LARGE_OUTPUT_FINAL", audio.bufferedAudioDiagnostics() ?? [:])
     drainCapture()
+    if let firstObservedSignal { print("LARGE_FIRST_CAPTURED_SIGNAL_MS", (firstObservedSignal - start) * 1000) }
     print("LARGE_CAPTURE frames=\(capturedFrames) nonzeroFrames=\(nonzeroFrames) peak=\(capturedPeak) longestSilenceFrames=\(longestSilence)")
     precondition(capturedFrames > 0 && nonzeroFrames > 0, "Moving meters alone do not prove actual output PCM")
     if env["CATLIVE_STRESS_REQUIRE_HEALTHY"] == "1" {

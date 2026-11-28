@@ -1,6 +1,7 @@
 #pragma once
 #include "Common.h"
 #include "MediaPath.h"
+#include "LinkedStemMedia.h"
 #include "WaveformDetailPeaks.h"
 namespace catlive {
 // The same signed RPKL peak scale and 256/1024/... hierarchy as the Mac.
@@ -215,8 +216,9 @@ class WaveformCache final {
     // Reopening a decoder must not decode the complete show a second time just
     // to locate attacks that are already present in a prepared waveform cache.
     static std::shared_ptr<Data> forAnalysis(const File &requested, AudioFormatReader &reader,
-                                              const std::atomic<bool> *cancel = nullptr) {
+                                              const std::atomic<bool> *cancel = nullptr, bool cachePeaks = true) {
         if (cancel && cancel->load()) return {};
+        if (!cachePeaks) return analyse(reader, cancel);
         const auto file = existingMediaPath(requested);
         const auto size = file.getSize(), modified = file.getLastModificationTime().toMilliseconds();
         const auto destination = cacheFile(file, size, modified);
@@ -349,11 +351,13 @@ class WaveformCache final {
     }
   private:
     static File macCacheFile(const File &file) {
+        if (const auto linked = LinkedStemMedia::shared().waveform(file); linked != File{}) return linked;
         for (auto parent = file.getParentDirectory(); parent != parent.getParentDirectory(); parent = parent.getParentDirectory())
             if (parent.getFileName().equalsIgnoreCase("Stems")) return parent.getChildFile("WF").getChildFile(file.getRelativePathFrom(parent) + ".waveform");
         return file.getParentDirectory().getChildFile("Stems/WF").getChildFile(file.getFileName() + ".waveform");
     }
     static File cacheFile(const File &file, int64 size, int64 modified) {
+        if (const auto linked = LinkedStemMedia::shared().waveform(file); linked != File{}) return linked;
         String identity = file.getFullPathName();
         // Copies of a project can share a Stems junction; share its cache too.
         const auto handle = CreateFileW(file.getFullPathName().toWideCharPointer(), FILE_READ_ATTRIBUTES,

@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(UniformTypeIdentifiers)
+import UniformTypeIdentifiers
+#endif
 
 public struct TrackRole: Codable, Hashable, Sendable, RawRepresentable {
     public var rawValue: String
@@ -7,6 +10,20 @@ public struct TrackRole: Codable, Hashable, Sendable, RawRepresentable {
     public static let chords = Self(rawValue: "chords")
     public init(from decoder: Decoder) throws { rawValue = try decoder.singleValueContainer().decode(String.self) }
     public func encode(to encoder: Encoder) throws { var box = encoder.singleValueContainer(); try box.encode(rawValue) }
+}
+public struct AdjustedVideoSource: Codable, Equatable, Sendable {
+    public struct Point: Codable, Equatable, Sendable { public var time: Double; public var source: Double }
+    public var path: String
+    public var points: [Point]
+    public var loopStart: Double?
+    public var loopLength: Double?
+    func clock(at time: Double) -> (Double, Double) {
+        guard points.count >= 2 else { return (time, 1) }
+        let index = min(points.count - 2, max(0, points.lastIndex(where: { $0.time <= time }) ?? 0))
+        let a = points[index], b = points[index+1]
+        let rate = (b.source-a.source)/(b.time-a.time)
+        return (a.source + (time-a.time)*rate, rate)
+    }
 }
 public struct AudioFile: Codable, Equatable, Sendable { public var path: String; public var sha256: String? }
 public struct ItemTempoReference: Codable, Equatable, Sendable { public var markerID: UUID; public var rate: Double; public init(markerID: UUID, rate: Double) { self.markerID = markerID; self.rate = rate } }
@@ -118,7 +135,21 @@ public extension Array where Element == ElasticPoint {
         return lower <= upper ? Swift.max(lower, Swift.min(upper, proposed)) : self[index].position
     }
 }
-public struct AudioClip: Codable, Identifiable, Equatable, Sendable { public var id: UUID; public var name: String; public var startTime: Double; public var duration: Double; public var separatedStemTracks: [UUID]?; public var sourceOffset: Double = 0; public var waveform: [Double] = []; public var audioFile: AudioFile?; public var gain: Double?; public var phaseInverted: Bool? = nil; public var pan: Double? = nil; public var normalizationGain: Double?; public var fadeIn: Double?; public var fadeOut: Double?; public var fadeControlsEnabled: Bool? = nil; public var fadeInCurve: Double? = nil; public var fadeInSCurve: Double? = nil; public var fadeOutCurve: Double? = nil; public var fadeOutSCurve: Double? = nil;  public var fadeTimelineStart: Double?; public var fadeTimelineDuration: Double?; public var channelMode: Int?; public var waveformChannels: [[Double]]?; public var muted: Bool?; public var playbackRate: Double?; public var recordingLane: Int?; public var loopStart: Double?; public var loopLength: Double?; public var fx: NativeFXSettings?; public var timecode: TimecodeSettings?; public var timecodeStartOffset: Double?; public var timecodeEndOffset: Double?; public var fxBypassed: Bool?; public var text: String?; public var midi: MIDIItem?; public var frozenMIDI: Bool?; public var renderedTiming: Bool?; public var pitchSemitones: Double? = nil; public var regionOwnerID: UUID? = nil; public var automation: TrackAutomation? = nil; public var automationSourceOffset: Double? = nil; public var tempoBasePlaybackRate: Double? = nil; public var renderedTempo: Bool? = nil; public var clickDouble: Bool? = nil; public var tempoRateReferences: [ItemTempoReference]? = nil; public var elasticPoints: [ElasticPoint]? = nil; public var elasticSourceScale: Double? = nil; public var audioRate: Double { playbackRate ?? 1 } }
+public struct AudioClip: Codable, Identifiable, Equatable, Sendable { public var id: UUID; public var name: String; public var startTime: Double; public var duration: Double; public var separatedStemTracks: [UUID]?; public var sourceOffset: Double = 0; public var waveform: [Double] = []; public var audioFile: AudioFile?; public var gain: Double?; public var phaseInverted: Bool? = nil; public var pan: Double? = nil; public var normalizationGain: Double?; public var fadeIn: Double?; public var fadeOut: Double?; public var fadeControlsEnabled: Bool? = nil; public var fadeInCurve: Double? = nil; public var fadeInSCurve: Double? = nil; public var fadeOutCurve: Double? = nil; public var fadeOutSCurve: Double? = nil;  public var fadeTimelineStart: Double?; public var fadeTimelineDuration: Double?; public var channelMode: Int?; public var waveformChannels: [[Double]]?; public var muted: Bool?; public var playbackRate: Double?; public var recordingLane: Int?; public var loopStart: Double?; public var loopLength: Double?; public var fx: NativeFXSettings?; public var timecode: TimecodeSettings?; public var timecodeStartOffset: Double?; public var timecodeEndOffset: Double?; public var fxBypassed: Bool?; public var text: String?; public var midi: MIDIItem?; public var frozenMIDI: Bool?; public var renderedTiming: Bool?; public var pitchSemitones: Double? = nil; public var regionOwnerID: UUID? = nil; public var automation: TrackAutomation? = nil; public var automationSourceOffset: Double? = nil; public var tempoBasePlaybackRate: Double? = nil; public var renderedTempo: Bool? = nil; public var clickDouble: Bool? = nil; public var tempoRateReferences: [ItemTempoReference]? = nil; public var adjustedVideo: AdjustedVideoSource? = nil; public var elasticPoints: [ElasticPoint]? = nil; public var elasticSourceScale: Double? = nil; public var audioRate: Double { playbackRate ?? 1 } }
+extension AudioClip {
+    var itemWaveLFO: WaveLFOEnvelope? {
+        guard fxBypassed != true, let envelope = fx?.activeWaveLFO, midi == nil, !isImage else { return nil }
+        return envelope
+    }
+    func effectiveWaveLFO(inheriting trackEnvelope: WaveLFOEnvelope?) -> WaveLFOEnvelope? {
+        if fxBypassed != true, fx?.inserted.contains(NativeFXSettings.waveLFOName) == true {
+            return itemWaveLFO
+        }
+        guard let trackEnvelope, midi == nil, !isImage else { return nil }
+        return trackEnvelope
+    }
+}
+
 public extension AudioClip {
     func isTeleprompterLyric(on track: Track) -> Bool {
         track.kind.isTeleprompter && !isProjectionMedia && audioFile == nil && midi == nil
@@ -128,7 +159,38 @@ public extension AudioClip {
         return track.kind == .standard && text == nil && timecode == nil &&
             (track.audioFile != nil || !waveform.isEmpty || waveformChannels?.isEmpty == false)
     }
-    var isProjectionMedia: Bool { audioFile?.path.hasPrefix("Videos/") == true }
+    /// File-backed audio, including movie soundtracks independently of live video monitoring.
+    public func audioMedia(on track: Track) -> AudioFile? {
+        guard midi == nil, let file = audioFile ?? track.audioFile else { return nil }
+        guard isProjectionMedia || track.kind == .video else { return track.kind == .standard ? file : nil }
+        let ext = (file.path as NSString).pathExtension.lowercased()
+        switch ext {
+        case "mov", "mp4", "m4v", "avi", "mkv", "webm", "mpg", "mpeg", "wmv", "mts", "m2ts",
+             "wav", "wave", "aif", "aiff", "aifc", "mp3", "m4a", "aac", "caf", "flac": return file
+        default:
+            #if canImport(UniformTypeIdentifiers)
+            if let type = UTType(filenameExtension: ext), type.conforms(to: .movie) || type.conforms(to: .audio) { return file }
+            #endif
+            return nil
+        }
+    }
+    var isProjectionMedia: Bool { adjustedVideo != nil || audioFile?.path.hasPrefix("Videos/") == true }
+    func adjustedVideoSource(at edges: [Double], newTime: (Double) -> Double) -> AdjustedVideoSource? {
+        guard let path = adjustedVideo?.path ?? audioFile?.path else { return nil }
+        let prior = adjustedVideo?.points.map { startTime + $0.time } ?? []
+        let boundaries = Set(edges + prior.filter { $0 > startTime && $0 < startTime + duration }).sorted()
+        return AdjustedVideoSource(path: path, points: boundaries.map {
+            .init(time: newTime($0) - newTime(startTime), source: adjustedVideo?.clock(at: $0-startTime).0 ?? (sourceOffset+($0-startTime)*audioRate))
+        }, loopStart: adjustedVideo?.loopStart ?? loopStart, loopLength: adjustedVideo?.loopLength ?? loopLength)
+    }
+    func visualClip(at time: Double) -> Self {
+        guard let visual = adjustedVideo else { return self }
+        let elapsed = time - startTime, (source, rate) = visual.clock(at: elapsed)
+        var copy = self; copy.audioFile = AudioFile(path: visual.path); copy.adjustedVideo = nil
+        copy.sourceOffset = source - elapsed*rate; copy.playbackRate = rate
+        copy.loopStart = visual.loopStart; copy.loopLength = visual.loopLength
+        return copy
+    }
     var isImage: Bool { isProjectionMedia && ["png", "jpg", "jpeg", "gif", "heic", "heif", "tif", "tiff", "bmp", "webp", "avif"].contains(URL(fileURLWithPath: audioFile?.path ?? "").pathExtension.lowercased()) }
 }
 /// The existing persisted channel field also identifies a MIDI take (zero PCM channels).
@@ -187,7 +249,7 @@ public struct Track: Codable, Identifiable, Equatable, Sendable {
     public var stackedStems: Bool? = nil
     public var hiddenMixerComponents: Int? = nil
     public var supportsMixerComponents: Bool { kind == .standard && role.rawValue != "vinhetas" }
-    public var allowsCompactMixerHeight: Bool { supportsMixerComponents || kind == .programChange || kind == .click || kind.isTeleprompter }
+    public var allowsCompactMixerHeight: Bool { kind == .standard || kind == .programChange || kind == .click || kind.isTeleprompter }
     public var availableMixerComponents: [TrackMixerComponent] {
         supportsMixerComponents ? TrackMixerComponent.allCases : [.vuMeter]
     }
@@ -314,23 +376,27 @@ public enum TrackHeightGeometry {
     public static func scale(_ value: Double?) -> Double { value.flatMap { isValidScale($0) ? $0 : nil } ?? 1 }
     public static let minimumLaneHeight = 66.0
     public static let compactMinimumLaneHeight = 28.0
+    public static let desktopMinimumLaneHeight = 34.0
+    public static let desktopCompactMinimumLaneHeight = 18.0
     public static let compactControlHeight = 64.0
-    public static func laneLimits(count: Int, allowsCompactHeight: Bool = false) -> ClosedRange<Double> {
-        let minimum = allowsCompactHeight ? compactMinimumLaneHeight : minimumLaneHeight
-        return count > 1 ? max(26, minimum / Double(count))...168 : minimum...240
+    public static func laneLimits(count: Int, allowsCompactHeight: Bool = false, desktop: Bool = false) -> ClosedRange<Double> {
+        let regular = desktop ? desktopMinimumLaneHeight : minimumLaneHeight
+        let compact = desktop ? desktopCompactMinimumLaneHeight : compactMinimumLaneHeight
+        let minimum = allowsCompactHeight ? compact : regular
+        return count > 1 ? max(desktop ? desktopCompactMinimumLaneHeight : 26, minimum / Double(count))...168 : minimum...240
     }
-    public static func laneHeight(base: Double, scale: Double, count: Int, allowsCompactHeight: Bool = false) -> Double {
-        let limits = laneLimits(count: count, allowsCompactHeight: allowsCompactHeight)
+    public static func laneHeight(base: Double, scale: Double, count: Int, allowsCompactHeight: Bool = false, desktop: Bool = false) -> Double {
+        let limits = laneLimits(count: count, allowsCompactHeight: allowsCompactHeight, desktop: desktop)
         return min(limits.upperBound, max(limits.lowerBound, base * (count > 1 ? 0.7 : 1) * scale))
     }
     /// Stop a shared zoom at the first row limit, keeping all row proportions.
-    public static func globalLimits(scales: [Double], laneCounts: [Int], current: Double = 64, compact: [Bool] = []) -> ClosedRange<Double> {
+    public static func globalLimits(scales: [Double], laneCounts: [Int], current: Double = 64, compact: [Bool] = [], desktop: Bool = false) -> ClosedRange<Double> {
         let hasCompact = compact.prefix(scales.count).contains(true)
-        var lower = hasCompact ? Double.infinity : minimumLaneHeight, upper = 240.0
+        var lower = hasCompact ? Double.infinity : (desktop ? desktopMinimumLaneHeight : minimumLaneHeight), upper = 240.0
         for (index, scale) in scales.enumerated() {
             let count = laneCounts.indices.contains(index) ? laneCounts[index] : 1
             let isCompact = compact.indices.contains(index) && compact[index]
-            let limits = laneLimits(count: count, allowsCompactHeight: isCompact), multiplier = scale * (count > 1 ? 0.7 : 1)
+            let limits = laneLimits(count: count, allowsCompactHeight: isCompact, desktop: desktop), multiplier = scale * (count > 1 ? 0.7 : 1)
             // Full rows stop at their own floor while compact rows continue to shrink.
             if !hasCompact { lower = max(lower, limits.lowerBound / multiplier) }
             else if isCompact { lower = min(lower, limits.lowerBound / multiplier) }
@@ -642,6 +708,17 @@ public struct Song: Codable, Identifiable, Equatable, Sendable {
         return track.mute || !(TrackHierarchy.soloAudibleTracks(tracks)?.contains(track.id) ?? true)
     }
 }
+extension Song {
+    mutating func setTimelineNames(regions: [UUID: String], markers names: [UUID: String]) {
+        for index in parts.indices {
+            if let name = regions[parts[index].id] { parts[index].name = name }
+        }
+        for index in markers?.indices ?? 0..<0 {
+            if let id = markers?[index].id, let name = names[id] { markers?[index].name = name }
+        }
+    }
+}
+
 public struct Setlist: Codable, Identifiable, Equatable, Sendable { public var id: UUID; public var name: String; public var songIds: [UUID] }
 public struct RegionPlaylistDuplicate: Codable, Identifiable, Equatable, Sendable {
     public var id: UUID
@@ -1015,6 +1092,13 @@ public struct Project: Codable, Identifiable, Equatable, Sendable {
                     try register(clip.id)
                     guard (clip.waveformChannels ?? []).allSatisfy({ $0.allSatisfy { $0.isFinite && (0...1).contains($0) } }) else { throw ProjectError.invalid("Invalid channel waveform") }
                     guard clip.audioRate.isFinite, (1.0/32...32).contains(clip.audioRate) else { throw ProjectError.invalid("Invalid audio playback rate.") }
+                    if let visual = clip.adjustedVideo {
+                        guard clip.audioFile != nil, visual.points.count >= 2, visual.points[0].time == 0,
+                              visual.points.allSatisfy({ $0.time.isFinite && $0.source.isFinite && $0.source >= 0 }),
+                              zip(visual.points, visual.points.dropFirst()).allSatisfy({ $0.time < $1.time && $0.source < $1.source }),
+                              visual.loopStart.map({ $0.isFinite && $0 >= 0 }) ?? true,
+                              visual.loopLength.map({ $0.isFinite && $0 > 0 }) ?? true else { throw ProjectError.invalid("Invalid adjusted video clock") }
+                    }
                     guard ElasticPoint.valid(clip.elasticPoints ?? []), clip.elasticSourceScale.map({ $0.isFinite && $0 > 0 }) ?? true else { throw ProjectError.invalid("Invalid elastic points") }
                     let tempoReferences = clip.tempoRateReferences ?? []
                     guard Set(tempoReferences.map(\.markerID)).count == tempoReferences.count, tempoReferences.allSatisfy({ $0.rate.isFinite && $0.rate > 0 }) else { throw ProjectError.invalid("Invalid item tempo reference") }
@@ -1028,7 +1112,7 @@ public struct Project: Codable, Identifiable, Equatable, Sendable {
                     guard clip.gain == nil || (clip.gain!.isFinite && clip.gain! >= 0) else { throw ProjectError.invalid("Invalid clip gain") }
                     guard clip.startTime.isFinite, clip.duration.isFinite, clip.startTime >= 0, clip.duration > 0, clip.startTime + clip.duration <= song.duration, clip.sourceOffset.isFinite, clip.sourceOffset >= 0, clip.waveform.allSatisfy({ $0.isFinite && (0...1).contains($0) }) else { throw ProjectError.invalid("Bloco de áudio inválido.") }
                 }
-                for file in [track.audioFile, track.clickSound].compactMap({ $0 }) + track.clips.compactMap(\.audioFile) {
+                for file in [track.audioFile, track.clickSound].compactMap({ $0 }) + track.clips.compactMap(\.audioFile) + track.clips.compactMap({ $0.adjustedVideo.map { AudioFile(path: $0.path) } }) {
                     let parts = file.path.split(separator: "/", omittingEmptySubsequences: false)
                     guard !file.path.isEmpty, !file.path.contains("\\"), !file.path.contains(":"), parts.allSatisfy({ !$0.isEmpty && $0 != ".." && $0 != "." }) else { throw ProjectError.invalid("Use caminhos relativos para o áudio.") }
                     if let hash = file.sha256 { guard hash.count == 64, hash.allSatisfy({ $0.isHexDigit }) else { throw ProjectError.invalid("SHA-256 inválido.") } }
@@ -1687,7 +1771,7 @@ public extension Song {
     func firstProjectionItem(at position: Double, trackKind: TrackKind? = nil) -> AudioClip? {
         guard position.isFinite else { return nil }
         for track in tracks where !track.mute && (trackKind.map { track.kind == $0 } ?? !track.kind.isTeleprompter) {
-            for clip in track.clips where clip.isProjectionMedia && clip.muted != true && position >= clip.startTime && position < clip.startTime + clip.duration { return clip }
+            for clip in track.clips where clip.isProjectionMedia && clip.muted != true && position >= clip.startTime && position < clip.startTime + clip.duration { return clip.visualClip(at: position) }
         }
         return nil
     }

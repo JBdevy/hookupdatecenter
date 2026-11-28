@@ -120,6 +120,12 @@ private func setlistQueuedRegionID(_ region: UUID?, occurrence: UUID?, parent: U
         return cached
     }
 }
+enum SetlistDisplayMode: String {
+    case normal, compact
+    static let key = "jaras.setlist.mode"
+    func regionHeight(_ normal: CGFloat) -> CGFloat { self == .compact ? normal * 0.7 : normal }
+}
+
 struct SongListView: View {
     @AppStorage(JarasInterfaceTheme.preferenceKey) private var interfaceTheme = JarasInterfaceTheme.defaultTheme
     @AppStorage("jaras.language") private var language = "en"
@@ -172,6 +178,8 @@ struct SongListView: View {
     @State private var multiLoopRegion: Part?
     @State private var regionExport: RegionAudioExportRequest?
     @AppStorage("jaras.setlist.idMode") private var idMode = "playlist"
+    @AppStorage(SetlistDisplayMode.key) private var setlistMode = SetlistDisplayMode.normal
+    private var regionRowHeight: CGFloat { setlistMode.regionHeight(34) }
     @AppStorage("jaras.setlist.fontStyle") private var fontStyle = 0
     @ObservedObject private var allRegionsTextColor = AppearanceColor.shared("jaras.setlist.allRegionsTextColor", default: 0xffffff)
     @ObservedObject private var playlistTextColor = AppearanceColor.shared("jaras.setlist.playlistTextColor", default: 0x00ff9a)
@@ -419,7 +427,7 @@ struct SongListView: View {
                             let progress = active ? min(1, max(0, (transport.position - region.startTime) / duration)) : 0
                             let queueRemaining = queued ? max(0, playbackEnd - transport.position) : 0
                             let queueLength = max(0.001, playbackEnd - (transport.queueStartedAt ?? transport.position))
-                            RegionSetlistRow(region: region, fontStyle: fontStyle, nameColor: UInt32(region.parentRegionID != nil ? unifiedTextColor.value : playlist == nil ? allRegionsTextColor.value : playlistTextColor.value), number: idMode == "region" ? (regionIDs[show.playlistRegionSourceID(region.id)] ?? number) : number, selected: show.smkNavigation.focus == .songs && visibleSelection.contains(region.id),
+                            RegionSetlistRow(region: region, rowHeight: regionRowHeight, fontStyle: fontStyle, nameColor: UInt32(region.parentRegionID != nil ? unifiedTextColor.value : playlist == nil ? allRegionsTextColor.value : playlistTextColor.value), number: idMode == "region" ? (regionIDs[show.playlistRegionSourceID(region.id)] ?? number) : number, selected: show.smkNavigation.focus == .songs && visibleSelection.contains(region.id),
                                              active: active, queued: queued, prepareOnly: setlist.preparesWithoutPlayback, remaining: Int(ceil(remaining)),
                                              progress: progress, queueProgress: queued ? min(1, queueRemaining / queueLength) : 0,
                                              playedLive: show.playedLiveRegionIDs.contains(show.playlistRegionSourceID(region.id)),
@@ -485,7 +493,7 @@ struct SongListView: View {
                                     }
                                     }
                                 }
-                                .modifier(PlaylistRegionDrag(show: show, playlist: playlist?.id, entry: region.id, block: false, selection: $selectedEntries, locked: region.parentRegionID != nil, name: region.name, released: { selectEntry(region.id, visible: visible) }))
+                                .modifier(PlaylistRegionDrag(show: show, playlist: playlist?.id, entry: region.id, block: false, rowHeight: regionRowHeight, selection: $selectedEntries, locked: region.parentRegionID != nil, name: region.name, released: { selectEntry(region.id, visible: visible) }))
                                 .id(region.id)
                             }
                         }
@@ -1214,6 +1222,7 @@ private struct SetlistPressStyle: ButtonStyle {
 
 private struct RegionSetlistRow: View, Equatable {
     let region: Part
+    var rowHeight: CGFloat = 34
     var fontStyle: Int = 0
     var nameColor: UInt32 = 0xffffff
     let number: Int
@@ -1230,7 +1239,7 @@ private struct RegionSetlistRow: View, Equatable {
     var toggleDrawer: (() -> Void)? = nil
     let select: (SetlistSelectionPhase) -> Void
     static func == (a: Self, b: Self) -> Bool {
-        a.region == b.region && a.fontStyle == b.fontStyle && a.nameColor == b.nameColor && a.number == b.number && a.selected == b.selected &&
+        a.region == b.region && a.rowHeight == b.rowHeight && a.fontStyle == b.fontStyle && a.nameColor == b.nameColor && a.number == b.number && a.selected == b.selected &&
         a.active == b.active && a.queued == b.queued && a.prepareOnly == b.prepareOnly && a.remaining == b.remaining &&
         a.progress == b.progress && a.queueProgress == b.queueProgress && a.playedLive == b.playedLive && a.playback == b.playback && a.expanded == b.expanded
     }
@@ -1245,8 +1254,8 @@ private struct RegionSetlistRow: View, Equatable {
             #if os(macOS)
             NativeRegionSetlistLabel(number: number, name: region.displayName, duration: regionDurationText(Double(remaining)),
                 color: region.color ?? 0x705264, selected: selected, active: active, queued: queued, prepareOnly: prepareOnly,
-                progress: progress, queueProgress: queueProgress, fontStyle: fontStyle, nameColor: nameColor, playedLive: playedLive, playback: active || queued ? playback : nil)
-                .frame(height: 34).frame(maxWidth: .infinity).contentShape(Rectangle())
+                progress: progress, queueProgress: queueProgress, fontStyle: fontStyle, nameColor: nameColor, playedLive: playedLive, playback: active || queued ? playback : nil, rowHeight: rowHeight)
+                .frame(height: rowHeight).frame(maxWidth: .infinity).contentShape(Rectangle())
             #else
             HStack(spacing: 6) {
                 RoundedRectangle(cornerRadius: 2).fill(active ? Color.red : queued ? (prepareOnly ? JarasTheme.green : JarasTheme.yellow) : color).frame(width: 3)
@@ -1254,7 +1263,7 @@ private struct RegionSetlistRow: View, Equatable {
                     .frame(width: numberWidth, alignment: .leading)
                 Text(region.displayName).font(SetlistTypeface.font(fontStyle)).foregroundStyle(Color(hex: nameColor)).strikethrough(playedLive).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
                 Text(regionDurationText(Double(remaining))).font(.jarasSystem(size: 9, weight: .medium, design: .monospaced)).monospacedDigit().fixedSize()
-            }.padding(.horizontal, 8).padding(.vertical, 7).frame(height: 34).frame(maxWidth: .infinity)
+            }.padding(.horizontal, 8).padding(.vertical, 7).frame(height: rowHeight).frame(maxWidth: .infinity)
                 .background {
                     if active {
                         JarasTheme.liveOffRed
@@ -1294,12 +1303,12 @@ private struct RegionSetlistRow: View, Equatable {
                     Button(action: toggleDrawer) {
                         Image(systemName: expanded ? "chevron.down" : "chevron.right")
                             .font(.jarasSystem(size: 11, weight: .bold)).foregroundStyle(JarasTheme.green)
-                            .frame(width: 14, height: 34).contentShape(Rectangle())
+                            .frame(width: 14, height: rowHeight).contentShape(Rectangle())
                     }.buttonStyle(.plain).jarasHelp("Show unified songs").accessibilityLabel("Show unified songs")
                 } else {
-                    Color.clear.frame(width: 14, height: 34).allowsHitTesting(false)
+                    Color.clear.frame(width: 14, height: rowHeight).allowsHitTesting(false)
                 }
-            }.frame(width: 14, height: 34).fixedSize()
+            }.frame(width: 14, height: rowHeight).fixedSize()
         }
     }
 }
@@ -1325,8 +1334,10 @@ private struct NativeRegionSetlistLabel: NSViewRepresentable {
     var nameColor: UInt32 = 0xffffff
     var playedLive: Bool = false
     var playback: SetlistPlaybackBinding? = nil
+    var rowHeight: CGFloat = 34
     func makeNSView(context: Context) -> NativeRegionSetlistLabelView { NativeRegionSetlistLabelView() }
     func updateNSView(_ view: NativeRegionSetlistLabelView, context: Context) {
+        view.cardHeight = rowHeight
         view.applyPalette(interfaceTheme)
         view.configure(number: number, name: name, duration: duration, color: color, selected: selected,
                        active: active, queued: queued, prepareOnly: prepareOnly, progress: progress, queueProgress: queueProgress, fontStyle: fontStyle, nameColor: nameColor, playedLive: playedLive)
@@ -1334,7 +1345,7 @@ private struct NativeRegionSetlistLabel: NSViewRepresentable {
     }
     @available(macOS 13, *)
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: NativeRegionSetlistLabelView, context: Context) -> CGSize? {
-        CGSize(width: proposal.width ?? 0, height: 34)
+        CGSize(width: proposal.width ?? 0, height: rowHeight)
     }
 }
 private final class NativeRegionSetlistLabelView: NSView {
@@ -1411,7 +1422,8 @@ private final class NativeRegionSetlistLabelView: NSView {
     private var roundedBounds: CGRect = .null
     private var roundedPath: CGPath?
     override var isFlipped: Bool { true }
-    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: 34) }
+    var cardHeight: CGFloat = 34 { didSet { if cardHeight != oldValue { invalidateIntrinsicContentSize() } } }
+    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: cardHeight) }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -1518,7 +1530,7 @@ private final class NativeRegionSetlistLabelView: NSView {
             context.drawLinearGradient(Self.gradients[index], start: CGPoint(x: bounds.minX,y:0), end: CGPoint(x:bounds.maxX,y:0), options: [])
         } else { context.setFillColor(playedLive ? Self.playedBackground : cardBackground); context.fill(bounds) }
         context.setFillColor(stripe)
-        context.addPath(CGPath(roundedRect: CGRect(x:8,y:7,width:3,height:20), cornerWidth:2,cornerHeight:2,transform:nil));context.fillPath()
+        context.addPath(CGPath(roundedRect: CGRect(x: 8, y: bounds.height * 7 / 34, width: 3, height: bounds.height * 20 / 34), cornerWidth:2,cornerHeight:2,transform:nil));context.fillPath()
         let nameX: CGFloat = 8 + 3 + 6 + numberWidth + 6
         let durationX = bounds.width - 8 - durationWidth
         let available = max(0, durationX - 6 - nameX)
@@ -1854,6 +1866,7 @@ private struct PlaylistRegionDrag: ViewModifier {
     let playlist: UUID?
     let entry: UUID
     let block: Bool
+    var rowHeight: CGFloat = 34
     @Binding var selection: Set<UUID>
     var locked = false
     var name = ""
@@ -1866,7 +1879,7 @@ private struct PlaylistRegionDrag: ViewModifier {
         else {
             draggable(content)
                 .onDrop(of: [SetlistInsertionDrop.type], delegate: SetlistInsertionDrop(
-                    show: show, scope: scope, entry: entry, height: block ? 24 : 34, state: drag))
+                    show: show, scope: scope, entry: entry, height: block ? 24 : rowHeight, state: drag))
                 .overlay(alignment: insertionAfter == true ? .bottom : .top) {
                     if insertionAfter != nil {
                         Rectangle().fill(JarasTheme.green).frame(height: 3)
@@ -1976,15 +1989,15 @@ private final class SetlistNativeDragView: NSView {
         let source = SetlistNativeDragSource(); source.state = state; state.source = source
         source.edgeScroll.begin(from: row)
         let item = NSDraggingItem(pasteboardWriter: text as NSString)
-        let size = NSSize(width: max(80, min(300, row.bounds.width)), height: 34)
+        let size = NSSize(width: max(80, min(300, row.bounds.width)), height: row.bounds.height)
         let title = NSAttributedString(string: row.name, attributes: [.font: NSFont.jarasSystemFont(ofSize: 12, weight: .semibold), .foregroundColor: NSColor.labelColor])
         let preview = NSImage(size: size, flipped: true) { rect in
             NSColor.controlBackgroundColor.withAlphaComponent(0.9).setFill()
             NSBezierPath(roundedRect: rect, xRadius: 4, yRadius: 4).fill()
-            title.draw(in: rect.insetBy(dx: 8, dy: 9)); return true
+            title.draw(in: rect.insetBy(dx: 8, dy: max(0, (rect.height - title.size().height) / 2))); return true
         }
         let point = row.convert(event.locationInWindow, from: nil)
-        item.setDraggingFrame(NSRect(x: point.x - size.width / 2, y: point.y - 17, width: size.width, height: size.height), contents: preview)
+        item.setDraggingFrame(NSRect(x: point.x - size.width / 2, y: point.y - size.height / 2, width: size.width, height: size.height), contents: preview)
         let session = row.beginDraggingSession(with: [item], event: event, source: source)
         session.animatesToStartingPositionsOnCancelOrFail = false
         return true

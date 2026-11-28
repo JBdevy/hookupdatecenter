@@ -305,7 +305,7 @@ template <typename Test> void registerTests(const File &directory, Test &test) {
         session.command(jaras::CommandKind::editSeek, {}, 5);
         require(session.transportMeter() == std::make_pair(6, 8), "Meter edit rewrote the previous section");
     });
-    test("Live tuner changes audible pitch without moving transport and restores with Undo", [&] {
+    test("Tuner holds the stopped selection during playback and restores with Undo", [&] {
         const auto folder=directory.getNonexistentChildFile("live-tuner","");folder.createDirectory();
         WavAudioFormat format;auto stream=folder.getChildFile("tone.wav").createOutputStream();
         std::unique_ptr<AudioFormatWriter> writer(format.createWriterFor(stream.get(),48000,2,24,{},0));require(bool(writer),"Cannot create tuner fixture");stream.release();
@@ -321,7 +321,15 @@ template <typename Test> void registerTests(const File &directory, Test &test) {
         session.setMeter(7,8);
         require(session.song()->beatsPerBar==7 && session.song()->beatUnit==8 && session.audio.state().playing && session.audio.state().position==cursor,
                 "Live meter edit failed or moved transport");
-        session.setRegionPitch(p.songs[0].parts[0].id,12,{t.id},{});
+        session.command(jaras::CommandKind::stopAll);
+        session.setRegionPitch(p.songs[0].parts[0].id,12,{t.id,"deleted-track"},{"deleted-group"});
+        require(session.song()->parts.front().pitchTrackIDs==std::vector<ID>{t.id} &&
+                session.song()->parts.front().pitchGroupIDs==std::vector<ID>{},"Deleted Tuner targets survived");
+        session.command(jaras::CommandKind::play);
+        session.audio.render(block.getArrayOfWritePointers(),2,480);
+        session.setRegionPitch(p.songs[0].parts[0].id,-3,{},{});
+        session.undo();
+        require(session.song()->parts.front().pitchSemitones==12,"Running Tuner or Undo changed pitch");
         require(session.audio.state().playing && session.audio.state().position==cursor,"Tuner stopped or moved audio");
         int crossings=0;float previous=0;
         for(int n=0;n<30;++n){session.audio.render(block.getArrayOfWritePointers(),2,480);for(int i=0;i<480;++i){const auto value=block.getSample(0,i);if(n>=10 && previous<=0 && value>0)++crossings;previous=value;}}
@@ -330,7 +338,7 @@ template <typename Test> void registerTests(const File &directory, Test &test) {
         require(session.song()->parts[0].pitchSemitones.value_or(0)==0,"Tuner Undo did not restore pitch");
         session.undo();require(session.song()->beatsPerBar==4 && session.song()->beatUnit==4,"Meter Undo did not restore 4/4");
     });
-    test("Item tuner edits during playback without rebuilding and restores exact state with Undo", [&] {
+    test("Item Tuner disables controls during playback and preserves stopped pitch and history", [&] {
         const auto folder=directory.getNonexistentChildFile("item-tuner",""); folder.createDirectory();
         WavAudioFormat format; auto stream=folder.getChildFile("tone.wav").createOutputStream();
         std::unique_ptr<AudioFormatWriter> writer(format.createWriterFor(stream.get(),48000,2,24,{},0));
@@ -344,25 +352,28 @@ template <typename Test> void registerTests(const File &directory, Test &test) {
         Session session; session.inspection=true; session.mediaDirectory=folder; session.audio.prepareOffline(48000);
         session.restoreSnapshot(ProjectCodec::encode(p)); session.audio.setOffline(true);
         int rebuilds=0; session.changed=[&]{++rebuilds;}; session.timingChanged=[](bool){};
+        session.setItemPitch(clip.id,1);
+        session.setItemPitch(clip.id,12);
         session.command(jaras::CommandKind::play);
         AudioBuffer<float> block(2,480);session.audio.render(block.getArrayOfWritePointers(),2,480);
         const auto cursor=session.audio.state().position; rebuilds=0;
         ItemTunerPanel panel(session,clip.id,[](String error){throw std::runtime_error(utf8(error));});
         auto *up=dynamic_cast<Button*>(uiFeatureTests::find(panel,"itemTunerUp"));
-        require(up && up->isEnabled(),"Item tuner disabled during playback");
-        up->onClick(); require(session.song()->tracks[0].clips[0].pitchSemitones==1,"Tuner did not update immediately");
-        session.setItemPitch(clip.id,12);
+        require(up && !up->isEnabled(),"Item Tuner enabled during playback");
+        up->onClick(); session.setItemPitch(clip.id,-12); session.undo();
+        require(session.song()->tracks[0].clips[0].pitchSemitones==12,"Live item Tuner changed the held pitch");
         require(session.audio.state().playing && session.audio.state().position==cursor,"Item tuner stopped or sought playback");
         int crossings=0;float previous=0;
         for(int n=0;n<30;++n){session.audio.render(block.getArrayOfWritePointers(),2,480);for(int i=0;i<480;++i){auto v=block.getSample(0,i);if(n>=10 && previous<=0 && v>0)++crossings;previous=v;}}
         require(std::abs(crossings-176)<5,"Item pitch did not audibly transpose to 880 Hz");
-        const auto after=session.audio.state().position;
+        require(rebuilds==0 && !session.preparingLiveAudio(),"Ignored item pitch edit rebuilt the graph");
+        session.command(jaras::CommandKind::stopAll);
+        session.audio.render(block.getArrayOfWritePointers(),2,480);
         session.undo(); session.undo();
         require(!session.song()->tracks[0].clips[0].pitchSemitones,"Undo did not restore inherited item pitch");
         session.redo(); session.redo();
         require(session.song()->tracks[0].clips[0].pitchSemitones==12,"Redo lost item pitch");
-        require(session.audio.state().playing && session.audio.state().position==after,"Item pitch history sought or stopped playback");
-        require(rebuilds==0 && !session.preparingLiveAudio(),"Item pitch rebuilt the project/graph");
+        require(!session.audio.state().playing,"Item pitch history started playback");
     });
 }
 }

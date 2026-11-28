@@ -136,12 +136,10 @@ public:
     }
     void mouseDown(const MouseEvent &e)override{if(e.mods.isLeftButtonDown()){clear();repaint();}}
 };
-// Match TrackMeterLevel: immediate attack, no hold, 40 dB/s fall.
+// Match TrackMeterLevel's immediate attack and three-second release.
 // The independent numeric peak is retained by PeakHold.
 inline float envelope(float previous, float input, double elapsed) noexcept {
-    input = std::isfinite(input) ? std::max(0.f, input) : 0.f;
-    const auto level = std::max(input, previous * (float)std::pow(10., -40. * std::max(0., elapsed) / 20.));
-    return level < .001f ? 0.f : level;
+    return audio::releasedMeterLevel(previous, input, audio::meterReleaseFactor(elapsed));
 }
 inline constexpr float railThickness = 14.f;
 inline constexpr float yellowTransitionStart = fractionForDB(-20.f), yellowTransitionEnd = fractionForDB(-17.f);

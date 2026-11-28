@@ -21,7 +21,7 @@ public enum RecentProjectStorage {
         var files: [String: URL] = [document.resolvingSymlinksInPath().standardizedFileURL.path: document]
         for path in project.mediaPaths {
             try Task.checkCancellation()
-            let url = (path.hasPrefix("/") ? URL(fileURLWithPath: path) : root.appendingPathComponent(path))
+            let url = (path.hasPrefix("/") ? URL(fileURLWithPath: path) : root.projectMedia(path))
             files[url.resolvingSymlinksInPath().standardizedFileURL.path] = url
         }
         var total: Int64 = 0
@@ -262,7 +262,7 @@ public enum ProjectBackups {
             for path in paths {
                 try Task.checkCancellation()
                 progress(.init(completedFiles: completed, totalFiles: total, fileName: path))
-                let source = root.appendingPathComponent(path).standardizedFileURL
+                let source = root.projectMedia(path).standardizedFileURL
                 let target = folder.appendingPathComponent(path).standardizedFileURL
                 guard target.path.hasPrefix(folder.standardizedFileURL.path + "/") else {
                     throw ProjectError.invalid("Invalid imported media path.")
@@ -481,7 +481,9 @@ public final class TemporaryProjectSession: @unchecked Sendable {
                 try Task.checkCancellation()
                 progress(.init(stage: .copying, completedFiles: index, totalFiles: paths.count,
                                fileName: URL(fileURLWithPath: path).lastPathComponent))
-                let source = directory.appendingPathComponent(path).standardizedFileURL
+                let local = directory.appendingPathComponent(path).standardizedFileURL
+                let source = directory.projectMedia(path).standardizedFileURL
+                if LinkedStemMedia.isReference(path), local != source { continue }
                 let target = folder.appendingPathComponent(path).standardizedFileURL
                 guard source.path.hasPrefix(directory.path + "/"), target.resolvingSymlinksInPath().path.hasPrefix(folder.path + "/"),
                       (try source.resourceValues(forKeys: [.isRegularFileKey])).isRegularFile == true else {

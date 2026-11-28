@@ -1,6 +1,8 @@
 #import <Foundation/Foundation.h>
 NS_ASSUME_NONNULL_BEGIN
 @interface JarasCoreBridge : NSObject
++ (nullable NSData *)regionTempoPlan:(NSData *)metadata region:(NSString *)region target:(double)bpm clickBeats:(NSArray<NSNumber *> *)beats error:(NSError **)error NS_SWIFT_NAME(regionTempoPlan(_:region:target:clickBeats:));
++ (BOOL)renderFixedTempo:(NSURL *)input to:(NSURL *)output source:(NSArray<NSNumber *> *)source outputTimes:(NSArray<NSNumber *> *)outputTimes progress:(BOOL (^)(double))progress error:(NSError **)error NS_SWIFT_NAME(renderFixedTempo(_:to:source:outputTimes:progress:));
 - (double)subplayPreparationPosition;
 + (void)setProjectSyncFollowing:(BOOL)following;
 - (void)setProjectSyncID:(NSString *)identifier;
@@ -36,9 +38,11 @@ NS_ASSUME_NONNULL_BEGIN
 - (BOOL)insertAudioTracks:(NSData *)data song:(NSString *)song error:(NSError **)error;
 - (BOOL)replaceAudioClip:(NSData *)data track:(NSString *)track error:(NSError **)error;
 - (BOOL)addRecordedClip:(NSData *)data track:(NSString *)track error:(NSError **)error;
+- (BOOL)setTrackHeights:(NSString *)song scales:(NSDictionary<NSString *, NSNumber *> *)scales error:(NSError **)error;
 - (BOOL)setTrackHeight:(NSString *)song track:(NSString * _Nullable)track scale:(double)scale error:(NSError **)error;
 - (BOOL)setTimelineLocks:(BOOL)locked options:(int)options error:(NSError**)error;
 - (BOOL)editMasterColor:(unsigned int)color error:(NSError **)error;
+- (nullable NSDictionary<NSString *, NSNumber *> *)randomizeTrackColors:(NSString *)song tracks:(NSArray<NSString *> *)tracks error:(NSError **)error NS_SWIFT_NAME(randomizeTrackColors(_:tracks:));
 - (BOOL)setTrackMixerComponents:(NSString *)song masks:(NSDictionary<NSString *, NSNumber *> *)masks error:(NSError **)error;
 - (BOOL)editTrack:(NSString *)identifier name:(NSString *)name color:(unsigned int)color error:(NSError **)error;
 - (BOOL)renameTrack:(NSString *)identifier name:(NSString *)name error:(NSError **)error;
@@ -46,6 +50,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (BOOL)setRegionInit:(NSString *)identifier count:(int)count bars:(BOOL)bars error:(NSError **)error;
 - (BOOL)setRegionPitch:(NSString *)identifier semitones:(int)semitones tracks:(NSArray<NSString *> *)tracks groups:(NSArray<NSString *> *)groups error:(NSError **)error;
 - (BOOL)editRegion:(NSString *)identifier name:(NSString *)name color:(unsigned int)color uppercaseName:(BOOL)uppercaseName error:(NSError **)error;
+- (BOOL)setTimelineNames:(NSString *)song regions:(NSDictionary<NSString *,NSString *> *)regions markers:(NSDictionary<NSString *,NSString *> *)markers error:(NSError **)error;
 - (BOOL)moveClip:(NSString *)clipId start:(double)start track:(NSString *)trackId error:(NSError **)error;
 - (BOOL)deleteManualMarker:(NSString *)identifier error:(NSError **)error;
 - (BOOL)setProjectTiming:(double)bpm beats:(int)beats unit:(int)unit settings:(NSData *)settings error:(NSError **)error;

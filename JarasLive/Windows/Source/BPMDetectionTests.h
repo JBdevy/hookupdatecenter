@@ -5,7 +5,7 @@
 namespace catlive::bpmDetectionTests {
 using floatingControlTests::require;
 using floatingControlTests::pump;
-inline File clickFile(const File &directory) {
+inline File clickFile(const File &directory, bool irregular = false) {
     const auto file = directory.getNonexistentChildFile("bpm-background-click", ".wav");
     WavAudioFormat format; auto stream = file.createOutputStream();
     std::unique_ptr<AudioFormatWriter> writer(format.createWriterFor(stream.get(), 48000, 1, 24, {}, 0));
@@ -13,7 +13,7 @@ inline File clickFile(const File &directory) {
     AudioBuffer<float> pcm(1, 16 * 48000); pcm.clear();
     for (int beat = 0; beat < 32; ++beat)
         for (int sample = 0; sample < 128; ++sample)
-            pcm.setSample(0, beat * 24000 + sample, .5f * float(128 - sample) / 128.f);
+            pcm.setSample(0, beat * 24000 + (irregular ? 4800 + (beat % 3 - 1) * 640 : 0) + sample, .5f * float(128 - sample) / 128.f);
     require(writer->writeFromAudioSampleBuffer(pcm, 0, pcm.getNumSamples()), "Cannot write Click fixture");
     writer.reset(); return file;
 }
@@ -41,6 +41,35 @@ inline int tempos(const Session &session) {
         [](const auto &marker) { return marker.tempoBPM.has_value(); }) : 0;
 }
 template <typename Test> void registerTests(const File &directory, Test &test) {
+    test("Adjust BPM aligns the rendered Click and accompaniment before a fresh BPM detection", [&] {
+        const auto folder=directory.getChildFile("measured-click");folder.createDirectory();
+        const auto file=clickFile(folder,true);
+        auto project=fixture(file);auto& song=project.songs.front();
+        auto& region=song.parts.front();region.endTime=16;
+        auto& lane=song.tracks.front();lane.clips.front().name="Beat";lane.clips.front().duration=16;
+        auto music=lane;music.id=uuid();music.name="Music";music.role.id="other";music.clips.front().id=uuid();
+        song.tracks={lane,music};
+        jaras::TimelineMarker a;a.name="TEMPO";a.id=uuid();a.tempoBPM=119.5;a.position=0;a.tempoPlaybackRate=1;
+        auto b=a;b.id=uuid();b.tempoBPM=121.5;b.position=8;song.markers={{a,b}};
+        Session session;setup(session,project,folder);
+        const auto id=region.id;
+        bool finished=false;String failure;
+        session.adjustRegionBPM(id,119.85,[&](String message){failure=message;finished=true;});
+        const auto until=Time::getMillisecondCounterHiRes()+30000;
+        while(!finished && Time::getMillisecondCounterHiRes()<until)pump();
+        require(finished && failure.isEmpty(),"Cannot render the measured Click");
+        for (const auto& track:session.song()->tracks) {
+            const auto& clip=track.clips.front();
+            auto hits=clickTempo::transients(ProjectCodec::mediaInput(folder,clip.audioFile->path));
+            require(hits.size()==32,"A rendered beat disappeared");
+            for(size_t i=0;i<hits.size();++i)
+                require(std::abs(hits[i].position-hits.front().position-i*60./119.85)<.003,"A stem missed the fixed beat");
+        }
+        session.detectRegionBPM({id});wait(session);
+        require(tempos(session)>0,"Fresh detection found no tempo");
+        for(const auto& m:*session.song()->markers)if(m.tempoBPM && m.position<session.song()->parts.front().endTime)
+            require(std::abs(*m.tempoBPM-119.85)<.03,"Fresh Click analysis recreated fractional tempo changes");
+    });
     test("Ruler selection measures only arranged PCM, preserving the project and cursor", [&] {
         const auto file = clickFile(directory);
         auto project = fixture(file);

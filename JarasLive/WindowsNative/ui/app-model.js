@@ -100,6 +100,6 @@ export function fadeGain(clip, position) {
     * (output > 0 ? fadeCurve((clip.startTime + clip.duration - position) / output, clip.fadeOutCurve, clip.fadeOutSCurve) : 1);
 }
 export function zoomAt({scale, offset, x, delta, width, duration}) {
-  const next = clamp(scale * Math.exp(-delta * .0025), .015, 2000);
+  const next = clamp(scale * Math.exp(-delta * .0025), .3651216238088901, 2000);
   return {scale: next, offset: clamp((offset + x / scale) - x / next, 0, Math.max(0, duration - width / next))};
 }

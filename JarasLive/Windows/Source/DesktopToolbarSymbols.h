@@ -109,8 +109,16 @@ inline bool drawDesktopToolbarSymbol(Graphics &g, const String &name, juce::Rect
     if (side <= 0) return true;
     const float scale = side / 24.f;
     const auto pin = [density](float point) { return std::round(point * density) / density; };
-    const auto transform = AffineTransform::scale(scale)
+    auto transform = AffineTransform::scale(scale)
         .translated(pin(bounds.getCentreX() - side * .5f), pin(bounds.getCentreY() - side * .5f));
+    if (name == "setlist") {
+        // The three rows of the shared Mac artwork are seven units apart.
+        // Give each row identical pixel coverage at fractional Windows DPI.
+        const float rowStep = std::max(1.f, std::round(7.f * scale * density)) / density;
+        const float rowScale = rowStep / 7.f;
+        transform = AffineTransform::scale(scale, rowScale)
+            .translated(bounds.getCentreX() - 12.f * scale, bounds.getCentreY() - 12.f * rowScale);
+    }
     g.fillPath(icon->second.interior, transform);
     auto outline = icon->second.outline;
     outline.applyTransform(transform);

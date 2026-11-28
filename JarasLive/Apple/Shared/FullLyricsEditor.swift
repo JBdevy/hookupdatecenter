@@ -40,7 +40,7 @@ struct FullLyricsEditor: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Full lyrics").font(.jarasHeadline)
+            Text(verbatim: TeleprompterTrackButtons.lyricsTitle).font(.jarasHeadline)
             Text(verbatim: target.range.name).font(.jarasSystem(size: 14, weight: .semibold)).lineLimit(1)
             Text("Separate each stanza with two blank lines. Items will fill the whole song equally.")
                 .font(.jarasSystem(size: 12)).foregroundStyle(JarasTheme.secondary)
@@ -51,7 +51,7 @@ struct FullLyricsEditor: View {
                 NativeFullLyricsInput(text: $draft)
                 #endif
             }
-            .accessibilityLabel("Full lyrics").frame(minHeight: 150)
+            .accessibilityLabel(Text(verbatim: TeleprompterTrackButtons.lyricsTitle)).frame(minHeight: 150)
             .overlay(RoundedRectangle(cornerRadius: 6).stroke(JarasTheme.secondary.opacity(0.35)).allowsHitTesting(false))
             HStack {
                 Button("Cancel", action: close).keyboardShortcut(.cancelAction)
@@ -59,7 +59,7 @@ struct FullLyricsEditor: View {
                 Button("Create items", action: createItems).buttonStyle(.borderedProminent).tint(JarasTheme.green)
             }
         }.padding(18).background(JarasTheme.background).foregroundStyle(JarasTheme.text)
-            .alert("Full lyrics", isPresented: Binding(get: { warning != nil }, set: { if !$0 { warning = nil } })) {
+            .alert(Text(verbatim: TeleprompterTrackButtons.lyricsTitle), isPresented: Binding(get: { warning != nil }, set: { if !$0 { warning = nil } })) {
                 Button("OK") { warning = nil }
             } message: { Text(LocalizedStringKey(warning ?? "")) }
     }

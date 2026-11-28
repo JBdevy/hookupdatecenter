@@ -13,7 +13,7 @@ enum SidebarWidthLimits {
     static let nativeTrackMixer: CGFloat = 327.921875
     static let nativeTrackMixerMinimum: CGFloat = nativeTrackMixer - 69
     static let nativeTrackMixerPatchThreshold: CGFloat = nativeTrackMixer - 14
-    static let nativeTrackMixerIconThreshold: CGFloat = nativeTrackMixer - 28
+    static let nativeTrackMixerEnvelopeThreshold: CGFloat = nativeTrackMixer - 28
     static let trackMixerDefault = trackMixer
     #endif
     static let setlistDefault: CGFloat = 335.63671875
@@ -97,6 +97,16 @@ private struct SidebarPreferenceContent<Value: Hashable, Content: View>: View {
     }
     var body: some View { content(value) }
 }
+private final class DesktopRightPanelSelection: ObservableObject {
+    enum Panel { case notes, samplers }
+    @Published var panel: Panel?
+    func toggle(_ requested: Panel) { panel = panel == requested ? nil : requested }
+}
+private struct DesktopRightPanelContent<Content: View>: View {
+    @ObservedObject var selection: DesktopRightPanelSelection
+    @ViewBuilder var content: (DesktopRightPanelSelection.Panel?) -> Content
+    var body: some View { content(selection.panel) }
+}
 private struct DesktopSidebarWidths<Content: View>: View {
     @WorkspacePreference private var mixer: Double
     @WorkspacePreference private var setlist: Double
@@ -174,9 +184,8 @@ struct MainView: View {
         get { performanceDockState.midiPreview.active }
         nonmutating set { performanceDockState.midiPreview.setActive(newValue) }
     }
-    @State private var proNotesOpen = false
+    @State private var rightPanel = DesktopRightPanelSelection()
     @State private var proNotesTab = WorkspaceNotesDock.Tab.notes
-    @State private var proSamplersOpen = false
     @StateObject private var midiPreviewWindow = RecordingPianoWindow()
     @StateObject private var detachedMixer = DetachedMixerWindow()
     @StateObject private var detachedParts = DetachedPartsWindow()
@@ -278,7 +287,7 @@ struct MainView: View {
     }
     private func toggleSetlist() {
         #if os(macOS)
-        if setlistCollapsed && proNotesOpen { proNotesTab = .notes }
+        if setlistCollapsed && rightPanel.panel == .notes { proNotesTab = .notes }
         #endif
         #if os(macOS)
         if setlistPlacement == .detached {
@@ -291,7 +300,7 @@ struct MainView: View {
     }
     private func placeSetlist(_ placement: SetlistPlacement) {
         #if os(macOS)
-        if proNotesOpen { proNotesTab = .notes }
+        if rightPanel.panel == .notes { proNotesTab = .notes }
         if placement == .left { partsLeftOpen = false }
         if placement == .detached {
             setlistPlacement = .detached
@@ -427,18 +436,13 @@ struct MainView: View {
         // control. Their own layouts still receive the current proposed size.
         #if os(macOS)
         let share: (() -> Void)? = shareProject
-        let notesOpen = proNotesOpen, samplersOpen = proSamplersOpen
         let notesAction = {
-            proNotesOpen.toggle()
-            if proNotesOpen { proSamplersOpen = false; proNotesTab = .notes }
+            if rightPanel.panel != .notes { proNotesTab = .notes }
+            rightPanel.toggle(.notes)
         }
-        let samplersAction = {
-            proSamplersOpen.toggle()
-            if proSamplersOpen { proNotesOpen = false }
-        }
+        let samplersAction = { rightPanel.toggle(.samplers) }
         #else
         let share: (() -> Void)? = nil
-        let notesOpen = false, samplersOpen = false
         let notesAction: () -> Void = {}, samplersAction: () -> Void = {}
         #endif
         #if os(macOS)
@@ -452,7 +456,7 @@ struct MainView: View {
         let timerReadout: AnyView? = nil
         let statusControls: AnyView? = nil
         #endif
-        func makeTransport(mixerCollapsed: Bool, setlistCollapsed: Bool) -> TransportView {
+        func makeTransport(mixerCollapsed: Bool, setlistCollapsed: Bool, notesOpen: Bool = false, samplersOpen: Bool = false) -> TransportView {
             TransportView(show: show, documents: documents, remotePresentation: remotePresentation,
             mediaDirectory: documents.currentURL?.deletingLastPathComponent(),
             toggleNavigation: openProjects,
@@ -467,7 +471,10 @@ struct MainView: View {
         #if os(macOS)
         let transport = _mixerWidth.observing { width in
             _setlistWidth.observing { setlist in
-                makeTransport(mixerCollapsed: width <= 0, setlistCollapsed: isSetlistCollapsed(at: setlist))
+                DesktopRightPanelContent(selection: rightPanel) { panel in
+                    makeTransport(mixerCollapsed: width <= 0, setlistCollapsed: isSetlistCollapsed(at: setlist),
+                                  notesOpen: panel == .notes, samplersOpen: panel == .samplers)
+                }
             }
         }
         #else
@@ -488,6 +495,7 @@ struct MainView: View {
                 AudioExportView(project: show.snapshot.project, song: show.current, mediaDirectory: documents.currentURL?.deletingLastPathComponent())
             }
             .sheet(isPresented: $showingProjectShare) { PortableProjectExportView(documents: documents) }
+            .background(RegionBPMHost(show: show, documents: documents))
         #else
         return presentWorkspace(editor)
         #endif
@@ -536,7 +544,7 @@ struct MainView: View {
                     GeometryReader { geometry in
                         DesktopSidebarWidths(mixer: _mixerWidth, setlist: _setlistWidth, restore: _setlistRestoreWidth, parts: _partsRightOpen) {
                             trackColumnWidth, listWidth, restoreWidth, rightPartsVisible in
-                        let proDockOpen = proNotesOpen || proSamplersOpen
+                        DesktopRightPanelContent(selection: rightPanel) { panel in
                         let vuWidth = showsTrackVU && desktopExtras ? TrackMixerVU.columnWidth : 0
                         let preferredMixer = TrackMixerColumnGeometry(requestedWidth: CGFloat(trackColumnWidth),
                             maximum: 486.5 - vuWidth, showsIcons: false, extraWidth: vuWidth).totalWidth
@@ -544,7 +552,7 @@ struct MainView: View {
                         let gridReserve = minimumGridWidth + TimelineVerticalBar.width + 6
                         DesktopRightDockEditorWidth(enabled: desktopExtras, show: show, docks: performanceDockState,
                             baseWidth: preferredMixer + gridReserve) { minimumEditorWidth in
-                        SectionListDock(visible: proDockOpen, storageKey: "catlive.proDock.width",
+                        SectionListDock(visible: panel != nil, storageKey: "catlive.proDock.width",
                                         minimumPrimaryWidth: max(700, minimumEditorWidth + (listWidth > 0 ? SidebarWidthLimits.setlist : 0)),
                                         defaultFraction: 0.22, enforcesMinimumPrimaryWidth: true,
                                         maximumSidebarWidth: 558.80078125,
@@ -567,7 +575,7 @@ struct MainView: View {
                             onToggle: toggleSetlist, onEnd: { finalWidth in
                                 if finalWidth > 0 {
                                     setlistRestoreWidth = finalWidth
-                                    if proNotesOpen { proNotesTab = .notes }
+                                    if rightPanel.panel == .notes { proNotesTab = .notes }
                                 }
                                 setlistWidth = finalWidth
                             }) {
@@ -624,15 +632,20 @@ struct MainView: View {
                         } sections: { SmoothSeekPanel(show: show) }
                         } sections: {
                             ZStack {
-                                DesktopSamplerPane(theme: interfaceTheme, show: show, visible: proSamplersOpen)
-                                if proNotesOpen {
-                                    WorkspaceNotesDock(theme: interfaceTheme, show: show, tab: $proNotesTab) {
-                                        if !setlistCollapsed { toggleSetlist() }
+                                DesktopSamplerPane(theme: interfaceTheme, show: show, visible: panel == .samplers)
+                                GeometryReader { geometry in
+                                    RetainedWorkspacePane(width: geometry.size.width, visible: panel == .notes,
+                                        identity: AnyHashable(WorkspaceDockContentIdentity(project: show.snapshot.project.id,
+                                            controller: ObjectIdentifier(show), theme: interfaceTheme))) {
+                                        WorkspaceNotesDock(theme: interfaceTheme, show: show, tab: $proNotesTab) {
+                                            if !setlistCollapsed { toggleSetlist() }
+                                        }
                                     }
-                                }
+                                }.allowsHitTesting(panel == .notes).accessibilityHidden(panel != .notes)
                             }
                         }
                         .frame(width: geometry.size.width, height: geometry.size.height)
+                        }
                         }
                         }
                     }
@@ -860,11 +873,13 @@ struct MainView: View {
                 // MIDI/SMK/Remote pads must be ready before their UI is opened.
                 if DesktopProjectTabs.shared.isForeground(show) {
                     VinhetasController.shared.bind(show: show)
+                    mappings.bind(show)
                 }
                 DAWRemoteHostBridge.bind(show)
                 ResolumeController.shared.bind(show)
-                #endif
+                #else
                 mappings.bind(show)
+                #endif
                 #if os(macOS)
                 show.smkPartsVisibility = { (partsLeftOpen || detachedParts.isVisible, partsRightOpen) }
                 #else
@@ -1460,7 +1475,7 @@ struct RegionTunerControl: View {
     @State private var editing: Part?
     @State private var hoveredStep: Int?
     private func step(_ delta: Int) {
-        guard let song = show.current, let region = show.pitchRegion else { return }
+        guard show.tunerInputAllowed, let song = show.current, let region = show.pitchRegion else { return }
         let targets = song.pitchTargets(region)
         show.setRegionPitch(region.id, semitones: min(12, max(-12, region.semitones + delta)), tracks: targets.tracks, groups: targets.groups)
     }
@@ -1475,7 +1490,7 @@ struct RegionTunerControl: View {
                 .font(.jarasSystem(size: 11, weight: .semibold, design: .monospaced)).monospacedDigit()
                 .frame(width: 34, height: 23)
                 #if os(macOS)
-                .immediateRightClick { editing = show.pitchRegion }
+                .immediateRightClick { if show.tunerInputAllowed { editing = show.pitchRegion } }
                 #else
                 .modifier(NativeTunerTargets(show: show))
                 #endif
@@ -1486,6 +1501,9 @@ struct RegionTunerControl: View {
         }.buttonStyle(.plain).foregroundStyle(JarasTheme.green)
         .padding(.horizontal, 6).frame(width: panelWidth, height: panelHeight)
         .background(TransportDetailSurface())
+        .disabled(!show.tunerInputAllowed)
+        .opacity(show.tunerInputAllowed ? 1 : 0.45)
+        .onChange(of: show.tunerInputAllowed) { if !$0 { editing = nil } }
         .sheet(item: $editing) { region in
             if let song = show.current {
                 RegionPitchTargets(show: show, song: song, region: region, close: { editing = nil })
@@ -1506,7 +1524,7 @@ struct RegionTunerControl: View {
     }
 }
 struct RegionPitchTargets: View {
-    let show: ShowController
+    @ObservedObject var show: ShowController
     private let individualTracks: [Track]
     private let folders: [Track]
     let region: Part
@@ -1574,7 +1592,7 @@ struct RegionPitchTargets: View {
                     show.setRegionPitch(region.id, semitones: current.semitones, tracks: tracks, groups: [])
                 }
                 close()
-            }.keyboardShortcut(.defaultAction) }
+            }.keyboardShortcut(.defaultAction).disabled(!show.tunerInputAllowed) }
         }.padding(20).frame(width: 410).background(JarasTheme.panel).foregroundStyle(JarasTheme.text)
     }
 }

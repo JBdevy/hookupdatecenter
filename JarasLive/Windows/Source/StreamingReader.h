@@ -132,9 +132,9 @@ class StreamingReader final : public AudioFormatReader {
             if (!metersFileReads(*transitionDecoder)) read.emplace(audio::diskIOActivity);
             if (!transitionDecoder->read(&next->pcm, 0, wanted, at, true, true)) return false;
         }
-        next->forward = std::make_unique<RealtimeBufferedReader>(transitionDecoder.release(), service.preparedFill, 131072);
+        next->forward = std::make_unique<RealtimeBufferedReader>(transitionDecoder.release(), service.preparedFill,
+                                                                 131072, at, &next->pcm);
         next->forward->setReadTimeout(0);
-        probeAt(*next->forward, at);
         if (pinned[slot]) retiredPinned.push_back(std::move(pinned[slot]));
         pinned[slot] = std::move(next);
         publishedPinned[slot].store(pinned[slot].get(), std::memory_order_seq_cst);
@@ -301,9 +301,9 @@ class StreamingReader final : public AudioFormatReader {
             ++fallbackOpens;
             std::unique_ptr<AudioFormatReader> source(service.formats.createReaderFor(file));
             if (!source) return;
-            reader = std::make_unique<RealtimeBufferedReader>(source.release(), service.fillThread, 131072);
+            reader = std::make_unique<RealtimeBufferedReader>(source.release(), service.fillThread,
+                                                               131072, std::max<int64>(0, at));
             reader->setReadTimeout(0);
-            probeAt(*reader, std::max<int64>(0, at));
         }
         // Opening a cold file may overlap adoption of a prepared stream. Never
         // overwrite that selection or hint it with this fallback's old position.

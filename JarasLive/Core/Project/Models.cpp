@@ -273,6 +273,7 @@ void validateClipFXJSON(const std::string& json) {
         "Instruments", "Drummer Pad 16", "Drummer Pad 48", "Arpeggiator", "EQ", "Compressor", "Pitch", "Delay", "Reverb", "Limiter", "CatLive Trigger", "Cat Gate", "CatStemSeparation 5"
     };
     auto available = nativeKinds;
+    available.insert("Wave LFO"); // One amplitude envelope per item, stored directly in the chain.
     const auto registerEffects = [&](const char* field, const char* prefix) {
         const auto list = settings.find(field);
         if (list == settings.end()) return;
@@ -467,7 +468,7 @@ void validate(const Project& p) {
                 for (int layer = isTeleprompterRole(t.role) ? 1 : 0; layer < (isTeleprompterRole(t.role) ? 2 : 1); ++layer) {
                 ordered.clear();
                 for (const auto& clip : t.clips) {
-                    const bool media = clip.audioFile && clip.audioFile->path.rfind("Videos/", 0) == 0;
+                    const bool media = clip.adjustedVideo || (clip.audioFile && clip.audioFile->path.rfind("Videos/", 0) == 0);
                     if (!isTeleprompterRole(t.role) || media == (layer == 1)) ordered.push_back(&clip);
                 }
                 std::sort(ordered.begin(), ordered.end(), [](const auto* a, const auto* b) { return a->startTime < b->startTime; });
@@ -546,10 +547,10 @@ void validate(const Project& p) {
                         require(!n.id.empty() && noteIDs.insert(n.id).second && finite(n.start) && finite(n.length) && n.start>=0 && n.length>0 && n.start+n.length<=10000000 && n.pitch>=0 && n.pitch<=127 && n.velocity>=1 && n.velocity<=127 && n.channel>=1 && n.channel<=16, "Invalid MIDI note");
                     }
                 }
-                require(t.role.id != "generatedClick" || !clip.audioFile || clip.audioFile->path.rfind("Videos/", 0) == 0, "Click items use the built-in sound");
+                require(t.role.id != "generatedClick" || !clip.audioFile || clip.adjustedVideo || clip.audioFile->path.rfind("Videos/", 0) == 0, "Click items use the built-in sound");
                 require(!clip.text || textTrack, "Text items require a Teleprompter or Chords track");
                 if (clip.text) validateClipText(*clip.text);
-                const bool media = clip.audioFile && clip.audioFile->path.rfind("Videos/", 0) == 0;
+                const bool media = clip.adjustedVideo || (clip.audioFile && clip.audioFile->path.rfind("Videos/", 0) == 0);
                 // Text can retain source timing for its visual repeat seams, without audio.
                 require(!textTrack || media || (!clip.audioFile && !clip.gain && !clip.muted && clip.waveform.empty() && clip.waveformChannels.empty() && (clip.loopLength || (clip.sourceOffset == 0 && !clip.loopStart))), "Text items cannot contain audio");
                 require(!clip.fxJSON || fixed.empty() || media, "Item FX requires an audio item");
@@ -563,6 +564,18 @@ void validate(const Project& p) {
                 require(!clip.timecodeEndOffset || (finite(*clip.timecodeEndOffset) && t.role.id == "timecode"), "Invalid Timecode end span");
                 require(t.role.id != "timecode" || media || (!clip.loopStart && !clip.loopLength), "Timecode items cannot repeat their source");
                 if (clip.audioFile) files.push_back(*clip.audioFile);
+                if (clip.adjustedVideo) {
+                    const auto& v=*clip.adjustedVideo;
+                    require(clip.audioFile && !v.path.empty() && v.points.size()>=2 && v.points.front().time==0,"Invalid adjusted video");
+                    double previous=-1,source=-1;
+                    for(const auto& point:v.points){
+                        require(finite(point.time) && finite(point.source) && point.time>previous && point.source>source && point.source>=0,"Invalid adjusted video clock");
+                        previous=point.time;source=point.source;
+                    }
+                    require((!v.loopStart || (finite(*v.loopStart) && *v.loopStart>=0)) &&
+                            (!v.loopLength || (finite(*v.loopLength) && *v.loopLength>0)),"Invalid adjusted video loop");
+                    files.push_back({v.path,{}});
+                }
                 require(!clip.loopStart || (finite(*clip.loopStart) && *clip.loopStart >= 0), "Invalid loop start");
                 require(!clip.loopLength || (finite(*clip.loopLength) && *clip.loopLength > 0), "Invalid loop length");
                 require(!clip.pan || (finite(*clip.pan) && *clip.pan >= -1 && *clip.pan <= 1), "Invalid item pan");

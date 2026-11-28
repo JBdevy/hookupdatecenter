@@ -319,6 +319,20 @@ public enum ClickTempoDetector {
         return Analysis(sections: merged)
     }
 
+    // A printed Click can carry a deliberately fractional fixed tempo. Retain
+    // that precision only when the PCM attacks follow one clock throughout.
+    static func fixedPrintedBPM(_ times: [Double], near bpm: Double) -> Double? {
+        guard times.count >= 4, let first = times.first, let last = times.last, last > first, bpm > 0 else { return nil }
+        let beats = times.map { (($0-first)*bpm/60).rounded() }
+        guard let total = beats.last, total >= 3,
+              zip(beats, beats.dropFirst()).allSatisfy({ $0.1 > $0.0 }) else { return nil }
+        let measured = total*60/(last-first)
+        for value in [(measured*100).rounded()/100, (measured*1000).rounded()/1000, measured] {
+            if (60...300).contains(value), zip(times, beats).allSatisfy({ abs($0.0-first-$0.1*60/value) <= 0.003 }) { return value }
+        }
+        return nil
+    }
+
     /// Uses only the Click track inside this region. Imported projects and the
     /// manual Detect BPM action both require measured click evidence.
     public static func markers(song: Song, region: Part, onsetsFor: (AudioFile) throws -> [Double]) throws -> (markers: [TimelineMarker], hasClickAudio: Bool) {
@@ -335,6 +349,7 @@ public enum ClickTempoDetector {
         song.timeSettings = timing
         var pulses: [Transient] = []
         var hasClickAudio = false
+        var allClickAudioPrinted = true
         var hasClickAtRegionStart = false
         for track in song.tracks {
             let analyzesAudio = track.role == .click ||
@@ -345,6 +360,7 @@ public enum ClickTempoDetector {
                 if clip.startTime <= region.startTime { hasClickAtRegionStart = true }
                 guard analyzesAudio, let file = clip.audioFile ?? track.audioFile else { continue }
                 hasClickAudio = true
+                allClickAudioPrinted = allClickAudioPrinted && clip.renderedTempo == true
                 for pulse in try transientsFor(file) {
                     let position = clip.startTime + (pulse.position - clip.sourceOffset) / clip.audioRate
                     if position >= max(clip.startTime, region.startTime), position < min(clip.startTime + clip.duration, region.endTime) {
@@ -360,8 +376,12 @@ public enum ClickTempoDetector {
         let signature: Meter? = Meter(beats: 4, unit: 4)
         let analysis = hasClickAudio ? analyze(onsets: unique.map(\.position), beatsPerBar: signature?.beats ?? song.meterBeats)
             : Analysis(sections: [])
-        let sections = markerSections(analysis.sections, beatsPerBar: signature?.beats ?? song.meterBeats,
+        var sections = markerSections(analysis.sections, beatsPerBar: signature?.beats ?? song.meterBeats,
                                       beatUnit: signature?.unit ?? song.meterUnit, until: region.endTime)
+        if allClickAudioPrinted, sections.count == 1, analysis.sections.count == 1,
+           let bpm = fixedPrintedBPM(unique.map(\.position), near: analysis.sections[0].bpm) {
+            sections[0].bpm = bpm
+        }
         var markers = sections.map { section in
             let beats = 4
             let unit = 4

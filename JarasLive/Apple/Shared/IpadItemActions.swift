@@ -8,6 +8,7 @@ import UniformTypeIdentifiers
     var id: String { title }
     let title: String
     var destructive = false
+    var enabled = true
     let action: () -> Void
 }
 @MainActor enum IpadItemContextMenu {
@@ -55,7 +56,7 @@ struct IpadItemBodyContextMenu: UIViewRepresentable {
             guard !actions.isEmpty else { return nil }
             return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { _ in
                 UIMenu(children: actions.map { command in
-                    UIAction(title: command.title, attributes: command.destructive ? .destructive : []) { _ in command.action() }
+                    UIAction(title: command.title, attributes: command.enabled ? (command.destructive ? .destructive : []) : .disabled) { _ in command.action() }
                 })
             }
         }
@@ -103,7 +104,7 @@ struct IpadItemBodyContextMenu: UIViewRepresentable {
     private var editableIDs: Set<UUID> { Set(standard.map { $0.1.id }) }
     private var audio: [(Track, AudioClip)] {
         entries.filter { track, clip in
-            (track.kind == .standard || clip.isProjectionMedia) && clip.midi == nil && !clip.isImage && (clip.audioFile ?? track.audioFile) != nil
+            clip.audioMedia(on: track) != nil
         }
     }
     private var audioIDs: Set<UUID> { Set(audio.map { $0.1.id }) }
@@ -195,7 +196,7 @@ struct IpadItemBodyContextMenu: UIViewRepresentable {
                             }
                         }
                     }
-                    if !audioIDs.intersection(editableIDs).isEmpty { action("Export", symbol: "square.and.arrow.up") { exporting = true } }
+                    if !audioIDs.isEmpty { action("Export Audio", symbol: "square.and.arrow.up") { exporting = true } }
                     if !processing.error.isEmpty { Text(verbatim: processing.error).font(.jarasCaption).foregroundStyle(.red) }
                     Button("Delete", role: .destructive) { show.deleteItems(Set(entries.map { $0.1.id })); close() }
                         .frame(maxWidth: .infinity, minHeight: 44).buttonStyle(.bordered)
@@ -290,7 +291,8 @@ struct IpadItemBodyContextMenu: UIViewRepresentable {
                     Button { adjustPitch(clip.id, by: 1) } label: { Image(systemName: "plus").frame(width: 34, height: 34) }
                 }
             }
-        }.padding(10).background(JarasTheme.display, in: RoundedRectangle(cornerRadius: 7))
+        }.disabled(!show.tunerInputAllowed).opacity(show.tunerInputAllowed ? 1 : 0.45)
+            .padding(10).background(JarasTheme.display, in: RoundedRectangle(cornerRadius: 7))
     }
     private func beginSeparation() {
         separating = true; separation.start(item: item, show: show, documents: documents)
@@ -348,7 +350,7 @@ struct IpadItemBodyContextMenu: UIViewRepresentable {
         } else if exporting, let song = show.current {
             IpadCompactModal(preferredSize: CGSize(width: 540, height: 480)) {
                 IpadItemExportEditor(request: .init(project: show.snapshot.project, song: song,
-                    items: audioIDs.intersection(editableIDs), mediaDirectory: documents.currentURL?.deletingLastPathComponent()), close: { exporting = false })
+                    items: audioIDs, mediaDirectory: documents.currentURL?.deletingLastPathComponent()), close: { exporting = false })
             }
         }
     }

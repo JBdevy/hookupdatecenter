@@ -101,6 +101,7 @@ import UIKit
                 Button("Copy") { RegionShortcutView.performClipboard("c") }.keyboardShortcut("c")
                 Button("Paste") { RegionShortcutView.performClipboard("v") }.keyboardShortcut("v")
                 Button("Duplicate") { RegionShortcutView.performClipboard("d") }.keyboardShortcut("d")
+                Button("Select all") { RegionShortcutView.performClipboard("a") }.keyboardShortcut("a")
             }
         }
         #else
@@ -116,6 +117,18 @@ import UIKit
         #endif
     }
 }
+#if os(iOS)
+struct NativeSaveProgressBar: View {
+    let progress: TemporaryProjectSession.SaveProgress
+    var body: some View {
+        ProgressView(value: progress.stage == .preparing ? nil : progress.fraction)
+            .progressViewStyle(JarasProgressBarStyle(height: SongProgressBar.panelHeight))
+            .accessibilityLabel("Saving project…")
+            .accessibilityValue(Text(verbatim: "\(Int(progress.fraction * 100))%  \(progress.fileName)"))
+            .allowsHitTesting(false)
+    }
+}
+#endif
 struct RootView: View {
     @AppStorage(TransportPanelColor.key) private var transportPanelColor = ""
     @AppStorage(JarasInterfaceTheme.preferenceKey) private var interfaceTheme = JarasInterfaceTheme.defaultTheme
@@ -240,6 +253,7 @@ struct RootView: View {
             if ["ziplive", "zip"].contains(url.pathExtension.lowercased()) { documents.importPortablePackage(url) }
             #endif
         }
+        #if os(macOS)
         .overlay {
             if let progress = documents.temporarySaveProgress {
                 ZStack {
@@ -269,6 +283,13 @@ struct RootView: View {
                 }
             }
         }
+        #else
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if browsingNative || !documents.ready, let progress = documents.temporarySaveProgress {
+                NativeSaveProgressBar(progress: progress).padding(.horizontal, 6)
+            }
+        }
+        #endif
         #if os(iOS)
         .disabled(documents.showsBlockingProgress)
         .overlay {

@@ -686,7 +686,7 @@ final class TimelineAudioWaveform: ObservableObject {
                     // previous audio's cached header at the same path.
                     headers.setObject(header, forKey: url.path as NSString)
                     guard let prefix = header.cachePrefix, let identity = header.vertexSource,
-                          let source = try? (pinnedSource(identity) ?? WaveformSource.loadOrBuild(url, header: header, buildIfMissing: !cachedOnly, cancelled: cancelled)),
+                          let source = try? (pinnedSource(identity) ?? WaveformSource.loadOrBuild(url, header: header, buildIfMissing: !cachedOnly || LinkedStemMedia.shared.waveform(inSourceFolderOf: url) != nil, cancelled: cancelled)),
                           let overview = prepareZoomOutVertices(source, header: header, prefix: prefix, overviewPixels: overviewPixels) else { return nil }
                     sources.setObject(source, forKey: prefix as NSString, cost: source.cost)
                     return (url, header, overview, source)
@@ -1497,7 +1497,7 @@ final class TimelineAudioWaveform: ObservableObject {
     static func clickOnsets(_ url: URL) throws -> [Double] {
         try clickTransients(url).map(\.position)
     }
-    static func clickTransients(_ url: URL) throws -> [(position: Double, peak: Double, shape: [Double])] {
+    static func clickTransients(_ url: URL, cancelled: () -> Bool = { false }) throws -> [(position: Double, peak: Double, shape: [Double])] {
         let file = try AVAudioFile(forReading: url)
         let header = Header(rate: file.processingFormat.sampleRate, frames: file.length, channels: Int(file.processingFormat.channelCount))
         let source = try WaveformSource.loadOrBuild(url, header: header)
@@ -1513,7 +1513,10 @@ final class TimelineAudioWaveform: ObservableObject {
         let capacity = WaveformSource.baseStep * 2 + Int(ceil(header.rate * 0.03))
         let pcm = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: AVAudioFrameCount(capacity))!
         for (index, peak) in peaks.enumerated() {
-            if index % 4096 == 0 { try Task.checkCancellation() }
+            if index % 1024 == 0 {
+                try Task.checkCancellation()
+                if cancelled() { throw CancellationError() }
+            }
             if peak < threshold * 0.3 { armed = true }
             guard armed, peak >= threshold else { continue }
             armed = false
@@ -1804,6 +1807,7 @@ private final class WaveformSource: NSObject {
             channels: channels, levels: Array(entries.dropFirst()), mapping: mapping)
     }
     static func cacheURL(_ url: URL) -> URL {
+        if let sidecar = LinkedStemMedia.shared.waveform(inSourceFolderOf: url) { return sidecar }
         let directory = url.deletingLastPathComponent()
         var ancestor = directory
         while ancestor.path != "/" {

@@ -118,7 +118,7 @@ public enum PortableProjectPackage {
             var track = project.songs[s].tracks[t]
             let fallback = track.audioFile, kind = track.kind
             track.clips.removeAll { clip in
-                video(clip.audioFile ?? fallback) || clip.timecode != nil ||
+                (clip.adjustedVideo != nil || video(clip.audioFile ?? fallback)) || clip.timecode != nil ||
                     (kind == .timecode && clip.audioFile == nil && fallback == nil && clip.midi == nil)
             }
             if video(track.audioFile) { track.audioFile = nil }
@@ -173,8 +173,8 @@ public enum PortableProjectPackage {
         progress(0)
         for (index, path) in media.enumerated() {
             try validatePath(path)
-            let source = root.appendingPathComponent(path).standardizedFileURL
-            guard source.path.hasPrefix(root.path + "/") else { throw invalid("Invalid project media path.") }
+            let source = root.projectMedia(path).standardizedFileURL
+            guard LinkedStemMedia.isReference(path) || source.path.hasPrefix(root.path + "/") else { throw invalid("Invalid project media path.") }
             mapping[path] = try add(source, proposed: (path.hasPrefix("Videos/") ? "Videos/" : "Stems/") + source.lastPathComponent)
             progress(0.25 * Double(index + 1) / Double(max(1, media.count + usedInstruments.count)))
         }
@@ -186,7 +186,12 @@ public enum PortableProjectPackage {
         func rewrite(_ file: inout AudioFile?) { if let path = file?.path, let target = mapping[path] { file?.path = target } }
         for s in project.songs.indices { for t in project.songs[s].tracks.indices {
             rewrite(&project.songs[s].tracks[t].audioFile); rewrite(&project.songs[s].tracks[t].clickSound)
-            for c in project.songs[s].tracks[t].clips.indices { rewrite(&project.songs[s].tracks[t].clips[c].audioFile) }
+            for c in project.songs[s].tracks[t].clips.indices {
+                rewrite(&project.songs[s].tracks[t].clips[c].audioFile)
+                if let path = project.songs[s].tracks[t].clips[c].adjustedVideo?.path, let next = mapping[path] {
+                    project.songs[s].tracks[t].clips[c].adjustedVideo?.path = next
+                }
+            }
         }}
         project.remapFXSamples(mapping)
         let document = try ProjectDocumentCodec.encode(project)

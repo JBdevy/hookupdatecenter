@@ -152,7 +152,7 @@ typealias ProjectionImage = UIImage
         guard playing, boundary - position <= 5,
               let next = song.firstProjectionItem(at: boundary, trackKind: trackKind == .video ? nil : trackKind),
               next.id != clip.id, let file = next.audioFile else { return }
-        let url = directory.appendingPathComponent(file.path)
+        let url = directory.projectMedia(file.path)
         guard UTType(filenameExtension: url.pathExtension)?.conforms(to: .image) != true else { return }
         guard preparedID != next.id || preparedURL != url else { return }
         clearPreparation(); preparedID = next.id; preparedURL = url
@@ -233,7 +233,7 @@ typealias ProjectionImage = UIImage
         }
         let fade = clip.fadeGain(at: position)
         if opacity != fade { opacity = fade }
-        let url = directory.appendingPathComponent(file.path)
+        let url = directory.projectMedia(file.path)
         if UTType(filenameExtension: url.pathExtension)?.conforms(to: .image) == true {
             if clipID != clip.id {
                 reset(); clipID = clip.id; message = ""

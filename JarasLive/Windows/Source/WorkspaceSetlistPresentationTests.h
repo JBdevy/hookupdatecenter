@@ -43,6 +43,14 @@ struct WorkspaceSetlistPresentationTests {
         auto *canvas=uiFeatureTests::find(workspace,"timelineCanvas");
         auto *right=workspace.partsSidebar.get();
         require(list && canvas && right,"Setlist presentation components are missing");
+        auto *rows = dynamic_cast<SetlistRows *>(uiFeatureTests::find(*list, "setlistRows"));
+        require(rows && rows->getRowHeight(0) == 38, "Normal setlist cards must start at 34 pixels plus spacing");
+        require(workspace.appearance.set("jaras.setlist.mode", "compact").wasOk(), "Cannot set compact setlist mode");
+        pump();
+        require(rows->getRowHeight(0) == 28 && rows->getRowHeight(1) == 28, "Compact cards must occupy 24 pixels plus spacing");
+        require(workspace.appearance.set("jaras.setlist.mode", "normal").wasOk(), "Cannot restore normal setlist mode");
+        pump();
+        require(rows->getRowHeight(0) == 38, "Returning to Normal must restore the row and its hit area");
         const auto before=JSON::toString(session.snapshot());
         const int savedWidth=workspace.setlistWidth;
         using Placement=Workspace::SetlistPlacement;

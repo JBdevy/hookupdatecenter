@@ -493,6 +493,20 @@ public final class ShowTrackSelectionPresentation: ObservableObject {
         libraryTimelineSelection.select(id, in: song.id, region: region)
         return true
     }
+    public func clickLibraryTimelineEntry(_ id: UUID, region: Bool) {
+        guard canControl(), !finishing, let song = current else { return }
+        let selection = libraryTimelineSelection
+        selection.pendingSeek?.cancel()
+        selection.select(id, in: song.id, region: region)
+        guard !isPlaying, snapshot.transport.paused != true else { return }
+        let session = projectSessionID, songID = song.id
+        selection.pendingSeek = Task { [weak self] in
+            await Task.yield()
+            guard !Task.isCancelled, let self, self.projectSessionID == session,
+                  self.current?.id == songID else { return }
+            self.selectLibraryTimelineEntry(id, region: region, includesUnified: true)
+        }
+    }
     public func browseLibraryTimelineEntry(_ id: UUID, region: Bool, commitAfterDelay: Bool = true) {
         guard canControl(), !finishing, !isPlaying, snapshot.transport.paused != true, let song = current else { return }
         let selection = libraryTimelineSelection
@@ -967,6 +981,7 @@ public final class ShowTrackSelectionPresentation: ObservableObject {
         public let action: DAWAction
     }
     @Published public private(set) var itemProcessingRequest: ItemProcessingRequest?
+    @Published public var adjustBPMRegion: UUID?
     @Published public var detectBPMRegion: UUID?
     @Published public var detectBPMRegions: [UUID] = []
     @Published public private(set) var tempoMarkerRequest: UInt64 = 0
@@ -1051,7 +1066,7 @@ public final class ShowTrackSelectionPresentation: ObservableObject {
         case .stop: send(.stop)
         case .subPlay: send(.subPlay)
         case .tunerDown, .tunerUp:
-            guard let song = current, let region = pitchRegion else { return }
+            guard tunerInputAllowed, let song = current, let region = pitchRegion else { return }
             let targets = song.pitchTargets(region)
             setRegionPitch(region.id, semitones: min(12, max(-12, region.semitones + (action == .tunerUp ? 1 : -1))), tracks: targets.tracks, groups: targets.groups)
         case .partsUp, .partsDown:
@@ -1410,8 +1425,8 @@ public final class ShowTrackSelectionPresentation: ObservableObject {
     public func discardClosedHistory() { resetHistory() }
     public func undo() { restoreEdit(redo: false) }
     public func redo() { restoreEdit(redo: true) }
-    private func recordEdit(preservingMediaStorage: Bool = false, knownChanged: Bool = false) {
-        history?.record(snapshot.project, preservingMediaStorage: preservingMediaStorage, knownChanged: knownChanged)
+    private func recordEdit(preservingMediaStorage: Bool = false, knownChanged: Bool = false, editsTuner: Bool = false) {
+        history?.record(snapshot.project, preservingMediaStorage: preservingMediaStorage, knownChanged: knownChanged, editsTuner: editsTuner)
         canUndo = history?.canUndo == true; canRedo = history?.canRedo == true
         if !preservingMediaStorage { knownMediaPaths.formUnion(snapshot.project.mediaPaths) }
     }
@@ -1425,7 +1440,7 @@ public final class ShowTrackSelectionPresentation: ObservableObject {
     private func restoreEdit(redo: Bool) {
         if pendingFXEdit { commitFX() }
         guard canControl(), !finishing, var next = history else { return }
-        guard let project = redo ? next.redo() : next.undo() else { return }
+        guard let project = redo ? next.redo(allowsTuner: tunerInputAllowed) : next.undo(allowsTuner: tunerInputAllowed) else { return }
         do {
             tick(); try executor.applyProjectEdit(project)
             snapshot = try executor.snapshot(); history = next
@@ -1467,6 +1482,20 @@ public final class ShowTrackSelectionPresentation: ObservableObject {
             snapshot = try executor.snapshot(); markChanged(refreshAudio: refreshAudio); onProjectEdited()
             return true
         } catch { message = error.localizedDescription; return false }
+    }
+    func commitRegionBPM(_ song: Song, original: Song, projectID: UUID, mapTime: (Double) -> Double) -> Bool {
+        guard snapshot.project.id == projectID, current == original, tunerInputAllowed,
+              let index = snapshot.project.songs.firstIndex(where: { $0.id == song.id }) else { return false }
+        let cursor = snapshot.transport.editPosition ?? snapshot.transport.position
+        let applied = editProject { project in
+            project.songs[index] = song
+            project.masterAutomation?.mapTimelineTimes(mapTime)
+            if let saved = project.savedCursor, saved.songID == song.id {
+                project.savedCursor = SavedProjectCursor(songID: song.id, position: mapTime(saved.position))
+            }
+        }
+        if applied { send(.editSeek, value: mapTime(cursor)) }
+        return applied
     }
     func replaceTimelineAudio(_ replacements: [String: AudioFile]) -> Bool {
         editProject { project in
@@ -1621,7 +1650,7 @@ public final class ShowTrackSelectionPresentation: ObservableObject {
         }
     }
     public func setItemPitch(_ id: UUID, semitones: Double) {
-        guard canControl(), !finishing, (-12...12).contains(semitones) else { return }
+        guard tunerInputAllowed, canControl(), !finishing, (-12...12).contains(semitones) else { return }
         for song in snapshot.project.songs.indices {
             for track in snapshot.project.songs[song].tracks.indices where snapshot.project.songs[song].tracks[track].kind == .standard {
                 guard let item = snapshot.project.songs[song].tracks[track].clips.firstIndex(where: { $0.id == id && $0.midi == nil }) else { continue }
@@ -1629,7 +1658,7 @@ public final class ShowTrackSelectionPresentation: ObservableObject {
                 do {
                     try executor.execute(.clipPitch, target: id, value: Double(semitones))
                     snapshot.project.songs[song].tracks[track].clips[item].pitchSemitones = semitones == 0 ? nil : semitones
-                    markChanged()
+                    markChanged(editsTuner: true)
                 } catch { message = error.localizedDescription }
                 return
             }
@@ -1638,14 +1667,14 @@ public final class ShowTrackSelectionPresentation: ObservableObject {
     /// Apply one common semitone delta; stop at the first item's range limit
     /// so existing intervals between the selected items remain unchanged.
     public func adjustItemPitch(_ ids: Set<UUID>, by requested: Double) {
-        guard canControl(), !finishing, requested.isFinite else { return }
+        guard tunerInputAllowed, canControl(), !finishing, requested.isFinite else { return }
         let pitches = snapshot.project.songs.flatMap(\.tracks).filter { $0.kind == .standard }
             .flatMap(\.clips).filter { ids.contains($0.id) && $0.midi == nil }.map { $0.pitchSemitones ?? 0 }
         guard let low = pitches.min(), let high = pitches.max() else { return }
         let delta = min(12 - high, max(-12 - low, requested))
         guard delta != 0 else { return }
         var changed = false
-        defer { if changed { markChanged() } }
+        defer { if changed { markChanged(editsTuner: true) } }
         for song in snapshot.project.songs.indices {
             for track in snapshot.project.songs[song].tracks.indices where snapshot.project.songs[song].tracks[track].kind == .standard {
                 for item in snapshot.project.songs[song].tracks[track].clips.indices {
@@ -1740,7 +1769,7 @@ public final class ShowTrackSelectionPresentation: ObservableObject {
                 for (clip, file) in entries {
                     if cancelled() { throw CancellationError() }
                     let url = file.path.hasPrefix("/") ? URL(fileURLWithPath: file.path) :
-                        (mediaDirectory ?? URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)).appendingPathComponent(file.path)
+                        (mediaDirectory ?? URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)).projectMedia(file.path)
                     values[clip.id] = try AudioFileRead.sourceDuration(url.standardizedFileURL)
                 }
                 return values
@@ -2440,6 +2469,7 @@ public final class ShowTrackSelectionPresentation: ObservableObject {
     }
     private var liveTempoEdits = LiveTempoEditGate()
     var tempoEditClock: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
+    public var tunerInputAllowed: Bool { !isPlaying && !preparingAudio && !recordingBlocksTapTempo() }
     public var tempoInputAllowed: Bool { !snapshot.transport.playing && !snapshot.transport.subPlay.playing }
     public func setTypedTempo(_ bpm: Double) {
         guard tempoInputAllowed else { return }
@@ -2554,7 +2584,7 @@ public final class ShowTrackSelectionPresentation: ObservableObject {
     private static let profileTransport = ProcessInfo.processInfo.environment["CATLIVE_PROFILE_LAYOUT"] == "1"
     #endif
     private func send(_ command: ShowCommand, target: UUID?, value: Double, prepareSeek: Bool) {
-        guard !ProjectSyncControl.following else { return }
+        guard !ProjectSyncControl.following, command != .clipPitch || tunerInputAllowed else { return }
         #if os(macOS)
         let profile = Self.profileTransport && (command == .stop || command == .stopAll || command == .pause || command == .play)
         let began = profile ? ProcessInfo.processInfo.systemUptime : 0
@@ -3473,7 +3503,7 @@ public final class ShowTrackSelectionPresentation: ObservableObject {
         } catch { hasUnsavedChanges = true; throw error }
     }
     @discardableResult public func insertFX(_ track: UUID?, effect: String) -> String? {
-        guard NativeFXSettings.order.contains(effect),
+        guard NativeFXSettings.order.contains(effect) || (effect == NativeFXSettings.waveLFOName && current?.tracks.contains(where: { $0.id == track && $0.kind == .standard }) == true),
               track != nil || effect != "Instruments" else { return nil }
         var value = fxSettings(track)
         let key = value.appendNative(effect)
@@ -3485,10 +3515,11 @@ public final class ShowTrackSelectionPresentation: ObservableObject {
     /// One insertion gesture creates one history entry, regardless of track count.
     @discardableResult public func insertFX(_ targets: [UUID?], effect: String) -> [UUID?: String] {
         guard canControl(), !finishing,
-              NativeFXSettings.order.contains(effect),
+              NativeFXSettings.order.contains(effect) || effect == NativeFXSettings.waveLFOName,
               effect != "Instruments" else { return [:] }
         var inserted: [UUID?: String] = [:]
         for target in targets where inserted[target] == nil {
+            if effect == NativeFXSettings.waveLFOName, current?.tracks.contains(where: { $0.id == target && $0.kind == .standard }) != true { continue }
             guard target == nil || snapshot.project.songs.contains(where: { song in song.tracks.contains { $0.id == target } }) else { continue }
             var settings = fxSettings(target)
             let key = settings.appendNative(effect)
@@ -3824,7 +3855,7 @@ public final class ShowTrackSelectionPresentation: ObservableObject {
               let t = snapshot.project.songs[s].tracks.firstIndex(where: { $0.id == track && $0.kind.isTeleprompter }) else { return false }
         do {
             guard try FullLyricsRange(song: snapshot.project.songs[s], position: (range.start + range.end) / 2) == range else {
-                message = "The song changed. Open Full lyrics again."; return false
+                message = "The song changed. Open Add Lyrics again."; return false
             }
             let items = try range.items(text: text)
             var next = snapshot.project
@@ -3937,6 +3968,22 @@ public final class ShowTrackSelectionPresentation: ObservableObject {
             onProjectEdited()
         } catch { message = error.localizedDescription }
     }
+    public func randomizeTrackColors(_ ids: Set<UUID>, project: UUID) {
+        guard canControl(), !finishing, snapshot.project.id == project, !ids.isEmpty,
+              let currentSong = current?.id,
+              let song = snapshot.project.songs.firstIndex(where: { $0.id == currentSong }) else { return }
+        do {
+            let colors = try executor.randomizeTrackColors(currentSong, tracks: ids)
+            guard !colors.isEmpty else { return }
+            var next = snapshot.project
+            for row in next.songs[song].tracks.indices {
+                if let color = colors[next.songs[song].tracks[row].id] { next.songs[song].tracks[row].color = color }
+            }
+            snapshot.project = next
+            markChanged(refreshAudio: false, preservingMediaStorage: true, updateAudio: false, knownChanged: true)
+            onProjectEdited()
+        } catch { message = error.localizedDescription }
+    }
     /// Save track artwork outside Undo; name/color retain their existing history.
     public func editTrackDetails(_ ids: Set<UUID>, name: String?, color: UInt32?,
                                  instrumentIcon: String?, project: UUID) {
@@ -4036,6 +4083,32 @@ public final class ShowTrackSelectionPresentation: ObservableObject {
             publishTrackHeights(next)
         } catch { message = error.localizedDescription }
     }
+    private var lastHeightWheel: (session: UUID, song: UUID, tracks: Set<UUID>, revision: UInt64, time: TimeInterval)?
+    public func setTrackHeightScales(_ scales: [UUID: Double], project: UUID, song: UUID) {
+        guard !scales.isEmpty, !finishing, canControl(), snapshot.project.id == project, current?.id == song,
+              let index = snapshot.project.songs.firstIndex(where: { $0.id == song }),
+              scales.values.allSatisfy(TrackHeightGeometry.isValidScale) else { return }
+        var next = snapshot.project
+        var changed: [UUID: Double] = [:]
+        for row in next.songs[index].tracks.indices {
+            let track = next.songs[index].tracks[row]
+            if let scale = scales[track.id], abs(scale - (track.heightScale ?? 1)) > 0.000001 {
+                next.songs[index].tracks[row].heightScale = scale == 1 ? nil : scale
+                changed[track.id] = scale
+            }
+        }
+        guard !changed.isEmpty else { return }
+        do {
+            try executor.setTrackHeights(song, scales: changed)
+            let now = ProcessInfo.processInfo.systemUptime, ids = Set(scales.keys)
+            let continuing = lastHeightWheel.map {
+                $0.session == projectSessionID && $0.song == song && $0.tracks == ids &&
+                $0.revision == projectRevision && now - $0.time < 0.22
+            } ?? false
+            publishTrackHeights(next, continuing: continuing)
+            lastHeightWheel = (projectSessionID, song, ids, projectRevision, now)
+        } catch { message = error.localizedDescription }
+    }
     public func resetTrackHeightScales(project: UUID, song: UUID) {
         guard snapshot.project.id == project, current?.id == song, !finishing,
               let index = snapshot.project.songs.firstIndex(where: { $0.id == song }),
@@ -4049,10 +4122,16 @@ public final class ShowTrackSelectionPresentation: ObservableObject {
             publishTrackHeights(next)
         } catch { message = error.localizedDescription }
     }
-    private func publishTrackHeights(_ project: Project) {
+    private func publishTrackHeights(_ project: Project, continuing: Bool = false) {
         rowHeightEdit = (projectRevision &+ 1, timelineContentRevision)
         snapshot.project = project
-        markChanged(refreshAudio: false, preservingMediaStorage: true, updateAudio: false, knownChanged: true)
+        if continuing {
+            history?.continueMetadataGesture(project)
+            projectRevision &+= 1
+            hasUnsavedChanges = true
+        } else {
+            markChanged(refreshAudio: false, preservingMediaStorage: true, updateAudio: false, knownChanged: true)
+        }
         onProjectEdited()
     }
     /// Color-only batch: keep names and audio untouched and create one undo step.
@@ -4445,7 +4524,7 @@ public final class ShowTrackSelectionPresentation: ObservableObject {
               let index = snapshot.project.songs.firstIndex(where: { $0.id == songID }) else { return nil }
         if let existing = current?.tracks.first(where: { $0.role.rawValue == "vinhetas" }) { return existing.id }
         var project = snapshot.project
-        let track = Track(id: UUID(), name: "VINHETAS-FX", role: TrackRole(rawValue: "vinhetas"), instrumentIcon: nil, color: Track.defaultStandardColor)
+        let track = Track(id: UUID(), name: "VINHETAS-FX", role: TrackRole(rawValue: "vinhetas"), instrumentIcon: "png:Drums/sample-pad", color: Track.defaultStandardColor)
         project.songs[index].tracks.append(track); project.orderSpecialTracks()
         do {
             try project.validate(); try executor.applyProjectEdit(project)
@@ -4695,10 +4774,12 @@ public final class ShowTrackSelectionPresentation: ObservableObject {
         } catch { message = error.localizedDescription }
     }
     public func setRegionPitch(_ id: UUID, semitones: Int, tracks: Set<UUID>, groups: Set<UUID>) {
-        guard canControl(), !finishing, (-12...12).contains(semitones),
+        guard tunerInputAllowed, canControl(), !finishing, (-12...12).contains(semitones),
               let song = snapshot.project.songs.firstIndex(where: { $0.id == snapshot.transport.songId }),
               let region = snapshot.project.songs[song].parts.firstIndex(where: { $0.id == id }) else { return }
-        let t = tracks.sorted { $0.uuidString < $1.uuidString }, g = groups.sorted { $0.uuidString < $1.uuidString }
+        let available = Set(snapshot.project.songs[song].tracks.lazy.filter { $0.kind == .standard }.map(\.id))
+        let t = tracks.intersection(available).sorted { $0.uuidString < $1.uuidString }
+        let g = groups.intersection(available).sorted { $0.uuidString < $1.uuidString }
         let previous = snapshot.project.songs[song].parts[region]
         guard previous.semitones != semitones || previous.pitchTrackIDs != t || previous.pitchGroupIDs != g else { return }
         do {
@@ -4706,7 +4787,7 @@ public final class ShowTrackSelectionPresentation: ObservableObject {
             snapshot.project.songs[song].parts[region].pitchSemitones = semitones
             snapshot.project.songs[song].parts[region].pitchTrackIDs = t
             snapshot.project.songs[song].parts[region].pitchGroupIDs = g
-            markChanged(refreshAudio: false, preservingMediaStorage: true, knownChanged: true)
+            markChanged(refreshAudio: false, preservingMediaStorage: true, knownChanged: true, editsTuner: true)
         } catch { message = error.localizedDescription }
     }
     public func editRegionColors(_ ids: Set<UUID>, color: UInt32) {
@@ -4733,24 +4814,30 @@ public final class ShowTrackSelectionPresentation: ObservableObject {
     }
     public func renameTimelineLabel(_ id: UUID, name: String, region: Bool, includesUnified: Bool = false, includesParts: Bool = false) {
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty, let song = current?.id else { return }
-        editProject(refreshAudio: false) { project in
-            guard let index = project.songs.firstIndex(where: { $0.id == song }) else { return }
-            let markerIndex = region ? nil : project.songs[index].markers?.firstIndex(where: {
-                $0.id == id && ($0.isNavigationMarker || (includesParts && $0.isSection && !$0.isTempo)) &&
+        guard !name.isEmpty, canControl(), !finishing,
+              let index = snapshot.project.songs.firstIndex(where: { $0.id == snapshot.transport.songId }) else { return }
+        let song = snapshot.project.songs[index]
+        let marker = region ? nil : song.markers?.first {
+            $0.id == id && ($0.isNavigationMarker || (includesParts && $0.isSection)) &&
                 (includesUnified || ($0.unifiedRegionID == nil && $0.sourceRegionID == nil))
-            })
-            let regionID = region ? id : markerIndex.flatMap { project.songs[index].markers?[$0].sourceRegionID }
-            if let regionID, let part = project.songs[index].parts.firstIndex(where: { $0.id == regionID }) {
-                project.songs[index].parts[part].name = name
-                for marker in project.songs[index].markers?.indices ?? 0..<0
-                where project.songs[index].markers?[marker].sourceRegionID == regionID {
-                    project.songs[index].markers?[marker].name = name
-                }
-            } else if let marker = markerIndex {
-                project.songs[index].markers?[marker].name = String(name.prefix(TimelineMarker.maximumNameLength))
-            }
         }
+        var regions: [UUID: String] = [:], markers: [UUID: String] = [:]
+        if let source = region ? id : marker?.sourceRegionID, let part = song.parts.first(where: { $0.id == source }) {
+            if part.name != name { regions[source] = name }
+            for linked in song.markers ?? [] where linked.sourceRegionID == source && linked.name != name {
+                markers[linked.id] = name
+            }
+        } else if let marker {
+            let limited = String(name.prefix(TimelineMarker.maximumNameLength))
+            if marker.name != limited { markers[marker.id] = limited }
+        }
+        guard !regions.isEmpty || !markers.isEmpty else { return }
+        do {
+            try executor.setTimelineNames(song.id, regions: regions, markers: markers)
+            snapshot.project.songs[index].setTimelineNames(regions: regions, markers: markers)
+            markChanged(refreshAudio: false, preservingMediaStorage: true, updateAudio: false, knownChanged: true)
+            onProjectEdited()
+        } catch { message = error.localizedDescription }
     }
     public func editRegion(_ id: UUID, name: String, color: UInt32, uppercaseName: Bool? = nil) {
         guard canControl(), !finishing,
@@ -5120,8 +5207,8 @@ public final class ShowTrackSelectionPresentation: ObservableObject {
         return nil
     }
     private func markChanged(refreshAudio: Bool = true, preservingMediaStorage: Bool = false,
-                             updateAudio: Bool = true, knownChanged: Bool = false) {
-        recordEdit(preservingMediaStorage: preservingMediaStorage, knownChanged: knownChanged)
+                             updateAudio: Bool = true, knownChanged: Bool = false, editsTuner: Bool = false) {
+        recordEdit(preservingMediaStorage: preservingMediaStorage, knownChanged: knownChanged, editsTuner: editsTuner)
         projectRevision &+= 1
         if refreshAudio { audioProjectRevision &+= 1 }
         hasUnsavedChanges = true
@@ -5147,7 +5234,7 @@ public final class ShowTrackSelectionPresentation: ObservableObject {
         lastSetlistNavigationID = nil
         setlistNavigationRequest = nil; setlistFocusRequest = UUID(); timelineNavigationCache = nil
         splitItemsRequest = 0; normalizeItemsRequest = 0; itemProcessingRequest = nil; tempoMarkerRequest = 0; addTrackRequest = 0
-        detectBPMRegion = nil; detectBPMRegions = []; modalNotice = nil
+        detectBPMRegion = nil; detectBPMRegions = []; adjustBPMRegion = nil; modalNotice = nil
         resetTapTempo()
         pendingFXEdit = false; clipFXDefaults.removeAll()
         itemClipboard = nil; trackClipboard = nil

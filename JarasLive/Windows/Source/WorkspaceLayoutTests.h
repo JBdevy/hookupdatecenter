@@ -8,12 +8,52 @@
 #include "ModalSheet.h"
 #include "MIDIItemExport.h"
 #include "FloatingControlTests.h"
+#include "ActionBindingsTests.h"
 #include "ProjectDeletionPanel.h"
 #include "ProjectOpenConfirmationPanel.h"
 #include "SetlistRows.h"
 #include "ExportPanel.h"
 namespace catlive {
 struct WorkspaceLayoutTests {
+    static void tunerInputs(const File &directory) {
+        using floatingControlTests::require;
+        const auto stage = [&](const String &s) { directory.getChildFile("tuner-input-stages.log").appendText(s+"\n"); };
+        stage("project");
+        auto project = floatingControlTests::fixture();
+        stage("session");
+        auto ownedSession = std::make_unique<Session>();
+        auto &session = *ownedSession; session.inspection = true; stage("offline"); session.audio.prepareOffline(48000);
+        stage("restore");
+        session.restoreSnapshot(ProjectCodec::encode(project));
+        stage("auth"); Auth auth; stage("lighting"); Lighting lighting(session);
+        stage("workspace");
+        auto owner = std::make_unique<Workspace>(session,auth,lighting,false,directory.getNonexistentChildFile("tuner-inputs",".json"));
+        auto &workspace = *owner;
+        stage("bindings");
+        auto cc = object(); put(cc,"status",0xb0); put(cc,"number",77); put(cc,"channel",2);
+        require(workspace.actions.assign("tunerUp","keyboard","F8") &&
+                workspace.actions.assign("tunerDown","midi",cc),"Could not assign Tuner inputs");
+        session.command(jaras::CommandKind::selectRegion,project.songs.front().parts.front().id);
+        const auto pitch = [&]{ return session.song()->parts.front().pitchSemitones.value_or(0); };
+        const auto key = [&]{ workspace.actions.key(KeyPress::createFromDescription("F8")); };
+        const auto midi = [&]{
+            ActionBindingsTestAccess::receive(workspace.actions,MidiMessage::controllerEvent(2,77,127));
+            ActionBindingsTestAccess::receive(workspace.actions,MidiMessage::controllerEvent(2,77,0));
+        };
+        stage("key");
+        key(); require(pitch()==1,"Stopped shortcut missed the Tuner");
+        stage("midi");
+        midi(); require(pitch()==0,"Stopped MIDI missed the Tuner");
+        stage("play");
+        key(); session.command(jaras::CommandKind::play);
+        key(); require(pitch()==1,"Keyboard changed the Tuner while playing");
+        midi(); require(pitch()==1,"MIDI changed the Tuner while playing");
+        stage("stop");
+        session.command(jaras::CommandKind::stopAll);
+        midi(); require(pitch()==0,"MIDI did not unlock after Stop");
+        key(); require(pitch()==1,"Keyboard did not unlock after Stop");
+        stage("teardown");
+    }
     static void externalPluginWindow(const File &directory, const String &pluginPath) {
         using floatingControlTests::require;
         const auto descriptions = native::vst3::scan(std::filesystem::u8path(utf8(pluginPath)));
@@ -303,14 +343,18 @@ struct WorkspaceLayoutTests {
         for(int width:{800,1000,1440,1920}) for(int tabInset:{0,24}) {
             host.setSize(width,850); w.workspaceFullscreen=false;
             w.setBounds(0,tabInset,tabs.getWidth(),tabs.getHeight()-tabInset); w.resized();
-            require(w.controls["masterMono"]->isVisible() && w.controls["masterPatch"]->isVisible() &&
-                    !w.controls["masterFX"]->isVisible() && w.controls["masterMute"]->isVisible() &&
-                    w.controls["masterSolo"]->isVisible() && w.masterPan.isVisible(),
-                    "The transport Main keeps Stereo/Mono, Patch, Pan, Mute and Solo");
-            require(w.transportBounds.contains(w.masterVolume.getBounds()) &&
-                    w.controls["menu"]->getRight() < w.masterPan.getX() &&
-                    w.masterVolume.getRight() < w.proPlaybackBounds.getX(),
-                    "Keep File at the left of the Main controls");
+            for (const auto *id : {"masterMono", "masterPatch", "masterFX", "masterMute", "masterSolo"})
+                require(!w.controls[id]->isVisible(), "Transport Main only exposes the menu and gain");
+            for (auto *child : w.getChildren())
+                require(dynamic_cast<meterDisplay::PeakReadout *>(child) == nullptr,
+                        "The transport must not display or poll a master peak readout");
+            require(!w.masterPan.isVisible() && w.transportBounds.contains(w.masterVolume.getBounds()) &&
+                    w.controls["menu"]->getRight() < w.masterVolume.getX() &&
+                    w.masterVolume.getRight() < w.proPlaybackBounds.getX(), "Main fader follows the file menu");
+            require(w.proTimeBounds.getRight() + 4 == w.songDisplay.getX() &&
+                    w.transportResourceBounds.getRight() <= w.controls["audioStatus"]->getX() &&
+                    w.controls["audioStatus"]->getBounds().getVerticalRange().contains(w.transportResourceBounds.getCentreY()),
+                    "Title follows SEC and the four meters align with the audio status");
             const auto *library = w.controls.at("library"), *inspector = w.controls.at("focus");
             const auto *integration = w.controls.at("integration");
             require(library->getY() > w.masterVolume.getBottom() &&
@@ -334,9 +378,9 @@ struct WorkspaceLayoutTests {
             if (w.timelineSnap.isVisible())
                 require(w.timelineSnap.getX() - previousRight >= 10, "Separate Panel from Snap");
             const auto *audio = w.controls.at("audioStatus"), *settings = w.controls.at("settings");
-            require(audio->getRight() < settings->getX() && audio->getBottom() <= w.transportResourceBounds.getY() &&
+            require(audio->getRight() < settings->getX() && w.transportResourceBounds.getRight() < audio->getX() &&
                     audio->getWidth() == FooterAudioStatusButton::widthForStatus(w.toolbarAudioFormat),
-                    "Keep audio format and settings above the resource meters");
+                    "Audio format and settings follow the four resource meters");
             const auto normalPanel=w.transportBounds, normalGrid=w.workspaceBounds;
             for (auto id : {"proPlay", "proPause", "proRepeat", "proRecord", "metronome"})
                 require(w.transportDisplayBounds.contains(w.controls[id]->getBounds()), "Playback must stay inside the transport display");
@@ -356,7 +400,7 @@ struct WorkspaceLayoutTests {
                     metronomeBounds.getHeight() == modeBounds.getHeight(),
                     "Mode and metronome must be standard buttons to the left of the BPM panel");
             require(w.tuner->getX() > w.tempoDisplayBounds.getRight() && w.songDisplay.getY() < w.tempoControl->getY(),
-                    "Tuner must sit to the right of BPM beneath the centered song title");
+                    "Tuner must sit to the right of BPM beneath the transport title");
             require(w.tuner->getY() == w.tempoDisplayBounds.getY() &&
                     w.tuner->getHeight() == w.tempoDisplayBounds.getHeight(), "BPM and Tuner must share their top and height");
             const int playbackBottom = w.controls["proPlay"]->getBottom();
@@ -380,7 +424,7 @@ struct WorkspaceLayoutTests {
             std::vector<juce::Rectangle<int>> normal;
             for(auto *c:transport) normal.push_back(c->getBounds());
             const auto beforeNative=nativeRects(); require(beforeNative.size()==7,"Native controls missing");
-            const auto beforeMaster=w.createComponentSnapshot({4,normalPanel.getY()+4,222,80});
+            const auto beforeMaster=w.createComponentSnapshot({4,normalPanel.getY()+4,222,std::min(80,normalPanel.getHeight()-8)});
             for(int repeat=0;repeat<3;++repeat) {
                 w.workspaceFullscreen=true; w.resized();
                 require(w.transportBounds.getY()==normalPanel.getY()-32 && w.workspaceBounds.getY()==normalGrid.getY()-32,
@@ -397,7 +441,7 @@ struct WorkspaceLayoutTests {
                     const auto found=afterNative.find(child);
                     require(found!=afterNative.end() && EqualRect(&expected,&found->second),"Native hit area lagged behind fullscreen layout");
                 }
-                const auto afterMaster=w.createComponentSnapshot({4,w.transportBounds.getY()+4,222,80});
+                const auto afterMaster=w.createComponentSnapshot({4,w.transportBounds.getY()+4,222,std::min(80,normalPanel.getHeight()-8)});
                 for(int y=0;y<beforeMaster.getHeight();++y) for(int x=0;x<beforeMaster.getWidth();++x)
                     require(beforeMaster.getPixelAt(x,y)==afterMaster.getPixelAt(x,y),"Master drawing moved relative to its controls");
                 w.workspaceFullscreen=false; w.resized();
@@ -1745,6 +1789,98 @@ struct WorkspaceLayoutTests {
         session.undo(); require(session.tempoBPM()==146,"Free BPM undo failed");
         session.redo(); require(session.tempoBPM()==87,"Free BPM redo failed");
     }
+    static void playingRightPanels(const File& directory) {
+        using floatingControlTests::require;
+        const auto source = SystemStats::getEnvironmentVariable("CATLIVE_TEMPO_STRESS_PROJECT", {});
+        if (source.isEmpty()) return;
+        const File file(source);
+        Session session;
+        session.inspection = true;
+        session.document = file;
+        session.mediaDirectory = file.getParentDirectory();
+        session.restoreSnapshot(ProjectCodec::read(file));
+        Auth auth;
+        Lighting lighting(session);
+        Workspace w(session, auth, lighting, false, directory.getChildFile("inspected-layout.json"));
+        DocumentWindow host("Performance test", theme::background, 0);
+        host.setContentNonOwned(&w, true); host.centreWithSize(1366,900); host.setVisible(true);
+        w.projectOpened(false);
+        const auto report = directory.getChildFile("right-panels.jsonl");
+        report.replaceWithText("");
+        auto phase = [&](String label, auto action) {
+            const auto missed = session.audio.getUnderruns();
+            const auto start = Time::getMillisecondCounterHiRes();
+            action();
+            const auto end = Time::getMillisecondCounterHiRes();
+            double previous = start, gap = end - start;
+            for (int i=0; i<8; ++i) {
+                floatingControlTests::pump();
+                const auto now = Time::getMillisecondCounterHiRes();
+                gap=std::max(gap,now-previous); previous=now;
+            }
+            auto row = object();
+            put(row,"action",label); put(row,"actionMs",end-start); put(row,"gapMs",gap);
+            put(row,"sourceUnderruns",static_cast<int64>(session.audio.getUnderruns()-missed));
+            put(row,"playing",session.audio.state().playing);
+            report.appendText(JSON::toString(row, true)+"\n");
+            require(session.audio.state().playing,"Audio did not run during the panel test");
+        };
+        auto press = [&](Component& content, const String& target) {
+            std::function<Button*(Component&)> find = [&](Component& root)->Button* {
+                if (auto* b=dynamic_cast<Button*>(&root); b && b->isVisible() &&
+                    (b->getButtonText()==target || b->getButtonText()==localization::translate(target))) return b;
+                for(auto* child:root.getChildren()) if(child->isVisible()) if(auto* result=find(*child))return result;
+                return nullptr;
+            };
+            auto* button=find(content); require(button!=nullptr && (bool)button->onClick,"Panel control missing");
+            button->onClick();
+        };
+        tempoProjectStressTests::measureStart(session, directory, [&] {
+            for (int pass=1; pass<=3; ++pass) {
+                const String suffix="-"+String(pass);
+                for (auto id : {"proNotes","proSamplers"}) {
+                    phase(String(id)+"-open"+suffix,[&]{w.controls.at(id)->onClick();});
+                    auto* dock=w.findChildWithID("pro-library-dock"); require(dock&&dock->isVisible(),"Right dock did not open");
+                    const auto tabs=String(id)=="proNotes" ? StringArray{"Region","Markers","Notes"} : StringArray{"Files","Samplers"};
+                    for (const auto& tab : tabs) phase(String(id)+"-"+tab+suffix,[&]{press(*dock,tab);});
+                    phase(String(id)+"-close"+suffix,[&]{w.controls.at(id)->onClick();});
+                    require(!dock->isVisible(),"Right dock did not close");
+                }
+                for (int index : {1,2}) {
+                    const String config="Config"+String(index), key=String::fromUTF8("Configurações do teleprompter");
+                    phase(config+"-open"+suffix,[&]{w.openStageConfig(index);});
+                    auto* panel=w.floatingWindows.at(key)->getContentComponent();
+                    if (index == 1) {
+                        phase("Config-switch-to-2"+suffix,[&]{w.openStageConfig(2);});
+                        require(w.floatingWindows.at(key)->getContentComponent() == panel,"Switching TP rebuilt its window");
+                        bool secondSelected = false;
+                        for (auto *child : panel->getChildren())
+                            if (auto *button = dynamic_cast<Button *>(child); button && button->getButtonText() == "Teleprompter 2")
+                                secondSelected = button->getToggleState();
+                        require(secondSelected,"Opening TP2 while TP1 is visible must select TP2");
+                        phase("Config-switch-to-1"+suffix,[&]{w.openStageConfig(1);});
+                    }
+                    for(const auto& tab : StringArray{"DIA","NOITE"}) phase(config+"-"+tab+suffix,[&]{press(*panel,tab);});
+                    phase(config+"-close"+suffix,[&]{press(*panel,"Fechar");});
+                    require(!w.floatingWindows.at(key)->isVisible(),"TP config did not close");
+                }
+                for (int index : {1,2}) {
+                    const String name="Remote"+String(index);
+                    phase(name+"-open"+suffix,[&]{w.openTPRemote(index);});
+                    auto* sheet=Component::getCurrentlyModalComponent();
+                    require(sheet!=nullptr,"Remote panel did not open");
+                    auto& server=*w.teleprompterHTTP[size_t(index-1)];
+                    phase(name+"-local-enable"+suffix,[&]{server.start(0,"127.0.0.1");});
+                    require(server.enabled() && server.port()>0,"Local TP endpoint unavailable");
+                    phase(name+"-disable"+suffix,[&]{press(*sheet,"Ativado");});
+                    require(!server.enabled(),"Remote panel did not disable its server");
+                    phase(name+"-close"+suffix,[&]{press(*sheet,"Fechar");});
+                    require(Component::getCurrentlyModalComponent()==nullptr,"Remote panel did not close");
+                }
+            }
+        });
+        host.clearContentComponent();
+    }
     static void recordingAndSidebars(const File &directory) {
         using floatingControlTests::require;
         const auto folder = directory.getNonexistentChildFile("record-mix", "");
@@ -1875,6 +2011,7 @@ struct WorkspaceLayoutTests {
         auto *grid=uiFeatureTests::find(w,"timelineCanvas");require(grid,"Timeline canvas missing");
         const auto gridPoint=grid->getLocalBounds().toFloat().getCentre();
         const auto now=Time::getCurrentTime();
+        w.selectedTracks.clear(); w.selectedTrack.clear();
         const auto altWheel=MouseEvent(Desktop::getInstance().getMainMouseSource(),gridPoint,ModifierKeys(ModifierKeys::altModifier),
             1,0,0,0,0,grid,grid,now,gridPoint,now,1,false);
         const auto zoom=w.pixelsPerSecond;
@@ -1945,6 +2082,22 @@ struct WorkspaceLayoutTests {
         put(measurements,"dispatchMs",dispatchMs);
         directory.getChildFile("grid-touchpad.json").replaceWithText(JSON::toString(measurements));
         wheel = {}; wheel.isSmooth = true;
+        const auto songID=session.song()->id;
+        session.setTrackHeight(songID,tracks[2].id,1.5);
+        w.selectedTrack=tracks[0].id; w.selectedTracks={tracks[0].id,tracks[2].id};
+        const auto height0=w.itemLaneHeight(0), height1=w.itemLaneHeight(1), height2=w.itemLaneHeight(2);
+        const auto globalHeight=w.trackHeight;
+        wheel.deltaY=.3f;grid->mouseWheelMove(altWheel,wheel);
+        require(w.itemLaneHeight(0)>height0 && w.itemLaneHeight(2)>height2 && w.itemLaneHeight(1)==height1 &&
+                w.trackHeight==globalHeight && w.pixelsPerSecond==precisionZoom,"Alt wheel resized an unselected row or the grid");
+        auto taller=w.itemLaneHeight(0);
+        w.mouseWheelMove(event(ModifierKeys::altModifier),wheel);
+        require(w.itemLaneHeight(0)>taller && w.itemLaneHeight(1)==height1,"Mixer Alt wheel missed the selection");
+        session.undo();
+        require(w.itemLaneHeight(0)==height0 && w.itemLaneHeight(2)==height2,"Selected wheel gesture did not undo as one resize");
+        w.selectedTracks={tracks[2].id};w.selectedTrack=tracks[2].id;
+        wheel.deltaY=-.3f;w.mouseWheelMove(event(ModifierKeys::altModifier),wheel);
+        require(w.itemLaneHeight(0)==height0 && w.itemLaneHeight(2)<height2,"Alt wheel did not honor a new single selection");
         const int height=w.trackHeight;wheel.deltaY=.2f;
         w.mouseWheelMove(event(ModifierKeys::ctrlModifier),wheel);
         require(w.trackHeight>height,"Ctrl wheel no longer adjusts track height");
@@ -1982,6 +2135,16 @@ struct WorkspaceLayoutTests {
                 w.transportBounds == toolbarBounds && setlistPanel->getBounds() == setlistBounds &&
                 w.tracksViewport.getViewPositionY() == w.verticalOffset,
                 "Resizing compact tracks must retain transport, Setlist and the shared scroll");
+        for (int height : {63, 50, 29, 23, 22, 21, 18, 21, 22, 23, 29, 50, 63}) {
+            w.trackHeightSlider.setValue(height, sendNotificationSync);
+            for (const auto *id : {"trackRecord", "trackInputMonitor", "trackMute", "trackSolo"}) {
+                const auto *button = row->findChildWithID(id);
+                const int side = std::min(22, row->getHeight());
+                require(button && button->isVisible() && button->getHeight() == side && button->getWidth() == side &&
+                        button->getY() == (row->getHeight() - side) / 2,
+                        "REC, I, M and S stay centered and fill the track only near its minimum");
+            }
+        }
         w.trackHeightSlider.setValue(75, sendNotificationSync);
         require(row->getHeight() == expandedBounds.getHeight() && envelope->isVisible(),
                 "Re-expanding the row must restore its layout and envelope control");
@@ -2307,6 +2470,7 @@ template<class Test> void registerTests(const File &directory,Test &test) {
     test("Tempo gestures update grid and preserve Undo and Redo",[&]{WorkspaceLayoutTests::tempoResponsiveness(directory);});
     test("Free project BPM without regions or tempo markers preserves every PCM sample during Play",
          [&] { WorkspaceLayoutTests::freeTempoPCM(directory); });
+    test("Right panels and teleprompters with the stress project playing",[&]{WorkspaceLayoutTests::playingRightPanels(directory);});
     test("Playing stress grid opens and closes Track Mixer Setlist and keeps per-track REC responsive",[&]{WorkspaceLayoutTests::recordingAndSidebars(directory);});
     test("Track Mixer wheel thumb and grid scroll stay synchronized without rebuilding rows",[&]{WorkspaceLayoutTests::immediateTrackScroll(directory);});
     test("Repeated multi-track paste selects the last copy and immediately reveals it in both 900-track mixers while retaining controls",[&]{WorkspaceLayoutTests::duplicateTrackFollow(directory);});

@@ -7,7 +7,7 @@ inline bool english = false;
 inline String translate(const String &original) {
     if(original=="BLOCOS" || original=="BLOCKS")return english?"BLOCKS":"BLOCOS";
     if (original == "Temporary") return english ? "Temporary" : String::fromUTF8("Temporário");
-    if (original == "Setlist")
+    if (original == "Setlist" || original == "Add Text" || original == "Add Lyrics")
         return original;
     struct Catalog {
         std::map<String, String> english, portuguese;

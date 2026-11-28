@@ -92,6 +92,14 @@ inline void remove(jaras::Song &song, const ID &id) {
                 std::remove(clip.separatedStemTracks.begin(), clip.separatedStemTracks.end(), id),
                 clip.separatedStemTracks.end());
     }
+    for (auto &part : song.parts) {
+        for (auto *targets : {&part.pitchTrackIDs, &part.pitchGroupIDs}) {
+            if (*targets) {
+                auto &ids = **targets;
+                ids.erase(std::remove(ids.begin(), ids.end(), id), ids.end());
+            }
+        }
+    }
     song.tracks.erase(song.tracks.begin() + at);
 }
 inline void move(jaras::Song &song, const ID &id, const ID &before) {

@@ -53,16 +53,20 @@ do {
     grid.updateLayout(GridSelectionLayout(items: [testItem]), pixelsPerSecond: 30)
     let plain = pixels()
     var envelope = WaveLFOEnvelope()
-    envelope.attack = 1; envelope.decay = 1; envelope.sustain = 0.6; envelope.release = 1
+    envelope.attack = 1; envelope.hold = 0.5; envelope.decay = 1; envelope.sustain = 0.6; envelope.release = 1
     testItem.waveLFO = envelope
     grid.updateLayout(GridSelectionLayout(items: [testItem]), pixelsPerSecond: 30)
     let ink = pixels()
     precondition(ink != plain, "Adding Wave LFO must draw the envelope directly on the audio item")
     let handles = testItem.wavePoints(envelope)
-    precondition(handles.count == 5 && testItem.rect.contains(handles[1]) && testItem.rect.contains(handles[3]))
-    let changed = testItem.draggedWave(envelope, handle: 2, point: CGPoint(x: 280, y: testItem.waveBody.midY))
+    precondition(handles.count == 6 && handles[2].x - handles[1].x == 50 && testItem.rect.contains(handles[4]))
+    let changed = testItem.draggedWave(envelope, handle: 3, point: CGPoint(x: 330, y: testItem.waveBody.midY))
     precondition(abs(changed.decay - 1.5) < 1e-9 && abs(changed.sustain - 0.5) < 1e-9)
+    testItem.waveLFO = nil
+    grid.updateLayout(GridSelectionLayout(items: [testItem]), pixelsPerSecond: 30)
+    precondition(pixels() == plain, "A track envelope must leave its items free of envelope ink")
     testItem.fxBypassed = true
+    testItem.waveLFO = nil
     grid.updateLayout(GridSelectionLayout(items: [testItem]), pixelsPerSecond: 30)
     precondition(pixels() != ink, "Bypass must update the overlay")
     grid.updateLayout(GridSelectionLayout(items: [item]), pixelsPerSecond: 30)

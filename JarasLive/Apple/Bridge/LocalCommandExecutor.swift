@@ -94,6 +94,11 @@ import Foundation
         try core.addRecordedClip(JSONEncoder().encode(clip), track: track.uuidString)
         waveforms[clip.id] = ClipWaveform(clip)
     }
+    func setTrackHeights(_ song: UUID, scales: [UUID: Double]) throws {
+        try core.setTrackHeights(song.uuidString, scales: Dictionary(uniqueKeysWithValues: scales.map {
+            ($0.key.uuidString, NSNumber(value: $0.value))
+        }))
+    }
     func setTrackHeight(_ song: UUID, track: UUID?, scale: Double) throws {
         try core.setTrackHeight(song.uuidString, track: track?.uuidString, scale: scale)
     }
@@ -101,6 +106,12 @@ import Foundation
         try core.setTimelineLocks(locked, options: Int32(options))
     }
     func editMasterColor(_ color: UInt32) throws { try core.editMasterColor(color) }
+    func randomizeTrackColors(_ song: UUID, tracks: Set<UUID>) throws -> [UUID: UInt32] {
+        let colors = try core.randomizeTrackColors(song.uuidString, tracks: tracks.map(\.uuidString))
+        return Dictionary(uniqueKeysWithValues: tracks.compactMap { track in
+            colors[track.uuidString].map { (track, $0.uint32Value) }
+        })
+    }
     func setTrackMixerComponents(_ song: UUID, masks: [UUID: Int]) throws {
         try core.setTrackMixerComponents(song.uuidString, masks: Dictionary(uniqueKeysWithValues: masks.map {
             ($0.key.uuidString, NSNumber(value: $0.value))
@@ -112,6 +123,11 @@ import Foundation
     func setRegionInit(_ id: UUID, count: Int, bars: Bool) throws { try core.setRegionInit(id.uuidString, count: Int32(count), bars: bars) }
     func setRegionPitch(_ id: UUID, semitones: Int, tracks: [UUID], groups: [UUID]) throws { try core.setRegionPitch(id.uuidString, semitones: Int32(semitones), tracks: tracks.map(\.uuidString), groups: groups.map(\.uuidString)) }
     func editRegion(_ id: UUID, name: String, color: UInt32, uppercaseName: Bool) throws { try core.editRegion(id.uuidString, name: name, color: color, uppercaseName: uppercaseName) }
+    func setTimelineNames(_ song: UUID, regions: [UUID: String], markers: [UUID: String]) throws {
+        try core.setTimelineNames(song.uuidString,
+            regions: Dictionary(uniqueKeysWithValues: regions.map { ($0.key.uuidString, $0.value) }),
+            markers: Dictionary(uniqueKeysWithValues: markers.map { ($0.key.uuidString, $0.value) }))
+    }
     func moveClip(_ id: UUID, start: Double, track: UUID?) throws { try core.moveClip(id.uuidString, start: start, track: track?.uuidString ?? "") }
     func deleteManualMarker(_ id: UUID) throws { try core.deleteManualMarker(id.uuidString) }
     func retimeTempoMarkers(_ markers: [TimelineMarker]) throws { try core.retimeTempoMarkers(JSONEncoder().encode(markers)) }

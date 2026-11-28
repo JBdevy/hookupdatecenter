@@ -165,25 +165,21 @@ struct GridSelectionItem {
     func wavePoints(_ envelope: WaveLFOEnvelope) -> [CGPoint] {
         let body = waveBody
         guard duration > 0, body.height > 4, body.width > 4 else { return [] }
-        let e = envelope.fitted(to: duration)
-        let scale = body.width / duration
-        let level = body.maxY - e.sustain * body.height
-        return [CGPoint(x: body.minX, y: body.maxY),
-                CGPoint(x: body.minX + e.attack * scale, y: body.minY),
-                CGPoint(x: body.minX + (e.attack + e.decay) * scale, y: level),
-                CGPoint(x: body.maxX - e.release * scale, y: level),
-                CGPoint(x: body.maxX, y: body.maxY)]
+        return envelope.vertices(duration: duration).map {
+            CGPoint(x: body.minX + $0.time * body.width / duration, y: body.maxY - $0.gain * body.height)
+        }
     }
     func draggedWave(_ envelope: WaveLFOEnvelope, handle: Int, point: CGPoint) -> WaveLFOEnvelope {
         let body = waveBody
         var e = envelope.fitted(to: duration)
         let t = min(duration, max(0, (point.x - body.minX) * duration / max(1, body.width)))
         switch handle {
-        case 1: e.attack = min(60, max(0, min(t, duration - e.decay - e.release)))
-        case 2:
-            e.decay = min(60, max(0, min(t - e.attack, duration - e.release - e.attack)))
+        case 1: e.attack = min(60, max(0, min(t, duration - e.hold - e.decay - e.release)))
+        case 2: e.hold = min(60, max(0, min(t - e.attack, duration - e.attack - e.decay - e.release)))
+        case 3:
+            e.decay = min(60, max(0, min(t - e.attack - e.hold, duration - e.attack - e.hold - e.release)))
             e.sustain = min(1, max(0, (body.maxY - point.y) / max(1, body.height)))
-        case 3: e.release = min(60, max(0, min(duration - t, duration - e.attack - e.decay)))
+        case 4: e.release = min(60, max(0, min(duration - t, duration - e.attack - e.hold - e.decay)))
         default: break
         }
         return e
@@ -842,6 +838,7 @@ struct GridSelectionInput: NSViewRepresentable {
     var freezeMIDI: (Set<UUID>, Int) -> Void = { _, _ in }
     var glue: (Set<UUID>) -> Void = { _ in }
     var tuner: (Set<UUID>) -> Void = { _ in }
+    var canTune: () -> Bool = { true }
     var resetRate: (Set<UUID>) -> Void = { _ in }
     var resetDuration: (Set<UUID>) -> Void = { _ in }
     var configureRate: (Set<UUID>) -> Void = { _ in }
@@ -902,7 +899,7 @@ struct GridSelectionInput: NSViewRepresentable {
         view.itemPressed = itemPressed
         view.supportsProTools = proTools; view.applyProTool = applyProTool; view.applyTrackTool = applyTrackTool; view.setLoopArea = setLoopArea
         view.renameItem = renameItem; view.exportMIDI = exportMIDI
-        view.mute = mute; view.move = move; view.seek = seek; view.selectRow = selectRow; view.selectionChanged = selectionChanged; view.createRegion = createRegion; view.reRender = reRender; view.normalize = normalize; view.resetRate = resetRate; view.resetDuration = resetDuration; view.convert = convert; view.freezeMIDI = freezeMIDI; view.glue = glue; view.tuner = tuner; view.export = export; view.resize = resize; view.resizeShared = resizeShared; view.fade = fade; view.setFadeControls = setFadeControls; view.editWave = editWave; view.addWave = addWave; view.fadeShape = fadeShape; view.gain = gain; view.phase = phase; view.pan = pan; view.fx = fx; view.editText = editText; view.editMIDI = editMIDI; view.createMIDI = createMIDI
+        view.mute = mute; view.move = move; view.seek = seek; view.selectRow = selectRow; view.selectionChanged = selectionChanged; view.createRegion = createRegion; view.reRender = reRender; view.normalize = normalize; view.resetRate = resetRate; view.resetDuration = resetDuration; view.convert = convert; view.freezeMIDI = freezeMIDI; view.glue = glue; view.tuner = tuner; view.canTune = canTune; view.export = export; view.resize = resize; view.resizeShared = resizeShared; view.fade = fade; view.setFadeControls = setFadeControls; view.editWave = editWave; view.addWave = addWave; view.fadeShape = fadeShape; view.gain = gain; view.phase = phase; view.pan = pan; view.fx = fx; view.editText = editText; view.editMIDI = editMIDI; view.createMIDI = createMIDI
         view.observeHeaderScroll()
     }
 }
@@ -1154,6 +1151,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
     var freezeMIDI: ((Set<UUID>, Int) -> Void)?
     var glue: ((Set<UUID>) -> Void)?
     var tuner: ((Set<UUID>) -> Void)?
+    var canTune: () -> Bool = { true }
     var resetRate: ((Set<UUID>) -> Void)?
     var resetDuration: ((Set<UUID>) -> Void)?
     var configureRate: ((Set<UUID>) -> Void)?
@@ -1547,7 +1545,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
             resizingLeft = false; heldItemGuide = item.rect
             return
         }
-        if let wave = item.waveLFO, !item.fxBypassed, tool == .select {
+        if let wave = item.waveLFO, tool == .select {
             let points = item.wavePoints(wave)
             if let hit = points.indices.dropFirst().dropLast().min(by: {
                 hypot(points[$0].x - timeline.x, points[$0].y - timeline.y) < hypot(points[$1].x - timeline.x, points[$1].y - timeline.y)
@@ -2149,7 +2147,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
                 let glue = NSMenuItem(title: JarasLocalization.string("Unify items"), action: #selector(glueSelection), keyEquivalent: "")
                 glue.target = self; menu.addItem(glue)
                 let tuner = NSMenuItem(title: "Tuner", action: #selector(tuneSelection), keyEquivalent: "")
-                tuner.target = self; menu.addItem(tuner)
+                tuner.target = self; tuner.isEnabled = canTune(); menu.addItem(tuner)
                 if selected.count == 1, canSeparateAudio?(contextItem) == true {
                     let separation = NSMenuItem(title: "Separation audio", action: #selector(separateContextAudio), keyEquivalent: "")
                     separation.target = self; menu.addItem(separation)
@@ -2179,9 +2177,9 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
             toggle.target = self; menu.addItem(toggle)
         }
         menu.addItem(.separator())
-        let export = NSMenuItem(title: JarasLocalization.string("Export"), action: #selector(exportSelection), keyEquivalent: "")
+        let export = NSMenuItem(title: JarasLocalization.string("Export Audio"), action: #selector(exportSelection), keyEquivalent: "")
         export.target = self
-        export.isEnabled = selected.contains { item(id: $0).map { $0.editable && $0.audioExportable } == true }
+        export.isEnabled = selected.contains { item(id: $0)?.audioExportable == true }
         menu.addItem(export)
         menu.autoenablesItems = false
         return menu
@@ -2218,10 +2216,11 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
         for item in audioItems where item.muted != muted { mute?(item.id) }
     }
     @objc private func exportSelection() {
-        let audio = Set(selected.filter { item(id: $0).map { $0.editable && $0.audioExportable } == true })
+        let audio = Set(selected.filter { item(id: $0)?.audioExportable == true })
         if !audio.isEmpty { export?(audio) }
     }
     @objc private func tuneSelection() {
+        guard canTune() else { return }
         let ids = Set(selected.filter { item(id: $0).map { $0.audioExportable && !$0.midiEditable } == true })
         if !ids.isEmpty { tuner?(ids) }
     }
@@ -2313,9 +2312,9 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
         let border = NSBezierPath(rect: rect.insetBy(dx: 0.5, dy: 0.5)); border.lineWidth = 1; border.stroke()
     }
     private func drawItemFades(_ item: GridSelectionItem, visibleRects: [CGRect?]) {
-        if let wave = item.waveLFO, !item.fxBypassed, let context = NSGraphicsContext.current?.cgContext {
+        if let wave = item.waveLFO, let context = NSGraphicsContext.current?.cgContext {
             let points = item.wavePoints(wave)
-            if points.count == 5 {
+            if !points.isEmpty {
                 context.saveGState()
                 context.clip(to: item.rect)
                 context.setStrokeColor(NSColor.systemTeal.cgColor)

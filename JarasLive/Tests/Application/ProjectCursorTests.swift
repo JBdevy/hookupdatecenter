@@ -41,6 +41,12 @@ import XCTest
         default: break
         }
     }
+    func setRegionPitch(_ id: UUID, semitones: Int, tracks: [UUID], groups: [UUID]) throws {
+        guard let i = project.songs[0].parts.firstIndex(where: { $0.id == id }) else { throw ProjectError.invalid("Missing region") }
+        project.songs[0].parts[i].pitchSemitones = semitones
+        project.songs[0].parts[i].pitchTrackIDs = tracks
+        project.songs[0].parts[i].pitchGroupIDs = groups
+    }
     func setMarker(_ marker: TimelineMarker) throws {
         if project.songs[0].markers == nil { project.songs[0].markers = [] }
         if let index = project.songs[0].markers?.firstIndex(where: { $0.id == marker.id }) { project.songs[0].markers![index] = marker }
@@ -905,6 +911,53 @@ final class ProjectCursorTests: XCTestCase {
         XCTAssertTrue(executor.regionCommands.isEmpty)
         XCTAssertEqual(executor.loadCount, loads); XCTAssertEqual(executor.snapshotCount, snapshots)
         show.send(.stopAll)
+    }
+
+    @MainActor func testTunerKeyboardAndMIDIStopAtTransportBoundary() throws {
+        var project = Project.empty(name: "Tuner")
+        let track = Track(id: UUID(), name: "Keys", role: .keys)
+        let part = Part(id: UUID(), name: "Song", startTime: 0, endTime: 15)
+        project.songs[0].tracks.append(track)
+        project.songs[0].parts = [part]
+        let executor = CursorExecutor()
+        let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)
+        show.focusRegion(part.id)
+        let key = ControlInput(kind: "keyboard", label: "F8", key: 100, modifiers: 0)
+        let cc = ControlInput(kind: "midi", label: "CC77", channel: 2, status: 0xb0, number: 77)
+        var bindings = DAWActionBindings()
+        XCTAssertTrue(bindings.setInput(key, action: .tunerUp, kind: "keyboard"))
+        XCTAssertTrue(bindings.setInput(cc, action: .tunerDown, kind: "midi"))
+        let up = try XCTUnwrap(bindings.matching(key)), down = try XCTUnwrap(bindings.matching(cc))
+        show.performAction(up)
+        XCTAssertEqual(show.pitchRegion?.semitones, 1)
+        show.performAction(down, midiValue: 127)
+        XCTAssertEqual(show.pitchRegion?.semitones, 0)
+        show.setRegionPitch(part.id, semitones: 3, tracks: [track.id, UUID()], groups: [UUID()])
+        XCTAssertEqual(show.pitchRegion?.pitchTrackIDs, [track.id])
+        XCTAssertEqual(show.pitchRegion?.pitchGroupIDs, [])
+        show.send(.play)
+        let revision = show.projectRevision
+        show.performAction(up)
+        show.performAction(down, midiValue: 127)
+        show.setRegionPitch(part.id, semitones: 9, tracks: [], groups: [])
+        show.undo()
+        XCTAssertEqual(show.projectRevision, revision)
+        XCTAssertEqual(show.pitchRegion?.semitones, 3)
+        executor.transport.playing = false; executor.transport.subPlay.playing = true
+        show.send(.ignoreNext)
+        XCTAssertFalse(show.tunerInputAllowed)
+        show.performAction(up)
+        XCTAssertEqual(show.projectRevision, revision)
+        executor.transport.subPlay.playing = false
+        show.send(.stopAll)
+        show.performAction(down, midiValue: 127)
+        XCTAssertEqual(show.pitchRegion?.semitones, 2)
+        show.performAction(up)
+        XCTAssertEqual(show.pitchRegion?.semitones, 3)
+        var saved = show.snapshot.project
+        saved.deleteTracks([track.id])
+        let reopened = try ProjectDocumentCodec.decode(ProjectDocumentCodec.encode(saved))
+        XCTAssertEqual(reopened.songs[0].parts[0].pitchTrackIDs, [])
     }
 
     @MainActor func testSpecialSelectionUsesFirstChildPitchAndPlaybackUsesCurrentChild() throws {

@@ -41,7 +41,7 @@ class TunerControl final : public Component, private Timer {
                    up.getX() - down.getRight(), getHeight(), Justification::centred);
     }
     void mouseDown(const MouseEvent &e) override {
-        if (e.mods.isPopupMenu() && e.x >= down.getRight() && e.x < up.getX() && region())
+        if (session.tunerInputAllowed() && e.mods.isPopupMenu() && e.x >= down.getRight() && e.x < up.getX() && region())
             configure();
     }
 
@@ -54,15 +54,16 @@ class TunerControl final : public Component, private Timer {
         if (!isShowing())
             return;
         auto *part = region();
-        const bool allowed =
-            part && !session.busy;
+        const bool unlocked = session.tunerInputAllowed();
+        setAlpha(unlocked ? 1.0f : 0.45f);
+        const bool allowed = part && !session.busy && unlocked;
         down.setEnabled(allowed && part->pitchSemitones.value_or(0) > -12);
         up.setEnabled(allowed && part->pitchSemitones.value_or(0) < 12);
         const int pitch = part ? part->pitchSemitones.value_or(0) : 0;
         if (!shownPitch || *shownPitch != pitch) { shownPitch = pitch; repaint(); }
     }
 };
-class PitchTargetsPanel final : public Component {
+class PitchTargetsPanel final : public Component, private Timer {
   public:
     PitchTargetsPanel(Session &owner, ID target, std::function<void()> finish,
                       std::function<void(String)> failure)
@@ -113,6 +114,8 @@ class PitchTargetsPanel final : public Component {
         apply.setColour(TextButton::buttonColourId, theme::green);
         apply.setColour(TextButton::textColourOffId, Colours::black);
         refresh();
+        timerCallback();
+        startTimerHz(8);
     }
     ~PitchTargetsPanel() override { view.setViewedComponent(nullptr, false); }
     void paint(Graphics &g) override { g.fillAll(theme::panel); }
@@ -188,7 +191,14 @@ class PitchTargetsPanel final : public Component {
         all.setButtonText(allSelected ? "Desmarcar todas" : "Selecionar todas");
         resized();
     }
+    void timerCallback() override {
+        const bool editable = session.tunerInputAllowed();
+        view.setEnabled(editable);
+        all.setEnabled(editable);
+        apply.setEnabled(editable);
+    }
     void commit() {
+        if (!session.tunerInputAllowed()) return;
         try {
             if (const auto *song = session.song()) for (const auto &part : song->parts)
                 if (part.id == region) {

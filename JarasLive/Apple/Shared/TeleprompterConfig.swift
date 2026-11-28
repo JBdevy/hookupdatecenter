@@ -138,7 +138,7 @@ struct TeleprompterConfig: View {
                 }.pickerStyle(.segmented)
                 GeometryReader { geometry in
                     ScrollView(showsIndicators: false) {
-                        VStack(spacing: 12) {
+                        LazyVStack(spacing: 12) {
                             ForEach(["Colors","Scales","Fonts and positions","Display"],id: \.self) { group in
                                 VStack(alignment: .leading,spacing: 10) {
                                     Text(LocalizedStringKey(group)).font(.jarasSystem(size: 12,weight: .bold)).foregroundStyle(JarasTheme.green)

@@ -313,6 +313,25 @@ if case .state(let state) = try DAWRemoteWire.decode(DAWRemoteWire.state(fixture
 for data in [Data(), Data([0x4a,0x4c,1,1]), Data([0x4a,0x4c,2,99]), Data(repeating: 0, count: DAWRemoteWire.maximumPacket + 1)] {
     require((try? DAWRemoteWire.decode(data)) == nil, "reject old mirroring protocol and malformed packets")
 }
+do {
+    var state = fixture
+    state.pitchRegion = regionID; state.pitchSemitones = 3
+    state.playing = false; state.subPlaying = false; state.recording = false
+    var feedback = DAWRemoteControlFeedback()
+    let command = DAWRemoteCommand(project: state.project, song: state.song, action: .pitch, target: regionID, value: 4)
+    for mode in 0..<4 {
+        var running = state
+        if mode == 0 { running.playing = true }
+        if mode == 1 { running.subPlaying = true }
+        if mode == 2 { running.recording = true }
+        if mode == 3 { running.tunerLocked = true }
+        require(!running.tunerInputAllowed, "Remote Tuner must dim while the host is running")
+        require(!feedback.record(command, display: state, host: running, now: 1), "Stale Remote display predicted a live pitch edit")
+        require(!feedback.record(command, display: running, host: state, now: 1), "Remote display accepted a pitch edit while running")
+    }
+    require(state.tunerInputAllowed && feedback.record(command, display: state, host: state, now: 1), "Stopped Remote Tuner did not unlock")
+    print("REMOTE_TUNER_MAIN_SUBPLAY_RECORDING_STALE_DISPLAY_AND_STOP_OK")
+}
 for semitones in [-12.0, -7, 7, 12] {
     let pitch = DAWRemoteCommand(project: project, action: .pitch, target: regionID, value: semitones)
     if case .command(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.command(pitch)) {

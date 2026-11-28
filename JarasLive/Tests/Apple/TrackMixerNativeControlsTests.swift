@@ -164,6 +164,20 @@
     print("NATIVE_ROW_BEHAVIOR_OK actions rebind state focus locale disabled hit-area")
     fixture.window.close()
 }
+@MainActor private func verifyCompactButtonHeight() {
+    let fixture = FixtureWindow(candidate: true, kinds: [.standard])
+    let row = descendants(fixture.host, of: TrackMixerNativeControlView.self).first!
+    let hosts = descendants(row, of: TrackMixerControlHost.self)
+    for height: CGFloat in [63, 50, 29, 23, 22, 21, 18, 21, 22, 23, 29, 50, 63] {
+        fixture.change(height)
+        let active = hosts.first { !$0.isHidden && !$0.isHiddenOrHasHiddenAncestor }!
+        let rect = active.convert(active.bounds, to: row)
+        expect(abs(rect.height - min(22, height)) < 0.01 && abs(rect.midY - row.bounds.midY) < 0.01,
+               "Compact buttons fill rows at 18–22 points and stay centered above 22 points")
+    }
+    fixture.window.close()
+    print("COMPACT_BUTTON_HEIGHT_OK 18–22 full height, 23–63 centered")
+}
 @MainActor private func verifyLiveSidebarResize() {
     let fixture = FixtureWindow(candidate: true, kinds: [.standard])
     fixture.change(80)
@@ -494,7 +508,7 @@ private struct FixtureRow: View, Equatable {
         TrackMixerNativePanelContent(
             title: TrackDragTitle(title:title,foreground:0xffffff,project:project,track:track,state:state.drag,select:{state.calls += actionStep}),
             slider:volumeSlider,buttons:AnyView(buttons),compactButtons:AnyView(buttons),
-            compactButtonsWidth:100,allowsCompactHeight:true,phase:TrackMixerNativePhase(inverted:false,action:{state.calls += actionStep}),
+            compactButtonsWidth:100,allowsCompactHeight:true,fullHeightCompactButtons:true,phase:TrackMixerNativePhase(inverted:false,action:{state.calls += actionStep}),
             showsVolume:true,expandedButtonsWidth:210,mapVolume:{state.calls += 100})
     }
     @ViewBuilder private func controls(split: Bool) -> some View {
@@ -572,7 +586,7 @@ private func descendants<T: NSView>(_ view: NSView, of type: T.Type) -> [T] { (v
 }
 @MainActor private func run() {
 _ = NSApplication.shared
-if CommandLine.arguments.contains("--fader-one-x") {
+if CommandLine.arguments.contains("--compact-button-height") { verifyCompactButtonHeight() } else if CommandLine.arguments.contains("--fader-one-x") {
     verifyFaderEdgesAtOneX()
 } else if CommandLine.arguments.contains("--automatic-height") { verifyAutomaticHeightLayout() } else if CommandLine.arguments.contains("--mode-transition") { verifyHeightModeTransition() } else if CommandLine.arguments.contains("--behavior") { verifyBehavior() } else if CommandLine.arguments.contains("--geometry") {
     for kind in Kind.allCases {

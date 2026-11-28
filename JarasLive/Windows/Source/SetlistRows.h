@@ -83,7 +83,7 @@ namespace catlive {
             // Match the Mac's single title strip, even for a multi-selection.
             // Keeping the preview separate from the row painting leaves the
             // destination and insertion line visible beneath the pointer.
-            constexpr int height=34;
+            const int height = std::max(1, getRowHeight(sourceRow) - 4);
             const int width=jlimit(80,300,rows[(size_t)sourceRow]->getWidth());
             scale=std::max(1.0,scale);
             Image preview(Image::ARGB,(int)std::ceil(width*scale),(int)std::ceil(height*scale),true);

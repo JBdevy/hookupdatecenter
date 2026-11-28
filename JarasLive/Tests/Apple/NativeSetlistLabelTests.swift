@@ -7,7 +7,7 @@ struct ShowSnapshot { var transport: TransportState }
 final class ShowController: ObservableObject {
     @Published var snapshot = ShowSnapshot(transport: TransportState())
 }
-extension View { func jarasHelp(_ text: String) -> some View { self } }
+
 
 import SwiftUI
 import AppKit
@@ -87,6 +87,14 @@ func descendants<T: NSView>(_ type: T.Type,_ view: NSView) -> [T] { (view as? T)
 
 
 @MainActor func testVisualParity() throws {
+ let part = Part(name: "Compact region")
+ for height: CGFloat in [34, 34 * 0.7] {
+   let row = RegionSetlistRow(region: part, rowHeight: height, number: 1, selected: true, active: false,
+       queued: false, prepareOnly: false, remaining: 60, progress: 0, queueProgress: 0,
+       expanded: false, toggleDrawer: {}, select: { _ in })
+   let host = NSHostingView(rootView: row.frame(width: 340))
+   precondition(abs(host.fittingSize.height - height) <= 0.5, "Region card and drawer must adopt the selected height")
+ }
  for width: CGFloat in [240,340,486] {
   var images:[NSBitmapImageRep]=[]
   for native in [false,true] {

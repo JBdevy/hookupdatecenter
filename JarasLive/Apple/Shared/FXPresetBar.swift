@@ -7,6 +7,7 @@ import Combine
     private let selector = NSPopUpButton()
     private let save = NSButton(title: "Salvar preset…", target: nil, action: nil)
     private let useDefault = NSButton(title: "Usar como padrão", target: nil, action: nil)
+    private let actions = NSPopUpButton(frame: .zero, pullsDown: true)
     private let readSettings: () -> NativeFXSettings
     private let capture: (String) throws -> NativeFXSettings
     private let apply: (NativeFXSettings) -> Void
@@ -27,6 +28,14 @@ import Combine
         save.target = self; save.action = #selector(savePreset)
         useDefault.target = self; useDefault.action = #selector(makeDefault)
         save.bezelStyle = .rounded; useDefault.bezelStyle = .rounded
+        addSubview(actions); actions.controlSize = .small
+        actions.setAccessibilityLabel("Presets")
+        actions.addItem(withTitle: "•••")
+        for (button, action) in [(save, #selector(savePreset)), (useDefault, #selector(makeDefault))] {
+            let entry = NSMenuItem(title: button.title, action: action, keyEquivalent: "")
+            entry.target = self; actions.menu?.addItem(entry)
+        }
+        actions.menu?.autoenablesItems = false
         do { library = try FXPresetStore.shared.read() } catch { report(error.localizedDescription) }
         observation = NotificationCenter.default.publisher(for: FXPresetStore.didChange)
             .receive(on: RunLoop.main).sink { [weak self] notification in
@@ -38,6 +47,14 @@ import Combine
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override func layout() {
         super.layout()
+        let compact = bounds.width < 380
+        actions.isHidden = !compact; save.isHidden = compact; useDefault.isHidden = compact
+        if compact {
+            let buttonWidth = min(48, max(0, bounds.width - 12))
+            actions.frame = NSRect(x: bounds.width - buttonWidth - 6, y: 7, width: buttonWidth, height: 22)
+            selector.frame = NSRect(x: 6, y: 7, width: max(0, actions.frame.minX - 12), height: 22)
+            return
+        }
         selector.frame = NSRect(x: 10, y: 7, width: max(100, bounds.width - 278), height: 22)
         save.frame = NSRect(x: max(120, bounds.width - 258), y: 7, width: 112, height: 22)
         useDefault.frame = NSRect(x: max(232, bounds.width - 146), y: 7, width: 136, height: 22)
@@ -65,6 +82,8 @@ import Combine
         }
         useDefault.isEnabled = currentID != nil
         useDefault.title = currentID == (library.defaults[identity] ?? "") ? "Padrão selecionado" : "Usar como padrão"
+        actions.lastItem?.isEnabled = useDefault.isEnabled
+        actions.lastItem?.title = useDefault.title
         useDefault.setAccessibilityHelp("Aplicar este preset às novas inserções deste plugin em qualquer pista.")
     }
     private func nativeFactory(_ settings: NativeFXSettings, effect: String) -> FXPreset? {

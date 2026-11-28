@@ -24,15 +24,16 @@ class MediaCleanupPanel final : public Component, private Timer {
                 cancel.setEnabled(false);
                 remove.setEnabled(false);
                 repaint();
-                session.cleanTimelineMedia([safe](String failure) {
+                session.cleanTimelineMedia([safe](String notice, bool error) {
                     if (!safe)
                         return;
                     ModalSheet::blockDismiss(*safe, false);
-                    if (failure.isEmpty())
+                    if (notice.isEmpty())
                         ModalSheet::dismiss(*safe);
                     else {
                         safe->working = false;
-                        safe->failure = failure;
+                        safe->failure = notice;
+                        safe->warningOnly = !error;
                         safe->cancel.setEnabled(true);
                         safe->repaint();
                     }
@@ -40,6 +41,7 @@ class MediaCleanupPanel final : public Component, private Timer {
             } catch (const std::exception &e) {
                 working = false;
                 ModalSheet::blockDismiss(*this, false);
+                warningOnly = false;
                 failure = String::fromUTF8(e.what());
                 cancel.setEnabled(true);
                 repaint();
@@ -64,11 +66,11 @@ class MediaCleanupPanel final : public Component, private Timer {
         g.setColour(theme::secondary);
         g.drawFittedText(session.document.getParentDirectory().getFullPathName(), 24, 156,
                          getWidth() - 48, 40, Justification::topLeft, 2, 1.f);
-        g.setColour(failure.isNotEmpty() ? Colour(0xffff7777) : theme::green);
+        g.setColour(warningOnly && !working ? theme::yellow : failure.isNotEmpty() && !working ? Colour(0xffff7777) : theme::green);
         g.drawFittedText(working ? String::fromUTF8("Excluindo backups antigos e mídias sem uso… ") +
                                        String((int)(session.importProgress * 100)) + "%"
                                  : failure,
-                         24, 204, getWidth() - 48, 42, Justification::topLeft, 2, 1.f);
+                         24, 200, getWidth() - 48, std::max(40, getHeight() - 254), Justification::topLeft, 4, .85f);
     }
     void resized() override {
         cancel.setBounds(24, getHeight() - 46, 88, 26);
@@ -78,7 +80,7 @@ class MediaCleanupPanel final : public Component, private Timer {
   private:
     Session &session;
     TextButton cancel{localization::translate("Cancelar")}, remove{localization::translate("Excluir")};
-    bool working = false;
+    bool working = false, warningOnly = false;
     String failure;
     double readyAt = Time::getMillisecondCounterHiRes() + 3000;
     bool available() const {

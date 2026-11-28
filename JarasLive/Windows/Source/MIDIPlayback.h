@@ -128,6 +128,43 @@ inline void appendArpeggio(std::vector<PlaybackNote> &output, const std::vector<
     }
 }
 
+// Project source notes through trim, looping and tempo once for playback and offline edits.
+template<class Emit>
+inline void forEachTimedNote(const jaras::AudioClip& clip, const jaras::Song* song,
+                             jaras::TempoEditMap::PlaybackRates* playbackRates, Emit&& emit) {
+    const auto& midi = *clip.midi;
+    const ClipTempo timing(clip, song, playbackRates);
+    const double seconds = 60 / midi.sourceBPM,
+                 sourceEnd = timing.sourceAt(clip.startTime + clip.duration);
+    const double loop = clip.loopLength.value_or(0), origin = clip.loopStart.value_or(0);
+    if (loop > 0 && (sourceEnd - origin) / loop > 1e12)
+        throw std::runtime_error("MIDI loop position exceeds the supported range.");
+    const int64 first = loop > 0
+                            ? std::max(int64(0),
+                                       (int64)std::floor((clip.sourceOffset - origin) / loop))
+                            : 0,
+                last = loop > 0
+                           ? std::max(first, (int64)std::ceil((sourceEnd - origin) / loop) - 1)
+                           : 0;
+    if (last - first > 100000)
+        throw std::runtime_error("MIDI loop count exceeds the supported project size.");
+    for (const auto &note : midi.notes)
+        for (int64 cycle = first; cycle <= last; ++cycle) {
+            const double shift = cycle * loop, noteStart = note.start * seconds,
+                         noteEnd = (note.start + note.length) * seconds;
+            const double rawStart = loop > 0 ? std::max(origin, noteStart) + shift : noteStart,
+                         rawEnd = loop > 0 ? std::min(origin + loop, noteEnd) + shift : noteEnd;
+            if (rawEnd <= rawStart)
+                continue;
+            const double start =
+                             std::max(clip.startTime,
+                                      timing.timeAt(rawStart, false)),
+                         end = std::min(clip.startTime + clip.duration,
+                                        timing.timeAt(rawEnd, false));
+            if (end > start) emit(note, start, end);
+        }
+}
+
 inline std::vector<PlaybackNote> playbackNotes(const jaras::Track &track,
                                                const jaras::Song *song = nullptr, bool includeSilent = false,
                                                bool sharedInstrumentOnly = false,
@@ -138,41 +175,12 @@ inline std::vector<PlaybackNote> playbackNotes(const jaras::Track &track,
         if (!clip.midi || (!includeSilent && (clip.muted || clip.gain.value_or(1) <= 0)) || clip.frozenMIDI.value_or(false))
             continue;
         if (sharedInstrumentOnly && hasTakeInstrument(clip)) continue;
-        const auto &midi = *clip.midi;
         auto arpeggio = trackARP;
         if (song && !arpeggio && !clip.fxBypassed.value_or(false)) arpeggio = midiArpeggio(clip.fxJSON);
         std::vector<PlaybackNote> projected;
         auto &destination = arpeggio ? projected : result;
-        const ClipTempo timing(clip, song, playbackRates);
-        const double seconds = 60 / midi.sourceBPM,
-                     sourceEnd = timing.sourceAt(clip.startTime + clip.duration);
-        const double loop = clip.loopLength.value_or(0), origin = clip.loopStart.value_or(0);
-        if (loop > 0 && (sourceEnd - origin) / loop > 1e12)
-            throw std::runtime_error("MIDI loop position exceeds the supported range.");
-        const int64 first = loop > 0
-                                ? std::max(int64(0),
-                                           (int64)std::floor((clip.sourceOffset - origin) / loop))
-                                : 0,
-                    last = loop > 0
-                               ? std::max(first, (int64)std::ceil((sourceEnd - origin) / loop) - 1)
-                               : 0;
-        if (last - first > 100000)
-            throw std::runtime_error("MIDI loop count exceeds the supported project size.");
-        for (const auto &note : midi.notes)
-            for (int64 cycle = first; cycle <= last; ++cycle) {
-                const double shift = cycle * loop, noteStart = note.start * seconds,
-                             noteEnd = (note.start + note.length) * seconds;
-                const double rawStart = loop > 0 ? std::max(origin, noteStart) + shift : noteStart,
-                             rawEnd = loop > 0 ? std::min(origin + loop, noteEnd) + shift : noteEnd;
-                if (rawEnd <= rawStart)
-                    continue;
-                const double start =
-                                 std::max(clip.startTime,
-                                          timing.timeAt(rawStart, false)),
-                             end = std::min(clip.startTime + clip.duration,
-                                            timing.timeAt(rawEnd, false));
-                if (end > start)
-                    destination.push_back(
+        forEachTimedNote(clip, song, playbackRates, [&](const jaras::MIDINote& note, double start, double end) {
+            destination.push_back(
                         {start, end,
                          jlimit(0, 127,
                                 note.pitch + (int)std::round(clip.pitchSemitones.value_or(0)) +
@@ -183,9 +191,9 @@ inline std::vector<PlaybackNote> playbackNotes(const jaras::Track &track,
                                 (int)std::round(note.velocity *
                                                 (clip.muted ? 0 : std::min(127., clip.gain.value_or(1))) * jaras::itemFadeGain(clip, start))),
                          note.channel, song ? jaras::playbackItemStart(*song, clip) : std::optional<double>(clip.startTime), song ? jaras::playbackOwnerIndex(*song,clip.regionOwnerID) : 0});
-                if (destination.size() > 1000000)
-                    throw std::runtime_error("Too many MIDI playback notes.");
-            }
+            if (destination.size() > 1000000)
+                throw std::runtime_error("Too many MIDI playback notes.");
+        });
         if (arpeggio) appendArpeggio(result, projected, *song, *arpeggio);
     }
     if(!includeSilent)result.erase(std::remove_if(result.begin(), result.end(), [](const auto &note) { return note.velocity == 0; }), result.end());

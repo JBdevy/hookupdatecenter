@@ -17,11 +17,17 @@ require(viewport == previous, "Invalid gestures cannot corrupt grid geometry")
 viewport.zoom(factor: 1e12, anchor: 0.5)
 require(viewport.span == 0.25, "Close zoom has a bounded readable scale")
 viewport.zoom(factor: 1e-12, anchor: 0.5)
-require(viewport.span == 36000 && viewport.start >= 0, "Wide zoom stops at the ten-hour iPad overview")
+require(viewport.span == viewport.maximumSpan && viewport.start >= 0, "Pinch stops at the desktop scale")
+for width: CGFloat in [390, 768, 1024, 1366] {
+    viewport.resizeLeadingSpace(0, width: width)
+    viewport.zoom(factor: 1e-12, centeredOn: 6000)
+    require(abs(Double(width)/viewport.span - 10 * TimelineZoomLimits.minimumZoom(viewportWidth: width)) < 1e-9,
+            "The same item has the same width at minimum zoom after rotating or resizing the native mixer")
+}
 viewport.pan(pixels: 1e12, width: 1)
 require(viewport.start == 0, "Left scroll stops at timeline origin")
 viewport.pan(pixels: -1e12, width: 1)
-require(viewport.end == 604800, "Right scroll stays within the transport time domain")
+require(abs(viewport.end - 604800) < 1e-8, "Right scroll stays within the transport time domain")
 viewport.reset(duration: 0)
 require(viewport.span == 30 && viewport.start == 0, "Empty project retains editable free grid")
 print("IPAD_STANDALONE_FREE_TIMELINE_PAN_PINCH_ANCHOR_AND_BOUNDS_OK")
@@ -74,24 +80,25 @@ require(viewport.start == 105, "Next ruler drag uses the new viewport origin")
 ruler.reset()
 print("IPAD_RULER_PAN_CLICK_THRESHOLD_REVERSAL_AND_REPEAT_OK")
 
-viewport = IpadTimelineViewport(start: 1200, span: 36000)
+viewport = IpadTimelineViewport(start: 1200)
+viewport.span = viewport.maximumSpan
 let overview = viewport
 let overviewCenter = overview.start + overview.span / 2
 for _ in 0..<100 { viewport.zoom(factor: 0.5, anchor: 0.5) }
-require(viewport == overview, "Repeated zoom out at the ten-hour limit does not drift")
+require(viewport == overview, "Repeated zoom out at the minimum zoom limit does not drift")
 viewport.zoom(factor: 0.001, centeredOn: overviewCenter)
-require(viewport == overview, "Cursor-centered zoom uses the same ten-hour limit")
+require(viewport == overview, "Cursor-centered zoom uses the same minimum zoom limit")
 viewport.zoom(factor: 2, centeredOn: overviewCenter)
-require(viewport.span == 18000 && viewport.start + viewport.span / 2 == overviewCenter, "Zoom in responds immediately after reaching the overview limit")
+require(abs(viewport.span - overview.span / 2) < 1e-9 && abs(viewport.start + viewport.span / 2 - overviewCenter) < 1e-8, "Zoom in responds immediately after reaching the overview limit")
 viewport.zoom(factor: 0.001, centeredOn: overviewCenter)
-require(viewport == overview, "Zooming back out returns to the same ten-hour overview")
+require(abs(viewport.start - overview.start) < 1e-8 && viewport.span == overview.span, "Zooming back out returns to the same minimum zoom overview")
 viewport.pan(pixels: -400, width: 400)
-require(viewport.start == 37200 && viewport.span == 36000, "The zoom limit still allows scrolling to the rest of a long project")
-print("IPAD_TEN_HOUR_OVERVIEW_LIMIT_AND_ANCHOR_STABILITY_OK")
+require(abs(viewport.start - (1200 + overview.span)) < 1e-8 && viewport.span == overview.span, "The zoom limit still allows scrolling to the rest of a long project")
+print("IPAD_DESKTOP_MINIMUM_ZOOM_LIMIT_AND_ANCHOR_STABILITY_OK")
 
 // Playback can advance at display cadence while the item drawing remains
 // unchanged for many frames; rebasing must preserve every world coordinate.
-for visibleSpan in [0.25, 5.0, 60.0, 300.0, 36000.0] {
+for visibleSpan in [0.25, 5.0, 60.0, 300.0, overview.span] {
     for width in [360.0, 800.0, 1366.0] {
         var visible = IpadTimelineViewport(start: 1000, span: visibleSpan)
         var drawing = IpadTimelineRenderWindow(visible)

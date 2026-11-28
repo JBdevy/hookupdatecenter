@@ -16,7 +16,7 @@ public:
         song.setText(name, dontSendNotification); song.setFont(theme::font(16));
         instructions.setText(localization::translate("Separate each stanza with two blank lines. Items will fill the whole song equally."), dontSendNotification);
         instructions.setFont(theme::font(12)); instructions.setColour(Label::textColourId, theme::secondary);
-        editor.setName(localization::translate("Full lyrics"));
+        editor.setName("Add Lyrics");
         warning.setFont(theme::font(12)); warning.setColour(Label::textColourId, Colours::orange);
         cancel.onClick = [this] { ModalSheet::dismiss(*this); };
         create.setColour(TextButton::buttonColourId, theme::green);

@@ -122,6 +122,7 @@ class Workspace final : public Component,
     void chooseSoundFont();
     void openVideo();
     void editRegion(ID);
+    void requestAdjustBPM(ID);
     void showRegionMenu(ID, Point<int>, std::set<ID> selection);
     void exportRegions(std::set<ID>);
     void exportMultitrack(std::set<ID>);
@@ -148,7 +149,6 @@ class Workspace final : public Component,
   private:
     std::set<int> heldShortcutKeys;
     int elasticDeleteKey = 0;
-    std::unique_ptr<meterDisplay::PeakReadout> masterPeakReadout;
     int masterMuteBlinkPhase = -1;
     bool timelineEditMode = false;
     jaras::CommandKind timelineEditSeek = jaras::CommandKind::queueBarSeek;
@@ -413,7 +413,7 @@ class Workspace final : public Component,
     void perform(std::function<void()>);
     void performAction(const String &, float, int);
     bool lastSubCursorVisible = false;
-    void prompt(const String &, const String &, const String &, std::function<void(String)>);
+    void prompt(const String &, const String &, const String &, std::function<void(String)>, bool selectInitialText = false);
     void confirm(const String &, const String &, std::function<void()>, std::function<void()> cancelled = {}, String action = {}, bool destructive = false, bool vertical = false);
     void confirmTrackDeletion(const std::set<ID> &, std::function<void()>);
     void newProject();

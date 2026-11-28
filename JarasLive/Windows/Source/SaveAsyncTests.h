@@ -75,7 +75,7 @@ template <typename Test> void registerTests(const File &directory, Test &test) {
         Session session;session.inspection=true;session.audio.prepareOffline(48000);session.audio.setOffline(true);
         session.load(target);
         bool completed=false;String error;
-        session.cleanTimelineMedia([&](String failure){error=failure;completed=true;});
+        session.cleanTimelineMedia([&](String failure, bool){error=failure;completed=true;});
         const auto deadline=Time::getMillisecondCounterHiRes()+20000;
         while(session.busy&&Time::getMillisecondCounterHiRes()<deadline)floatingControlTests::pump();
         require(completed&&error.isEmpty()&&projectBackups::files(target).empty()&&!discarded.exists(),
@@ -255,7 +255,12 @@ template <typename Test> void registerTests(const File &directory, Test &test) {
         workspace.setSize(1280,800);workspace.projectOpened(false);
         String error="pending"; session.saveAsync(doc,[&](String failure){error=failure;});
         auto *indicator=workspace.findChildWithID("project-save-progress");
-        require(indicator && indicator->isVisible() && !indicator->getBounds().isEmpty(),"No visible save progress bar");
+        auto* saveButton=uiFeatureTests::find(workspace,"save");
+        require(indicator && saveButton && indicator->isVisible() && indicator->getWidth()>80 &&
+                indicator->getHeight() <= 5 && indicator->getY() >= saveButton->getBottom() &&
+                indicator->getY() < saveButton->getBottom()+16 && !indicator->isOnDesktop() &&
+                !indicator->hitTest(1,1) && !indicator->getWantsKeyboardFocus(),
+                "Saving must use the transport rail below the buttons without a floating panel");
         double last=0; bool advanced=false;
         const auto deadline=Time::getMillisecondCounterHiRes()+15000;
         while(Time::getMillisecondCounterHiRes()<deadline) {

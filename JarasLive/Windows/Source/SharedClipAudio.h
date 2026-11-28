@@ -1,16 +1,7 @@
 #pragma once
 #include "Common.h"
 // All Windows users of Signalsmith include this header, including NativeFX.
-#ifndef CATLIVE_SIGNALSMITH_STATE_COPY
-#define CATLIVE_SIGNALSMITH_STATE_COPY 1
-#endif
-#ifndef CATLIVE_SIGNALSMITH_BATCH_OUTPUT
-#define CATLIVE_SIGNALSMITH_BATCH_OUTPUT 1
-#endif
-#ifndef CATLIVE_SIGNALSMITH_NEUTRAL_WARMUP
-#define CATLIVE_SIGNALSMITH_NEUTRAL_WARMUP 1
-#endif
-#include "../ThirdParty/Signalsmith/signalsmith-stretch.h"
+#include "../../Core/Audio/CatLiveStretch.hpp"
 #include "../../Core/Audio/SharedRenderPool.hpp"
 
 namespace catlive {

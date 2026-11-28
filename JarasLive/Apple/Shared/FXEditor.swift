@@ -29,6 +29,7 @@ struct FXEditor: View {
     let effectKey: String
     private let project: UUID
     private let fallbackSettings: NativeFXSettings
+    private let waveItemDuration: Double?
     @State private var selected: UUID?
     @State private var changed = false
     @State private var choosingSample = false
@@ -41,6 +42,7 @@ struct FXEditor: View {
         self.show = show; self.track = track; self.clip = clip; self.clipChainEditor = clipChainEditor; self.close = close; effectKey = effect; project = show.snapshot.project.id
         let chain = clip.map { show.clipFXSettings($0) } ?? show.fxSettings(track)
         page = chain.kind(of: effect)
+        waveItemDuration = effect == NativeFXSettings.waveLFOName ? clip.flatMap { FXModelLookup.clip($0, in: show.snapshot.project)?.duration } : nil
         let initial = chain.settings(for: effect)
         fallbackSettings = initial
         _settings = State(initialValue: initial); _selected = State(initialValue: initial.bands.first?.id)
@@ -156,11 +158,16 @@ struct FXEditor: View {
             case NativeFXSettings.waveLFOName:
                 VStack {
                     Toggle(enabledTitle, isOn: Binding(get: { settings.waveLFOEnabled == true }, set: { settings.waveLFOEnabled = $0 }))
+                    let wave = settings.waveLFOParameters
+                    ADSREnvelopeGraph(wave: wave, color: settings.waveLFOEnabled == true ? JarasTheme.green : .gray, duration: waveItemDuration)
+                        .padding(8).frame(maxWidth: .infinity).frame(height: 74)
+                        .background(Color(hex: 0x161020), in: RoundedRectangle(cornerRadius: 7))
                     HStack {
-                        FXKnob("Attack", value: $settings.waveLFOParameters.attack, range: 0...60, unit: "s", reset: 0.05)
-                        FXKnob("Decay", value: $settings.waveLFOParameters.decay, range: 0...60, unit: "s", reset: 0.20)
+                        FXKnob("Attack", value: $settings.waveLFOParameters.attack, range: 0...60, unit: "s", logarithmic: true, reset: 0.05)
+                        FXKnob("Hold", value: $settings.waveLFOParameters.hold, range: 0...60, unit: "s", logarithmic: true, reset: 0)
+                        FXKnob("Decay", value: $settings.waveLFOParameters.decay, range: 0...60, unit: "s", logarithmic: true, reset: 0.20)
                         FXKnob("Sustain", value: Binding(get: { settings.waveLFOParameters.sustain * 100 }, set: { settings.waveLFOParameters.sustain = $0 / 100 }), range: 0...100, unit: "%", reset: 75)
-                        FXKnob("Release", value: $settings.waveLFOParameters.release, range: 0...60, unit: "s", reset: 0.25)
+                        FXKnob("Release", value: $settings.waveLFOParameters.release, range: 0...60, unit: "s", logarithmic: true, reset: 0.25)
                     }
                 }
             case NativeFXSettings.reverbConvolution:
@@ -194,7 +201,7 @@ struct FXEditor: View {
         .padding(12).frame(maxWidth: .infinity, minHeight: compactControls ? 260 : 410)
         .background { editorBackground }.foregroundStyle(JarasTheme.text)
         #else
-        .padding(clipChainEditor ? 0 : 20).frame(minWidth: clipChainEditor ? 600 : 640, idealWidth: clipChainEditor ? 700 : 740, maxWidth: .infinity, minHeight: compactControls ? (clipChainEditor ? 260 : 340) : (clipChainEditor ? 410 : 540), idealHeight: compactControls ? (clipChainEditor ? 280 : 360) : (clipChainEditor ? 440 : 560), maxHeight: .infinity).background { editorBackground }.foregroundStyle(JarasTheme.text).clipShape(RoundedRectangle(cornerRadius: 12)).shadow(radius: clipChainEditor ? 0 : 20)
+        .padding(clipChainEditor ? 0 : 20).frame(minWidth: page == NativeFXSettings.waveLFOName ? 500 : clipChainEditor ? 600 : 640, idealWidth: page == NativeFXSettings.waveLFOName ? 520 : clipChainEditor ? 700 : 740, maxWidth: .infinity, minHeight: page == NativeFXSettings.waveLFOName ? 330 : compactControls ? (clipChainEditor ? 260 : 340) : (clipChainEditor ? 410 : 540), idealHeight: page == NativeFXSettings.waveLFOName ? 350 : compactControls ? (clipChainEditor ? 280 : 360) : (clipChainEditor ? 440 : 560), maxHeight: .infinity).background { editorBackground }.foregroundStyle(JarasTheme.text).clipShape(RoundedRectangle(cornerRadius: 12)).shadow(radius: clipChainEditor ? 0 : 20)
         #endif
             .onChange(of: settings) { value in
                 guard show.snapshot.project.id == project else { return }

@@ -64,7 +64,7 @@ public:
         Request job;job.clip=waveformClip(*found);job.project=project;job.clipID=clipID;job.revision=(uint64)revision;
         job.start=std::max(start,found->startTime);job.end=std::min(end,found->startTime+found->duration);job.secondsPerColumn=(end-start)/requestedWidth;
         if(job.end<=job.start){reply({},"Waveform viewport is outside the item.");return;}
-        try {job.file=ProjectCodec::resolveMedia(session.mediaDirectory,media->path,false);}catch(const std::exception &error){reply({},String::fromUTF8(error.what()));return;}
+        try {job.file=ProjectCodec::mediaInput(session.mediaDirectory,media->path);}catch(const std::exception &error){reply({},String::fromUTF8(error.what()));return;}
         if(state->project!=project){invalidate();state->project=project;}
         auto old=state->requests.find(clipID);if(old!=state->requests.end())old->second->cancelled.store(true);
         if(state->pending.load()>=48){reply({},"Waveform queue is busy; retry the visible viewport.");return;}

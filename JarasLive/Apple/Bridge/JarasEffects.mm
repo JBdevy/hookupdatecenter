@@ -260,7 +260,7 @@ struct VoiceGainKernel {
     float current=1;
     std::atomic<bool> resetRequested{true};
     unsigned capacity=0, channels=0;
-    std::vector<float> silence;
+    std::unique_ptr<float[]> silence;
 };
 @interface JarasVoiceGainUnit : AUAudioUnit {
 @public VoiceGainKernel gain;
@@ -285,7 +285,9 @@ struct VoiceGainKernel {
     if(![super allocateRenderResourcesAndReturnError:error]) return NO;
     gain.sampleRate=_output.format.sampleRate;
     gain.capacity=self.maximumFramesToRender; gain.channels=_output.format.channelCount;
-    gain.silence.assign(gain.capacity*gain.channels,0);
+    // The silent branch clears the entire returned range before handing it to
+    // the host. Reserve the fallback without writing every idle voice's pages.
+    gain.silence.reset(new float[size_t(gain.capacity)*gain.channels]);
     gain.resetRequested.store(true,std::memory_order_release);
     return YES;
 }
@@ -298,7 +300,7 @@ struct VoiceGainKernel {
         if(!state->enabled.load(std::memory_order_acquire)) {
             for(unsigned ch=0;ch<output->mNumberBuffers && ch<state->channels;++ch) {
                 auto& buffer=output->mBuffers[ch];
-                if(!buffer.mData) buffer.mData=state->silence.data()+ch*state->capacity;
+                if(!buffer.mData) buffer.mData=state->silence.get()+ch*state->capacity;
                 buffer.mDataByteSize=frames*sizeof(float)*buffer.mNumberChannels;
                 memset(buffer.mData,0,buffer.mDataByteSize);
             }
@@ -402,20 +404,21 @@ struct ItemFadeKernel {
             }
         }
     }
-    std::array<std::atomic<double>,15> pending{};
+    static constexpr size_t parameterCount = 16;
+    std::array<std::atomic<double>,parameterCount> pending{};
     std::atomic<unsigned> generation{0};
     unsigned consumedGeneration=~0u;
-    double parameters[15]{0,0,0,0,0,0,1,1,1,1};
+    std::array<double,parameterCount> parameters{0,0,0,0,0,0,1,1,1,1};
     double rate=48000;
     const double hostSecondsPerTick=[] {
         mach_timebase_info_data_t timebase{};
         mach_timebase_info(&timebase);
         return double(timebase.numer)/double(timebase.denom)*1e-9;
     }();
-    void configure(double in,double out,double duration,double position,uint64_t host,double sample,double inCurve=0,double inS=1,double outCurve=0,double outS=1, bool waveEnabled=false,double attack=0,double decay=0,double sustain=1,double release=0) {
+    void configure(double in,double out,double duration,double position,uint64_t host,double sample,double inCurve=0,double inS=1,double outCurve=0,double outS=1, bool waveEnabled=false,double attack=0,double hold=0,double decay=0,double sustain=1,double release=0) {
         generation.fetch_add(1,std::memory_order_acq_rel);
-        const double values[]={in,out,duration,position,host?double(host)*hostSecondsPerTick:0,sample,std::exp2(4*std::clamp(inCurve,-1.,1.)),std::clamp(inS,-1.,1.),std::exp2(4*std::clamp(outCurve,-1.,1.)),std::clamp(outS,-1.,1.),waveEnabled ? 1. : 0.,attack,decay,sustain,release};
-        for(unsigned i=0;i<15;++i) pending[i].store(values[i],std::memory_order_relaxed);
+        const std::array<double,parameterCount> values={in,out,duration,position,host?double(host)*hostSecondsPerTick:0,sample,std::exp2(4*std::clamp(inCurve,-1.,1.)),std::clamp(inS,-1.,1.),std::exp2(4*std::clamp(outCurve,-1.,1.)),std::clamp(outS,-1.,1.),waveEnabled ? 1. : 0.,attack,hold,decay,sustain,release};
+        for(size_t i=0;i<values.size();++i) pending[i].store(values[i],std::memory_order_relaxed);
         generation.fetch_add(1,std::memory_order_release);
     }
     static double curve(double t) { t=std::clamp(t,0.0,1.0); return t*t*(3-2*t); }
@@ -424,11 +427,11 @@ struct ItemFadeKernel {
         const auto physical = jaras::physicalRenderTime(*time, rate); time = &physical;
         const auto before=generation.load(std::memory_order_acquire);
         if(!(before&1) && before!=consumedGeneration) {
-            double values[15];
-            for(unsigned i=0;i<15;++i) values[i]=pending[i].load(std::memory_order_relaxed);
+            std::array<double,parameterCount> values;
+            for(size_t i=0;i<values.size();++i) values[i]=pending[i].load(std::memory_order_relaxed);
             if(generation.load(std::memory_order_acquire)==before) {
-                std::copy(values, values + 15, parameters);
-                wave = values[10] ? jaras::WaveLFO::prepare(values[2], values[11], values[12], values[13], values[14]) : jaras::WaveLFO{};
+                parameters = values;
+                wave = values[10] ? jaras::WaveLFO::prepare(values[2], values[11], values[12], values[13], values[14], values[15]) : jaras::WaveLFO{};
                 consumedGeneration=before;
             }
         }
@@ -746,8 +749,13 @@ struct EQKernel {
     ((JarasEQAudioUnit *)node.AUAudioUnit)->kernel.fade.configure(std::max(0.0,fadeIn),std::max(0.0,fadeOut),std::max(0.0,duration),position,hostTime,sampleTime);
 }
 + (void)setInputFade:(AVAudioUnitEffect *)node fadeIn:(double)fadeIn fadeOut:(double)fadeOut fadeInCurve:(double)inCurve fadeInSCurve:(double)inS fadeOutCurve:(double)outCurve fadeOutSCurve:(double)outS duration:(double)duration position:(double)position hostTime:(uint64_t)hostTime sampleTime:(double)sampleTime waveEnabled:(BOOL)waveEnabled attack:(double)attack decay:(double)decay sustain:(double)sustain release:(double)release {
+    [self setInputFade:node fadeIn:fadeIn fadeOut:fadeOut fadeInCurve:inCurve fadeInSCurve:inS fadeOutCurve:outCurve fadeOutSCurve:outS
+              duration:duration position:position hostTime:hostTime sampleTime:sampleTime waveEnabled:waveEnabled attack:attack hold:0
+                 decay:decay sustain:sustain release:release];
+}
++ (void)setInputFade:(AVAudioUnitEffect *)node fadeIn:(double)fadeIn fadeOut:(double)fadeOut fadeInCurve:(double)inCurve fadeInSCurve:(double)inS fadeOutCurve:(double)outCurve fadeOutSCurve:(double)outS duration:(double)duration position:(double)position hostTime:(uint64_t)hostTime sampleTime:(double)sampleTime waveEnabled:(BOOL)waveEnabled attack:(double)attack hold:(double)hold decay:(double)decay sustain:(double)sustain release:(double)release {
     ((JarasEQAudioUnit *)node.AUAudioUnit)->kernel.fade.configure(fadeIn, fadeOut, duration, position, hostTime, sampleTime,
-        inCurve, inS, outCurve, outS, waveEnabled, attack, decay, sustain, release);
+        inCurve, inS, outCurve, outS, waveEnabled, attack, hold, decay, sustain, release);
 }
 + (void)setInputFade:(AVAudioUnitEffect *)node fadeIn:(double)fadeIn fadeOut:(double)fadeOut fadeInCurve:(double)inCurve fadeInSCurve:(double)inS fadeOutCurve:(double)outCurve fadeOutSCurve:(double)outS duration:(double)duration position:(double)position hostTime:(uint64_t)hostTime sampleTime:(double)sampleTime {
     if(!std::isfinite(fadeIn)||!std::isfinite(fadeOut)||!std::isfinite(duration)||!std::isfinite(position)||!std::isfinite(sampleTime)||!std::isfinite(inCurve)||!std::isfinite(inS)||!std::isfinite(outCurve)||!std::isfinite(outS)) return;

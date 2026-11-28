@@ -64,7 +64,7 @@ File saveMigratedProject(const MigratedProject &result, const File &selection) {
     for (const auto &entry : result.media) {
         if (entry.second == File())
             continue; // Keep offline references for relinking, as on Mac.
-        auto target = ProjectCodec::resolveMedia(folder, entry.first);
+        auto target = ProjectCodec::resolveMedia(folder, entry.first, false);
         require(target.getParentDirectory().createDirectory().wasOk() &&
                     entry.second.copyFileTo(target),
                 migration::message("Could not copy media: ") + entry.second.getFileName());

@@ -1,6 +1,10 @@
 #import "JarasCoreBridge.h"
 #include "../../Core/Transport/Engine.hpp"
 #include "../../Core/Import/TrackTaxonomy.hpp"
+#include "../../Core/Songs/RegionTempoAdjustment.hpp"
+#define DR_WAV_IMPLEMENTATION
+#include "../../Core/Audio/RegionTempoRender.hpp"
+#undef DR_WAV_IMPLEMENTATION
 #include <memory>
 #include <map>
 #include <set>
@@ -180,6 +184,14 @@ static NSDictionary* trackJSON(const Track& t, bool includeWaveforms = true) {
         if(clip.clickDouble) item[@"clickDouble"]=@(*clip.clickDouble); if(clip.renderedTempo) item[@"renderedTempo"]=@(*clip.renderedTempo);
         if(clip.tempoBasePlaybackRate) item[@"tempoBasePlaybackRate"]=@(*clip.tempoBasePlaybackRate);
         if (clip.elasticSourceScale != 1) item[@"elasticSourceScale"] = @(clip.elasticSourceScale);
+        if (clip.adjustedVideo) {
+            const auto& visual=*clip.adjustedVideo;NSMutableArray *points=[NSMutableArray new];
+            for(const auto& p:visual.points)[points addObject:@{@"time":@(p.time),@"source":@(p.source)}];
+            NSMutableDictionary *v=[@{@"path":text(visual.path),@"points":points} mutableCopy];
+            if(visual.loopStart)v[@"loopStart"]=@(*visual.loopStart);
+            if(visual.loopLength)v[@"loopLength"]=@(*visual.loopLength);
+            item[@"adjustedVideo"]=v;
+        }
         if (!clip.elasticPoints.empty()) {
             NSMutableArray* points = [NSMutableArray new];
             for (const auto& point : clip.elasticPoints) {
@@ -411,7 +423,15 @@ static Track readTrack(NSDictionary* td) {
  if([td[@"instrumentIcon"] isKindOfClass:NSString.class])t.instrumentIcon=str(td[@"instrumentIcon"]); else t.instrumentIcon.reset();
             if (td[@"clickSound"] && td[@"clickSound"] != NSNull.null) { NSDictionary* f=object(td[@"clickSound"]); AudioFile file; file.path=str(f[@"path"]); if(f[@"sha256"] && f[@"sha256"]!=NSNull.null) file.sha256=str(f[@"sha256"]); t.clickSound=file; }
             if (td[@"audioFile"] && td[@"audioFile"] != NSNull.null) { NSDictionary* f=object(td[@"audioFile"]); AudioFile file; file.path=str(f[@"path"]); if (f[@"sha256"] && f[@"sha256"]!=NSNull.null) file.sha256=str(f[@"sha256"]); t.audioFile=file; }
-            for (id rawClip in array(td[@"clips"])) { NSDictionary* cd=object(rawClip); AudioClip clip; clip.id=str(cd[@"id"]); if(cd[@"regionOwnerID"] && cd[@"regionOwnerID"]!=NSNull.null) clip.regionOwnerID=str(cd[@"regionOwnerID"]); for(id stem in array(cd[@"separatedStemTracks"] ?: @[])) clip.separatedStemTracks.push_back(str(stem)); clip.name=str(cd[@"name"]); clip.startTime=number(cd[@"startTime"]); clip.duration=number(cd[@"duration"]); clip.sourceOffset=number(cd[@"sourceOffset"]); clip.playbackRate=cd[@"playbackRate"] && cd[@"playbackRate"]!=NSNull.null ? number(cd[@"playbackRate"]) : 1; for(id peak in array(cd[@"waveform"])) clip.waveform.push_back(number(peak)); if(cd[@"audioFile"] && cd[@"audioFile"]!=NSNull.null) { NSDictionary* f=object(cd[@"audioFile"]); AudioFile file; file.path=str(f[@"path"]); if(f[@"sha256"] && f[@"sha256"]!=NSNull.null) file.sha256=str(f[@"sha256"]); clip.audioFile=file; } if(cd[@"text"] && cd[@"text"]!=NSNull.null) clip.text=readClipText(cd[@"text"]); if(cd[@"midi"] && cd[@"midi"]!=NSNull.null) clip.midi=readMIDIItem(cd[@"midi"]); if(cd[@"frozenMIDI"] && cd[@"frozenMIDI"]!=NSNull.null) clip.frozenMIDI=clipFXBypass(cd[@"frozenMIDI"]); if(cd[@"renderedTiming"] && cd[@"renderedTiming"]!=NSNull.null) clip.renderedTiming=clipFXBypass(cd[@"renderedTiming"]); if(cd[@"clickDouble"] && cd[@"clickDouble"]!=NSNull.null) clip.clickDouble=clipFXBypass(cd[@"clickDouble"]); if(cd[@"renderedTempo"] && cd[@"renderedTempo"]!=NSNull.null) clip.renderedTempo=clipFXBypass(cd[@"renderedTempo"]); if(cd[@"tempoBasePlaybackRate"] && cd[@"tempoBasePlaybackRate"]!=NSNull.null) clip.tempoBasePlaybackRate=number(cd[@"tempoBasePlaybackRate"]); clip.elasticSourceScale=number(cd[@"elasticSourceScale"] ?: @1); for(id rawPoint in array(cd[@"elasticPoints"] ?: @[])){NSDictionary* point=object(rawPoint);clip.elasticPoints.push_back({number(point[@"position"]),number(point[@"source"]),number(point[@"slopeBefore"] ?: @0),number(point[@"slopeAfter"] ?: @0)});} for(id rawReference in array(cd[@"tempoRateReferences"] ?: @[])){NSDictionary* reference=object(rawReference);clip.tempoRateReferences.push_back({str(reference[@"markerID"]),number(reference[@"rate"])});} if(cd[@"pitchSemitones"] && cd[@"pitchSemitones"]!=NSNull.null) clip.pitchSemitones=number(cd[@"pitchSemitones"]); if(cd[@"gain"] && cd[@"gain"]!=NSNull.null) clip.gain=number(cd[@"gain"]); if(cd[@"phaseInverted"] && cd[@"phaseInverted"]!=NSNull.null) clip.phaseInverted=clipFXBypass(cd[@"phaseInverted"]); if(cd[@"pan"] && cd[@"pan"]!=NSNull.null) clip.pan=number(cd[@"pan"]); if(cd[@"fadeControlsEnabled"] && cd[@"fadeControlsEnabled"]!=NSNull.null) clip.fadeControlsEnabled=clipFXBypass(cd[@"fadeControlsEnabled"]); if(cd[@"fadeIn"] && cd[@"fadeIn"]!=NSNull.null) clip.fadeIn=number(cd[@"fadeIn"]); if(cd[@"fadeOut"] && cd[@"fadeOut"]!=NSNull.null) clip.fadeOut=number(cd[@"fadeOut"]); if(cd[@"fadeOutSCurve"] && cd[@"fadeOutSCurve"]!=NSNull.null) clip.fadeOutSCurve=number(cd[@"fadeOutSCurve"]); if(cd[@"fadeOutCurve"] && cd[@"fadeOutCurve"]!=NSNull.null) clip.fadeOutCurve=number(cd[@"fadeOutCurve"]); if(cd[@"fadeInSCurve"] && cd[@"fadeInSCurve"]!=NSNull.null) clip.fadeInSCurve=number(cd[@"fadeInSCurve"]); if(cd[@"fadeInCurve"] && cd[@"fadeInCurve"]!=NSNull.null) clip.fadeInCurve=number(cd[@"fadeInCurve"]); if(cd[@"normalizationGain"] && cd[@"normalizationGain"]!=NSNull.null) clip.normalizationGain=number(cd[@"normalizationGain"]); if(cd[@"channelMode"] && cd[@"channelMode"]!=NSNull.null) clip.channelMode=(int)number(cd[@"channelMode"]); if(cd[@"fxBypassed"] && cd[@"fxBypassed"]!=NSNull.null) clip.fxBypassed=clipFXBypass(cd[@"fxBypassed"]); if(cd[@"timecode"] && cd[@"timecode"]!=NSNull.null) clip.timecode=readTimecode(cd[@"timecode"]); if(cd[@"timecodeStartOffset"] && cd[@"timecodeStartOffset"]!=NSNull.null) clip.timecodeStartOffset=number(cd[@"timecodeStartOffset"]); if(cd[@"timecodeEndOffset"] && cd[@"timecodeEndOffset"]!=NSNull.null) clip.timecodeEndOffset=number(cd[@"timecodeEndOffset"]); if(cd[@"fx"] && cd[@"fx"]!=NSNull.null) clip.fxJSON=readClipFX(cd[@"fx"]); if(cd[@"automation"] && cd[@"automation"]!=NSNull.null) clip.automationJSON=str([[NSString alloc] initWithData:[NSJSONSerialization dataWithJSONObject:object(cd[@"automation"]) options:0 error:nil] encoding:NSUTF8StringEncoding]); for(id channel in array(cd[@"waveformChannels"] ?: @[])) { std::vector<double> values; for(id peak in array(channel)) values.push_back(number(peak)); clip.waveformChannels.push_back(std::move(values)); } if(cd[@"loopStart"] && cd[@"loopStart"]!=NSNull.null) clip.loopStart=number(cd[@"loopStart"]); if(cd[@"loopLength"] && cd[@"loopLength"]!=NSNull.null) clip.loopLength=number(cd[@"loopLength"]); if(cd[@"recordingLane"] && cd[@"recordingLane"]!=NSNull.null) clip.recordingLane=(int)number(cd[@"recordingLane"]); clip.muted=[cd[@"muted"] respondsToSelector:@selector(boolValue)] && [cd[@"muted"] boolValue]; t.clips.push_back(std::move(clip)); }
+            for (id rawClip in array(td[@"clips"])) { NSDictionary* cd=object(rawClip); AudioClip clip;
+                if(NSDictionary *v=cd[@"adjustedVideo"]; [v isKindOfClass:NSDictionary.class]) {
+                    AdjustedVideoSource visual;visual.path=str(v[@"path"]);
+                    for(NSDictionary *p in array(v[@"points"]))visual.points.push_back({number(p[@"time"]),number(p[@"source"])});
+                    if(v[@"loopStart"])visual.loopStart=number(v[@"loopStart"]);
+                    if(v[@"loopLength"])visual.loopLength=number(v[@"loopLength"]);
+                    clip.adjustedVideo=std::move(visual);
+                }
+                clip.id=str(cd[@"id"]); if(cd[@"regionOwnerID"] && cd[@"regionOwnerID"]!=NSNull.null) clip.regionOwnerID=str(cd[@"regionOwnerID"]); for(id stem in array(cd[@"separatedStemTracks"] ?: @[])) clip.separatedStemTracks.push_back(str(stem)); clip.name=str(cd[@"name"]); clip.startTime=number(cd[@"startTime"]); clip.duration=number(cd[@"duration"]); clip.sourceOffset=number(cd[@"sourceOffset"]); clip.playbackRate=cd[@"playbackRate"] && cd[@"playbackRate"]!=NSNull.null ? number(cd[@"playbackRate"]) : 1; for(id peak in array(cd[@"waveform"])) clip.waveform.push_back(number(peak)); if(cd[@"audioFile"] && cd[@"audioFile"]!=NSNull.null) { NSDictionary* f=object(cd[@"audioFile"]); AudioFile file; file.path=str(f[@"path"]); if(f[@"sha256"] && f[@"sha256"]!=NSNull.null) file.sha256=str(f[@"sha256"]); clip.audioFile=file; } if(cd[@"text"] && cd[@"text"]!=NSNull.null) clip.text=readClipText(cd[@"text"]); if(cd[@"midi"] && cd[@"midi"]!=NSNull.null) clip.midi=readMIDIItem(cd[@"midi"]); if(cd[@"frozenMIDI"] && cd[@"frozenMIDI"]!=NSNull.null) clip.frozenMIDI=clipFXBypass(cd[@"frozenMIDI"]); if(cd[@"renderedTiming"] && cd[@"renderedTiming"]!=NSNull.null) clip.renderedTiming=clipFXBypass(cd[@"renderedTiming"]); if(cd[@"clickDouble"] && cd[@"clickDouble"]!=NSNull.null) clip.clickDouble=clipFXBypass(cd[@"clickDouble"]); if(cd[@"renderedTempo"] && cd[@"renderedTempo"]!=NSNull.null) clip.renderedTempo=clipFXBypass(cd[@"renderedTempo"]); if(cd[@"tempoBasePlaybackRate"] && cd[@"tempoBasePlaybackRate"]!=NSNull.null) clip.tempoBasePlaybackRate=number(cd[@"tempoBasePlaybackRate"]); clip.elasticSourceScale=number(cd[@"elasticSourceScale"] ?: @1); for(id rawPoint in array(cd[@"elasticPoints"] ?: @[])){NSDictionary* point=object(rawPoint);clip.elasticPoints.push_back({number(point[@"position"]),number(point[@"source"]),number(point[@"slopeBefore"] ?: @0),number(point[@"slopeAfter"] ?: @0)});} for(id rawReference in array(cd[@"tempoRateReferences"] ?: @[])){NSDictionary* reference=object(rawReference);clip.tempoRateReferences.push_back({str(reference[@"markerID"]),number(reference[@"rate"])});} if(cd[@"pitchSemitones"] && cd[@"pitchSemitones"]!=NSNull.null) clip.pitchSemitones=number(cd[@"pitchSemitones"]); if(cd[@"gain"] && cd[@"gain"]!=NSNull.null) clip.gain=number(cd[@"gain"]); if(cd[@"phaseInverted"] && cd[@"phaseInverted"]!=NSNull.null) clip.phaseInverted=clipFXBypass(cd[@"phaseInverted"]); if(cd[@"pan"] && cd[@"pan"]!=NSNull.null) clip.pan=number(cd[@"pan"]); if(cd[@"fadeControlsEnabled"] && cd[@"fadeControlsEnabled"]!=NSNull.null) clip.fadeControlsEnabled=clipFXBypass(cd[@"fadeControlsEnabled"]); if(cd[@"fadeIn"] && cd[@"fadeIn"]!=NSNull.null) clip.fadeIn=number(cd[@"fadeIn"]); if(cd[@"fadeOut"] && cd[@"fadeOut"]!=NSNull.null) clip.fadeOut=number(cd[@"fadeOut"]); if(cd[@"fadeOutSCurve"] && cd[@"fadeOutSCurve"]!=NSNull.null) clip.fadeOutSCurve=number(cd[@"fadeOutSCurve"]); if(cd[@"fadeOutCurve"] && cd[@"fadeOutCurve"]!=NSNull.null) clip.fadeOutCurve=number(cd[@"fadeOutCurve"]); if(cd[@"fadeInSCurve"] && cd[@"fadeInSCurve"]!=NSNull.null) clip.fadeInSCurve=number(cd[@"fadeInSCurve"]); if(cd[@"fadeInCurve"] && cd[@"fadeInCurve"]!=NSNull.null) clip.fadeInCurve=number(cd[@"fadeInCurve"]); if(cd[@"normalizationGain"] && cd[@"normalizationGain"]!=NSNull.null) clip.normalizationGain=number(cd[@"normalizationGain"]); if(cd[@"channelMode"] && cd[@"channelMode"]!=NSNull.null) clip.channelMode=(int)number(cd[@"channelMode"]); if(cd[@"fxBypassed"] && cd[@"fxBypassed"]!=NSNull.null) clip.fxBypassed=clipFXBypass(cd[@"fxBypassed"]); if(cd[@"timecode"] && cd[@"timecode"]!=NSNull.null) clip.timecode=readTimecode(cd[@"timecode"]); if(cd[@"timecodeStartOffset"] && cd[@"timecodeStartOffset"]!=NSNull.null) clip.timecodeStartOffset=number(cd[@"timecodeStartOffset"]); if(cd[@"timecodeEndOffset"] && cd[@"timecodeEndOffset"]!=NSNull.null) clip.timecodeEndOffset=number(cd[@"timecodeEndOffset"]); if(cd[@"fx"] && cd[@"fx"]!=NSNull.null) clip.fxJSON=readClipFX(cd[@"fx"]); if(cd[@"automation"] && cd[@"automation"]!=NSNull.null) clip.automationJSON=str([[NSString alloc] initWithData:[NSJSONSerialization dataWithJSONObject:object(cd[@"automation"]) options:0 error:nil] encoding:NSUTF8StringEncoding]); for(id channel in array(cd[@"waveformChannels"] ?: @[])) { std::vector<double> values; for(id peak in array(channel)) values.push_back(number(peak)); clip.waveformChannels.push_back(std::move(values)); } if(cd[@"loopStart"] && cd[@"loopStart"]!=NSNull.null) clip.loopStart=number(cd[@"loopStart"]); if(cd[@"loopLength"] && cd[@"loopLength"]!=NSNull.null) clip.loopLength=number(cd[@"loopLength"]); if(cd[@"recordingLane"] && cd[@"recordingLane"]!=NSNull.null) clip.recordingLane=(int)number(cd[@"recordingLane"]); clip.muted=[cd[@"muted"] respondsToSelector:@selector(boolValue)] && [cd[@"muted"] boolValue]; t.clips.push_back(std::move(clip)); }
             t.importedTimecodeItems=[td[@"importedTimecodeItems"] boolValue];
             if(td[@"timecode"] && td[@"timecode"]!=NSNull.null) t.timecode=readTimecode(td[@"timecode"]);
             if(td[@"automation"] && td[@"automation"]!=NSNull.null) t.automationJSON=str([[NSString alloc] initWithData:[NSJSONSerialization dataWithJSONObject:object(td[@"automation"]) options:0 error:nil] encoding:NSUTF8StringEncoding]);
@@ -518,6 +538,37 @@ static void report(NSError** error, const std::exception& e) { if (error) *error
     uint64_t _snapshotRevision;
 }
 - (instancetype)init { if ((self=[super init])) _engine=std::make_unique<Engine>(); return self; }
++ (NSData*)regionTempoPlan:(NSData*)metadata region:(NSString*)identifier target:(double)bpm clickBeats:(NSArray<NSNumber*>*)beats error:(NSError**)error {
+    NSDictionary *dict=[NSJSONSerialization JSONObjectWithData:metadata options:0 error:error];
+    if (!dict) return nil;
+    try {
+        Project project=readProject(dict);
+        if(project.songs.empty()) throw std::invalid_argument("Region not found.");
+        auto& song=project.songs.front();
+        auto region=std::find_if(song.parts.begin(),song.parts.end(),[&](const Part& p){return p.id==str(identifier);});
+        if(region==song.parts.end()) throw std::invalid_argument("Region not found.");
+        regionTempo::Plan plan(song,*region,bpm);
+        std::vector<double> onsets;
+        onsets.reserve(beats.count);
+        for (NSNumber *at in beats) onsets.push_back(at.doubleValue);
+        plan.alignToClick(std::move(onsets));
+        NSMutableArray *output=[NSMutableArray new], *source=[NSMutableArray new];
+        for(double edge:plan.edges){[source addObject:@(edge)];[output addObject:@(plan.time.position(edge))];}
+        plan.apply(project,song,*region,[]{return str(NSUUID.UUID.UUIDString);});
+        NSDictionary *mapped=[projectJSON(project, false)[@"songs"] firstObject];
+        return [NSJSONSerialization dataWithJSONObject:@{@"region":identifier,@"targetBPM":@(bpm),@"source":source,@"output":output,@"parts":mapped[@"parts"],@"markers":mapped[@"markers"]} options:0 error:error];
+    } catch(const std::exception& e){report(error,e);return nil;}
+}
++ (BOOL)renderFixedTempo:(NSURL*)input to:(NSURL*)output source:(NSArray<NSNumber*>*)source outputTimes:(NSArray<NSNumber*>*)times progress:(BOOL (^)(double))progress error:(NSError**)error {
+    try {
+        if(source.count!=times.count)throw std::invalid_argument("Invalid tempo map.");
+        std::vector<catlive::regionTempo::Anchor> anchors;
+        for(NSUInteger i=0;i<source.count;++i)anchors.push_back({source[i].doubleValue,times[i].doubleValue});
+        catlive::regionTempo::render(input.fileSystemRepresentation, output.fileSystemRepresentation, anchors,
+            [&](double value){return bool(progress(value));});
+        return YES;
+    } catch(const std::exception& e){report(error,e);return NO;}
+}
 - (BOOL)applyProjectEditData:(NSData*)data error:(NSError**)error {
     id decoded=[NSJSONSerialization JSONObjectWithData:data options:0 error:error]; if (!decoded) return NO;
     try { _engine->applyProjectEdit(readProject(object(decoded))); return YES; } catch(const std::exception& e) { report(error,e); return NO; }
@@ -823,11 +874,30 @@ static void report(NSError** error, const std::exception& e) { if (error) *error
         _engine->addRecordedClip(str(track), std::move(clip), true); return YES;
     } catch(const std::exception& e) { report(error,e); return NO; }
 }
+- (NSDictionary<NSString*, NSNumber*>*)randomizeTrackColors:(NSString*)song tracks:(NSArray<NSString*>*)tracks error:(NSError**)error {
+    try {
+        std::set<ID> ids;
+        for (NSString* track in tracks) ids.insert(str(track));
+        auto colors = _engine->randomTrackColors(str(song), ids);
+        NSMutableDictionary* selected = [NSMutableDictionary dictionaryWithCapacity:colors.size()];
+        for (const auto& [track, color] : colors) selected[text(track)] = @(*color);
+        _engine->exchangeTrackColors(str(song), colors);
+        return selected;
+    } catch (const std::exception& e) { report(error, e); return nil; }
+}
 - (BOOL)setTrackMixerComponents:(NSString*)song masks:(NSDictionary<NSString*, NSNumber*>*)masks error:(NSError**)error {
     try {
         std::map<ID, int> values;
         for (NSString* track in masks) values.emplace(str(track), masks[track].intValue);
         _engine->setTrackMixerComponents(str(song), values);
+        return YES;
+    } catch (const std::exception& e) { report(error,e); return NO; }
+}
+- (BOOL)setTrackHeights:(NSString*)song scales:(NSDictionary<NSString*, NSNumber*>*)scales error:(NSError**)error {
+    try {
+        std::map<ID,double> values;
+        for (NSString* track in scales) values.emplace(str(track), scales[track].doubleValue);
+        _engine->setTrackHeights(str(song), values);
         return YES;
     } catch (const std::exception& e) { report(error,e); return NO; }
 }
@@ -859,6 +929,15 @@ static void report(NSError** error, const std::exception& e) { if (error) *error
 }
 - (BOOL)editRegion:(NSString*)identifier name:(NSString*)name color:(unsigned int)color uppercaseName:(BOOL)uppercaseName error:(NSError**)error {
     try { _engine->editRegion(str(identifier), str(name), color, uppercaseName); return YES; } catch(const std::exception& e) { report(error,e); return NO; }
+}
+- (BOOL)setTimelineNames:(NSString*)song regions:(NSDictionary<NSString*,NSString*>*)regions markers:(NSDictionary<NSString*,NSString*>*)markers error:(NSError**)error {
+    try {
+        std::map<jaras::ID,std::string> partNames, markerNames;
+        for (NSString *key in regions) partNames.emplace(str(key), str(regions[key]));
+        for (NSString *key in markers) markerNames.emplace(str(key), str(markers[key]));
+        _engine->exchangeTimelineNames(str(song), partNames, markerNames);
+        return YES;
+    } catch (const std::exception& e) { report(error,e); return NO; }
 }
 - (BOOL)moveClip:(NSString*)clipId start:(double)start track:(NSString*)trackId error:(NSError**)error {
     try { _engine->moveClip(str(clipId), start, str(trackId)); return YES; } catch(const std::exception& e) { report(error,e); return NO; }

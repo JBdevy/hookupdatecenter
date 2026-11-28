@@ -10,6 +10,8 @@ models=Path('Application/Project/ProjectModels.swift').read_text()
 grid=Path('Apple/Shared/TimelineGridView.swift').read_text()
 project_error=next(line for line in models.splitlines() if line.startswith('public enum ProjectError:')) + '\n'
 geometry=models[models.index('public enum TrackHeightGeometry'):models.index('public struct TrackLinkOriginal')]
+limits_start=grid.index('enum TimelineTrackHeightLimits')
+geometry += grid[limits_start:grid.index('\n}', limits_start) + 2] + '\n'
 lanes=models[models.index('public struct TrackLanes'):models.index('public enum TrackKind')]
 lanes=lanes.replace('public ', '').replace('init(track: Track) {', 'init(track: Track) { LaneBuildCounter.count += 1')
 cache=grid[grid.index('@MainActor private final class TrackLayoutCache'):grid.index('@MainActor private final class RegionOverlapCache')]

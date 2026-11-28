@@ -205,9 +205,11 @@ class ClipAudio {
             const int frames =
                 segment ? boundedFrames((segment->end - now) * sampleRate, audibleFrames)
                         : audibleFrames;
-            if (std::abs(pitch) < 1e-8 && head.next < 0) {
+            if (std::abs(pitch) < 1e-8) {
                 ok = read(reader, scratch, output, done, now, frames) && ok;
                 head.next = -1;
+                head.ahead = 0;
+                head.semitones = 0;
             } else {
                 if (std::abs(head.next - now) > .25 / sampleRate) {
                     processor.setTransposeSemitones((float)pitch);

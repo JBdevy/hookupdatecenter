@@ -1,3 +1,4 @@
+#include "../../Core/Songs/RegionTempoAdjustment.hpp"
 #include <numeric>
 #include "TimelineGridCache.h"
 #include "TimelineNeedle.h"
@@ -108,7 +109,7 @@ Colour workspaceToolbarColour() {
     return theme::background == theme::darkBackground ? theme::background : Colour(0xff2a2a2a);
 }
 constexpr int mainStripWidth = 248;
-constexpr int proMasterFaderY = 44;
+constexpr int proMasterFaderY = 16;
 constexpr int timelineLockButtonWidth = 74;
 constexpr float timelineToolbarLabelSize = 11.f;
 }
@@ -134,15 +135,16 @@ void invalidateThemeImages(Component &component) {
 bool independentWorkspaceWindow(const String &name, const Component *content) {
     return name == "Mixer" || name == "Parts" || dynamic_cast<const Projection *>(content) != nullptr;
 }
-constexpr int compactTrackHeight = 28;
+constexpr int compactTrackHeight = 18;
+constexpr int regularTrackMinimum = 34;
 constexpr int expandedTrackHeight = 64;
 bool allowsCompactTrackHeight(const jaras::Track &track) {
-    return track.supportsMixerComponents() || track.role.id == "programChange" ||
+    return jaras::fixedTrackName(track.role).empty() || track.role.id == "programChange" ||
         track.role.id == "generatedClick" || jaras::isTeleprompterRole(track.role);
 }
 double desktopLaneMinimum(int lanes, bool compact = false) {
-    const double minimum = compact ? compactTrackHeight : double(theme::trackMixerMinHeight);
-    return lanes > 1 ? std::max(26., minimum / lanes) : minimum;
+    const double minimum = compact ? compactTrackHeight : double(regularTrackMinimum);
+    return lanes > 1 ? std::max(double(compactTrackHeight), minimum / lanes) : minimum;
 }
 int valueTooltipWidth(const String &label) {
     return std::max(88,roundToInt(GlyphArrangement::getStringWidth(theme::semiboldFont(12),label))+18);
@@ -1521,12 +1523,13 @@ class Workspace::TrackRow final : public Component, public DragAndDropTarget {
             const int left = groupIndent() + stripeWidth() + 4;
             return {left, std::max(0, (body - 22) / 2), std::max(1, special->getX() - left - 4), 22};
         }
-        if ((t.supportsMixerComponents() || t.role.id == "generatedClick") && body < expandedTrackHeight) {
+        if ((jaras::fixedTrackName(t.role).empty() || t.role.id == "generatedClick") && body < expandedTrackHeight) {
             const int left = groupIndent() + stripeWidth() + 28;
             int right = signalLight.getX() - 3;
             for (const auto *button : {&record, &monitor, &mute, &solo})
                 if (button->isVisible()) right = std::min(right, button->getX() - 4);
-            return {left, std::max(0, (body - 22) / 2), std::max(1, right - left), 22};
+            const int height = std::min(body, 22);
+            return {left, (body - height) / 2, std::max(1, right - left), height};
         }
         if (compactMixerControls(t)) {
             const int left = groupIndent() + stripeWidth() + 4;
@@ -1621,7 +1624,8 @@ class Workspace::TrackRow final : public Component, public DragAndDropTarget {
             }
         }
         if (const auto *t = track(); t && !signalLight.isEmpty()) {
-            trackIcons::draw(g, t->instrumentIcon, {float(groupIndent() + stripeWidth() + 4), float(signalLight.getCentreY() - 10), 20.f, 20.f});
+            const float side = float(jlimit(1, 20, getHeight() - int(automation::visible(*t).size()) * 32 - 2));
+            trackIcons::draw(g, t->instrumentIcon, {float(groupIndent() + stripeWidth() + 4), signalLight.getCentreY() - side / 2, side, side});
             g.setColour(signalColour);
             g.fillEllipse(signalLight.toFloat());
             g.setColour(Colour(0xff2d3236));
@@ -1657,7 +1661,7 @@ class Workspace::TrackRow final : public Component, public DragAndDropTarget {
         const int volumeY = y + h;
         const int volumeHeight = jlimit(0, 20, body - 17 - volumeY);
         const bool metronome = t && t->role.id == "generatedClick";
-        const bool heightCompact = t && (t->supportsMixerComponents() || metronome) && body < expandedTrackHeight;
+        const bool heightCompact = t && (jaras::fixedTrackName(t->role).empty() || metronome) && body < expandedTrackHeight;
         signalLight = heightCompact ? juce::Rectangle<int>{bodyWidth() - 17, std::max(0, (body - 10) / 2), 10, 10} : juce::Rectangle<int>{};
         int x = bodyWidth() - 4;
         auto place = [&](Component &control, int width) {
@@ -1680,11 +1684,12 @@ class Workspace::TrackRow final : public Component, public DragAndDropTarget {
             peak->setVisible(false);
             volume.setVisible(false);
             if (special) special->setVisible(false);
-            const int top = std::max(0, (body - 22) / 2);
+            const int side = jlimit(1, 22, body);
+            const int top = (body - side) / 2;
             int right = signalLight.getX() - 6;
             for (auto *button : {&solo, &mute, &monitor, &record}) if (button->isVisible()) {
-                button->setBounds(right - 22, top, 22, 22);
-                right -= 25;
+                button->setBounds(right - side, top, side, side);
+                right -= side + 3;
             }
             rename.layoutIn(titleBounds(*t, body).withTrimmedLeft(20));
             return;
@@ -2620,7 +2625,10 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
         }
     }
     void initialView() {
-        zoomAt(std::max(1, canvas.getWidth() - 40) / 180.0, 0);
+        const auto saved = get(w.appearance.value("jaras.workspace.layout"), "timelineZoom", w.appearance.value("jaras.timeline.zoom"));
+        const double scale = double(saved);
+        const bool valid = (saved.isDouble() || saved.isInt() || saved.isInt64()) && std::isfinite(scale);
+        zoomAt(valid ? scale : std::max(1, canvas.getWidth() - 40) / 180.0, 0);
         const auto position = w.session.transport().editPosition;
         horizontal.setCurrentRangeStart(position <= 10. ? firstOffset : (position - 10.) * w.pixelsPerSecond);
     }
@@ -2667,6 +2675,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
         Array<var> stages;for(auto ms:paintStages) stages.add(ms);put(v,"paintStagesMilliseconds",stages);
         put(v, "vertical", vertical.getCurrentRangeStart());
         put(v, "zoom", w.pixelsPerSecond);
+        if (canvas.visibleRegionDuration().isNotEmpty()) put(v, "regionDurationTooltip", canvas.visibleRegionDuration());
         if(playbackFrame)put(v,"framePlaybackPosition",playbackFrame->position);
         if(heads.hasPainted){put(v,"paintedMainNeedleX",heads.paintedMainX);put(v,"paintedMainPosition",heads.paintedMainPosition);}
         if(selectedHeaderRegion && selectedHeaderProject==w.session.project().id)put(v,"selectedHeaderRegion",text(*selectedHeaderRegion));
@@ -2725,6 +2734,32 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
         put(v, "y", getY());
         return v;
     }
+    bool adjustSelectedTrackHeights(const MouseWheelDetails& wheel) {
+        const auto* song=w.session.song();
+        auto selected=w.selectedTracks;
+        if(selected.empty() && !w.selectedTrack.empty())selected.insert(w.selectedTrack);
+        if(!song || selected.empty())return false;
+        if(wheel.isInertial || !std::isfinite(wheel.deltaY) || wheel.deltaY==0)return true;
+        stopGesture();
+        w.tracksViewport.cancelWheel();
+        std::map<ID,double> scales;
+        const double points=w.trackHeight*.6*wheel.deltaY;
+        for(int i=0;i<(int)song->tracks.size();++i) {
+            const auto& track=song->tracks[(size_t)i];
+            if(!selected.count(track.id) || w.rowHidden(i))continue;
+            const int lanes=w.itemLanes(i).count;
+            const double base=w.trackHeight*(lanes>1?.7:1.);
+            const double minimum=desktopLaneMinimum(lanes,allowsCompactTrackHeight(track)), maximum=lanes>1?168.:240.;
+            const double previous=jlimit(minimum,maximum,base*track.heightScale.value_or(1.));
+            scales.emplace(track.id,jlimit(.1,10.,jlimit(minimum,maximum,previous+points)/base));
+        }
+        if(scales.empty())return false;
+        const double now=Time::getMillisecondCounterHiRes();
+        const bool continuing=lastHeightSelection==selected && lastHeightRevision==w.session.revision && now-lastSelectedHeightTime<220.;
+        w.perform([&]{w.session.setSelectedTrackHeights(song->id,scales,continuing);});
+        lastHeightSelection=std::move(selected);lastHeightRevision=w.session.revision;lastSelectedHeightTime=now;
+        return true;
+    }
     void adjustTrackHeight(float delta) {
         if (delta == 0 || !std::isfinite(delta)) return;
         setTrackHeight((int)std::lround(w.trackHeight * std::exp(delta * .6)));
@@ -2773,6 +2808,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
             return;
         }
         if (e.mods.isAltDown()) {
+            if (adjustSelectedTrackHeights(d)) return;
             stopGesture();
             w.tracksViewport.scrollByWheel(d);
             return;
@@ -2823,6 +2859,9 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
 
   private:
     Workspace &w;
+    uint64 lastHeightRevision=0;
+    double lastSelectedHeightTime=0;
+    std::set<ID> lastHeightSelection;
     uint64 scrollEndRevision = ~uint64(0);
     ID scrollEndSong;
     double scrollEndTime = 0;
@@ -2921,7 +2960,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
     File waveformFile(const std::string &relative) {
         if(waveformDirectory!=w.session.mediaDirectory) {waveformFiles.clear();waveformDirectory=w.session.mediaDirectory;}
         auto at=waveformFiles.find(relative);
-        if(at==waveformFiles.end()) at=waveformFiles.emplace(relative,ProjectCodec::resolveMedia(waveformDirectory,relative,false)).first;
+        if(at==waveformFiles.end()) at=waveformFiles.emplace(relative,ProjectCodec::mediaInput(waveformDirectory,relative)).first;
         return at->second;
     }
     uint64 paintCount = 0;
@@ -2999,24 +3038,57 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
       public:
         int headerHeight() const { return t.headerHeight(); }
         explicit Canvas(Timeline &timeline) : t(timeline) { setOpaque(true); setComponentID("timelineCanvas"); }
+        const String &visibleRegionDuration() const { return regionDurationText; }
+        std::optional<std::pair<ID, bool>> waveDropTarget(const SourceDetails& source) const {
+            const auto* song = t.w.session.song();
+            const auto point = source.localPosition;
+            if (!song || t.w.session.busy || jaras::projectSync::readOnly() || !getLocalBounds().contains(point) ||
+                str(source.description, "project") != text(t.w.session.project().id) ||
+                str(source.description, "identity") != "native:Wave LFO") return {};
+            const int row = rowAtPoint(point.y);
+            if (row < 0 || row >= int(song->tracks.size())) return {};
+            const auto& track = song->tracks[size_t(row)];
+            const int offset = point.y - rowsTop() + t.w.verticalOffset - t.w.rowTop(row);
+            if (offset < 0 || offset >= t.w.rowBodyHeight(row) || !jaras::fixedTrackName(track.role).empty()) return {};
+            for (auto clip = track.clips.rbegin(); clip != track.clips.rend(); ++clip) {
+                if (!itemRect(row, *clip).contains(point.toFloat())) continue;
+                if (!WaveLFOParameters::supports(*clip, track)) return {};
+                return std::make_pair(clip->id, true);
+            }
+            return std::make_pair(track.id, false);
+        }
         bool isInterestedInDragSource(const SourceDetails &source) override {
             const auto type = str(source.description, "type");
+            if (type == "catlive-library-effect")
+                return str(source.description, "identity") == "native:Wave LFO" &&
+                    str(source.description, "project") == text(t.w.session.project().id);
             const File file(str(source.description, "file"));
             return (type == "catlive-library-sampler" && externalMedia::supported(file)) ||
                 (type == "catlive-library-media" && (externalMedia::supported(file) ||
                     file.hasFileExtension("jl;bkjl;ziplive;jllyrics")));
         }
         void itemDragEnter(const SourceDetails &source) override {
+            if (str(source.description, "type") == "catlive-library-effect") return;
             const auto point = t.w.getLocalPoint(this, source.localPosition);
             t.w.fileDragEnter({str(source.description, "file")}, point.x, point.y);
         }
         void itemDragMove(const SourceDetails &source) override {
+            if (str(source.description, "type") == "catlive-library-effect") return;
             const auto point = t.w.getLocalPoint(this, source.localPosition);
             t.w.fileDragMove({}, point.x, point.y);
         }
-        void itemDragExit(const SourceDetails &) override { t.w.fileDragExit({}); }
+        void itemDragExit(const SourceDetails& source) override {
+            if (str(source.description, "type") != "catlive-library-effect") t.w.fileDragExit({});
+        }
         void itemDropped(const SourceDetails &source) override {
             if (!isInterestedInDragSource(source)) return;
+            if (str(source.description, "type") == "catlive-library-effect") {
+                if (const auto target = waveDropTarget(source)) t.w.perform([&] {
+                    t.w.session.insertLibraryEffect(target->first, str(source.description, "identity"),
+                                                    str(source.description, "preset"), {}, target->second);
+                });
+                return;
+            }
             const auto point = t.w.getLocalPoint(this, source.localPosition);
             t.w.filesDropped({str(source.description, "file")}, point.x, point.y);
         }
@@ -3989,14 +4061,18 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                 g.setColour(theme::green);
                 g.drawVerticalLine((int)t.xAt(previewStart),(float)t.rulerTop(),(float)getHeight());
             }
+            if (regionDurationText.isNotEmpty())
+                drawValueTooltip(g, tooltipBounds(regionDurationText, regionDurationPoint), regionDurationText);
         }
 
+        void mouseEnter(const MouseEvent &e) override { mouseMove(e); }
         void mouseMove(const MouseEvent &e) override {
             String tooltip;
             MouseCursor cursor(MouseCursor::NormalCursor);
             if(t.onRuler(e.position.y)) cursor=MouseCursor::PointingHandCursor;
             if(t.onRuler(e.position.y) && timeRangeEdge(e.position.x)) cursor=MouseCursor::LeftRightResizeCursor;
             const auto hit=regionHit(e.position,true);
+            trackRegionHover(hit.first, e.position);
             const ID nextHover=hit.first && hit.second?hit.first->id:ID{};
             if(nextHover!=hoverRegion || hit.second!=hoverRegionEdge) {
                 hoverRegion=nextHover;hoverRegionEdge=hit.second;repaint(0, 0, getWidth(), t.regionRowsBottom());
@@ -4030,6 +4106,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
             setMouseCursor(cursor);
         }
         void mouseExit(const MouseEvent &) override {
+            if (dragRegion.empty() || !regionEdge) clearRegionDuration();
             if(!controlClip)setItemValueTooltip({},controlPointer);
             hoverRegion.clear();hoverRegionEdge=0;repaint(0, 0, getWidth(), t.regionRowsBottom());
         }
@@ -4037,6 +4114,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
             elasticDrag.reset();
             suppressElasticRelease = false;
             clickedElastic = false;
+            clearRegionDuration();
             setItemValueTooltip({},e.position);
             collapseSelectionOnRelease.clear(); clearSelectionOnRelease=false;
             pendingProItem.clear(); pendingProTrack.clear(); proLoopGesture=false; rulerContextClick=false; leftMarquee=false;
@@ -4145,7 +4223,10 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                                 dragRegion=p.id; originalStart=p.startTime; clipLength=p.endTime-p.startTime;
                                 regionEdge=hit.second;
                                 regionRepulsion.emplace(*t.w.session.song(),p,10./t.w.pixelsPerSecond);
-                                if(regionEdge)setMouseCursor(regionResizeCursor());
+                                if (regionEdge) {
+                                    setMouseCursor(regionResizeCursor());
+                                    showRegionDuration(p.id, clipLength, e.position);
+                                }
                             }
                 }
                 return;
@@ -4268,7 +4349,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                                     const auto nodes = envelope.points(bounds, c.duration);
                                     int handle = 0;
                                     float distance = 6.f;
-                                    for (int i = 1; i <= 3; ++i) {
+                                    for (int i = 1; i + 1 < int(nodes.size()); ++i) {
                                         const float d = nodes[i].getDistanceFrom(e.position);
                                         if (d < distance) { handle = i; distance = d; }
                                     }
@@ -4400,6 +4481,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
             if (rightSelection) { updateAreaSelection(e); return; }
             if ((!dragClip.empty() && timelineGrid::itemsLocked(t.w.session.project())) ||
                 ((!dragRegion.empty() || !dragMarker.empty()) && timelineGrid::regionsLocked(t.w.session.project()))) {
+                clearRegionDuration();
                 t.setRegionPreview(std::nullopt); t.previewMarker(std::nullopt);
                 dragPreview = false; resizedClipPreview.reset(); movingClipPreview.reset(); sharedOriginal.reset(); sharedPreview.reset();
                 setMouseCursor(MouseCursor::NormalCursor); repaint(); return;
@@ -4414,7 +4496,9 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                     if (!dragRegion.empty() && t.w.session.song()) {
                         const auto bounds=regionEditBounds(e);
                         previewStart=bounds.first; previewEnd=bounds.second;
-                        t.setRegionPreview(previewRegionEdit(*t.w.session.song(),dragRegion,previewStart,previewEnd,regionEdge!=0));
+                        auto preview = previewRegionEdit(*t.w.session.song(),dragRegion,previewStart,previewEnd,regionEdge!=0);
+                        if (regionEdge) showRegionDuration(dragRegion, preview ? previewEnd-previewStart : clipLength, e.position);
+                        t.setRegionPreview(std::move(preview));
                     }
                     if (!dragMarker.empty()) { previewStart=markerEditPosition(e); t.previewMarker(std::make_pair(dragMarker,previewStart)); }
                     dragPreview=true;
@@ -4601,6 +4685,11 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                     }
                 });
                 t.setRegionPreview(std::nullopt); t.previewMarker(std::nullopt);
+                if (regionEdge && !region.empty()) {
+                    const auto *part = regionHit(e.position, false).first;
+                    if (part && part->id == region) showRegionDuration(region, part->endTime - part->startTime, e.position);
+                    else clearRegionDuration();
+                }
                 dragRegion.clear();dragMarker.clear();dragPreview=false;setMouseCursor(MouseCursor::NormalCursor);t.invalidate();return;
             }
             if (controlClip) {
@@ -4752,9 +4841,11 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
             }
         }
         void mouseWheelMove(const MouseEvent &e, const MouseWheelDetails &d) override {
+            clearRegionDuration();
             t.mouseWheelMove(e, d);
         }
         void cancelDrag() {
+            clearRegionDuration();
             if (waveDrag) {
                 auto d = std::exchange(waveDrag, std::nullopt);
                 t.w.session.audio.previewNativeParameters(d->id, "Wave LFO", "Wave LFO", d->original, d->original);
@@ -5116,11 +5207,48 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
         ID controlTrack; int controlRow=-1;
         ItemHeader::Control controlKind=ItemHeader::none;
         Point<float> controlPointer;
-        juce::Rectangle<int> valueTooltipBounds() const {
-            if(itemValueTooltip.isEmpty())return {};
-            const int width=valueTooltipWidth(itemValueTooltip);
-            return juce::Rectangle<int>(roundToInt(controlPointer.x)+12,roundToInt(controlPointer.y)-30,width,24)
+        juce::Rectangle<int> tooltipBounds(const String &label, Point<float> point) const {
+            if (label.isEmpty()) return {};
+            return juce::Rectangle<int>(roundToInt(point.x)+12, roundToInt(point.y)-30, valueTooltipWidth(label), 24)
                 .constrainedWithin(getLocalBounds());
+        }
+        juce::Rectangle<int> valueTooltipBounds() const { return tooltipBounds(itemValueTooltip, controlPointer); }
+        ID durationRegion;
+        String regionDurationText;
+        Point<float> regionDurationPoint;
+        struct RegionHoverTimer final : juce::Timer {
+            explicit RegionHoverTimer(Canvas &owner) : canvas(owner) {}
+            void timerCallback() override {
+                stopTimer();
+                const auto *part = canvas.regionHit(canvas.regionDurationPoint, false).first;
+                if (part && part->id == canvas.durationRegion && canvas.isShowing() && !canvas.isCurrentlyBlockedByAnotherModalComponent())
+                    canvas.showRegionDuration(part->id, part->endTime - part->startTime, canvas.regionDurationPoint);
+            }
+            Canvas &canvas;
+        } regionHoverTimer{*this};
+        void clearRegionDuration() {
+            regionHoverTimer.stopTimer();
+            durationRegion.clear();
+            if (regionDurationText.isEmpty()) return;
+            const auto old = tooltipBounds(regionDurationText, regionDurationPoint);
+            regionDurationText.clear();
+            repaint(old.expanded(1));
+        }
+        void trackRegionHover(const jaras::Part *part, Point<float> point) {
+            if (!part) { if (!durationRegion.empty()) clearRegionDuration(); return; }
+            if (durationRegion == part->id && regionDurationPoint == point) return;
+            clearRegionDuration();
+            regionDurationPoint = point;
+            durationRegion = part->id;
+            regionHoverTimer.startTimer(1000);
+        }
+        void showRegionDuration(const ID &id, double duration, Point<float> point) {
+            regionHoverTimer.stopTimer();
+            const auto label = "Duracao-" + clockText(std::round(duration), true);
+            if (durationRegion == id && regionDurationText == label && regionDurationPoint == point) return;
+            const auto old = tooltipBounds(regionDurationText, regionDurationPoint);
+            durationRegion = id; regionDurationText = label; regionDurationPoint = point;
+            repaint(old.getUnion(tooltipBounds(label, point)).expanded(1));
         }
         void setItemValueTooltip(const String &label,Point<float> point) {
             const auto old=valueTooltipBounds();
@@ -5675,7 +5803,6 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
     transportFont.getParentDirectory().createDirectory();
     if (!transportFont.existsAsFile() && !transportFont.replaceWithData(BinaryData::InterSemiBold_ttf, BinaryData::InterSemiBold_ttfSize))
         throw std::runtime_error("Não foi possível preparar a fonte do transporte.");
-    masterPeakReadout=std::make_unique<meterDisplay::PeakReadout>([this]{return session.audio.heldPeak();},[this]{session.audio.clearPeak();},[]{return theme::surfaceText(theme::mixerStripeSurface);});addAndMakeVisible(*masterPeakReadout);
     nativeTransport = std::make_unique<native::TransportButtons>(transportFont.getFullPathName().toWideCharPointer());
     remotePresentation->save = [this] { chooseSave(); };
     remotePresentation->fadeout = [this](bool active) {
@@ -5911,7 +6038,7 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
         session.edit([&](jaras::Project &project) {
             for (auto &song : project.songs) if (song.id == session.song()->id) {
                 if (std::any_of(song.tracks.begin(), song.tracks.end(), [](const auto &track) { return track.role.id == "vinhetas"; })) return;
-                jaras::Track track; track.id=uuid(); track.name="VINHETAS-FX"; track.role.id="vinhetas"; track.color=0x828282;
+                jaras::Track track; track.id=uuid(); track.name="VINHETAS-FX"; track.role.id="vinhetas"; track.instrumentIcon="png:Drums/sample-pad"; track.color=0x828282;
                 auto at=std::find_if(song.tracks.begin(),song.tracks.end(),[](const auto &t){return t.role.id=="generatedClick";});
                 song.tracks.insert(at,track);
             }
@@ -6009,7 +6136,7 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
     trackHeightSlider.setComponentID("track-height-slider");
     trackHeightSlider.setTitle(localization::translate("Track height"));
     trackHeightSlider.setTooltip(trackHeightSlider.getTitle());
-    trackHeightSlider.setRange(theme::trackMixerMinHeight, 240, 1);
+    trackHeightSlider.setRange(regularTrackMinimum, 240, 1);
     trackHeightSlider.setValue(trackHeight, dontSendNotification);
     trackHeightSlider.onValueChange = [this] { timeline->setTrackHeight((int)trackHeightSlider.getValue()); };
     for (auto *label : std::initializer_list<Label *>{&songDisplay, &transportTime, &transportInfo, &footer, &tempo}) {
@@ -7058,6 +7185,7 @@ void Workspace::saveWorkspaceLayout() {
     put(state,"proLibraryWidth",proLibraryWidth);
     put(state,"vinhetasDetached",vinhetasDetached);put(state,"vinhetasOpen",vinhetasVisible);
     put(state,"setlistPlacement",(int)setlistPlacement); put(state,"setlistDockSide",(int)setlistDockSide);
+    put(state,"timelineZoom",pixelsPerSecond);
     put(state,"trackWidth",mixerWidth); put(state,"setlistWidth",setlistWidth);
     put(state,"partsLeftWidth",partsLeftWidth); put(state,"partsRightWidth",partsRightWidth);
     put(state,"mixerHeight",mixerHeightSetting); put(state,"footerHeight",footerHeightSetting);
@@ -7475,7 +7603,9 @@ void Workspace::openFloating(const String &name, std::unique_ptr<Component> pane
     const bool externalEditorPanel = effectContent && effectContent->opensExternalEditor();
     const bool synthPanel = effectsPanel && name.startsWith("CatSynth - ");
     const bool graphicEQPanel = effectsPanel && name.startsWith("EQ - 31 Band - ");
-    if (effectsPanel && !graphicEQPanel && !externalEditorPanel) {
+    const bool wavePanel = effectContent && effectContent->opensWaveEditor();
+    if (wavePanel) { width = 520; height = 430; }
+    else if (effectsPanel && !graphicEQPanel && !externalEditorPanel) {
         width = std::max(width, EffectsPanel::minimumContentWidth);
         height = std::max(height, EffectsPanel::minimumContentHeight);
     }
@@ -7523,6 +7653,8 @@ void Workspace::openFloating(const String &name, std::unique_ptr<Component> pane
         } else if (externalEditorPanel) {
             window->setResizeLimits(EffectsPanel::externalMinimumWidth + contentBorder.getLeftAndRight(),
                 EffectsPanel::externalMinimumHeight + contentBorder.getTopAndBottom(), 3840, 2160);
+        } else if (wavePanel) {
+            window->setResizeLimits(520 + contentBorder.getLeftAndRight(), 410 + contentBorder.getTopAndBottom(), 3840, 2160);
         } else if (synthPanel) {
             window->setResizeLimits(1047, 713, 3840, 2160);
         } else if (drummerPanel) {
@@ -7796,10 +7928,14 @@ void Workspace::paint(Graphics &g) {
         constexpr float meterLabelSize = 7.5f;
         g.setFont(theme::semiboldFont(meterLabelSize).withPointHeight(meterLabelSize));
         const auto meter = [&](String label, std::optional<double> value, int column, int row) {
-            const int x=transportResourceBounds.getX()+column*69, y=transportResourceBounds.getY()+row*12;
+            const int columnWidth = proTransport ? transportResourceBounds.getWidth() / 4 : 69;
+            const int x = transportResourceBounds.getX() + (proTransport ? column * 2 + row : column) * columnWidth;
+            const int y = transportResourceBounds.getY() + (proTransport ? 0 : row * 12);
+            const int labelWidth = proTransport ? std::min(26, columnWidth / 2) : 28;
             g.setColour(theme::secondary);
-            g.drawText(label,x,y,28,12,Justification::centredLeft,false);
-            const juce::Rectangle<float> rail{float(x+31),float(y+4),30,4};
+            g.drawText(label, x, y, labelWidth, 12, Justification::centredLeft, false);
+            const float barWidth = proTransport ? float(std::max(0, columnWidth - labelWidth - 7)) : 30.f;
+            const juce::Rectangle<float> rail{float(x + labelWidth + 3), float(y + 4), barWidth, 4.f};
             g.setColour(Colours::white.withAlpha(.15f)); g.fillRoundedRectangle(rail,2);
             if (value && *value > 0) {
                 g.setColour(label == "HD" && *value >= 90 ? theme::liveOffRed : theme::green);
@@ -7811,7 +7947,7 @@ void Workspace::paint(Graphics &g) {
         meter("HD",resourceUsage.disk,1,0);
         meter("MIDI",transportMIDIActive ? 100. : 0.,1,1);
     }
-    if (transportProgressPixels >= 0) {
+    if (transportProgressPixels >= 0 && !saveIndicator) {
         const auto lane = transportProgressBounds();
         g.setColour(Colours::white.withAlpha(.12f));
         g.fillRect(lane);
@@ -7921,7 +8057,7 @@ void Workspace::paint(Graphics &g) {
     g.setColour(proTransport ? Colours::white : theme::surfaceText(masterColour));
     g.setFont(theme::semiboldFont(11));
     if (proTransport)
-        g.drawText("Main", 6, proMasterFaderY + 1, 45, 18, Justification::centredLeft);
+        g.drawText("Main", 43, proMasterFaderY + 1, 36, 18, Justification::centredLeft);
     else
         g.drawText("Main", 4, 37, mainStripWidth, 18, Justification::centred);
     }
@@ -8019,7 +8155,7 @@ void Workspace::resized() {
     const int minimumToolbarWidth = toolbarInset*2 + settingsWidth + audioTextWidth + 6 +
         ((int)primaryTools.size() + (int)integrations.size())*(29 + toolbarGap) + liveToolsWidth;
     const int settingsX = getWidth() - settingsWidth - toolbarInset;
-    const int panelHeight = proTransport ? (compactTransport ? 129 : 97) : (compactTransport ? 124 : 86);
+    const int panelHeight = proTransport ? (compactTransport ? 109 : 77) : (compactTransport ? 124 : 86);
     const int editingHeight = proTransport ? 36 : 0;
     const int transport = toolBarHeight + panelHeight + editingHeight;
     const int footerHeight = setlistVisible ? jlimit(27, 161, footerHeightSetting) : 27;
@@ -8084,9 +8220,8 @@ void Workspace::resized() {
     workspaceBounds = {rail, title + transport, getWidth() - rail,
                        std::max(1, getHeight() - title - transport - bottom)};
     // The master is independent of track mixer visibility, as in the Mac transport.
-    masterVolume.setBounds(proTransport ? 54 : 10, proTransport ? proMasterFaderY : 54,
-                           mainStripWidth - (proTransport ? 56 : 12), 20);
-    if (masterPeakReadout) masterPeakReadout->setBounds(mainStripWidth - 47, proTransport ? proMasterFaderY - 12 : 41, 43, 12);
+    masterVolume.setBounds(proTransport ? 84 : 10, proTransport ? proMasterFaderY : 54,
+                           mainStripWidth - (proTransport ? 86 : 12), 20);
     controls["masterMono"]->setBounds(10, 14, 49, 20);
     controls["masterPatch"]->setBounds(63, 14, 40, 20);
     controls["masterFX"]->setBounds(107, 14, 26, 20);
@@ -8234,18 +8369,12 @@ void Workspace::resized() {
     transportTime.setBounds(navX + 4, titleY, std::max(1, status.getX() + 282 - navX - 10), 27);
 
     const int masterY = panelY - (proTransport ? 7 : 0);
-    controls["masterFX"]->setVisible(!proTransport);
-    if (proTransport) {
-        controls["masterMono"]->setTopLeftPosition(43, 14);
-        controls["masterPatch"]->setTopLeftPosition(96, 14);
-        constexpr int soloX = mainStripWidth - 28, muteX = soloX - 30;
-        masterPan.setTopLeftPosition(muteX - 26, 13);
-        controls["masterMute"]->setTopLeftPosition(muteX, 14);
-        controls["masterSolo"]->setTopLeftPosition(soloX, 14);
-    }
+    for (auto id : {"masterMono", "masterPatch", "masterFX", "masterMute", "masterSolo"})
+        controls[id]->setVisible(!proTransport);
+    masterPan.setVisible(!proTransport);
     for (auto id : {"masterMono", "masterPatch", "masterFX", "masterMute", "masterSolo"})
         controls[id]->setTopLeftPosition(masterX + controls[id]->getX(), masterY + controls[id]->getY());
-    for (Component *component : std::initializer_list<Component *>{&masterVolume, &masterPan, masterPeakReadout.get()})
+    for (Component *component : std::initializer_list<Component *>{&masterVolume, &masterPan})
         if (component) component->setTopLeftPosition(masterX + component->getX(), masterY + component->getY());
     for (auto id : playback) controls[id]->setVisible(!proTransport);
     for (auto id : proPlayback) controls[id]->setVisible(proTransport);
@@ -8277,8 +8406,8 @@ void Workspace::resized() {
         proPlaybackBounds = {};
         proTimeBounds = {};
     }
-    transportResourceBounds = {status.getRight() - 138, titleY + (proTransport ? 25 : 2), 130, 24};
-    layoutTransportSongTitle();
+    if (!proTransport)
+        transportResourceBounds = {status.getRight() - 138, titleY + 2, 130, 24};
     for (auto id : navigation) {
         auto *control = controls[id];
         if (!proTransport) control->getProperties().set("iconSize",14.f);
@@ -8296,7 +8425,6 @@ void Workspace::resized() {
     controls["railTeleprompt2"]->setVisible(false);
     if (proTransport) {
         controls["menu"]->setBounds(masterX + 10, masterY + 13, 29, 22);
-        stageTimer->setBounds(proTimeBounds.getX(), titleY + 25, timerWidth, toolbarButtonHeight);
         controls["audioStatus"]->setBounds(settingsX - 6 - audioTextWidth, titleY, audioTextWidth, toolbarButtonHeight);
         controls["settings"]->getProperties().set("fontSize", toolbarFontSize);
         controls["settings"]->setBounds(settingsX, titleY, settingsWidth, toolbarButtonHeight);
@@ -8340,21 +8468,36 @@ void Workspace::resized() {
         controls["settings"]->getProperties().set("fontSize", toolbarFontSize);
         controls["settings"]->setBounds(settingsX, toolbarY, settingsWidth, toolbarButtonHeight);
     }
+    layoutTransportSongTitle();
     for (auto id : {"zoomOut", "zoomIn"}) controls[id]->setVisible(false);
     dockHeights = {mixerHeight, partsHeight, dockHeight, visibleDockHeight, previewHeight};
     layoutWorkspaceColumns(false);
     syncNativeTransport();
+    if (saveIndicator) saveIndicator->setBounds(transportProgressBounds().getSmallestIntegerContainer());
 }
 
 void Workspace::layoutTransportSongTitle() {
     const auto bounds = transportDisplayBounds;
     if (bounds.isEmpty()) return;
-    const int inset = std::min((bounds.getWidth() - 1) / 2, 282);
-    const int centeredWidth = std::max(1, bounds.getWidth() - 2 * inset);
-    const int textWidth = (int)std::ceil(GlyphArrangement::getStringWidth(songDisplay.getFont(), songDisplay.getText())) + 8;
-    const int maximum = std::max(1,transportResourceBounds.getX()-bounds.getX()-inset-8);
-    const int width = proTransport && textWidth > centeredWidth ? maximum : std::min(centeredWidth,maximum);
-    songDisplay.setBounds(bounds.getX() + inset, bounds.getY() + 4, width, 27);
+    songDisplay.setJustificationType(proTransport ? Justification::centredLeft : Justification::centred);
+    if (proTransport) {
+        const auto audio = controls.at("audioStatus")->getBounds();
+        const int left = proTimeBounds.getRight() + 4;
+        const int end = audio.getX() - 10;
+        const int available = std::max(0, end - left);
+        const int timerWidth = std::min(92, available);
+        const int timerSpace = stageTimer->isVisible() ? timerWidth + 6 : 0;
+        const int titleSpace = jlimit(56, 150, available / 4);
+        const int metersWidth = jlimit(0, 256, available - titleSpace - timerSpace);
+        transportResourceBounds = {end - metersWidth, audio.getCentreY() - 6, metersWidth, 12};
+        stageTimer->setBounds(transportResourceBounds.getX() - timerWidth - 6, audio.getY(), timerWidth, audio.getHeight());
+        const int titleRight = transportResourceBounds.getX() - timerSpace;
+        songDisplay.setBounds(left, proTimeBounds.getY(), std::max(0, titleRight - left - 4), proTimeBounds.getHeight());
+    } else {
+        const int inset = std::min((bounds.getWidth() - 1) / 2, 282);
+        const int width = std::max(1, std::min(bounds.getWidth() - 2 * inset, transportResourceBounds.getX() - bounds.getX() - inset - 8));
+        songDisplay.setBounds(bounds.getX() + inset, bounds.getY() + 4, width, 27);
+    }
 }
 
 void Workspace::showTransportTitleMenu(Point<int> point) {
@@ -8695,7 +8838,7 @@ const ItemLanes &Workspace::itemLanes(int index) const {
     return itemLayouts.at((size_t)index);
 }
 int Workspace::minimumTrackHeight() const {
-    int minimum = theme::trackMixerMinHeight;
+    int minimum = regularTrackMinimum;
     if (const auto *song = session.song()) {
         for (const auto &t : song->tracks) if (allowsCompactTrackHeight(t))
             minimum = std::min(minimum, int(compactTrackHeight));
@@ -8880,53 +9023,38 @@ void Workspace::rebuild() {
 }
 namespace {
 class ProjectSaveIndicator final : public Component {
-    String caption, detail;
     double fraction = -1;
 public:
     ProjectSaveIndicator() {
         setComponentID("project-save-progress");
         setInterceptsMouseClicks(false, false);
-        setAlwaysOnTop(true);
     }
-    void update(const Session::SaveProgress &state) {
+    void update(const Session::SaveProgress& state) {
         using Phase = Session::SaveProgress::Phase;
         const auto title = localization::translate(state.phase == Phase::copying ? "Copying media…"
             : state.phase == Phase::writing ? "Writing project…" : "Saving project…");
-        auto next = state.filename;
-        if (state.phase == Phase::copying)
-            next = String(state.fileIndex) + " / " + String(state.fileCount) + "   " + next;
-        const auto amount = state.phase == Phase::preparing ? -1. : state.fraction;
-        if (caption == title && detail == next && fraction == amount && amount >= 0) return;
-        caption = title; detail = next; fraction = amount;
-        setTitle(caption); setDescription(detail);
-        repaint();
+        const auto detail = state.phase == Phase::copying
+            ? String(state.fileIndex) + " / " + String(state.fileCount) + "   " + state.filename : state.filename;
+        if (getTitle() != title) setTitle(title);
+        if (getDescription() != detail) setDescription(detail);
+        const double amount = state.phase == Phase::preparing ? -1. : state.fraction;
+        if (fraction != amount || amount < 0) { fraction = amount; repaint(); }
     }
-    void paint(Graphics &g) override {
-        auto area = getLocalBounds().toFloat().reduced(1);
-        g.setColour(theme::panel); g.fillRoundedRectangle(area, 7);
-        g.setColour(theme::secondary); g.drawRoundedRectangle(area, 7, 1);
-        auto content = getLocalBounds().reduced(12, 7);
-        auto titleRow = content.removeFromTop(20);
-        g.setFont(theme::font(13, true)); g.setColour(Colours::white);
-        if (fraction >= 0) g.drawText(String(int(fraction * 100)) + "%", titleRow.removeFromRight(48), Justification::centredRight);
-        g.drawText(caption, titleRow, Justification::centredLeft);
-        theme::progressBar(g, content.removeFromTop(12).toFloat(), fraction);
-        g.setFont(theme::font(12)); g.setColour(theme::secondary);
-        g.drawText(detail, content, Justification::centredLeft, true);
+    void paint(Graphics& g) override {
+        const auto rail = getLocalBounds().toFloat().withHeight(3.2f);
+        theme::progressBar(g, rail, fraction);
     }
 };
 }
 void Workspace::refreshSaveIndicator() {
     const auto progress = session.saveProgress();
-    if (!progress) { saveIndicator.reset(); return; }
+    if (!progress) { saveIndicator.reset(); repaint(transportProgressBounds().getSmallestIntegerContainer()); return; }
     if (!saveIndicator) {
         saveIndicator = std::make_unique<ProjectSaveIndicator>();
         addAndMakeVisible(*saveIndicator);
     }
-    auto area = getLocalBounds().reduced(12);
-    area.removeFromBottom(footerBounds.getHeight());
-    saveIndicator->setBounds(area.removeFromBottom(68).removeFromRight(std::min(350, area.getWidth())));
-    static_cast<ProjectSaveIndicator &>(*saveIndicator).update(*progress);
+    saveIndicator->setBounds(transportProgressBounds().getSmallestIntegerContainer());
+    static_cast<ProjectSaveIndicator&>(*saveIndicator).update(*progress);
 }
 void Workspace::updateState() {
     if (layoutActive && (session.isSaving() || saveIndicator)) refreshSaveIndicator();
@@ -8950,7 +9078,9 @@ void Workspace::updateState() {
             if (selectedTracks.empty() && !selectedTrack.empty()) exportPanel->setMixerTracks({selectedTrack});
             else exportPanel->setMixerTracks(selectedTracks);
         }
+    const bool timerWasVisible = stageTimer->isVisible();
     stageTimer->refresh();
+    if (timerWasVisible != stageTimer->isVisible()) layoutTransportSongTitle();
     if (fadeoutOverlay) fadeoutOverlay->update();
     const bool loopMixerActive = session.transport().multiLoop.has_value();
     if (session.transportFadeoutActive() || lastFadeoutActive || loopMixerActive || lastLoopMixerActive)
@@ -9233,7 +9363,6 @@ void Workspace::timerCallback() {
         masterMuteBlinkPhase = mutePhase;
         repaint(transportBounds);
     }
-    if (masterPeakReadout) masterPeakReadout->refresh();
     masterVolume.setMeterLevels(session.audio.meterLevels());
     const auto visibleTracks = tracksViewport.getViewArea();
     if (tracksViewport.isShowing())
@@ -9696,13 +9825,15 @@ void Workspace::mouseWheelMove(const MouseEvent &event, const MouseWheelDetails 
         if (event.mods.isCtrlDown()) {
             tracksViewport.cancelWheel();
             timeline->adjustTrackHeight(details.deltaY);
+        } else if (event.mods.isAltDown() && timeline->adjustSelectedTrackHeights(details)) {
+            return;
         } else {
             tracksViewport.scrollByWheel(details);
         }
     }
 }
 void Workspace::prompt(const String &title, const String &label, const String &initial,
-                       std::function<void(String)> done) {
+                       std::function<void(String)> done, bool selectInitialText) {
     auto *dialog = new AlertWindow(title, label, MessageBoxIconType::NoIcon, this);
     dialog->addTextEditor("value", initial);
     dialog->addButton("Salvar", 1, KeyPress(KeyPress::returnKey));
@@ -9715,6 +9846,10 @@ void Workspace::prompt(const String &title, const String &label, const String &i
                                 }
                             }),
                             true);
+    if (selectInitialText) {
+        Component::SafePointer<TextEditor> field(dialog->getTextEditor("value"));
+        MessageManager::callAsync([field] { if (field) { field->grabKeyboardFocus(); field->selectAll(); } });
+    }
 }
 void Workspace::confirmTrackDeletion(const std::set<ID> &ids, std::function<void()> remove) {
     if (!tracksContainItems(session.project(), ids)) { remove(); return; }
@@ -10775,11 +10910,55 @@ void Workspace::detectRegions(std::set<ID> ids) {
 void Workspace::editMultiLoops(ID id) {
     ModalSheet::open(*this, "Multiloop Manager", std::make_unique<MultiLoopsPanel>(session,id,[safe=SafePointer<Workspace>(this)](String message){if(safe)safe->showError(message);}),760,540);
 }
+class AdjustRegionProgress final : public Component, private Timer {
+    Session& session;double fraction=0;ProgressBar bar{fraction};Label current;
+    TextButton cancel{localization::translate("Cancel")};
+    void timerCallback() override { fraction=session.importProgress;current.setText(session.message,dontSendNotification); }
+public:
+    explicit AdjustRegionProgress(Session& s):session(s) {
+        bar.setPercentageDisplay(true);addAndMakeVisible(bar);addAndMakeVisible(current);addAndMakeVisible(cancel);
+        cancel.onClick=[this]{session.cancelExport();cancel.setEnabled(false);};startTimerHz(15);
+    }
+    void resized() override {auto area=getLocalBounds().reduced(16);current.setBounds(area.removeFromTop(24));bar.setBounds(area.removeFromTop(18));cancel.setBounds(area.removeFromBottom(26).removeFromRight(84));}
+};
+void Workspace::requestAdjustBPM(ID id) {
+    if(!session.song())return;
+    const auto& song=*session.song();
+    const auto it=std::find_if(song.parts.begin(),song.parts.end(),[&](const auto& p){return p.id==id;});
+    if(it==song.parts.end())return;
+    const auto* tempo=jaras::tempoPlayback::active(song,it->startTime);
+    const double initial=tempo?*tempo->tempoBPM:song.bpm;
+    try{jaras::regionTempo::Plan check(song,*it,initial);}catch(const std::exception& e){showError(localization::translate(String::fromUTF8(e.what())));return;}
+    auto safe=SafePointer<Workspace>(this);
+    confirm("Adjust BPM","Render all audio items in this region at a fixed BPM? The following songs will move together.",
+        [safe,id,projectID=session.project().id,songID=song.id,initial]{
+            if(!safe)return;
+            safe->prompt("Adjust BPM",localization::translate("Target BPM"),String(initial,3).trimCharactersAtEnd("0").trimCharactersAtEnd("."),
+                [safe,id,projectID,songID](String textValue){
+                    if(!safe||safe->session.project().id!=projectID||!safe->session.song()||safe->session.song()->id!=songID)return;
+                    auto value=textValue.trim().replaceCharacter(',','.');const double bpm=value.getDoubleValue();
+                    if(!value.containsOnly("0123456789.") || value.indexOfChar('.')!=value.lastIndexOfChar('.') || !std::isfinite(bpm) || bpm<60 || bpm>300){
+                        safe->showError(localization::translate("Enter a BPM between 60 and 300."));return;
+                    }
+                    safe->perform([&]{
+                        auto progress=std::make_unique<AdjustRegionProgress>(safe->session);
+                        SafePointer<AdjustRegionProgress> view(progress.get());
+                        safe->session.adjustRegionBPM(id,bpm,[safe,view](String error){
+                            if(view){ModalSheet::blockDismiss(*view,false);ModalSheet::dismiss(*view);}
+                            if(safe && error.isNotEmpty())safe->showError(localization::translate(error));
+                        });
+                        ModalSheet::open(*safe,"Adjust BPM",std::move(progress),380,130);
+                        if(view)ModalSheet::blockDismiss(*view,true);
+                    });
+                }, true);
+        });
+}
 void Workspace::showRegionMenu(ID id, Point<int> point, std::set<ID> selection) {
     if (!session.song()) return;
     const bool unified = regionEditing::hasChildren(*session.song(),id);
     PopupMenu menu;
     menu.addItem(1, localization::translate(String::fromUTF8("Editar região"))); menu.addItem(2, localization::translate(String::fromUTF8("Detectar BPM…")));
+    menu.addItem(8,"Adjust BPM");
     if (regionEditing::overlapping(*session.song(),id).size()>1) menu.addItem(3,localization::translate("Unificar"));
     if (unified) menu.addItem(4,localization::translate("Desunificar"));
     menu.addItem(5,localization::translate(String::fromUTF8("Exportar áudio"))); menu.addItem(6,localization::translate(String::fromUTF8("Excluir região")));
@@ -10791,6 +10970,7 @@ void Workspace::showRegionMenu(ID id, Point<int> point, std::set<ID> selection) 
         if(!safe||!safe->session.song())return;
         if(action==1)safe->editRegion(id);
         if(action==2)safe->detectRegions({id});
+        if(action==8)safe->requestAdjustBPM(id);
         if(action==3){
             const auto roots=regionEditing::overlapping(*safe->session.song(),id);
             const bool existing=std::any_of(roots.begin(),roots.end(),[&](const auto &part){return regionEditing::hasChildren(*safe->session.song(),part.id);});
@@ -11056,10 +11236,10 @@ void Workspace::specialTrackAction(ID id,const String &action) {
                 try {
                     if(safe->session.busy)throw std::runtime_error("Aguarde a operação atual terminar.");
                     if(safe->session.project().id!=projectID||!safe->session.song()||safe->session.song()->id!=songID)
-                        throw std::runtime_error("O projeto mudou. Abra Letra Completa novamente.");
+                        throw std::runtime_error("O projeto mudou. Abra Add Lyrics novamente.");
                     const auto current=jaras::fullLyrics::range(*safe->session.song(),(range.start+range.end)/2);
                     if(current.region!=range.region||current.start!=range.start||current.end!=range.end)
-                        throw std::runtime_error("A música mudou. Abra Letra Completa novamente.");
+                        throw std::runtime_error("A música mudou. Abra Add Lyrics novamente.");
                     auto items = jaras::fullLyrics::items(range, utf8(ItemTextColors::plain(draft)), [] { return uuid(); });
                     const auto formatted = ItemTextColors::stanzas(draft);
                     if (formatted.size() == items.size())
@@ -11077,7 +11257,7 @@ void Workspace::specialTrackAction(ID id,const String &action) {
                     return {};
                 } catch(const std::exception &error) {return String::fromUTF8(error.what());}
             };
-            ModalSheet::open(*this,localization::translate("Full lyrics"),std::make_unique<FullLyricsPanel>(text(range.name),save),620,460);
+            ModalSheet::open(*this,"Add Lyrics",std::make_unique<FullLyricsPanel>(text(range.name),save),620,460);
         });
         return;
     }
@@ -11188,6 +11368,7 @@ void Workspace::showTrackMenu(ID id, Point<int> point, bool trackMixerMenu, bool
     if (standard && trackEditing::linkable(*song,targets)) menu.addItem(8,localization::translate("Link tracks"));
     if (track.stereoLinkPartner) menu.addItem(9,localization::translate("Unlink tracks"));
     menu.addItem(10,localization::translate("Set Track Color"));
+    menu.addItem(18,localization::translate("Set Random Color"));
     menu.addItem(13,localization::translate("Set Track Icon"));
     if (standard && track.role.id!="vinhetas") menu.addItem(12, targets.size() > 1 ? localization::translate("Duplicar pistas") : localization::translate("Duplicar pista"));
     PopupMenu organization;
@@ -11234,6 +11415,7 @@ void Workspace::showTrackMenu(ID id, Point<int> point, bool trackMixerMenu, bool
             if(choice==3)w.openFX(id);
             if(choice==4)w.addMIDIItem(id,w.session.transport().editPosition);
             if(choice==10)w.editTrack(id,targets);
+            if(choice==18)w.perform([&] { w.session.randomizeTrackColors(targets); });
             if(choice==13)w.editTrackIcon(id);
             if (choice >= 15 && choice <= 17) w.perform([&] {
                 const std::optional<bool> mode = choice == 15 ? std::nullopt : std::optional<bool>(choice == 16);
@@ -11281,6 +11463,7 @@ void Workspace::showTrackMenu(ID id, Point<int> point, bool trackMixerMenu, bool
 void Workspace::showClipMenu(ID id, Point<int> point) {
     PopupMenu menu;
     bool textItem = false, audioItem = false, midiItem = false, muted = false;
+    bool exportableItem = false;
     bool projection = false, hasFX = false, generatedClick = false, doubledClick = false;
     ID ownerID;
     bool fileItem = false, separable = false, durationItem = false, rateItem = false;
@@ -11298,6 +11481,7 @@ void Workspace::showClipMenu(ID id, Point<int> point) {
                         durationItem=!File::getCurrentWorkingDirectory().getChildFile(text(source->path)).hasFileExtension("png;jpg;jpeg;gif;heic;heif;tif;tiff;bmp;webp;avif");
                     textItem = clip.text && !clip.audioFile;
                     audioItem = jaras::fixedTrackName(track.role).empty();
+                    exportableItem = audioExport::canExportItem(track, clip);
                     midiItem = clip.midi.has_value();
                     muted = clip.muted;
                     projection = track.role.id == "video" && clip.audioFile.has_value();
@@ -11332,7 +11516,7 @@ void Workspace::showClipMenu(ID id, Point<int> point) {
         menu.addSeparator();menu.addItem(42, "Exportar MIDI", !clipSelected(id) || selectedClips.size() <= 1);
     } else {
         if(audioItem || projection) {
-            menu.addItem(9,localization::translate(String::fromUTF8("Criar região do item")));menu.addItem(13,"Re-render");menu.addItem(14,localization::translate("Unificar itens"));menu.addItem(10,"Tuner");
+            menu.addItem(9,localization::translate(String::fromUTF8("Criar região do item")));menu.addItem(13,"Re-render");menu.addItem(14,localization::translate("Unificar itens"));menu.addItem(10,"Tuner", session.tunerInputAllowed());
             if(separable&&(!clipSelected(id)||selectedClips.size()<=1)) menu.addItem(16,"Separation audio");
             menu.addItem(11,localization::translate(String::fromUTF8("Normalizar…")));
             menu.addItem(44,localization::translate("Reset rate"));
@@ -11340,7 +11524,7 @@ void Workspace::showClipMenu(ID id, Point<int> point) {
             if(audioItem){menu.addSeparator();menu.addItem(24,localization::translate("Inverter - LR"));menu.addItem(21,localization::translate("Converter Mono - L"));menu.addItem(22,localization::translate("Converter Mono - R"));menu.addItem(23,localization::translate("Converter Mono L-R"));menu.addItem(20,localization::translate(String::fromUTF8("Converter Estéreo")));}
         }
         if(audioItem){menu.addSeparator();menu.addItem(2,muted?localization::translate("Desmutar itens"):localization::translate("Mutar itens"));}
-        menu.addSeparator();menu.addItem(12,localization::translate("Exportar"),audioItem && !textItem);
+        menu.addSeparator();menu.addItem(12,localization::translate("Export Audio"),exportableItem);
     }
     menu.showMenuAsync(PopupMenu::Options().withTargetScreenArea({point.x, point.y, 1, 1}),
                        clipMenuAction(id, ownerID));
@@ -11561,8 +11745,8 @@ std::function<void(int)> Workspace::clipMenuAction(ID id, ID ownerID) {
                 if (action == 12) {
                     if(w.session.project().id!=projectID || !w.session.song() || w.session.song()->id!=songID)return;
                     std::set<ID> audioTargets;
-                    for(const auto &track:w.session.song()->tracks)if(jaras::fixedTrackName(track.role).empty())
-                        for(const auto &clip:track.clips)if(targets.count(clip.id) && !clip.midi && (clip.audioFile || track.audioFile))
+                    for(const auto &track:w.session.song()->tracks)
+                        for(const auto &clip:track.clips)if(targets.count(clip.id) && audioExport::canExportItem(track,clip))
                             audioTargets.insert(clip.id);
                     if(audioTargets.empty())return;
                     ModalSheet::open(w, "Exportar",
@@ -12209,9 +12393,18 @@ void Workspace::openAutomation(ID id) {
         850, 560);
 }
 void Workspace::openStageConfig(int index) {
-    openFloating(String::fromUTF8("Configurações do teleprompter"),
-                 std::make_unique<StageConfigPanel>(stage, index),
-                 760, 700);
+    const auto name = String::fromUTF8("Configurações do teleprompter");
+    if (auto found = floatingWindows.find(name); found != floatingWindows.end()) {
+        auto &window = *found->second;
+        if (auto *panel = dynamic_cast<StageConfigPanel *>(window.getContentComponent())) {
+            panel->selectChannel(index);
+            window.setMinimised(false);
+            window.setVisible(true);
+            window.toFront(true);
+            return;
+        }
+    }
+    openFloating(name, std::make_unique<StageConfigPanel>(stage, index), 760, 700);
 }
 void Workspace::openTimer(bool settings) {
     if (!settings) {

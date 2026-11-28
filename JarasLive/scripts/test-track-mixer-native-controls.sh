@@ -17,6 +17,7 @@ if [[ "${1:-}" == "--build-only" ]]; then
     cp "$test_dir/test" "${2:?Specify the output binary path}"
     exit 0
 fi
+"$test_dir/test" --compact-button-height
 "$test_dir/test" --automatic-height
 "$test_dir/test" --mode-transition
 "$test_dir/test" --geometry

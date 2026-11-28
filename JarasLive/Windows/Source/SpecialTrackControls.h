@@ -8,7 +8,7 @@ class SpecialTrackControls final : public Component, private Timer {
     uint64 displayedProgramChange=0;
     Session &session;ID id;std::function<void(ID,String)> action;
     TextButton insert{"Insert"},media{localization::translate(String::fromUTF8("Adicionar mídia"))},addText{localization::translate(String::fromUTF8("Adicionar texto"))},settings,patch{"Patch"},copy{"Copy"},scan{"Scan"},mtc{"MTC"},ltc{"LTC"};
-    TextButton fullLyrics{localization::translate("Full lyrics")};
+    TextButton fullLyrics{"Add Lyrics"};
     const jaras::Track *track() const {if(auto *s=session.song())for(const auto &t:s->tracks)if(t.id==id)return &t;return nullptr;}
   public:
     SpecialTrackControls(Session &s,ID target,std::function<void(ID,String)> callback):session(s),id(std::move(target)),action(std::move(callback)) {
@@ -54,6 +54,7 @@ class SpecialTrackControls final : public Component, private Timer {
         for(auto *b:{&insert,&media,&addText,&settings,&patch,&copy,&scan,&mtc,&ltc})b->setVisible(false);
         const auto *t=track();if(!t)return;const auto &role=t->role.id;
         if (jaras::isTeleprompterRole(t->role)) {
+            addText.setButtonText("Add Text");
             const int width = std::max(0, getWidth() - 6);
             const int patchWidth = std::min(40, width);
             const int textWidth = (width - patchWidth) / 2;
@@ -66,7 +67,7 @@ class SpecialTrackControls final : public Component, private Timer {
         }
         std::vector<TextButton*> buttons;
         if(role=="programChange")buttons={&patch,&copy,&scan};else if(role=="generatedClick")buttons=mixerMetronomeInsertOnly?std::vector<TextButton*>{&insert}:std::vector<TextButton*>{&patch,&insert};else if(role=="timecode")buttons={&settings,&mtc,&ltc};else if(role=="video")buttons={&media};
-        else if(role=="chords")buttons={&addText};
+        else if(role=="chords"){addText.setButtonText(localization::translate("Add text"));buttons={&addText};}
         if(getWidth()<100){int y=0;for(auto *b:buttons){b->setBounds(0,y,getWidth(),21);b->setVisible(true);y+=24;}}
         else{int x=0;for(auto *b:buttons){int width=(b==&patch||b==&copy||b==&scan)?50:b==&settings?30:(b==&mtc||b==&ltc?38:role=="generatedClick"?47:102);b->setBounds(x,0,width,std::min(24,getHeight()));b->setVisible(true);x+=width+3;}}
     }

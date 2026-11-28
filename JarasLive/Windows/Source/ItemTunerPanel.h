@@ -68,12 +68,13 @@ class ItemTunerPanel final : public Component, private Timer {
             const auto found=clips.find(row->id);const bool exists=found!=clips.end();
             if(exists){row->pitch=found->second->pitchSemitones.value_or(0);row->title.setText(text(found->second->name),dontSendNotification);}
             row->value.setText((row->pitch>=0?"+":"")+String(row->pitch,2).trimCharactersAtEnd("0").trimCharactersAtEnd(".")+" st",dontSendNotification);
-            const bool editable=exists&&!session.busy&&!jaras::projectSync::readOnly();
+            const bool editable=exists&&session.tunerInputAllowed()&&!session.busy&&!jaras::projectSync::readOnly();
             row->minus.setEnabled(editable&&row->pitch>-12);row->plus.setEnabled(editable&&row->pitch<12);
         }
     }
     void timerCallback() override { refresh(); }
     void change(const ID &id,int step) {
+        if (!session.tunerInputAllowed()) return;
         try {
             refresh();
             const bool together=ModifierKeys::getCurrentModifiersRealtime().isShiftDown();

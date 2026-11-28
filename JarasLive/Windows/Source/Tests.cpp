@@ -733,6 +733,46 @@ int runTests(const File &directory) {
     });
     transportFadeoutTests::registerTests(directory, test);
     test("Multiloop audio applies grouped M/S, Auto Fader, release, bypass and fader feedback", [&] { multiLoopPlaybackTests::playback(directory); });
+    test("Adjust BPM renders a fixed tempo and shifts the following song as one undo", [&] {
+        auto folder=directory.getChildFile("fixed-tempo");folder.createDirectory();
+        auto wav=folder.getChildFile("pulse.wav");auto output=wav.createOutputStream();expect(bool(output),"Cannot create PCM fixture");
+        WavAudioFormat format;
+        std::unique_ptr<AudioFormatWriter> writer(format.createWriterFor(output.get(),48000,2,24,{},0));
+        expect(bool(writer),"Cannot encode PCM fixture");output.release();
+        AudioBuffer<float> data(2,96000);
+        for(int c=0;c<2;++c)for(int n=0;n<96000;++n)data.setSample(c,n,.2f*std::sin(n*2*MathConstants<double>::pi*440/48000));
+        expect(writer->writeFromAudioSampleBuffer(data,0,96000),"Cannot write PCM fixture");writer.reset();
+        auto p=floatingControlTests::fixture();auto& s=p.songs[0];s.tracks.resize(1);s.parts[0].endTime=2;s.parts[1].startTime=4;s.parts[1].endTime=6;
+        jaras::TimelineMarker a,b;a.id=uuid();b.id=uuid();a.name=b.name="TEMPO";a.position=0;b.position=1;a.tempoBPM=90.5;b.tempoBPM=150.;
+        a.tempoPlaybackRate=1;b.tempoPlaybackRate=1;s.markers=std::vector<jaras::TimelineMarker>{a,b};
+        jaras::AudioClip c;c.id=uuid();c.name="Original";c.duration=2;c.audioFile=jaras::AudioFile{"pulse.wav",{}};s.tracks[0].clips={c};
+        jaras::Track keys;keys.id=uuid();keys.name="Keys";keys.role.id="other";
+        jaras::AudioClip loop;loop.id=uuid();loop.name="Keys Loop";loop.duration=2;
+        loop.loopStart=0;loop.loopLength=1;loop.midi=jaras::MIDIItem{};
+        loop.midi->notes.push_back({uuid(),.25,.5,61,79,1});keys.clips={loop};s.tracks.push_back(keys);
+        Session session;session.inspection=true;session.audio.prepareOffline(48000);session.mediaDirectory=folder;
+        session.document=folder.getChildFile("fixture.jl");session.restoreSnapshot(ProjectCodec::encode(p));session.audio.setOffline(true);
+        bool done=false;String error;session.adjustRegionBPM(s.parts[0].id,120,[&](String result){error=result;done=true;});
+        const auto deadline=Time::getMillisecondCounterHiRes()+30000;
+        while(!done && Time::getMillisecondCounterHiRes()<deadline)floatingControlTests::pump();
+        if(error.isNotEmpty())throw std::runtime_error(utf8(error));expect(done,"Render did not finish");
+        const double duration=(90.5+150.)/120.;const auto* after=session.song();const auto& clip=after->tracks[0].clips[0];
+        expect(std::abs(clip.duration-duration)<1e-8 && std::abs(after->parts[1].startTime-duration-2)<1e-8,"Lost beats or gap");
+        const auto& keysAfter=after->tracks[1].clips[0];
+        const auto& notes=keysAfter.midi->notes;
+        expect(!keysAfter.loopLength && notes.size()==2 && notes[0].id!=notes[1].id &&
+               notes[0].id==loop.midi->notes.front().id && notes[1].velocity==79 &&
+               std::abs(notes[0].start-.25*90.5/120)<1e-8 &&
+               std::abs(notes[1].start-2*(90.5+.125*150.)/120.)<1e-8,
+               "Looped MIDI notes lost their beat positions or source identity");
+        auto file=folder.getChildFile(text(clip.audioFile->path));expect(file.getParentDirectory()==folder.getChildFile("Stems") && file.existsAsFile(),"Adjusted audio not written to Stems");
+        std::unique_ptr<AudioFormatReader> read(format.createReaderFor(file.createInputStream().release(),true));expect(bool(read),"Cannot reopen adjusted WAV");
+        expect(std::abs(read->lengthInSamples-duration*48000.)<1.1,"Wrong number of samples");AudioBuffer<float> tone(1,4800);
+        read->read(&tone,0,4800,12000,true,false);int cycles=0;for(int i=1;i<4800;++i)if(tone.getSample(0,i-1)<=0&&tone.getSample(0,i)>0)++cycles;
+        expect(std::abs(cycles-44)<=2,"Stretch changed the pitch or produced silence");
+        session.undo();expect(session.song()->tracks[0].clips[0].audioFile->path=="pulse.wav" && session.song()->parts[1].startTime==4,"Undo did not restore original project");
+    });
+    test("Tuner MIDI and keyboard bindings lock during Play and unlock after Stop", [&] { WorkspaceLayoutTests::tunerInputs(directory); });
     addActionBindingsTests(directory, test);
     nativeWindowBoundsTests::registerTests(test);
     addUIFeatureTests(directory, test);
@@ -2203,11 +2243,14 @@ int runTests(const File &directory) {
         for(int block:{64,128,480,1024}) {
             float level=1;const double elapsed=double(block)/48000;const int count=(int)(.1/elapsed);
             for(int i=0;i<count;++i)level=meterDisplay::envelope(level,0,elapsed);
-            expect(std::abs(20*std::log10(level)+40*count*elapsed)<.001,"Fall must follow elapsed audio time, not callback count");
-            for(int i=0;i<(int)(.5/elapsed);++i)level=meterDisplay::envelope(level,0,elapsed);
-            expect(level>0,"The meter should still be falling after 600 ms");
-            for(int i=0;i<(int)(.95/elapsed);++i)level=meterDisplay::envelope(level,0,elapsed);
-            expect(level==0,"The meter clears by 1.55 seconds");
+            expect(std::abs(20*std::log10(level)+20*count*elapsed)<.001,"Fall must follow elapsed audio time, not callback count");
+            const int half = (int)(1.5/elapsed), nearFloor = (int)(2.9/elapsed);
+            for(int i=count;i<half;++i)level=meterDisplay::envelope(level,0,elapsed);
+            expect(std::abs(20*std::log10(level)+20*half*elapsed)<.01,"Meter is at the midpoint of the scale after 1.5 seconds");
+            for(int i=half;i<nearFloor;++i)level=meterDisplay::envelope(level,0,elapsed);
+            expect(level>0,"The meter should still be falling after 2.9 seconds");
+            for(int i=nearFloor;i<(int)(3.1/elapsed);++i)level=meterDisplay::envelope(level,0,elapsed);
+            expect(level==0,"The meter clears after three seconds");
         }
         expect(meterDisplay::envelope(0,.8f,.01)==.8f,"Immediate attack");
         expect(meterDisplay::envelope(.001f,0,.1)==0,"Silence threshold");
@@ -2641,6 +2684,17 @@ int runTests(const File &directory) {
             }
             expect(uiFeatureTests::find(*controls,"insertMedia")->isVisible()==(track.role.id=="video"),"Only legacy video tracks expose Add media");
             if(track.role.id=="chords"||jaras::isTeleprompterRole(track.role))expect(uiFeatureTests::find(*controls,"insertText")->isVisible(),"Text track exposes Add text");
+            if (jaras::isTeleprompterRole(track.role)) {
+                auto *insert = dynamic_cast<TextButton *>(uiFeatureTests::find(*controls, "insertText"));
+                auto *lyrics = dynamic_cast<TextButton *>(uiFeatureTests::find(*controls, "fullLyrics"));
+                expect(insert && lyrics && insert->isVisible() && lyrics->isVisible(), "Both teleprompter actions are visible");
+                for (const bool useEnglish : {false, true}) {
+                    const ScopedValueSetter<bool> language(localization::english, useEnglish);
+                    localization::panel(*controls);
+                    expect(insert->getButtonText() == "Add Text" && lyrics->getButtonText() == "Add Lyrics",
+                           "Teleprompter action names stay identical in Portuguese and English");
+                }
+            }
         }
     });
     test("Video audio decoding preserves source timing and silent video metadata", [&] {
@@ -5188,6 +5242,49 @@ int runTests(const File &directory) {
         directory.getChildFile("offline-throughput.json").replaceWithText(JSON::toString(report));
         request.directory.deleteRecursively();
     });
+    test("Export Audio renders a selected movie soundtrack on a video track", [&] {
+        const auto media = directory.getNonexistentChildFile("movie-item-export", "");
+        const auto videos = media.getChildFile("Videos");
+        expect(videos.createDirectory().wasOk(), "Movie export fixture directory");
+        const auto source = File(__FILE__).getParentDirectory().getSiblingFile("Tests").getChildFile("Fixtures/tone-video.mp4");
+        expect(source.copyFileTo(videos.getChildFile("tone.mp4")), "Movie fixture copy failed");
+        auto project = projectFixture();
+        auto &song = project.songs.front();
+        song.tracks.resize(1);
+        auto &track = song.tracks.front();
+        track.role.id = "video";
+        track.name = jaras::fixedTrackName(track.role);
+        track.mute = track.solo = false;
+        track.volume = 1;
+        track.pan = 0;
+        track.audioFile.reset();
+        jaras::AudioClip clip;
+        clip.id = uuid(); clip.name = "Soundtrack"; clip.duration = 0.5;
+        clip.audioFile = jaras::AudioFile{"Videos/tone.mp4", {}};
+        track.clips = {clip};
+        for (bool pre : {true, false}) {
+            ExportRequest request;
+            request.preProcessingItems = pre;
+            request.directory = media.getChildFile(pre ? "pre" : "post");
+            request.encodings[0].rate = 48000;
+            request.jobs = audioExport::plan(project, song, 3, 0, "%stem", {}, {clip.id}, {}, {}, request.encodings[0]);
+            expect(request.jobs.size() == 1 && request.jobs.front().clip == clip.id, "Video item missing from export");
+            var diagnostics;
+            request.diagnostics = [&](var value) { diagnostics = std::move(value); };
+            std::atomic<bool> cancel{false};
+            audioExport::render(project, song, media, request, cancel, {});
+            AudioFormatManager formats; registerAudioFormats(formats);
+            std::unique_ptr<AudioFormatReader> sourceReader(formats.createReaderFor(videos.getChildFile("tone.mp4")));
+            AudioBuffer<float> sourceSamples(2, 65536);
+            expect(sourceReader && sourceReader->read(&sourceSamples, 0, 65536, 0, true, true) &&
+                   sourceSamples.getMagnitude(0, 20000) > 0.1f, "Source movie must contain audible PCM starting at frame zero");
+            std::unique_ptr<AudioFormatReader> reader(formats.createReaderFor(request.directory.getChildFile(request.jobs[0].name)));
+            expect(reader && reader->lengthInSamples == 24000 && reader->numChannels == 2, "Movie item export duration/channels");
+            AudioBuffer<float> samples(2, 24000);
+            expect(reader->read(&samples, 0, 24000, 0, true, true) && samples.getMagnitude(0, 24000) > 0.01f,
+                   "Video monitoring muted the exported item " + JSON::toString(diagnostics, true));
+        }
+    });
     test("Item Pre/Post export preserves trims and prints both item and track FX without changing the document", [&] {
         const auto media=directory.getNonexistentChildFile("item-processing","");media.createDirectory();
         WavAudioFormat wav;auto stream=media.getChildFile("source.wav").createOutputStream();
@@ -7538,6 +7635,30 @@ int runTests(const File &directory) {
             portablePackage::exportPackage(ProjectCodec::read(local),local.getParentDirectory(),root.getChildFile("Mac-Windows.ziplive"));
         }
     });
+    test("Random colors target selected tracks with one undo and redo", [&] {
+        Session session;
+        session.inspection = true;
+        auto project = floatingControlTests::fixture();
+        auto& tracks = project.songs.front().tracks;
+        tracks[0].color.reset(); tracks[1].color = 0x234567; tracks[2].color = 0x123456;
+        session.restoreSnapshot(ProjectCodec::encode(project));
+        const auto a=tracks[0].id, b=tracks[1].id;
+        const auto initial=session.song()->tracks;
+        session.randomizeTrackColors({a,b});
+        const auto assigned=session.song()->tracks;
+        expect(assigned[0].color && assigned[1].color && assigned[0].color != assigned[1].color &&
+               assigned[1].color != initial[1].color && assigned[2].color == initial[2].color,
+               "Random colors did not honor the selection");
+        session.undo();
+        expect(session.song()->tracks[0].color == initial[0].color && session.song()->tracks[1].color == initial[1].color,
+               "One undo must restore both original colors including a default");
+        session.redo();
+        expect(session.song()->tracks[0].color == assigned[0].color && session.song()->tracks[1].color == assigned[1].color,
+               "Redo must restore the same random colors");
+        session.randomizeTrackColors({a});
+        expect(session.song()->tracks[0].color != assigned[0].color && session.song()->tracks[1].color == assigned[1].color,
+               "Single-track coloring touched another track");
+    });
     test("Media cleanup deletes own backups and preserves live shared and foreign media", [&] {
         const auto root = directory.getNonexistentChildFile("media-cleanup", {}, false);
         expect(root.getChildFile("Stems").createDirectory().wasOk() &&
@@ -7582,6 +7703,29 @@ int runTests(const File &directory) {
                    !root.getChildFile("Stems/recovery.wav").exists(),
                "Owned deleted media remained in Stems");
         expect(!backupFile.exists(), "Cleanup retained obsolete project backup");
+        // A second player can retain Windows handles after the item leaves the grid.
+        // One busy source must not block unrelated cleanup or disappear from a retry.
+        const auto held = root.getChildFile("Stems/held.wav");
+        make("Stems/held.wav"); make("Stems/obsolete.wav");
+        HANDLE reader = CreateFileW(held.getFullPathName().toWideCharPointer(), GENERIC_READ,
+            FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        expect(reader != INVALID_HANDLE_VALUE, "Could not lock the cleanup fixture");
+        StringArray retained;
+        const auto count = mediaCleanup::removeDeleted(current, currentRaw, doc, {"Stems/held.wav","Stems/obsolete.wav"}, {}, {}, &retained);
+        const bool preserved = held.existsAsFile();
+        ProjectCodec::write(backupFile, ProjectCodec::encode(backup, {}));
+        const auto allLocked = mediaCleanup::removeDeleted(current, currentRaw, doc, {}, {}, {}, &retained);
+        const bool backupKept = backupFile.existsAsFile();
+        CloseHandle(reader);
+        expect(count == 1 && allLocked == 0 && preserved && backupKept && retained.size() == 1 &&
+            retained[0].endsWith("held.wav"), "Cleanup lost a locked source, its recovery backup or the retry information");
+        expect(mediaCleanup::removeDeleted(current, currentRaw, doc, {}) == 1 && !held.exists(),
+               "Unlocked source was not removed on retry");
+        make("Stems/readonly.wav");
+        const auto readOnly = root.getChildFile("Stems/readonly.wav");
+        expect(readOnly.setReadOnly(true), "Could not set imported read-only attribute");
+        expect(mediaCleanup::removeDeleted(current, currentRaw, doc, {"Stems/readonly.wav"}) == 1 && !readOnly.exists(),
+               "Read-only imported source could not be removed");
         // Cleanup also removes old backups when there are no unused grid sources.
         // Archived media shared by another backup must remain intact.
         make("backups/Media/old/take.wav");

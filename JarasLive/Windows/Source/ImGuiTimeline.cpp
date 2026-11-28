@@ -1,4 +1,5 @@
 #include "ImGuiTimeline.h"
+#include "TimelineScale.h"
 #include <imgui.h>
 #include <algorithm>
 #include <chrono>
@@ -263,7 +264,7 @@ struct ImGuiTimeline::Impl {
         return nearest;
     }
     void zoom(double next,double anchor,float screenX,float width,double duration) {
-        scale=std::clamp(next,.01*uiScale(),81920.*uiScale());
+        scale=std::clamp(next,timelineGrid::minimumPointsPerSecond*uiScale(),81920.*uiScale());
         offset=std::clamp(anchor-screenX/scale,0.,std::max(0.,duration-width/scale));
     }
     void waveform(ImDrawList& draw,const Rect& body,const J& clip,const J& track,double from,double to,const Command& command,double delta,float canvasX) {

@@ -29,7 +29,9 @@ constants = '\n'.join(line for line in theme.splitlines() if line.strip().starts
 theme = interface + '\nenum JarasTheme {\n' + constants + '\n}\n'
 pads = Path('Apple/Shared/VinhetasPanel.swift').read_text()
 transfer = pads[pads.index('enum LibrarySamplerTransfer {'):pads.index('enum PadAudioBuffer {')]
-Path(sys.argv[1]).write_text('import UniformTypeIdentifiers\n' + geometry + elastic + fx[:fx.index('enum FXModelLookup')] + text[:text.index('/// The draft')] + track_environment + '\n' + appearance + '\n' + color + '\n' + theme + transfer)
+importer = Path('Application/Project/StemProjectImporter.swift').read_text()
+media_filter = importer[importer.index('enum GridMediaFileFilter {'):importer.index('/// Runs on a worker task')]
+Path(sys.argv[1]).write_text('import UniformTypeIdentifiers\n' + media_filter + geometry + elastic + fx[:fx.index('enum FXModelLookup')] + text[:text.index('/// The draft')] + track_environment + '\n' + appearance + '\n' + color + '\n' + theme + transfer)
 
 PY
 python3 - "$test_dir/main.swift" <<'PYTEST'

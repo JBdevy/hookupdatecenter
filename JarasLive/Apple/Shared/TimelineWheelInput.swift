@@ -190,15 +190,53 @@ struct TimelineTrackHeightResponse {
     }
 }
 
+/// Publish a group of row-height changes at most once per frame. Selection
+/// and document changes finish the old input before accepting a new target.
+final class TimelineSelectedHeightMotion {
+    private var selection = Set<UUID>()
+    private var session: UUID?
+    private var points = 0.0
+    private var lastFrame = 0.0
+    private var timer: Timer?
+    private var apply: ((Double) -> Void)?
+
+    func change(points delta: Double, selection: Set<UUID>, session: UUID, apply: @escaping (Double) -> Void) {
+        guard delta.isFinite, delta != 0, !selection.isEmpty else { return }
+        if self.session != session || self.selection != selection || points * delta < 0 { flush() }
+        self.session = session
+        self.selection = selection
+        self.apply = apply
+        points += delta
+        let delay = 1.0/60 - (ProcessInfo.processInfo.systemUptime - lastFrame)
+        if delay <= 0 { flush() }
+        else if timer == nil {
+            let next = Timer(timeInterval: delay, repeats: false) { [weak self] _ in self?.flush() }
+            timer = next
+            RunLoop.main.add(next, forMode: .common)
+        }
+    }
+    func flush() {
+        timer?.invalidate(); timer = nil
+        let amount = points, update = apply
+        points = 0; apply = nil
+        guard amount != 0 else { return }
+        lastFrame = ProcessInfo.processInfo.systemUptime
+        update?(amount)
+    }
+    deinit { timer?.invalidate() }
+}
+
 /// Shift (or Command/Control) + wheel changes all row heights over the mixer.
 struct TimelineMixerHeightWheelInput: NSViewRepresentable {
     let change: (Double, Bool) -> Void
+    var changeSelected: ((Double) -> Bool)? = nil
     func makeNSView(context: Context) -> TimelineMixerHeightWheelView { TimelineMixerHeightWheelView() }
-    func updateNSView(_ view: TimelineMixerHeightWheelView, context: Context) { view.change = change }
+    func updateNSView(_ view: TimelineMixerHeightWheelView, context: Context) { view.change = change; view.changeSelected = changeSelected }
 }
 final class TimelineMixerHeightWheelView: NSView, NativeTimelineInputObserver {
     private let layoutProfile = TimelineLayoutDiagnostics.make("mixer-height-input")
     var change: ((Double, Bool) -> Void)?
+    var changeSelected: ((Double) -> Bool)?
     private var response = TimelineTrackHeightResponse()
     private var monitor: Any?
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
@@ -218,13 +256,16 @@ final class TimelineMixerHeightWheelView: NSView, NativeTimelineInputObserver {
         if event.window === window, event.phase.contains(.began) { response.reset() }
         guard event.window === window, window?.attachedSheet == nil,
               !NativeTimelineInputGate.shared.isBlocked(window),
-              !event.modifierFlags.intersection([.command, .control, .shift]).isEmpty,
+              !event.modifierFlags.intersection([.command, .control, .shift, .option]).isEmpty,
               event.momentumPhase.isEmpty, event.scrollingDeltaY != 0,
               !isHiddenOrHasHiddenAncestor,
               visibleRect.contains(convert(event.locationInWindow, from: nil)) else { return false }
         layoutProfile?.event("input-received", view: self, input: event)
         let factor = response.factor(delta: Double(event.scrollingDeltaY), timestamp: event.timestamp,
             begins: event.phase.contains(.began), precise: event.hasPreciseScrollingDeltas)
+        if event.modifierFlags.intersection([.command, .control, .shift, .option]) == .option {
+            return changeSelected?(factor) == true
+        }
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
         withTransaction(transaction) { change?(factor, !event.hasPreciseScrollingDeltas) }
@@ -378,7 +419,7 @@ final class TimelineTrackHeightResizeView: NSView, NativeTimelineInputObserver, 
     override func mouseDragged(with event: NSEvent) {
         guard acceptsInput else { cancelDrag(); return }
         guard var drag else { return }
-        let limits = TrackHeightGeometry.laneLimits(count: drag.count, allowsCompactHeight: drag.compact)
+        let limits = TrackHeightGeometry.laneLimits(count: drag.count, allowsCompactHeight: drag.compact, desktop: true)
         let travel = Double((drag.startY - event.locationInWindow.y) / max(0.01, abs(convert(NSSize(width: 1, height: 1), to: nil).height)))
         let lane = min(limits.upperBound, max(limits.lowerBound, ((Double(drag.height) + travel) / Double(drag.count)).rounded()))
         let scale = min(TrackHeightGeometry.maximumScale, max(TrackHeightGeometry.minimumScale, lane / drag.denominator))
@@ -598,6 +639,7 @@ final class TimelineWheelView: NSView, NativeTimelineInputObserver {
     var cursorX: CGFloat?
     var modelUnitWidth: Double?
     var changeZoom: ((Double, CGFloat) -> Void)?
+    var changeSelectedHeight: ((Double) -> Bool)?
     var changeTrackHeight: ((Double, Bool) -> Void)?
     private var zoomPersistenceTimer: Timer?
     private var pendingSavedZoom: Double?
@@ -692,6 +734,7 @@ final class TimelineWheelView: NSView, NativeTimelineInputObserver {
     }
     private var monitor: Any?
     private var trackpadHorizontal: Bool?
+    private var selectedHeightMomentum = false
     private var trackpadVerticalMomentum = false
     private var horizontalLimiter = HorizontalScrollLimiter()
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
@@ -771,7 +814,22 @@ final class TimelineWheelView: NSView, NativeTimelineInputObserver {
         let delta = abs(event.scrollingDeltaY) >= abs(event.scrollingDeltaX) ? event.scrollingDeltaY : event.scrollingDeltaX
         let shifting = event.modifierFlags.contains(.shift)
         let scrollingVertically = event.modifierFlags.contains(.option)
-        if event.momentumPhase.isEmpty && event.phase.contains(.began) { trackpadVerticalMomentum = false }
+        if event.momentumPhase.isEmpty && event.phase.contains(.began) { trackpadVerticalMomentum = false; selectedHeightMomentum = false }
+        if !event.momentumPhase.isEmpty, selectedHeightMomentum {
+            if event.momentumPhase.contains(.ended) { selectedHeightMomentum = false }
+            return true
+        }
+        let optionOnly = event.modifierFlags.intersection([.command,.control,.option,.shift]) == .option
+        if optionOnly, event.momentumPhase.isEmpty, event.scrollingDeltaY != 0, let changeSelectedHeight {
+            let factor = heightResponse.factor(delta: Double(event.scrollingDeltaY), timestamp: event.timestamp,
+                                              begins: event.phase.contains(.began), precise: event.hasPreciseScrollingDeltas)
+            if changeSelectedHeight(factor) {
+                stopZoomUpdates()
+                selectedHeightMomentum = event.hasPreciseScrollingDeltas
+                trackpadVerticalMomentum = false
+                return true
+            }
+        }
         if scrollingVertically && event.hasPreciseScrollingDeltas && !event.phase.isEmpty { trackpadVerticalMomentum = true }
         defer {
             if event.momentumPhase.contains(.ended) || event.phase.contains(.cancelled) { trackpadVerticalMomentum = false }

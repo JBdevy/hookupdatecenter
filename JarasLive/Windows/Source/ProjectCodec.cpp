@@ -1,4 +1,5 @@
 #include "ProjectCodec.h"
+#include "LinkedStemMedia.h"
 #include "ProjectBackups.h"
 #include "MediaPath.h"
 #include "FXSchema.h"
@@ -560,6 +561,9 @@ void ProjectCodec::writeDocument(const File &file, const var &input, bool saving
     record("backupRetentionMilliseconds");
     if(profiling)file.withFileExtension("save-profile.json").replaceWithText(JSON::toString(timings));
 }
+File ProjectCodec::mediaInput(const File &directory, const std::string &relative) {
+    return resolveMedia(directory,relative,LinkedStemMedia::isReference(text(relative)));
+}
 File ProjectCodec::resolveMedia(const File &directory, const std::string &relative, bool resolveExisting) {
     auto path = text(relative).replaceCharacter('\\', '/');
     require(path.isNotEmpty() && !File::isAbsolutePath(path) && !path.containsChar(':') &&
@@ -569,7 +573,9 @@ File ProjectCodec::resolveMedia(const File &directory, const std::string &relati
         require(part != "..", "Unsafe media path.");
     auto file = directory.getChildFile(path);
     require(file.isAChildOf(directory), "Audio path escapes project folder.");
-    return resolveExisting ? existingMediaPath(file) : file;
+    if (!resolveExisting) return file;
+    if (LinkedStemMedia::isReference(path)) file = LinkedStemMedia::shared().resolve(path,file);
+    return existingMediaPath(file);
 }
 jaras::Project ProjectCodec::decode(const var &input) {
     const auto root = canonicalIDs(input);
@@ -756,6 +762,12 @@ jaras::Project ProjectCodec::decode(const var &input) {
                 optionalNum(rc, "clickDouble", c.clickDouble);
                 for(const auto& reference:list(get(rc,"tempoRateReferences")))c.tempoRateReferences.push_back({utf8(str(reference,"markerID")),num(reference,"rate",1)});
                 c.elasticSourceScale = num(rc, "elasticSourceScale", 1);
+                if (const auto video=get(rc,"adjustedVideo");video.isObject()) {
+                    jaras::AdjustedVideoSource visual;visual.path=s(video,"path");
+                    for (const auto& point:list(get(video,"points")))visual.points.push_back({num(point,"time"),num(point,"source")});
+                    optionalNum(video,"loopStart",visual.loopStart);optionalNum(video,"loopLength",visual.loopLength);
+                    c.adjustedVideo=std::move(visual);
+                }
                 for (const auto &point : list(get(rc, "elasticPoints")))
                     c.elasticPoints.push_back({num(point, "position"), num(point, "source"), num(point, "slopeBefore", 0), num(point, "slopeAfter", 0)});
                 optionalJSON(rc, "automation", c.automationJSON);
@@ -1107,6 +1119,12 @@ var ProjectCodec::encode(const jaras::Project &p, const var &input) {
                 emit(rc, "clickDouble", c.clickDouble);
                 if (c.elasticSourceScale != 1) put(rc, "elasticSourceScale", c.elasticSourceScale);
                 else remove(rc, "elasticSourceScale");
+                if(c.adjustedVideo){
+                    const auto& visual=*c.adjustedVideo;auto video=object();put(video,"path",text(visual.path));
+                    Array<var> points;for(const auto& p:visual.points){auto point=object();put(point,"time",p.time);put(point,"source",p.source);points.add(point);}
+                    put(video,"points",points);if(visual.loopStart)put(video,"loopStart",*visual.loopStart);if(visual.loopLength)put(video,"loopLength",*visual.loopLength);
+                    put(rc,"adjustedVideo",video);
+                }else remove(rc,"adjustedVideo");
                 if (c.elasticPoints.empty()) remove(rc, "elasticPoints");
                 else {
                     Array<var> points;
