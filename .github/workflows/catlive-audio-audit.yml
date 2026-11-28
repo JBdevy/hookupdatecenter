@@ -37,7 +37,7 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(inputs.apple_silicon && '{"include":[{"runner":"macos-15-intel","architecture":"x86_64"},{"runner":"macos-26","architecture":"arm64"}]}' || '{"include":[{"runner":"macos-15-intel","architecture":"x86_64"}]}') }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 90
+    timeout-minutes: 135
     env:
       MACOSX_DEPLOYMENT_TARGET: '12.0'
     defaults:
