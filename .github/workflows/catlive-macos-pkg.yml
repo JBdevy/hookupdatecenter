@@ -24,13 +24,13 @@ on:
         type: boolean
         default: false
       audio_tests:
-        description: 'Executar testes de renderização, Dynamics e Trigger/Gate (1.30 altera áudio)'
+        description: 'Executar a auditoria do motor de áudio e os testes de renderização, Dynamics e Trigger/Gate'
         type: boolean
-        default: true
+        default: false
       full_fx_tests:
-        description: 'Executar também a bateria completa dos FX em 44,1 e 48 kHz (1.30 altera áudio/FX)'
+        description: 'Executar também a bateria completa dos FX em 44,1 e 48 kHz'
         type: boolean
-        default: true
+        default: false
       audio_tail_from_run:
         description: 'Opcional: validar VST3/metrônomo/MIDI após conferir as etapas Intel já aprovadas desta execução'
         default: ''
