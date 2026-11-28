@@ -12,7 +12,8 @@ project_error=next(line for line in models.splitlines() if line.startswith('publ
 geometry=models[models.index('public enum TrackHeightGeometry'):models.index('public struct TrackLinkOriginal')]
 limits_start=grid.index('enum TimelineTrackHeightLimits')
 geometry += grid[limits_start:grid.index('\n}', limits_start) + 2] + '\n'
-lanes=models[models.index('public struct TrackLanes'):models.index('public enum TrackKind')]
+lane_end = models.index('\n}', models.index('public struct RegionLanes:')) + 2
+lanes = models[models.index('public struct TrackLanes:'):lane_end] + '\n'
 lanes=lanes.replace('public ', '').replace('init(track: Track) {', 'init(track: Track) { LaneBuildCounter.count += 1')
 cache=grid[grid.index('@MainActor private final class TrackLayoutCache'):grid.index('@MainActor private final class RegionOverlapCache')]
 row_start=grid.index('@MainActor private struct TrackRowLayout')
