@@ -110,11 +110,10 @@ precondition(rowHeight == 240, "repeated expansion remains at the maximum track 
 scroll.contentView.scroll(to: NSPoint(x: 200,y: 0))
 event.modifiers = .shift; event.delta = -10
 let heightAfterVerticalZoom = rowHeight, updatesBeforePan = zoomUpdates
-precondition(wheel.handleWheelEvent(event) && scroll.contentView.bounds.minX == 220)
-precondition(rowHeight == heightAfterVerticalZoom && zoomUpdates == updatesBeforePan, "Shift pans without changing either zoom")
+precondition(wheel.handleWheelEvent(event) && scroll.contentView.bounds.minX == 200)
 event.delta = 0; event.horizontalDelta = -10
-precondition(wheel.handleWheelEvent(event) && scroll.contentView.bounds.minX == 240,
-             "Shift also pans when AppKit delivers the wheel on its horizontal axis")
+precondition(wheel.handleWheelEvent(event) && scroll.contentView.bounds.minX == 200,
+             "Shift without selected tracks consumes either wheel axis")
 precondition(rowHeight == heightAfterVerticalZoom && zoomUpdates == updatesBeforePan)
 scroll.contentView.scroll(to: NSPoint(x: 220, y: 0))
 event.modifiers = []; event.delta = 0; event.horizontalDelta = -8
@@ -145,8 +144,18 @@ let selectedBefore = (heights.count, mixerHeightRouting.count)
 event.modifiers = .option; event.delta = 2; event.gesturePhase = .began; event.momentum = []
 wheel.changeSelectedHeight = { _ in selectedWheelPackets += 1; return true }
 mixerHeightInput.changeSelected = { _ in selectedWheelPackets += 1; return true }
+let beforeOptionX = scroll.contentView.bounds.minX
+precondition(wheel.handleWheelEvent(event) && !mixerHeightInput.handle(event))
+precondition(selectedWheelPackets == 0 && scroll.contentView.bounds.minX == beforeOptionX &&
+             heights.count == selectedBefore.0 && mixerHeightRouting.count == selectedBefore.1,
+             "Option leaves both selected and global heights alone on grid and mixer")
+event.modifiers = .shift; event.delta = 0; event.horizontalDelta = 2
 precondition(wheel.handleWheelEvent(event) && mixerHeightInput.handle(event))
 precondition(selectedWheelPackets == 2 && heights.count == selectedBefore.0 && mixerHeightRouting.count == selectedBefore.1)
+event.modifiers = []; event.gesturePhase = []; event.momentum = .changed
+precondition(wheel.handleWheelEvent(event) && mixerHeightInput.handle(event) && selectedWheelPackets == 2 &&
+             scroll.contentView.bounds.minX == beforeOptionX, "releasing Shift must not turn momentum into pan")
+event.horizontalDelta = 0; event.delta = 2
 wheel.changeSelectedHeight = nil; mixerHeightInput.changeSelected = nil
 event.modifiers = .command
 let beforeHeightMomentum = (heights.count, mixerHeightRouting.count)
@@ -565,21 +574,21 @@ resetZoomInput(); event.delta = 1
 precondition(wheel.handleWheelEvent(event, pressedMouseButtons: 1) && zoomValues.count == 1,
              "pressing the trackpad cannot turn its vertical zoom gesture into physical-wheel pan")
 resetZoomInput(precise: false)
-event.modifiers = .shift; event.delta = -2; event.inputTime += 1
+event.modifiers = []; event.delta = -6; event.inputTime += 1
 scroll.contentView.scroll(to: NSPoint(x: 500, y: 0))
-precondition(wheel.handleWheelEvent(event, pressedMouseButtons: 0) && scroll.contentView.bounds.minX == 608,
-             "Shift applies the physical horizontal step immediately")
+precondition(wheel.handleWheelEvent(event, pressedMouseButtons: 1) && scroll.contentView.bounds.minX == 608,
+             "Held left button applies the physical horizontal step immediately")
 RunLoop.main.run(until: Date().addingTimeInterval(0.15))
-precondition(scroll.contentView.bounds.minX == 608 && zoomValues.isEmpty, "Shift physical-wheel pan adds no synthetic coast")
+precondition(scroll.contentView.bounds.minX == 608 && zoomValues.isEmpty, "Held-left physical-wheel pan adds no synthetic coast")
 event.inputTime += 1
-precondition(wheel.handleWheelEvent(event, pressedMouseButtons: 0))
+precondition(wheel.handleWheelEvent(event, pressedMouseButtons: 1))
 let beforePanModal = scroll.contentView.bounds.minX
 gate.setBlocked(true, for: window)
 RunLoop.main.run(until: Date().addingTimeInterval(0.12))
 precondition(scroll.contentView.bounds.minX == beforePanModal, "opening an editor cancels physical pan inertia immediately")
 gate.setBlocked(false, for: window)
 event.inputTime += 1
-precondition(wheel.handleWheelEvent(event, pressedMouseButtons: 0))
+precondition(wheel.handleWheelEvent(event, pressedMouseButtons: 1))
 let sheetPan = scroll.contentView.bounds.minX
 let nativeSheet = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 100, height: 80), styleMask: [.titled], backing: .buffered, defer: false)
 nativeSheet.isReleasedWhenClosed = false
@@ -613,7 +622,7 @@ func beginPendingHorizontalZoom() -> CGFloat {
                  "the first mouse animation step prepares a bucket beyond the old viewport")
     return scroll.zoomAnchor!.width
 }
-for mode in ["shift", "trackpad", "focus"] {
+for mode in ["mouse", "trackpad", "focus"] {
     let targetWidth = beginPendingHorizontalZoom()
     // Keep another input waiting for a display frame. Taking horizontal control
     // must stop this request as well as discard the already-published anchor.
@@ -624,13 +633,13 @@ for mode in ["shift", "trackpad", "focus"] {
         wheel.focus(request: UUID(), x: 1450)
     } else {
         event.inputTime += 1
-        if mode == "shift" {
-            event.modifiers = .shift; event.delta = -2
+        if mode == "mouse" {
+            event.modifiers = []; event.delta = -6
         } else {
             event.precise = true; event.gesturePhase = .began
             event.delta = 0; event.horizontalDelta = -30
         }
-        precondition(wheel.handleWheelEvent(event, pressedMouseButtons: 0))
+        precondition(wheel.handleWheelEvent(event, pressedMouseButtons: mode == "mouse" ? 1 : 0))
     }
     let destination = scroll.contentView.bounds.minX
     precondition(destination > 1100 && destination < 1536 && scroll.zoomAnchor == nil,
@@ -655,7 +664,7 @@ wheel.modelUnitWidth = nil
 wheel.changeZoom = previousZoomCallback
 wheel.horizontalOffsetChanged = previousOffsetCallback
 document.setFrameSize(NSSize(width: 4000, height: 300))
-print("PENDING_ZOOM_SHIFT_TRACKPAD_FOCUS_OWNERSHIP_AND_BUCKET_RETURN_OK")
+print("PENDING_ZOOM_MOUSE_TRACKPAD_FOCUS_OWNERSHIP_AND_BUCKET_RETURN_OK")
 
 // A pending newer scale must not prevent centering an intermediate frame.
 scroll.zoomAnchor = (0.5, 200, 8000)
@@ -923,9 +932,10 @@ resetZoomInput()
 var logicalExtensions = 0
 wheel.extend = { logicalExtensions += 1; scroll.logicalDocumentWidth! += 300 }
 scroll.contentView.scroll(to: CGPoint(x: 1370, y: 0))
-event.modifiers = .shift; event.delta = -20
+event.modifiers = []; event.delta = 0; event.horizontalDelta = -40
+event.gesturePhase = .began; event.inputTime += 1
 precondition(wheel.handleWheelEvent(event) && logicalExtensions == 1 && scroll.contentView.bounds.minX == 1410,
-             "Shift pan requests extension at logical end and uses the updated extent")
+             "Trackpad pan requests extension at logical end and uses the updated extent")
 scroll.contentView.scroll(to: CGPoint(x: 1670, y: 0))
 event.modifiers = []; event.delta = 0; event.horizontalDelta = -40
 event.gesturePhase = .began; event.inputTime += 1

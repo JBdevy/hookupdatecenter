@@ -288,17 +288,30 @@ func heightWheel(_ flags: NSEvent.ModifierFlags, delta: CGFloat = 1, precise: Bo
     return event
 }
 // A native fixture supplies only event/window data; the production handler decides its action.
-for flags: NSEvent.ModifierFlags in [.command, .control, .shift] {
+for flags: NSEvent.ModifierFlags in [.command, .control] {
     for precise in [false, true] {
         for delta: CGFloat in [-1, 1] {
             let before = wheelPublications
             precondition(wheelView.handle(heightWheel(flags, delta: delta, precise: precise)),
-                         "Command, Control and Shift each reach the mixer's height callback")
+                         "Command and Control reach the mixer's global height callback")
             precondition(wheelPublications == before + 1)
             precondition(delta > 0 ? wheelFactors.last! > 1 : wheelFactors.last! < 1,
                          "each modifier preserves shrinking and expanding input")
             precondition(wheelSmoothing.last == !precise, "only a physical wheel requests smoothing")
         }
+    }
+}
+var selectedFactors: [Double] = []
+wheelView.changeSelected = { selectedFactors.append($0); return true }
+let globalBeforeSelection = wheelPublications
+for precise in [false, true] {
+    for delta: CGFloat in [-1, 1] {
+        let before = selectedFactors.count
+        precondition(wheelView.handle(heightWheel(.shift, delta: delta, precise: precise)))
+        precondition(selectedFactors.count == before + 1 && wheelPublications == globalBeforeSelection)
+        precondition(delta > 0 ? selectedFactors.last! > 1 : selectedFactors.last! < 1)
+        precondition(!wheelView.handle(heightWheel(.option, delta: delta, precise: precise)) &&
+                     selectedFactors.count == before + 1 && wheelPublications == globalBeforeSelection)
     }
 }
 let publicationsBeforePlain = wheelPublications

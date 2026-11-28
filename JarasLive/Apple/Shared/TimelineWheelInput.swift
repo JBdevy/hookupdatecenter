@@ -226,7 +226,7 @@ final class TimelineSelectedHeightMotion {
     deinit { timer?.invalidate() }
 }
 
-/// Shift (or Command/Control) + wheel changes all row heights over the mixer.
+/// Shift resizes the selection. Command or Control resizes all rows.
 struct TimelineMixerHeightWheelInput: NSViewRepresentable {
     let change: (Double, Bool) -> Void
     var changeSelected: ((Double) -> Bool)? = nil
@@ -239,11 +239,13 @@ final class TimelineMixerHeightWheelView: NSView, NativeTimelineInputObserver {
     var changeSelected: ((Double) -> Bool)?
     private var response = TimelineTrackHeightResponse()
     private var monitor: Any?
+    private var selectedHeightMomentum = false
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         if let monitor { NSEvent.removeMonitor(monitor); self.monitor = nil }
         response.reset()
+        selectedHeightMomentum = false
         guard window != nil else { return }
         NativeTimelineInputGate.shared.add(self)
         monitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
@@ -251,20 +253,29 @@ final class TimelineMixerHeightWheelView: NSView, NativeTimelineInputObserver {
         }
     }
     deinit { if let monitor { NSEvent.removeMonitor(monitor) } }
-    func timelineInputGateChanged(blocked: Bool) { if blocked { response.reset() } }
+    func timelineInputGateChanged(blocked: Bool) { if blocked { response.reset(); selectedHeightMomentum = false } }
     @discardableResult func handle(_ event: NSEvent) -> Bool {
-        if event.window === window, event.phase.contains(.began) { response.reset() }
         guard event.window === window, window?.attachedSheet == nil,
-              !NativeTimelineInputGate.shared.isBlocked(window),
-              !event.modifierFlags.intersection([.command, .control, .shift, .option]).isEmpty,
-              event.momentumPhase.isEmpty, event.scrollingDeltaY != 0,
-              !isHiddenOrHasHiddenAncestor,
+              !NativeTimelineInputGate.shared.isBlocked(window), !isHiddenOrHasHiddenAncestor,
               visibleRect.contains(convert(event.locationInWindow, from: nil)) else { return false }
+        let modifiers = event.modifierFlags.intersection([.command, .control, .shift, .option])
+        if event.phase.contains(.began) { selectedHeightMomentum = false }
+        if !event.momentumPhase.isEmpty && selectedHeightMomentum {
+            if event.momentumPhase.contains(.ended) { selectedHeightMomentum = false }
+            return true
+        }
+        if modifiers.contains(.option) || modifiers.isEmpty { return false }
+        let selectedOnly = modifiers == .shift
+        let delta = selectedOnly && event.scrollingDeltaY == 0 ? event.scrollingDeltaX : event.scrollingDeltaY
+        guard event.momentumPhase.isEmpty, delta.isFinite, delta != 0 else { return selectedOnly }
+        if event.phase.contains(.began) { response.reset() }
         layoutProfile?.event("input-received", view: self, input: event)
-        let factor = response.factor(delta: Double(event.scrollingDeltaY), timestamp: event.timestamp,
+        let factor = response.factor(delta: Double(delta), timestamp: event.timestamp,
             begins: event.phase.contains(.began), precise: event.hasPreciseScrollingDeltas)
-        if event.modifierFlags.intersection([.command, .control, .shift, .option]) == .option {
-            return changeSelected?(factor) == true
+        if selectedOnly {
+            selectedHeightMomentum = event.hasPreciseScrollingDeltas
+            _ = changeSelected?(factor)
+            return true
         }
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
@@ -812,33 +823,36 @@ final class TimelineWheelView: NSView, NativeTimelineInputObserver {
         let views = scrollViews
         guard let horizontal = views.first else { return false }
         let delta = abs(event.scrollingDeltaY) >= abs(event.scrollingDeltaX) ? event.scrollingDeltaY : event.scrollingDeltaX
-        let shifting = event.modifierFlags.contains(.shift)
-        let scrollingVertically = event.modifierFlags.contains(.option)
+        let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
+        let scrollingVertically = modifiers.contains(.option)
         if event.momentumPhase.isEmpty && event.phase.contains(.began) { trackpadVerticalMomentum = false; selectedHeightMomentum = false }
         if !event.momentumPhase.isEmpty, selectedHeightMomentum {
             if event.momentumPhase.contains(.ended) { selectedHeightMomentum = false }
             return true
         }
-        let optionOnly = event.modifierFlags.intersection([.command,.control,.option,.shift]) == .option
-        if optionOnly, event.momentumPhase.isEmpty, event.scrollingDeltaY != 0, let changeSelectedHeight {
-            let factor = heightResponse.factor(delta: Double(event.scrollingDeltaY), timestamp: event.timestamp,
-                                              begins: event.phase.contains(.began), precise: event.hasPreciseScrollingDeltas)
-            if changeSelectedHeight(factor) {
-                stopZoomUpdates()
+        if modifiers == .shift {
+            stopZoomUpdates()
+            trackpadVerticalMomentum = false
+            if event.momentumPhase.isEmpty {
                 selectedHeightMomentum = event.hasPreciseScrollingDeltas
-                trackpadVerticalMomentum = false
-                return true
+                let heightDelta = event.scrollingDeltaY == 0 ? event.scrollingDeltaX : event.scrollingDeltaY
+                if heightDelta.isFinite && heightDelta != 0 {
+                    let factor = heightResponse.factor(delta: Double(heightDelta), timestamp: event.timestamp,
+                        begins: event.phase.contains(.began), precise: event.hasPreciseScrollingDeltas)
+                    _ = changeSelectedHeight?(factor)
+                }
             }
+            return true
         }
         if scrollingVertically && event.hasPreciseScrollingDeltas && !event.phase.isEmpty { trackpadVerticalMomentum = true }
         defer {
             if event.momentumPhase.contains(.ended) || event.phase.contains(.cancelled) { trackpadVerticalMomentum = false }
         }
-        let movement = delta * (event.hasPreciseScrollingDeltas ? (shifting ? 2 : 1) : (shifting ? 54 : 18))
+        let movement = delta * (event.hasPreciseScrollingDeltas ? 1 : 18)
         let heldLeftWheel = pressedMouseButtons & 1 != 0 && !event.hasPreciseScrollingDeltas &&
             event.momentumPhase.isEmpty &&
             event.modifierFlags.intersection([.command, .control, .shift, .option]).isEmpty
-        if !event.modifierFlags.intersection([.command, .control]).isEmpty {
+        if !scrollingVertically && !modifiers.intersection([.command, .control]).isEmpty {
             stopZoomUpdates()
             if event.phase.contains(.began) { heightResponse.reset() }
             if event.momentumPhase.isEmpty, event.scrollingDeltaY != 0 {
@@ -853,13 +867,13 @@ final class TimelineWheelView: NSView, NativeTimelineInputObserver {
                 let amount = event.scrollingDeltaY * (event.hasPreciseScrollingDeltas ? 1 : 18)
                 if amount.isFinite { scroll(vertical, y: vertical.contentView.bounds.minY - amount) }
             }
-        } else if shifting || heldLeftWheel {
+        } else if heldLeftWheel {
             takeHorizontalControl(horizontal)
-            if heldLeftWheel, delta != 0, let window {
+            if delta != 0, let window {
                 // A ruler/item press must not activate on release after panning.
                 NativeTimelineInputGate.shared.cancelPendingClicks(for: window)
             }
-            let limited = horizontalLimiter.limit(movement, timestamp: event.timestamp, begins: event.phase.contains(.began), speed: shifting ? 12600 : 4200)
+            let limited = horizontalLimiter.limit(movement, timestamp: event.timestamp, begins: event.phase.contains(.began), speed: 4200)
             let origin = horizontal.contentView.bounds.minX
             let target = origin - limited
             if horizontal.documentView != nil, target + horizontal.contentView.bounds.width > horizontal.contentView.documentRect.maxX - 160 { extend?() }

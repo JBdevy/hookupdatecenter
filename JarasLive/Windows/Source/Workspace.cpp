@@ -2740,11 +2740,12 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
         auto selected=w.selectedTracks;
         if(selected.empty() && !w.selectedTrack.empty())selected.insert(w.selectedTrack);
         if(!song || selected.empty())return false;
-        if(wheel.isInertial || !std::isfinite(wheel.deltaY) || wheel.deltaY==0)return true;
+        const double delta = wheel.deltaY != 0 ? wheel.deltaY : wheel.deltaX;
+        if(wheel.isInertial || !std::isfinite(delta) || delta==0)return true;
         stopGesture();
         w.tracksViewport.cancelWheel();
         std::map<ID,double> scales;
-        const double points=w.trackHeight*.6*wheel.deltaY;
+        const double points=w.trackHeight*.6*delta;
         for(int i=0;i<(int)song->tracks.size();++i) {
             const auto& track=song->tracks[(size_t)i];
             if(!selected.count(track.id) || w.rowHidden(i))continue;
@@ -2804,17 +2805,21 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
     void mouseWheelMove(const MouseEvent &e, const MouseWheelDetails &d) override {
         ++w.wheelCount;
         pausePlaybackFollow(true);
-        if (e.mods.isCtrlDown()) {
-            adjustTrackHeight(d.deltaY);
-            return;
-        }
         if (e.mods.isAltDown()) {
-            if (adjustSelectedTrackHeights(d)) return;
             stopGesture();
             w.tracksViewport.scrollByWheel(d);
             return;
         }
-        const bool pan = e.mods.isShiftDown() || e.mods.isLeftButtonDown() || std::abs(d.deltaX) > std::abs(d.deltaY);
+        if (e.mods.isCtrlDown()) {
+            adjustTrackHeight(d.deltaY);
+            return;
+        }
+        if (e.mods.isShiftDown()) {
+            stopGesture();
+            adjustSelectedTrackHeights(d);
+            return;
+        }
+        const bool pan = e.mods.isLeftButtonDown() || std::abs(d.deltaX) > std::abs(d.deltaY);
         if (d.isInertial) return;
         if (pan && e.mods.isLeftButtonDown()) canvas.cancelDrag();
         const bool preciseWheel = isPreciseTimelineWheel(d);
@@ -9822,11 +9827,13 @@ void Workspace::mouseWheelMove(const MouseEvent &event, const MouseWheelDetails 
     auto relative = event.getEventRelativeTo(this);
     if (mixerVisible && tracksViewport.getBounds().contains(relative.getPosition())) {
         ++wheelCount;
-        if (event.mods.isCtrlDown()) {
+        if (event.mods.isAltDown()) {
+            tracksViewport.scrollByWheel(details);
+        } else if (event.mods.isCtrlDown()) {
             tracksViewport.cancelWheel();
             timeline->adjustTrackHeight(details.deltaY);
-        } else if (event.mods.isAltDown() && timeline->adjustSelectedTrackHeights(details)) {
-            return;
+        } else if (event.mods.isShiftDown()) {
+            timeline->adjustSelectedTrackHeights(details);
         } else {
             tracksViewport.scrollByWheel(details);
         }
@@ -10747,7 +10754,7 @@ void Workspace::showShortcuts() {
             "Ctrl+I / Ctrl+T — Importar áudio / nova pista\n"
             "Ctrl+Z / Ctrl+Shift+Z — Desfazer / refazer\nDelete — Excluir item selecionado\n"
             "Roda sobre o grid — Zoom horizontal\n"
-            "Shift+roda — Rolagem horizontal\nRoda sobre as pistas — Rolagem vertical\n"
+            "Alt+roda — Rolagem vertical\nShift+roda — Ajustar altura das pistas selecionadas\nRoda sobre as pistas — Rolagem vertical\n"
             "Clique no grid — Posicionar cursor de edição\nAlt+clique — Posicionar Sub Play\n"
             "Ctrl+Enter — Aplicar texto / enviar recado\n"
             "Duplo clique no fader — Restaurar 0 dB / pan central\nAlt+F4 — Fechar"),

@@ -6009,10 +6009,12 @@ private struct RemoteNativeTimeline: View {
     }
     private func handleWheel(_ delta: CGPoint, modifiers: HardwareKeyboardModifiers, width: CGFloat) {
         pauseScrollFollowing()
-        if modifiers.contains(.command) || modifiers.contains(.control) {
-            scrolling.resizeTracks(exp(Double(delta.y) * 0.006)); scrolling.finishResizingTracks()
-        } else if modifiers.contains(.option) {
+        if modifiers.contains(.option) {
             scrolling.pointerScroll(-delta.y)
+        } else if modifiers.contains(.command) || modifiers.contains(.control) {
+            scrolling.resizeTracks(exp(Double(delta.y) * 0.006)); scrolling.finishResizingTracks()
+        } else if local && modifiers.contains(.shift) {
+            scrolling.resizeSelectedTracks(by: delta.y == 0 ? delta.x : delta.y)
         } else if modifiers.contains(.shift) || abs(delta.x) > abs(delta.y) {
             viewport.pan(pixels: Double(delta.x == 0 ? delta.y : delta.x), width: visibleWidth(width))
         } else { viewport.zoom(factor: exp(Double(delta.y) * 0.009), centeredOn: zoomCursor) }
@@ -9272,9 +9274,26 @@ private struct IpadTimelineEditingBar: View {
         gesture.delegate = self
         return gesture
     }()
+    private lazy var selectedHeightWheel: UIPanGestureRecognizer = {
+        let gesture = UIPanGestureRecognizer(target: self, action: #selector(mixerHeightScrolled(_:)))
+        gesture.delegate = self
+        gesture.allowedTouchTypes = []
+        gesture.allowedScrollTypesMask = [.continuous, .discrete]
+        gesture.cancelsTouchesInView = false
+        return gesture
+    }()
+    @objc private func mixerHeightScrolled(_ gesture: UIPanGestureRecognizer) {
+        guard gesture.state == .began || gesture.state == .changed else { return }
+        let delta = gesture.translation(in: scrollView)
+        gesture.setTranslation(.zero, in: scrollView)
+        resizeSelectedTracks(by: delta.y == 0 ? delta.x : delta.y)
+    }
     private func bindMixerHeightPinch(from previous: UIScrollView?, to next: UIScrollView?) {
         previous?.removeGestureRecognizer(mixerHeightPinch)
         next?.addGestureRecognizer(mixerHeightPinch)
+        previous?.removeGestureRecognizer(selectedHeightWheel)
+        next?.addGestureRecognizer(selectedHeightWheel)
+        next?.panGestureRecognizer.require(toFail: selectedHeightWheel)
     }
     @objc private func mixerHeightPinched(_ gesture: UIPinchGestureRecognizer) {
         switch gesture.state {
@@ -9320,6 +9339,22 @@ private struct IpadTimelineEditingBar: View {
         if [scrollView, gridScrollView].compactMap({ $0 }).allSatisfy({ heightAppliedViews.contains(ObjectIdentifier($0)) }) {
             pendingHeightOffset = nil
         }
+    }
+    func resizeSelectedTracks(by delta: CGFloat) {
+        guard delta.isFinite, delta != 0, let show = heightEditor, let song = show.current else { return }
+        let selected = show.mixerTrackSelection
+        guard !selected.isEmpty else { return }
+        let minimum = RemoteNativeGridMetrics.minimumTrackHeight(local: true)
+        let liveScales = Dictionary(uniqueKeysWithValues: song.tracks.filter { selected.contains($0.id) }.map { ($0.id, $0.heightScale ?? 1) })
+        var scales: [UUID: Double] = [:]
+        for var row in heightTracks {
+            guard let current = liveScales[row.id] else { continue }
+            row.heightScale = current
+            if let next = DAWRemoteItemLayout.resizedTrackHeightScale(row, scale: heightScale, minimum: minimum, translation: Double(delta)) {
+                scales[row.id] = next
+            }
+        }
+        if !scales.isEmpty { show.setTrackHeightScales(scales, project: show.snapshot.project.id, song: song.id) }
     }
     #endif
     func resizeTracks(_ scale: CGFloat) {
@@ -9565,6 +9600,11 @@ private struct IpadTimelineEditingBar: View {
 }
 #if os(iOS)
 extension RemoteTrackScrollController: UIGestureRecognizerDelegate {
+    func gestureRecognizer(_ recognizer: UIGestureRecognizer, shouldReceive event: UIEvent) -> Bool {
+        guard recognizer === selectedHeightWheel else { return true }
+        let flags = event.modifierFlags.intersection([.shift, .control, .command, .alternate])
+        return usesNativeTrackHeight && heightEditor != nil && flags == .shift
+    }
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
         if gestureRecognizer === mixerHeightPinch { return receivesMixerHeightPinch(touch) }
         return gestureRecognizer === gridTapRecognizer ? receiveGridTap(touch) : receiveItemHold(touch)

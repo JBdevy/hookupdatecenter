@@ -2049,6 +2049,8 @@ struct WorkspaceLayoutTests {
         w.selectedTracks.clear(); w.selectedTrack.clear();
         const auto altWheel=MouseEvent(Desktop::getInstance().getMainMouseSource(),gridPoint,ModifierKeys(ModifierKeys::altModifier),
             1,0,0,0,0,grid,grid,now,gridPoint,now,1,false);
+        const auto shiftWheel = MouseEvent(Desktop::getInstance().getMainMouseSource(), gridPoint, ModifierKeys(ModifierKeys::shiftModifier),
+            1, 0, 0, 0, 0, grid, grid, now, gridPoint, now, 1, false);
         const auto zoom=w.pixelsPerSecond;
         // Some Windows drivers send precision touchpad input as a fractional wheel delta.
         wheel.deltaY = -.1015625f;
@@ -2122,22 +2124,38 @@ struct WorkspaceLayoutTests {
         w.selectedTrack=tracks[0].id; w.selectedTracks={tracks[0].id,tracks[2].id};
         const auto height0=w.itemLaneHeight(0), height1=w.itemLaneHeight(1), height2=w.itemLaneHeight(2);
         const auto globalHeight=w.trackHeight;
-        wheel.deltaY=.3f;grid->mouseWheelMove(altWheel,wheel);
+        w.mixerDivider.scrollTo(150);
+        const auto xBefore = horizontalOffset();
+        wheel.deltaY = -.3f;
+        grid->mouseWheelMove(altWheel, wheel);
+        const int afterAltGrid = w.verticalOffset;
+        w.mouseWheelMove(event(ModifierKeys::altModifier), wheel);
+        require(afterAltGrid > 150 && w.verticalOffset > afterAltGrid && horizontalOffset() == xBefore &&
+                w.itemLaneHeight(0) == height0 && w.itemLaneHeight(2) == height2 && w.trackHeight == globalHeight &&
+                w.pixelsPerSecond == precisionZoom, "Alt wheel must scroll vertically with selected tracks on both surfaces");
+        wheel.deltaY = 0; wheel.deltaX = .3f;
+        grid->mouseWheelMove(shiftWheel, wheel);
+        wheel.deltaX = 0; wheel.deltaY = .3f;
         require(w.itemLaneHeight(0)>height0 && w.itemLaneHeight(2)>height2 && w.itemLaneHeight(1)==height1 &&
-                w.trackHeight==globalHeight && w.pixelsPerSecond==precisionZoom,"Alt wheel resized an unselected row or the grid");
+                w.trackHeight==globalHeight && w.pixelsPerSecond==precisionZoom,"Shift wheel resized an unselected row or the grid");
         auto taller=w.itemLaneHeight(0);
-        w.mouseWheelMove(event(ModifierKeys::altModifier),wheel);
-        require(w.itemLaneHeight(0)>taller && w.itemLaneHeight(1)==height1,"Mixer Alt wheel missed the selection");
+        w.mouseWheelMove(event(ModifierKeys::shiftModifier),wheel);
+        require(w.itemLaneHeight(0)>taller && w.itemLaneHeight(1)==height1,"Mixer Shift wheel missed the selection");
         session.undo();
         require(w.itemLaneHeight(0)==height0 && w.itemLaneHeight(2)==height2,"Selected wheel gesture did not undo as one resize");
         w.selectedTracks={tracks[2].id};w.selectedTrack=tracks[2].id;
-        wheel.deltaY=-.3f;w.mouseWheelMove(event(ModifierKeys::altModifier),wheel);
-        require(w.itemLaneHeight(0)==height0 && w.itemLaneHeight(2)<height2,"Alt wheel did not honor a new single selection");
+        wheel.deltaY=-.3f;w.mouseWheelMove(event(ModifierKeys::shiftModifier),wheel);
+        require(w.itemLaneHeight(0)==height0 && w.itemLaneHeight(2)<height2,"Shift wheel did not honor a new single selection");
         const int height=w.trackHeight;wheel.deltaY=.2f;
         w.mouseWheelMove(event(ModifierKeys::ctrlModifier),wheel);
         require(w.trackHeight>height,"Ctrl wheel no longer adjusts track height");
         require(w.verticalOffset==w.tracksViewport.getViewPositionY(),"Changing track height desynchronized scroll");
         w.selectedTracks.clear(); w.selectedTrack.clear();
+        const auto unselectedY = w.verticalOffset, unselectedHeight = w.trackHeight;
+        grid->mouseWheelMove(shiftWheel, wheel);
+        w.mouseWheelMove(event(ModifierKeys::shiftModifier), wheel);
+        require(w.verticalOffset == unselectedY && w.trackHeight == unselectedHeight && w.pixelsPerSecond == precisionZoom &&
+                horizontalOffset() == xBefore, "Shift without a selection must leave the viewport and track heights alone");
         w.mixerDivider.scrollTo(w.rowTop(8) + w.rowHeight(8) / 2);
         const double clippedFraction = double(w.verticalOffset-w.rowTop(8))/w.rowHeight(8);
         wheel.deltaY=.5f; w.mouseWheelMove(event(ModifierKeys::ctrlModifier),wheel);
