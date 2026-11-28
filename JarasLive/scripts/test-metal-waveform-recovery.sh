@@ -55,7 +55,7 @@ extension MetalWaveformRenderView {
 (output / 'MetalWaveformRenderer.swift').write_text(source)
 (output / 'main.swift').write_text(Path('Tests/Apple/MetalWaveformRecoveryTests.swift').read_text())
 PY
-swiftc -O -swift-version 5 -target "$(uname -m)-apple-macos12.0" \
+swiftc Application/Project/LinkedStemMedia.swift -O -swift-version 5 -target "$(uname -m)-apple-macos12.0" \
   Apple/Shared/TimelineRenderDiagnostics.swift Application/Project/AudioFileRead.swift \
   Apple/Shared/TimelineAudioWaveform.swift "$test_dir/MetalWaveformRenderer.swift" \
   "$test_dir/main.swift" -o "$test_dir/test"

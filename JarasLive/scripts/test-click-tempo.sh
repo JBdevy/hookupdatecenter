@@ -11,7 +11,7 @@ sources=(
   Application/Project/ClipRepetition.swift Application/Project/ClickTempoDetector.swift
 )
 cp Tests/Apple/ClickOnsetTests.swift "$dir/main.swift"
-swiftc -O -swift-version 5 "${sources[@]}" Application/Project/AudioFileRead.swift Apple/Shared/TimelineAudioWaveform.swift \
+swiftc Application/Project/LinkedStemMedia.swift -O -swift-version 5 "${sources[@]}" Application/Project/AudioFileRead.swift Apple/Shared/TimelineAudioWaveform.swift \
   "$dir/main.swift" -o "$dir/test"
 "$dir/test"
 swiftc -O -swift-version 5 -parse-as-library "${sources[@]}" Apple/Shared/SelectionTempoAnalysis.swift \

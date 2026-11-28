@@ -28,5 +28,5 @@ public struct AudioClip: Equatable {
 '''
 Path(sys.argv[1]).write_text(stub + source[start:end] + Path('Tests/Apple/TimelineAudioWaveformTests.swift').read_text())
 PY
-swiftc -O -swift-version 5 Application/Project/ItemFade.swift Application/Project/ItemFadeCurve.swift Application/Project/AudioFileRead.swift Apple/Shared/TimelineAudioWaveform.swift Apple/Shared/ItemWaveformPreview.swift "$test_dir/main.swift" -o "$test_dir/test"
+swiftc Application/Project/LinkedStemMedia.swift -O -swift-version 5 Application/Project/ItemFade.swift Application/Project/ItemFadeCurve.swift Application/Project/AudioFileRead.swift Apple/Shared/TimelineAudioWaveform.swift Apple/Shared/ItemWaveformPreview.swift "$test_dir/main.swift" -o "$test_dir/test"
 "$test_dir/test"

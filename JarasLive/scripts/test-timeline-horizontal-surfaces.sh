@@ -22,5 +22,5 @@ fixture = Path('Tests/Apple/TimelineHorizontalSurfaceTests.swift').read_text().r
 Path(sys.argv[1]).write_text('import SwiftUI\n' + s[start:end] + fixture)
 
 PYCODE
-swiftc Apple/Shared/TimelineRenderDiagnostics.swift -swift-version 5 Application/Project/AudioFileRead.swift Apple/Shared/TimelineAudioWaveform.swift "$test_dir/main.swift" -o "$test_dir/test"
+swiftc Application/Project/LinkedStemMedia.swift Apple/Shared/TimelineRenderDiagnostics.swift -swift-version 5 Application/Project/AudioFileRead.swift Apple/Shared/TimelineAudioWaveform.swift "$test_dir/main.swift" -o "$test_dir/test"
 "$test_dir/test"

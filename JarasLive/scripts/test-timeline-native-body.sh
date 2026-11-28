@@ -113,7 +113,7 @@ appearance = selection.index('enum TrackMixerButtonAppearance {')
 appearance = selection[appearance:selection.index('\n}', appearance) + 2]
 out.joinpath('GridSelectionGeometry.swift').write_text('import SwiftUI\n' + appearance + '\n' + selection[start:selection.index('#if os(macOS)\nimport AppKit', start)] + metrics)
 PY
-swiftc -O -swift-version 5 -target "$(uname -m)-apple-macos12.0" \
+swiftc Application/Project/LinkedStemMedia.swift -O -swift-version 5 -target "$(uname -m)-apple-macos12.0" \
   Apple/Shared/TimelineRenderDiagnostics.swift Apple/Shared/TimelineVisibleClipIndex.swift \
   Application/Project/OutputPatch.swift Application/Project/DrummerPadKit.swift Application/Project/NativeFXSettings.swift \
   Application/Project/TrackRouting.swift Application/Project/MultiLoop.swift \

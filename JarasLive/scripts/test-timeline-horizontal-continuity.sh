@@ -21,5 +21,5 @@ metal=Path('Apple/Shared/TimelineMetalWaveforms.swift').read_text()
 coverage=metal[metal.index('enum TimelineWaveformCoverage {'):metal.index('/// File kind is already known.')]
 Path(sys.argv[1]).write_text('import AppKit\nimport SwiftUI\nprivate struct TimelineTileIdentity: Equatable {}\n'+diagnostics+'\n'+limits+'\n'+geometry+'\n'+native+'\n'+clip+'\n'+surface+'\n'+coverage+'\n'+Path('Tests/Apple/TimelineHorizontalContinuityTests.swift').read_text())
 PY
-swiftc Apple/Shared/TimelineRenderDiagnostics.swift -swift-version 5 Application/Project/AudioFileRead.swift Apple/Shared/TimelineAudioWaveform.swift Apple/Shared/NativeTimelineInputGate.swift Apple/Shared/TimelineWheelInput.swift "$test_dir/main.swift" -o "$test_dir/test"
+swiftc Application/Project/LinkedStemMedia.swift Apple/Shared/TimelineRenderDiagnostics.swift -swift-version 5 Application/Project/AudioFileRead.swift Apple/Shared/TimelineAudioWaveform.swift Apple/Shared/NativeTimelineInputGate.swift Apple/Shared/TimelineWheelInput.swift "$test_dir/main.swift" -o "$test_dir/test"
 "$test_dir/test"
