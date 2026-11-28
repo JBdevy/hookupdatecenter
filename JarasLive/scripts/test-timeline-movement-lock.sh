@@ -11,5 +11,5 @@ application_sources=()
 while IFS= read -r source; do application_sources+=("$source"); done < <(rg --files Application -g '*.swift')
 swiftc -swift-version 5 -parse-as-library -import-objc-header Apple/Bridge/JarasCoreBridge.h \
     "${application_sources[@]}" Apple/Bridge/LocalCommandExecutor.swift \
-    Tests/Apple/TimelineMovementLockTests.swift "$test_dir"/*.o -lc++ -o "$test_dir/test"
+    Tests/Apple/TimelineMovementLockTests.swift "$test_dir"/*.o -framework Accelerate -lc++ -o "$test_dir/test"
 "$test_dir/test"

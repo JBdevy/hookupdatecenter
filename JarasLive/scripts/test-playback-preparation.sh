@@ -11,5 +11,5 @@ preparation_sources=()
 while IFS= read -r source; do preparation_sources+=("$source"); done < <(rg --files Application -g '*.swift')
 swiftc -swift-version 5 -parse-as-library -import-objc-header Apple/Bridge/JarasCoreBridge.h \
     "${preparation_sources[@]}" Apple/Bridge/LocalCommandExecutor.swift \
-    Tests/Apple/PlaybackPreparationTests.swift "$preparation_test_dir"/*.o -lc++ -o "$preparation_test_dir/test"
+    Tests/Apple/PlaybackPreparationTests.swift "$preparation_test_dir"/*.o -framework Accelerate -lc++ -o "$preparation_test_dir/test"
 "$preparation_test_dir/test"
