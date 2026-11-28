@@ -13,15 +13,30 @@ enum JarasLocalization {
     // resolved bundles while still reading the current language on each call.
     private static let englishBundle = localizedBundle("en")
     private static let portugueseBundle = localizedBundle("pt-BR")
+    private static let englishStrings = stringCache()
+    private static let portugueseStrings = stringCache()
+    private static func stringCache() -> NSCache<NSString, NSString> {
+        let cache = NSCache<NSString, NSString>()
+        cache.countLimit = 256
+        return cache
+    }
     private static func localizedBundle(_ identifier: String) -> Bundle {
         Bundle.main.path(forResource: identifier, ofType: "lproj").flatMap(Bundle.init(path:)) ?? .main
     }
     static func bundle(language: String? = nil) -> Bundle {
-        let selected = (language ?? UserDefaults.standard.string(forKey: "jaras.language") ?? "en").replacingOccurrences(of: "_", with: "-")
-        return selected.lowercased().hasPrefix("pt") ? portugueseBundle : englishBundle
+        let selected = language ?? UserDefaults.standard.string(forKey: "jaras.language") ?? "en"
+        if selected.hasPrefix("en") { return englishBundle }
+        if selected.hasPrefix("pt") { return portugueseBundle }
+        return selected.prefix(2).lowercased() == "pt" ? portugueseBundle : englishBundle
     }
     static func string(_ key: String, language: String? = nil) -> String {
-        bundle(language: language).localizedString(forKey: key, value: key, table: nil)
+        let bundle = bundle(language: language)
+        let cache = bundle === portugueseBundle ? portugueseStrings : englishStrings
+        let lookup = key as NSString
+        if let hit = cache.object(forKey: lookup) { return hit as String }
+        let value = bundle.localizedString(forKey: key, value: key, table: nil)
+        cache.setObject(value as NSString, forKey: lookup)
+        return value
     }
 }
 extension View {

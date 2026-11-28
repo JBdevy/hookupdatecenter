@@ -16,6 +16,10 @@ import Combine
     @Published private(set) var timelineFocus: IpadTimelineFocus?
     private var subscriptions = Set<AnyCancellable>()
     private var refreshPending = false
+    private var needsFullRefresh = false
+    private var lastPresentation: ShowPresentationState?
+    private var lastClockBucket = SIMD2<Double>(repeating: -1)
+    private var lastMixerRevision: UInt64 = 0
     private var running = false
     private let mappingSession = UUID()
     private weak var show: ShowController?
@@ -40,8 +44,10 @@ import Combine
                 self?.refreshTeleprompterRemote(index)
             }
         }
-        for publisher in [show.objectWillChange.eraseToAnyPublisher(),
-                          show.multiLoopFaders.objectWillChange.eraseToAnyPublisher(),
+        show.objectWillChange.sink { [weak self, weak show] _ in
+            self?.scheduleRefresh(playbackTick: show?.timelinePlaybackIsPublishingTick == true)
+        }.store(in: &subscriptions)
+        for publisher in [show.multiLoopFaders.objectWillChange.eraseToAnyPublisher(),
                           documents.objectWillChange.eraseToAnyPublisher(),
                           TeleprompterTimerController.shared.objectWillChange.eraseToAnyPublisher(),
                           TPNoticeController.shared.objectWillChange.eraseToAnyPublisher(),
@@ -54,8 +60,10 @@ import Combine
         refresh()
         UIApplication.shared.isIdleTimerDisabled = true
     }
-    private func scheduleRefresh() {
-        guard running, !refreshPending else { return }
+    private func scheduleRefresh(playbackTick: Bool = false) {
+        guard running else { return }
+        if !playbackTick { needsFullRefresh = true }
+        guard !refreshPending else { return }
         refreshPending = true
         // Publish a completed snapshot outside UIKit's touch-tracking mode.
         // Playback keeps its own common-mode clock; scrolling must not rebuild
@@ -64,15 +72,28 @@ import Combine
             MainActor.assumeIsolated {
                 guard let self else { return }
                 self.refreshPending = false
-                if self.running { self.refresh() }
+                let force = self.needsFullRefresh
+                self.needsFullRefresh = false
+                if self.running { self.refresh(playbackTick: !force) }
             }
         }
     }
-    func refresh() {
+    func refresh(playbackTick: Bool = false) {
         if let show {
             VideoPlayback.shared.update(show.snapshot, revision: show.projectRevision)
             VideoPlayback.teleprompter.update(show.snapshot, revision: show.projectRevision)
             VideoPlayback.teleprompter2.update(show.snapshot, revision: show.projectRevision)
+            for index in 1...2 { refreshTeleprompterRemote(index) }
+            let presentation = show.presentationState
+            let transport = show.snapshot.transport
+            // Needles and meters have independent display clocks. Only the textual
+            // readouts and setlist progress need periodic workspace snapshots.
+            let bucket = SIMD2(floor(transport.position * 2), floor(transport.subPlay.position * 2))
+            if playbackTick, presentation == lastPresentation, bucket == lastClockBucket,
+               lastMixerRevision == show.mixerPlaybackRevision { return }
+            lastClockBucket = bucket
+            lastPresentation = presentation
+            lastMixerRevision = show.mixerPlaybackRevision
         }
         session.refreshLocalWorkspace()
         if var next = session.remoteState {
@@ -103,7 +124,6 @@ import Combine
             }
         }
         timer.synchronize(state?.timer)
-        for index in 1...2 { refreshTeleprompterRemote(index) }
     }
     private func refreshTeleprompterRemote(_ index: Int) {
         guard running, let show else { return }
@@ -1955,7 +1975,7 @@ struct IpadRecycledTrackRows<Row: View>: UIViewControllerRepresentable {
         self.retained = retained
         self.row = row
         needsReload = true
-        refresh()
+        view.setNeedsLayout()
     }
 
     private func observeScroll() {
@@ -1965,10 +1985,10 @@ struct IpadRecycledTrackRows<Row: View>: UIViewControllerRepresentable {
         if scroll !== enclosing {
             scroll = enclosing
             observation = enclosing?.observe(\.bounds, options: [.new]) { [weak self] _, _ in
-                MainActor.assumeIsolated { self?.refresh() }
+                MainActor.assumeIsolated { self?.viewIfLoaded?.setNeedsLayout() }
             }
         }
-        refresh()
+        viewIfLoaded?.setNeedsLayout()
     }
 
     private func refresh() {
@@ -2202,8 +2222,11 @@ struct IpadTimelinePlaybackSurface<Content: View>: UIViewControllerRepresentable
     private func paint() {
         guard let viewport = configuredViewport, let window = renderWindow, let transport,
               viewportSize.width > 0, viewportSize.height > 0, colors.count == 3 else { return }
-        let frame = TimelinePlaybackPresentation(transport: transport,
-            elapsed: ProcessInfo.processInfo.systemUptime - sampledAt, songDuration: duration, mainBoundary: boundary)
+        let now = ProcessInfo.processInfo.systemUptime
+        let frame = TimelinePlaybackPresentation(transport: transport, elapsed: now - sampledAt,
+            songDuration: duration, mainBoundary: boundary,
+            audibleMainPosition: transport.playing ? show?.audioPresentationPosition(0, now) : nil,
+            audibleSubPosition: transport.subPlay.playing ? show?.audioPresentationPosition(1, now) : nil)
         var visible = viewport
         visible.start = visibleStart
         if follow, show?.timelineFollowPaused != true, let position = frame.followPosition {

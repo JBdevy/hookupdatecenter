@@ -157,7 +157,13 @@ public final class ShowTrackSelectionPresentation: ObservableObject {
     public let transportFadeout = TransportFadeout()
     public let multiLoopFaders = MultiLoopFaderPresentation()
     public func mixerPlaybackGain(track: UUID?, manual: Double) -> Double {
-        let base = automationPlaybackValue(track, kind: .volume).map(TrackEnvelope.gain) ?? manual
+        mixerPlaybackGain(track, manual: manual, automation: automation(track))
+    }
+    func mixerPlaybackGain(for track: Track) -> Double {
+        mixerPlaybackGain(track.id, manual: track.volume, automation: automationRecording[track.id] ?? track.automation)
+    }
+    private func mixerPlaybackGain(_ track: UUID?, manual: Double, automation: TrackAutomation?) -> Double {
+        let base = automation.flatMap { automationPlaybackValue(track, kind: .volume, settings: $0) }.map(TrackEnvelope.gain) ?? manual
         return (multiLoopFaders.frame?.gain(base, project: snapshot.project.id, track: track) ?? base) * transportFadeout.multiplier(for: track)
     }
     public var audioTransportFade: ([UUID: Double]) -> Void = { _ in }
@@ -3293,7 +3299,9 @@ public final class ShowTrackSelectionPresentation: ObservableObject {
         catch { message = error.localizedDescription }
     }
     public func automationPlaybackValue(_ track: UUID?, kind: AutomationTarget.Kind) -> Double? {
-        let settings = automation(track)
+        automationPlaybackValue(track, kind: kind, settings: automation(track))
+    }
+    private func automationPlaybackValue(_ track: UUID?, kind: AutomationTarget.Kind, settings: TrackAutomation) -> Double? {
         guard settings.enabled, settings.mode != .trimRead,
               let envelope = settings.active.first(where: { $0.target.kind == kind }) else { return nil }
         let transport = timelinePlaybackTransport

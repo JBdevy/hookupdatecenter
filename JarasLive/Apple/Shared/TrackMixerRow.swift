@@ -1295,12 +1295,13 @@ struct TrackMixerVUButton: View {
             .accessibilityIdentifier("track-mixer-vu")
             .accessibilityAddTraits(visible ? .isSelected : [])
             .contextMenu {
-                ForEach(TrackMixerVU.Style.allCases, id: \.self) { choice in
-                    Button { style = choice } label: {
-                        if style == choice { Label(choice.title, systemImage: "checkmark") }
-                        else { Text(verbatim: choice.title) }
+                Picker("VU Meter", selection: $style) {
+                    ForEach(TrackMixerVU.Style.allCases, id: \.self) { choice in
+                        Text(verbatim: choice.title).tag(choice)
                     }
                 }
+                .pickerStyle(.inline)
+                .labelsHidden()
             }
             .jarasHelp("Show/hide track VU meters")
     }

@@ -6,7 +6,7 @@ import UIKit
     static func permitsInput(in view: UIView, enabled: Bool = true, allowsMappingLearning: Bool = false) -> Bool {
         guard let window = view.window, window.isKeyWindow, !view.isHidden,
               window.windowScene?.activationState == .foregroundActive else { return false }
-        var parent = window.catliveKeyboardFirstResponder
+        var parent = IpadFirstResponderProbe.current(in: window)
         var textEditing = false
         while let responder = parent {
             if responder is UITextInput { textEditing = true; break }
@@ -225,6 +225,27 @@ private final class IpadKeyboardPointerObserver: UIGestureRecognizer, UIGestureR
                            shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool { true }
 }
 
+@MainActor private final class IpadFirstResponderProbe: NSObject {
+    weak var responder: UIResponder?
+
+    static func current(in window: UIWindow) -> UIResponder? {
+        let probe = IpadFirstResponderProbe()
+        UIApplication.shared.sendAction(#selector(UIResponder.catliveIdentifyKeyboardResponder(_:)),
+                                        to: nil, from: probe, for: nil)
+        guard let responder = probe.responder else { return nil }
+        var parent: UIResponder? = responder
+        while let next = parent {
+            if next === window { return responder }
+            parent = next.next
+        }
+        // Another foreground scene can own the application-wide responder.
+        return window.catliveKeyboardFirstResponder
+    }
+}
+
+private extension UIResponder {
+    @objc func catliveIdentifyKeyboardResponder(_ probe: IpadFirstResponderProbe) { probe.responder = self }
+}
 private extension UIView {
     var catliveKeyboardFirstResponder: UIResponder? {
         if isFirstResponder { return self }

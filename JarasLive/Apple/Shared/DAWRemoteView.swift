@@ -434,6 +434,10 @@ struct DAWRemoteClientView: View {
         var blockSymbols: Bool
     }
     private static var cachedPresentationKey: PresentationKey?
+    static func localMediaDirectory(for show: ShowController?) -> URL? {
+        guard let documents, documents.show === show else { return nil }
+        return documents.currentURL?.deletingLastPathComponent() ?? documents.projectAudio.mediaDirectory
+    }
     private static var cachedRegions: [DAWRemoteState.Region] = []
     private static var cachedTimelineRegions: [DAWRemoteState.Region] = []
     private static var cachedMarkers: [DAWRemoteState.Marker] = []
@@ -599,16 +603,20 @@ struct DAWRemoteClientView: View {
                 : song?.parts.first(where: { $0.id == transport.queuedRegionId })
             let displays = TransportSongDisplays(song: song, transport: transport, focusedRegion: show.focusedRegion.map(show.playlistRegionSourceID))
             let nextSection = transport.queuedSectionMarkerId == nil ? nil : song?.nextSectionTrigger(for: transport)
+            let tracks = song?.tracks ?? []
+            let soloAudible = TrackHierarchy.soloAudibleTracks(tracks)
             return DAWRemoteState(project: snapshot.project.id, projectName: snapshot.project.name,
                 song: song?.id, songName: song?.name ?? "—",
                 songs: snapshot.project.songs.map { .init(id: $0.id, name: $0.name) },
-                tracks: (song?.tracks ?? []).filter { remote.isLocalWorkspace || $0.kind == .standard }.map { track in
+                tracks: tracks.filter { remote.isLocalWorkspace || $0.kind == .standard }.map { track in
                     let items = remote.isLocalWorkspace ? cachedItems[track.id] : cachedNetworkItems[track.id]
+                    let silenced = track.mute || (track.kind == .standard && !(soloAudible?.contains(track.id) ?? true))
+                    let emphasized = show.mixerTrackSelection.contains(track.id)
                     return .init(id: track.id, name: track.name, color: track.color ?? JarasTheme.roleHex(track.role),
-                          volume: show.mixerPlaybackGain(track: track.id, manual: track.volume), pan: track.pan, mute: track.mute, solo: track.solo,
+                          volume: show.mixerPlaybackGain(for: track), pan: track.pan, mute: track.mute, solo: track.solo,
                           clips: items?.clips ?? [],
-                          nameColor: JarasTheme.trackNameHex(track, emphasized: show.mixerTrackSelection.contains(track.id), silenced: song?.isSilenced(track) ?? track.mute),
-                          emphasized: show.mixerTrackSelection.contains(track.id), silenced: song?.isSilenced(track) ?? track.mute, laneCount: items?.lanes ?? 1, linkedTrack: track.stereoLink?.partner, heightScale: track.heightScale, compactComponents: remote.isLocalWorkspace && track.allowsCompactMixerHeight ? true : nil,
+                          nameColor: JarasTheme.trackNameHex(track, emphasized: emphasized, silenced: silenced),
+                          emphasized: emphasized, silenced: silenced, laneCount: items?.lanes ?? 1, linkedTrack: track.stereoLink?.partner, heightScale: track.heightScale, compactComponents: remote.isLocalWorkspace && track.allowsCompactMixerHeight ? true : nil,
                           minimumHeight: remote.isLocalWorkspace && track.kind == .programChange ? Double(track.programChangeLaneCount * 24 + 8) : nil,
                           peakDB: sendsPeaks && track.kind != .chords && track.kind != .timecode && track.kind != .programChange ? StemAudioPlayback.shared.meter(for: track.id).peakHold.decibels : nil,
                           canMeter: track.kind != .chords && track.kind != .timecode && track.kind != .programChange, parentTrack: track.parentTrackID,
@@ -6514,7 +6522,7 @@ private struct RemoteNativeTimeline: View {
             scrolling: scrolling, local: local, headersHidden: itemHeadersHidden, waveformPeaks: waveformPeaks,
             invertWaveformColors: local ? invertWaveformColors : (state.gridInvertsWaveforms ?? TimelineAppearanceDefaults.invertWaveformColors),
             nativeTrack: nativeContent?.tracks[track.id], nativeSong: nativeSong, preparedTrack: nativeContent?.track(track.id),
-            nativeDirectory: local ? DAWRemoteHostBridge.documents?.currentURL?.deletingLastPathComponent() : nil,
+            nativeDirectory: local ? DAWRemoteHostBridge.localMediaDirectory(for: localShow) : nil,
             nativeRevision: localShow?.projectRevision ?? 0, mixPreview: scrolling.itemMix, selectedItem: scrolling.selectedItem,
             selectedItems: scrolling.itemSelection.items, movementLocked: localShow?.timelineItemsLocked ?? false,
             itemMixLocks: TimelineItemControlLocks(volume: localShow?.timelineItemVolumeLocked == true,
