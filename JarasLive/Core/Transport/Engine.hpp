@@ -55,6 +55,7 @@ public:
     void setClipFXBypass(const ID& clip, bool bypassed);
     void setClipPitchState(const ID& clip, std::optional<double> semitones);
     void setClipName(const ID& clip, std::string name);
+    void setItemsMuted(const std::set<ID>& ids, bool muted);
     void setClipText(const ID& clip, std::string text);
     void setMIDIInput(const ID& track, int slot);
     void setMIDIChannel(const ID& track, int channel);

@@ -32,12 +32,51 @@ import Foundation
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
         let store = ProjectStore(url: directory.appendingPathComponent("Locked.jl"))
+        let midiURL = directory.appendingPathComponent("MIDI de teste.mid")
+        let midiBytes: [UInt8] = [77,84,104,100, 0,0,0,6, 0,0,0,1,0,96,
+                                  77,84,114,107, 0,0,0,12, 0,0x90,60,100, 96,0x80,60,0, 0,0xff,0x2f,0]
+        try Data(midiBytes).write(to: midiURL)
+        precondition(GridMediaFileFilter.accepts(midiURL))
+        let targetTrack = UUID()
+        let drop = try StemProjectImporter.prepareDroppedAudio([midiURL], start: 7, destinationTracks: [targetTrack],
+            destination: directory.appendingPathComponent("Test.jl"))
+        let midiClip = drop.tracks.first?.clips.first
+        precondition(drop.tracks.first?.id == targetTrack && midiClip?.startTime == 7 && midiClip?.duration == 0.5 &&
+                     midiClip?.midi?.notes.first?.pitch == 60 && midiClip?.audioFile == nil && drop.folders.isEmpty)
+        print("LIBRARY_MIDI_FILE_DROPS_EDITABLE_NOTES_ON_TARGET_TRACK_OK")
         let original = fixture()
         try original.validate()
         precondition(original.timelineMovementLocked == nil)
         let legacy = try JSONEncoder().encode(original)
         precondition(!String(data: legacy, encoding: .utf8)!.contains("timelineMovementLocked"))
-        let show = try ShowController(executor: LocalCommandExecutor(), persistence: store, initialProject: original)
+        let executor = LocalCommandExecutor()
+        let show = try ShowController(executor: executor, persistence: store, initialProject: original)
+        let muteIDs = Set(show.current!.tracks.filter { $0.kind == .standard }.compactMap { $0.clips.first?.id })
+        precondition(muteIDs.count == 2)
+        var mutedEvents = Set<UUID>(), audioUpdates = 0
+        show.audioClipMute = { id, muted in if muted { mutedEvents.insert(id) } }
+        show.audioUpdate = { _, _ in audioUpdates += 1 }
+        let beforeMute = show.projectRevision
+        show.setItemsMix(muteIDs, muted: true)
+        let mutedCore = try executor.snapshot().project
+        precondition(mutedEvents == muteIDs && show.projectRevision == beforeMute + 1 && audioUpdates == 0)
+        precondition(mutedCore.songs[0].tracks.flatMap(\.clips).filter { $0.muted == true }.count == 2)
+        mutedEvents.removeAll()
+        show.setItemsMix(muteIDs, muted: true)
+        precondition(mutedEvents.isEmpty && show.projectRevision == beforeMute + 1)
+        do {
+            try executor.setItemsMuted(muteIDs.union([UUID()]), muted: false)
+            preconditionFailure("Invalid batch was partially accepted")
+        } catch {
+            let stillMuted = try executor.snapshot().project
+            precondition(stillMuted == mutedCore)
+        }
+        show.undo()
+        precondition(show.current!.tracks.flatMap(\.clips).allSatisfy { $0.muted != true })
+        show.redo()
+        precondition(show.current!.tracks.flatMap(\.clips).filter { $0.muted == true }.count == 2)
+        show.undo()
+        print("BATCH_ITEM_MUTE_UPDATES_VOICES_ATOMICALLY_AND_SUPPORTS_UNDO_OK")
         precondition(!show.timelineMovementLocked)
         var audioRevisions: [UInt64] = []
         show.audioUpdate = { _, revision in audioRevisions.append(revision) }

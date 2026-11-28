@@ -99,6 +99,41 @@
 #include "MIDITakePlaybackTests.h"
 #include "RegionLaneTests.h"
 #include "MasterMixerTests.h"
+#include "WorkspaceLibrary.h"
+namespace catlive {
+struct WorkspaceLibraryTestAccess {
+    static void verify(Session &session, const File &folder) {
+        WorkspaceLibrary panel(session);
+        panel.setSize(620, 380);
+        auto &rows = panel.itemRows;
+        const auto midi = folder.getChildFile("Library phrase.mid"), sample = folder.getChildFile("Sound.wav");
+        auto preset = object(); put(preset, "plugin", "native:EQ");
+        auto vst = object(); put(vst, "classID", "abc");
+        rows.entries = {{"EQ", "native:EQ", "native"}, {"VST3", "", "external", vst},
+            {"Preset", "example", "preset", preset}, {"Keys", "keys", "instrument"},
+            {"Sample", "sound", "sample", {}, sample}, {"MIDI", "phrase", "midiFile", {}, midi},
+            {"Chord", "C", "midiChord"}};
+        auto &list = panel.contents;
+        list.setBounds(0, 0, 320, 315);
+        list.setVisible(true);
+        list.updateContent();
+        const StringArray types{"catlive-library-effect", "catlive-library-effect", "catlive-library-effect",
+            "catlive-library-effect", "catlive-library-sampler", "catlive-library-media", "catlive-midi-chord"};
+        for (int index = 0; index < rows.getNumRows(); ++index) {
+            const auto bounds = list.getRowPosition(index, true);
+            for (int y : {bounds.getY() + 1, bounds.getCentreY(), bounds.getBottom() - 2}) {
+                const int hit = list.getRowContainingPosition(bounds.getX() + 12, y);
+                if (hit != index) throw std::runtime_error("Library row has an inactive vertical edge");
+                SparseSet<int> selection; selection.addRange({hit, hit + 1});
+                const auto description = rows.getDragSourceDescription(selection);
+                if (str(description, "type") != types[index]) throw std::runtime_error("Missing Library row drag");
+                if (index == 5 && str(description, "file") != midi.getFullPathName())
+                    throw std::runtime_error("Library lost the MIDI file path");
+            }
+        }
+    }
+};
+}
 #include "WorkspaceLayoutTests.h"
 #include "WorkspaceSetlistPresentationTests.h"
 #include "SetlistSearchTests.h"
@@ -2803,6 +2838,11 @@ int runTests(const File &directory) {
             session.redo();expect(session.song()->tracks.front().clips.size()==(same?2u:1u),"Redo restores batch and media references");
         }
     });
+    test("Library rows start drags at top centre and bottom for every media type", [&] {
+        Session session; session.inspection = true; session.audio.prepareOffline(48000);
+        session.restoreSnapshot(ProjectCodec::encode(floatingControlTests::fixture()));
+        WorkspaceLibraryTestAccess::verify(session, directory);
+    });
     test("Library samples dropped on the grid import on the target track", [&] {
         const auto root = directory.getNonexistentChildFile("library-grid-drop", "");
         expect(root.createDirectory().wasOk(), "Could not create the scratch project directory");
@@ -2838,6 +2878,23 @@ int runTests(const File &directory) {
         const auto &clip = tracks[1].clips.front();
         expect(clip.name == "BUZINA" && clip.startTime > 0 && clip.audioFile &&
                root.getChildFile(text(clip.audioFile->path)).existsAsFile(), "The dropped grid item must keep its name, placement and media");
+
+        const auto midiFile = root.getChildFile("Library phrase.mid");
+        jaras::AudioClip phrase; phrase.id = uuid(); phrase.name = "Phrase"; phrase.duration = 1;
+        phrase.midi.emplace(); phrase.midi->notes.push_back({uuid(), 0, 1, 60, 100, 1});
+        exportMIDIItem(phrase, midiFile);
+        auto midiDrag = object(); put(midiDrag, "type", "catlive-library-media");
+        put(midiDrag, "file", midiFile.getFullPathName());
+        const Point<int> midiPoint{200, point.y};
+        const DragAndDropTarget::SourceDetails dropMIDI(midiDrag, &workspace, midiPoint);
+        expect(target->isInterestedInDragSource(dropMIDI), "Grid declined the Library MIDI file");
+        target->itemDropped(dropMIDI);
+        const auto midiDeadline = Time::getMillisecondCounterHiRes() + 10000;
+        while (session.busy && Time::getMillisecondCounterHiRes() < midiDeadline) floatingControlTests::pump();
+        const auto &onTrack = session.song()->tracks[1].clips;
+        const auto it = std::find_if(onTrack.begin(), onTrack.end(), [](const auto &item) { return item.midi.has_value(); });
+        expect(it != onTrack.end() && it->midi->notes.size() == 1 && it->midi->notes.front().pitch == 60 &&
+               !it->audioFile && it->startTime > 0, "Library MIDI must land as editable notes on the selected track");
     });
     test("Generated Click Subplay filters item owners without muting the incoming click", [&] {
         jaras::Song song; song.duration=8; song.bpm=120; song.regionOwnershipInitialized=true;

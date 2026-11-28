@@ -122,12 +122,15 @@ private struct LibraryRowDrag: ViewModifier {
     let data: () -> Data?
     let provider: () -> NSItemProvider
     var click: (() -> Void)?
+    var height: CGFloat = 27
 
     func body(content: Content) -> some View {
+        let row = content.frame(maxWidth: .infinity, alignment: .leading).frame(height: height).contentShape(Rectangle())
         #if os(macOS)
-        content.overlay(LibraryRowDragInput(title: title, type: type, data: data, click: click))
+        row.overlay(LibraryRowDragInput(title: title, type: type, data: data, click: click)
+            .frame(maxWidth: .infinity, maxHeight: .infinity))
         #else
-        content.onDrag(provider)
+        row.onDrag(provider)
         #endif
     }
 }
@@ -667,7 +670,8 @@ private struct WorkspaceFilesPane: View {
             #if os(iOS)
             label.onDrag { WorkspaceBrowserFileTransfer.provider(entry.url) }
             #else
-            label.onDrag { NSItemProvider(item: entry.url as NSURL, typeIdentifier: UTType.fileURL.identifier) }
+            label.modifier(LibraryRowDrag(title: entry.name, type: .fileURL,
+                data: { entry.url.dataRepresentation }, provider: { NSItemProvider(object: entry.url as NSURL) }, height: 25))
                 .contextMenu {
                     Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([entry.url]) }
                 }
@@ -1951,14 +1955,15 @@ struct WorkspaceLibrary: View {
     private func pluginRow(_ name: String, identity: String, shaded: Bool, favorite: Bool,
                            format: String, toggle: @escaping () -> Void) -> some View {
         HStack(spacing: 5) {
-            entryName(name, icon: "puzzlepiece.extension")
-                .contentShape(Rectangle())
-                .modifier(effectDrag(name, identity: identity))
-            Text(verbatim: format)
-                .font(.jarasSystem(size: 9, weight: .semibold))
-                .foregroundStyle(format == "ARA2" ? JarasTheme.green : theme.secondary)
-                .fixedSize().padding(.horizontal, 4).padding(.vertical, 2)
-                .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 3))
+            HStack(spacing: 5) {
+                entryName(name, icon: "puzzlepiece.extension")
+                Text(verbatim: format)
+                    .font(.jarasSystem(size: 9, weight: .semibold))
+                    .foregroundStyle(format == "ARA2" ? JarasTheme.green : theme.secondary)
+                    .fixedSize().padding(.horizontal, 4).padding(.vertical, 2)
+                    .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 3))
+            }
+            .modifier(effectDrag(name, identity: identity))
             favoriteButton(favorite, action: toggle)
         }
             .padding(.horizontal, 6).frame(height: 27)
@@ -2154,7 +2159,8 @@ struct WorkspaceLibrary: View {
                         }
                         .padding(.horizontal, 8).frame(height: 27)
                         .contentShape(Rectangle())
-                        .onDrag { NSItemProvider(object: url as NSURL) }
+                        .modifier(LibraryRowDrag(title: url.deletingPathExtension().lastPathComponent, type: .fileURL,
+                            data: { url.dataRepresentation }, provider: { NSItemProvider(object: url as NSURL) }))
                     }
                 }
             }

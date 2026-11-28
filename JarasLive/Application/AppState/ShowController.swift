@@ -111,7 +111,7 @@ public struct ShowTimelinePresentationState: Equatable {
     // The AppKit needles and zoom input read the transport separately.
     func hasSameGridLayout(as other: Self, includesTrackSelection: Bool = true) -> Bool {
         project == other.project && projectSession == other.projectSession && revision == other.revision &&
-        song == other.song && focusRequest == other.focusRequest && selectedRegion == other.selectedRegion &&
+        song == other.song && selectedRegion == other.selectedRegion &&
         selectedRegions == other.selectedRegions &&
         (!includesTrackSelection || (trackSelectionRequest == other.trackSelectionRequest && trackSelection == other.trackSelection)) &&
         programChangeSelection == other.programChangeSelection &&
@@ -1802,6 +1802,22 @@ public final class ShowTrackSelectionPresentation: ObservableObject {
               (muted == nil || !timelineItemMuteLocked) else { return }
         guard gain.map({ $0.isFinite && $0 >= 0 }) ?? true,
               pan.map({ $0.isFinite && (-1...1).contains($0) }) ?? true else { return }
+        if gain == nil, pan == nil, let muted {
+            guard canControl(), !finishing, !ids.isEmpty else { return }
+            var project = snapshot.project
+            let changed = project.setItemMutes(ids, muted: muted)
+            guard !changed.isEmpty else { return }
+            do {
+                try executor.setItemsMuted(changed, muted: muted)
+                for id in changed { audioClipMute(id, muted) }
+                publishingScalarMixerEdit = true
+                snapshot.project = project
+                publishingScalarMixerEdit = false
+                markChanged(refreshAudio: false, preservingMediaStorage: true, updateAudio: false, knownChanged: true)
+                onProjectEdited()
+            } catch { message = error.localizedDescription }
+            return
+        }
         editProject { project in
             for song in project.songs.indices {
                 for track in project.songs[song].tracks.indices where project.songs[song].tracks[track].kind == .standard {

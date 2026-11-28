@@ -861,6 +861,23 @@ void Engine::setClipPitchState(const ID& id, std::optional<double> semitones) {
     }
     throw std::invalid_argument("Unknown item");
 }
+void Engine::setItemsMuted(const std::set<ID>& ids, bool muted) {
+    projectSync::requireWritable();
+    if (ids.empty()) return;
+    std::vector<AudioClip*> selected;
+    selected.reserve(ids.size());
+    for (auto& song : project_.songs) {
+        for (auto& track : song.tracks) {
+            if (!fixedTrackName(track.role).empty()) continue;
+            for (auto& clip : track.clips)
+                if (ids.count(clip.id)) selected.push_back(&clip);
+        }
+    }
+    if (selected.size() != ids.size()) throw std::invalid_argument("Unknown or ineligible mute target");
+    for (auto* clip : selected) clip->muted = muted;
+    if (projectSync::internalDepth == 0) ++syncRevision_;
+}
+
 void Engine::setClipName(const ID& id, std::string name) {
     projectSync::requireWritable();
     if (name.empty()) throw std::invalid_argument("Item name cannot be empty");

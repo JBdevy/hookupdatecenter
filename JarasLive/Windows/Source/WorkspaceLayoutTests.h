@@ -1640,6 +1640,41 @@ struct WorkspaceLayoutTests {
             auto row=object();put(row,"operation",name);put(row,"handlerMilliseconds",done-begin);
             put(row,"paintMilliseconds",Time::getMillisecondCounterHiRes()-done);timings.add(row);
         };
+        auto *rows = dynamic_cast<SetlistRows *>(uiFeatureTests::find(w, "setlistRows"));
+        require(rows && rows->getModel(), "Setlist rows unavailable");
+        auto clickSong = [&](int index) {
+            rows->scrollToEnsureRowIsOnscreen(index);
+            auto *content = rows->getViewport()->getViewedComponent();
+            const int y = rows->rowTop(index) + rows->getRowHeight(index) / 2;
+            auto *row = content->getComponentAt(20, y);
+            require(row && row != content, "Song row could not receive a click");
+            while (row->getParentComponent() != content) row = row->getParentComponent();
+            const auto time = Time::getCurrentTime();
+            const Point<float> point{20.f, float(row->getHeight()) / 2};
+            auto mouse = [&](ModifierKeys mods) { return MouseEvent(Desktop::getInstance().getMainMouseSource(),
+                point, mods, 1, 0, 0, 0, 0, row, row, time, point, time, 1, false); };
+            row->mouseDown(mouse(ModifierKeys::leftButtonModifier));
+            row->mouseUp(mouse(ModifierKeys{}));
+        };
+        if (source.isEmpty()) {
+            const int distant = int(roots.size()) - 1;
+            for (int index : {distant, 1}) {
+                measure("clickSongPlaying", [&] { clickSong(index); });
+                require(session.transport().playing && session.transport().queuedRegionId == roots[(size_t)index] &&
+                        session.transport().regionId == roots.front(), "Setlist click changed the playing song or queued the wrong one");
+                const auto edit = 11. + index;
+                measure("gridAfterSetlistPlaying", [&] { session.command(jaras::CommandKind::editSeek, {}, edit); });
+                require(session.transport().editPosition == edit && session.transport().playing, "First grid edit after Setlist failed");
+            }
+            session.command(jaras::CommandKind::stopAll);
+            for (int index : {distant, 1}) {
+                measure("clickSongStopped", [&] { clickSong(index); });
+                require(!session.transport().playing && session.transport().regionId == roots[(size_t)index],
+                        "Stopped Setlist click selected the wrong song");
+            }
+            session.command(jaras::CommandKind::selectRegion, roots.front());
+            session.command(jaras::CommandKind::play);
+        }
         for(int i=0;i<3;++i) {
             measure("queue",[&]{session.command(jaras::CommandKind::queueRegion,roots[1]);});
             measure("stopOn",[&]{auto next=*session.project().regionSetlist;next.stopAtRegionEnd=true;session.configureSetlist(next);});

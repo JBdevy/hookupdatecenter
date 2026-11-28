@@ -785,6 +785,14 @@ static void report(NSError** error, const std::exception& e) { if (error) *error
 - (BOOL)setClipFXBypass:(NSString *)clip bypassed:(BOOL)bypassed error:(NSError **)error {
     try { _engine->setClipFXBypass(str(clip), bypassed); return YES; } catch(const std::exception& e) { report(error,e); return NO; }
 }
+- (BOOL)setItemsMuted:(NSArray<NSString *> *)clips muted:(BOOL)muted error:(NSError **)error {
+    try {
+        std::set<ID> ids;
+        for (NSString *clip in clips) ids.insert(str(clip));
+        _engine->setItemsMuted(ids, muted);
+        return YES;
+    } catch (const std::exception& e) { report(error, e); return NO; }
+}
 - (BOOL)setClipName:(NSString *)clip name:(NSString *)value error:(NSError **)error {
     try { _engine->setClipName(str(clip), str(value)); return YES; } catch(const std::exception& e) { report(error,e); return NO; }
 }

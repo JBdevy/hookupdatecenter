@@ -4,6 +4,7 @@
 #include "Session.h"
 #include "LinkedStemMedia.h"
 #include "MediaSource.h"
+#include "MIDIItemImport.h"
 #include "ProjectionSelection.h"
 #include "RegionBPM.h"
 #include "AudioSeparation.h"
@@ -3066,7 +3067,7 @@ void Session::importMedia(const Array<File> &files,double at,ID targetTrack,Medi
     auto weak=std::weak_ptr<int>(alive);busy=true;importProgress=0;message=String::fromUTF8("Importando mídia…");notify();
     worker.addJob([this,weak,files,at,targetTrack,layout,gap,songID,projectID,directory,targetRole,completion,deferWaveform,
                    gridTracks=std::move(gridTracks)]{
-        struct Source {File file;double duration;bool projection;};
+        struct Source {File file;double duration;bool projection;std::optional<jaras::MIDIItem> midi;};
         std::vector<Source> sources;std::vector<jaras::Track> tracks;Array<File> copied;String error;
         try {
             AudioFormatManager formats;registerAudioFormats(formats);
@@ -3078,7 +3079,14 @@ void Session::importMedia(const Array<File> &files,double at,ID targetTrack,Medi
                 if (!file.createInputStream()) throw std::runtime_error("Não foi possível ler: " + utf8(file.getFileName()));
                 double duration = 0;
                 bool projection = false;
-                if (file.hasFileExtension("png;jpg;jpeg;bmp;gif;tif;tiff")) {
+                std::optional<jaras::MIDIItem> midi;
+                if (file.hasFileExtension("mid;midi")) {
+                    try {
+                        auto item = readMIDIItem(file);
+                        duration = item.duration;
+                        midi = std::move(item.midi);
+                    } catch (const std::runtime_error &) { continue; }
+                } else if (file.hasFileExtension("png;jpg;jpeg;bmp;gif;tif;tiff")) {
                     if (!ImageFileFormat::loadFrom(file).isValid()) continue;
                     duration = 10; projection = true;
                 } else if (file.hasFileExtension("mp4;mov;m4v;avi;mkv;webm;wmv")) {
@@ -3094,28 +3102,32 @@ void Session::importMedia(const Array<File> &files,double at,ID targetTrack,Medi
                 }
                 if (!std::isfinite(duration) || duration <= 0) continue;
                 if((!projection||layout==MediaDropLayout::stacked)&&!jaras::fixedTrackName(targetRole).empty())throw std::runtime_error("Solte arquivos de áudio em uma pista padrão.");
-                sources.push_back({file,duration,projection});
+                sources.push_back({file,duration,projection,std::move(midi)});
             }
             double cursor=at;
             for(size_t i=0;i<sources.size();++i) {
-                const auto &source=sources[i];jaras::AudioClip clip;clip.id=uuid();clip.name=utf8(source.file.getFileNameWithoutExtension());clip.startTime=layout==MediaDropLayout::sameTrack?cursor:at;clip.duration=source.duration;
-                const String container = source.projection ? "Videos" : "Stems";
-                const auto folder = directory.getChildFile(container);
-                if (folder.createDirectory().failed()) throw std::runtime_error("Não foi possível criar a pasta de mídia.");
-                auto destination = folder.getChildFile(source.file.getFileName());
-                const bool shared = source.file == destination ||
-                    (destination.existsAsFile() && source.file.hasIdenticalContentTo(destination));
-                while (!shared) {
-                    destination = folder.getNonexistentChildFile(source.file.getFileNameWithoutExtension(), source.file.getFileExtension(), true);
-                    if (CopyFileW(source.file.getFullPathName().toWideCharPointer(), destination.getFullPathName().toWideCharPointer(), TRUE)) break;
-                    const auto error = GetLastError();
-                    if (error != ERROR_FILE_EXISTS && error != ERROR_ALREADY_EXISTS)
-                        throw std::runtime_error("Não foi possível copiar a mídia para o projeto.");
+                auto &source=sources[i];jaras::AudioClip clip;clip.id=uuid();clip.name=utf8(source.file.getFileNameWithoutExtension());clip.startTime=layout==MediaDropLayout::sameTrack?cursor:at;clip.duration=source.duration;
+                if (source.midi) {
+                    clip.midi = std::move(source.midi);
+                } else {
+                    const String container = source.projection ? "Videos" : "Stems";
+                    const auto folder = directory.getChildFile(container);
+                    if (folder.createDirectory().failed()) throw std::runtime_error("Não foi possível criar a pasta de mídia.");
+                    auto destination = folder.getChildFile(source.file.getFileName());
+                    const bool shared = source.file == destination ||
+                        (destination.existsAsFile() && source.file.hasIdenticalContentTo(destination));
+                    while (!shared) {
+                        destination = folder.getNonexistentChildFile(source.file.getFileNameWithoutExtension(), source.file.getFileExtension(), true);
+                        if (CopyFileW(source.file.getFullPathName().toWideCharPointer(), destination.getFullPathName().toWideCharPointer(), TRUE)) break;
+                        const auto error = GetLastError();
+                        if (error != ERROR_FILE_EXISTS && error != ERROR_ALREADY_EXISTS)
+                            throw std::runtime_error("Não foi possível copiar a mídia para o projeto.");
+                    }
+                    if (!shared) copied.add(destination);
+                    const auto relative = container + "/" + destination.getFileName();
+                    clip.audioFile=jaras::AudioFile{utf8(relative),{}};
+                    if(!source.projection&&!deferWaveform){std::unique_ptr<AudioFormatReader> reader(formats.createReaderFor(source.file));if(!reader)throw std::runtime_error("Não foi possível ler o áudio.");clip.waveform=waveform(*reader);}
                 }
-                if (!shared) copied.add(destination);
-                const auto relative = container + "/" + destination.getFileName();
-                clip.audioFile=jaras::AudioFile{utf8(relative),{}};
-                if(!source.projection&&!deferWaveform){std::unique_ptr<AudioFormatReader> reader(formats.createReaderFor(source.file));if(!reader)throw std::runtime_error("Não foi possível ler o áudio.");clip.waveform=waveform(*reader);}
                 if (layout == MediaDropLayout::separateTracks || tracks.empty()) {
                     jaras::Track track;
                     track.id = i < gridTracks.size() ? gridTracks[i]

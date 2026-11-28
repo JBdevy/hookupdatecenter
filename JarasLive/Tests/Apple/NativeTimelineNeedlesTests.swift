@@ -186,7 +186,7 @@ MainActor.assumeIsolated {
     pinnedNeedles.freezeTimerForTest()
     inner.contentView.scroll(to: .zero)
     stopped.timelineFollowPaused = false
-    pinnedNeedles.fireFrameForTest()
+    pinnedNeedles.requestFollowBeforeDisplayForTest()
     stopped.timelineFollowPaused = true
     pump(0.01)
     precondition(inner.contentView.bounds.minX == 0,

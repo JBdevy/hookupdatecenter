@@ -1493,6 +1493,22 @@ public struct RegionLanes: Equatable {
 }
 
 
+extension Project {
+    mutating func setItemMutes(_ ids: Set<UUID>, muted: Bool) -> Set<UUID> {
+        var changed = Set<UUID>()
+        for song in songs.indices {
+            for track in songs[song].tracks.indices where songs[song].tracks[track].kind == .standard {
+                let clips = songs[song].tracks[track].clips
+                for (index, clip) in clips.enumerated() where ids.contains(clip.id) && (clip.muted == true) != muted {
+                    songs[song].tracks[track].clips[index].muted = muted
+                    changed.insert(clip.id)
+                }
+            }
+        }
+        return changed
+    }
+}
+
 public enum TrackKind: String, CaseIterable, Sendable {
     case standard, video, timecode, teleprompt, teleprompt2, chords, programChange
     case click = "generatedClick"

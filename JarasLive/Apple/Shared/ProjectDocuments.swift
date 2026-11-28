@@ -1674,50 +1674,11 @@ extension UTType {
         }
         do {
             var imported = track
-            imported.clips = [try Self.readMIDIItem(url, start: cursor)]
+            imported.clips = [try StemProjectImporter.readMIDIItem(url, start: cursor)]
             try show.insertAudioTracks([imported], song: song.id, project: project)
         } catch { audioImportError = error.localizedDescription }
     }
 
-    nonisolated private static func readMIDIItem(_ url: URL, start: Double) throws -> AudioClip {
-        let unreadable = ProjectError.invalid("Could not read the MIDI file.")
-        var source: MusicSequence?
-        guard NewMusicSequence(&source) == noErr, let source else { throw unreadable }
-        defer { DisposeMusicSequence(source) }
-        guard MusicSequenceFileLoad(source, url as CFURL, .midiType, []) == noErr else { throw unreadable }
-        var count: UInt32 = 0
-        MusicSequenceGetTrackCount(source, &count)
-        var notes: [MIDINote] = [], duration = 0.0
-        for index in 0..<count {
-            var track: MusicTrack?
-            var iterator: MusicEventIterator?
-            guard MusicSequenceGetIndTrack(source, index, &track) == noErr, let track,
-                  NewMusicEventIterator(track, &iterator) == noErr, let iterator else { continue }
-            defer { DisposeMusicEventIterator(iterator) }
-            var hasEvent = DarwinBoolean(false)
-            while MusicEventIteratorHasCurrentEvent(iterator, &hasEvent) == noErr, hasEvent.boolValue {
-                var beat: MusicTimeStamp = 0, kind: MusicEventType = 0, size: UInt32 = 0
-                var data: UnsafeRawPointer?
-                MusicEventIteratorGetEventInfo(iterator, &beat, &kind, &data, &size)
-                if kind == kMusicEventType_MIDINoteMessage, let data, size >= MemoryLayout<MIDINoteMessage>.size {
-                    let note = data.load(as: MIDINoteMessage.self)
-                    var begin = 0.0, end = 0.0
-                    if note.velocity > 0, MusicSequenceGetSecondsForBeats(source, beat, &begin) == noErr,
-                       MusicSequenceGetSecondsForBeats(source, beat + Double(note.duration), &end) == noErr,
-                       begin.isFinite, end.isFinite, begin >= 0, end > begin {
-                        notes.append(.init(start: begin * 2, length: (end - begin) * 2, pitch: Int(note.note),
-                                           velocity: Int(note.velocity), channel: Int(note.channel) + 1))
-                        duration = max(duration, end)
-                    }
-                }
-                MusicEventIteratorNextEvent(iterator)
-            }
-        }
-        guard !notes.isEmpty else { throw ProjectError.invalid("The MIDI file contains no notes.") }
-        var item = AudioClip(id: UUID(), name: url.deletingPathExtension().lastPathComponent, startTime: start, duration: duration)
-        item.midi = MIDIItem(notes: notes)
-        return item
-    }
     #endif
     func browsePortablePackage() {
         guard !busy, !TrackRecording.shared.recording, !TrackRecording.shared.busy else { return }

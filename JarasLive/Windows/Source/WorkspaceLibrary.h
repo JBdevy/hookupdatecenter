@@ -380,6 +380,7 @@ private:
 };
 
 class WorkspaceLibrary final : public Component, public FileDragAndDropTarget, private Timer {
+    friend struct WorkspaceLibraryTestAccess;
     struct SharedSettings {
         var value;
         uint64 revision = 0;
@@ -785,9 +786,9 @@ class WorkspaceLibrary final : public Component, public FileDragAndDropTarget, p
             else if (row.kind == "external") identity = "vst3:" + str(row.payload, "classID").toUpperCase();
             else if (row.kind == "preset") identity = str(row.payload, "plugin");
             else if (row.kind == "instrument") identity = "native:Instruments:" + row.key;
-            else if (row.kind == "sample") {
+            else if (row.kind == "sample" || row.kind == "midiFile") {
                 auto payload = object();
-                put(payload, "type", "catlive-library-sampler");
+                put(payload, "type", row.kind == "sample" ? "catlive-library-sampler" : "catlive-library-media");
                 put(payload, "file", row.file.getFullPathName());
                 return payload;
             }

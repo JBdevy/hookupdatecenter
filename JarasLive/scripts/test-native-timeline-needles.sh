@@ -25,12 +25,17 @@ transfer = Path('Apple/Shared/VinhetasPanel.swift').read_text()
 diagnostics += '\nimport UniformTypeIdentifiers\ntypealias MixerDividerView = NSView\n'
 diagnostics += scroll[scroll.index('private protocol TimelineSetlistResizeHost:'):scroll.index('private final class WorkspaceSplitView<')]
 diagnostics += transfer[transfer.index('enum LibrarySamplerTransfer {'):transfer.index('enum PadAudioBuffer {')]
+importer = Path('Application/Project/StemProjectImporter.swift').read_text()
+diagnostics += importer[importer.index('enum GridMediaFileFilter {'):importer.index('/// Runs on a worker task')]
+diagnostics += '\n@MainActor enum NativeLibraryTrackDrop { static let type = NSPasteboard.PasteboardType("com.catlive.library-effect") }\n'
+commands = Path('Application/AppState/Commands.swift').read_text()
+diagnostics += next(line for line in commands.splitlines() if line.startswith('public enum ShowCommand:')) + '\n'
 transportView = Path('Apple/Shared/TransportView.swift').read_text()
 start = transportView.index('enum TimelineEditPreferences {')
 diagnostics += transportView[start:transportView.index('\n}', start) + 2] + '\n'
 head = grid[grid.index('private let markerLaneHeight:'):grid.index('struct TimelineHeaderBands')]
 start = grid.index('/// Moving needles update Core Animation layers')
-layer = grid[start:grid.index('private struct TimelineCursorAppearance<', start)].rsplit('#endif', 1)[0]
+layer = grid[start:grid.index('struct TimelineCursorAppearance<', start)].rsplit('#endif', 1)[0]
 models = Path('Application/Project/ProjectModels.swift').read_text()
 transport = models[models.index('public struct QueueState:'):models.index('public struct PlaybackItemStartIndex')]
 multi = Path('Application/Project/MultiLoop.swift').read_text()
@@ -52,7 +57,7 @@ stubs = stubs.replace('var isPlaying: Bool', '@Published var timelineFollowPause
 stubs = stubs.replace('    private var sampledAt =', '    var timelinePlaybackIsPublishingTick = false\n    private var sampledAt =', 1)
 stubs = stubs.replace('subPlaying: Bool = false) {', 'subPlaying: Bool = false, tick: Bool = false) {', 1)
 stubs = stubs.replace('        generation += 1', '        timelinePlaybackIsPublishingTick = tick\n        defer { timelinePlaybackIsPublishingTick = false }\n        generation += 1', 1)
-layer = layer.replace('    private func paint() {', '    var paintCountForTest = 0\n    private func paint() {\n        paintCountForTest += 1', 1)
+layer = layer.replace('    private func paint(onDisplayTick: Bool = false) {', '    var paintCountForTest = 0\n    private func paint(onDisplayTick: Bool = false) {\n        paintCountForTest += 1', 1)
 layer = layer.replace('        let resized = self.size != size', '        configureCountForTest += 1\n        let resized = self.size != size', 1)
 layer = layer.replace('    private var pendingSample = false', '    var configureCountForTest = 0\n    private var pendingSample = false', 1)
 layer += '''
@@ -62,6 +67,7 @@ extension NativeTimelineNeedlesView {
     var sampleTimeForTest: Double { sampledAt }
     func freezeTimerForTest() { timer?.fireDate = .distantFuture }
     func fireFrameForTest() { timer?.fire() }
+    func requestFollowBeforeDisplayForTest() { paint() }
 }
 '''
 stubs += '''
@@ -82,7 +88,9 @@ flags = producer[producer.index('    private var updatingPlaybackSnapshot'):prod
 getter_start = producer.index('    var timelinePlaybackIsPublishingTick:')
 getter = producer[getter_start:producer.index('\n', getter_start)]
 tick_start = producer.index('    public func tick() {')
-tick = producer[tick_start:producer.index('    private var tempoControlRegion:', tick_start)]
+advance_start = producer.index('    public private(set) var timelinePlaybackAdvance =')
+advance = producer[advance_start:producer.index('    public var audioPresentationPosition:', advance_start)]
+tick = advance + producer[tick_start:producer.index('    private var tempoControlRegion:', tick_start)]
 auto_fader = Path('Tests/Apple/NativeTimelineNeedlesAutoFaderTests.swift').read_text().replace('__PRODUCTION_FLAGS__', flags).replace('__PRODUCTION_GETTER__', getter).replace('__PRODUCTION_TICK__', tick)
 Path(sys.argv[1]).write_text('import AppKit\nimport SwiftUI\nimport Combine\n' +
     stub_track + transport + '\n' + multi + '\n' + diagnostics + '\n' + native + '\n' + clip + '\n' + pin + '\n' +

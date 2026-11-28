@@ -1468,7 +1468,7 @@ private struct TimelineGridContent: View, Equatable {
     }
     private func muteSelectedItems(_ id: UUID) {
         guard let song = show.current,
-              let clip = song.tracks.filter({ $0.kind == .standard }).flatMap(\.clips).first(where: { $0.id == id }) else { return }
+              let clip = song.tracks.lazy.filter({ $0.kind == .standard }).flatMap(\.clips).first(where: { $0.id == id }) else { return }
         show.setItemsMix(itemMixTargets(id), muted: clip.muted != true)
     }
 
@@ -1578,9 +1578,7 @@ private struct TimelineGridContent: View, Equatable {
                     return CGRect(x: movingStart * scale + 1, y: 0, width: max(0, item.duration * scale - 2), height: 0)
                 }
                 return nil
-            }, focusRequest: show.regionFocusRequest,
-            focusTime: show.navigationFocusPosition ?? (show.snapshot.transport.subPlay.playing ? nil :
-                (show.restoredCursorPosition ?? song.parts.first(where: { $0.id == show.focusedRegion.map(show.playlistRegionSourceID) })?.startTime)),
+            },
             interactionBlocked: gridInteractionBlocked,
             horizontalOffsetChanged: { if horizontalScroll.offset != $0 { horizontalScroll.offset = $0 } },
             verticalOffsetChanged: { offset in
@@ -3315,8 +3313,6 @@ private struct TimelineGridContent: View, Equatable {
     let hasHostedItems: Bool
     let hasHostedProjection: () -> Bool
     let itemGuide: (CGFloat) -> CGRect?
-    let focusRequest: UUID
-    let focusTime: Double?
     let interactionBlocked: Bool
     let horizontalOffsetChanged: (CGFloat) -> Void
     let verticalOffsetChanged: (CGFloat) -> Void
@@ -4599,6 +4595,7 @@ private final class NativeTimelineBaseMountView: NSView {
     private var recordingSubscription: AnyCancellable?
     private var trackSelectionSubscription: AnyCancellable?
     private var rowRevealSubscription: AnyCancellable?
+    private var focusSubscription: AnyCancellable?
     private var highlightedTracks: Set<UUID> = []
     private var configuration: NativeTimelineBaseConfiguration?
     private var style: NativeTimelineBaseStyle?
@@ -4696,6 +4693,9 @@ private final class NativeTimelineBaseMountView: NSView {
             rowRevealSubscription = value.show.trackRevealChanges.dropFirst().sink { [weak self] request in
                 self?.revealTrack(request)
             }
+            focusSubscription = value.show.$regionFocusRequest.dropFirst().sink { [weak self] request in
+                self?.revealTimelineFocus(request)
+            }
         }
         updateHeaderInteraction()
         documentSize.hostedProjectionDidLayout = { [weak self] in self?.commitHostedProjection() ?? true }
@@ -4766,7 +4766,14 @@ private final class NativeTimelineBaseMountView: NSView {
         } else { project(zoom: state.value) }
         observeScroll()
         revealTrack(value.show.trackSelectionRequest)
-        wheel.focus(request: value.focusRequest, x: value.focusTime.map { $0 * pixelsPerSecond })
+        revealTimelineFocus(value.show.regionFocusRequest)
+    }
+    private func revealTimelineFocus(_ request: UUID) {
+        guard let value = configuration, let song = value.show.current, song.id == value.header.song.id else { return }
+        let show = value.show
+        let cursor = show.navigationFocusPosition ?? (show.snapshot.transport.subPlay.playing ? nil :
+            (show.restoredCursorPosition ?? show.focusedRegion.flatMap { show.playlistRegion($0)?.startTime }))
+        wheel.focus(request: request, x: cursor.map { $0 * pixelsPerSecond })
     }
     private func revealTrack(_ request: ShowController.TrackSelectionRequest?) {
         guard let scroll = vertical?.superview as? GridNativeScrollView else { return }
@@ -4870,7 +4877,7 @@ private final class NativeTimelineBaseMountView: NSView {
         DispatchQueue.main.async { [weak self] in
             guard let self, self.backgroundMount?.window == nil, self.rulerMount?.window == nil, self.foregroundMount?.window == nil else { return }
             self.zoomSubscription = nil; self.zoomState = nil
-            self.trackSelectionSubscription = nil; self.rowRevealSubscription = nil
+            self.trackSelectionSubscription = nil; self.rowRevealSubscription = nil; self.focusSubscription = nil
             self.highlightedTracks = []
             self.configuration = nil; self.style = nil
             self.selection.recordingHeaders = []
@@ -5135,6 +5142,13 @@ private final class NativeTimelineNeedlesView: NSView {
             subscriptions.removeAll(); self.show = show
             subscriptions.append(show.$snapshot.sink { [weak self, weak show] snapshot in
                 guard let self else { return }
+                // An explicit edit move already has its final time. Position its
+                // retained layer during the click, before the deferred UI and audio work.
+                if let previous = self.transport, previous.songId == snapshot.transport.songId,
+                   let position = snapshot.transport.editPosition, previous.editPosition != position, self.size.width > 0 {
+                    self.editX = self.x(position)
+                    self.edit.root.position.x = self.editX
+                }
                 // @Published calls this while the controller's tick flag is
                 // still set. Commands and engine state transitions keep their
                 // immediate presentation; routine samples join the 60 Hz clock.

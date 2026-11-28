@@ -3,7 +3,7 @@
 
 namespace catlive::externalMedia {
 inline bool supported(const File &file) {
-    return file.hasFileExtension("wav;wave;aif;aiff;flac;mp3;ogg;m4a;aac;mp4;mov;m4v;avi;mkv;webm;wmv;png;jpg;jpeg;bmp;gif;tif;tiff");
+    return file.hasFileExtension("wav;wave;aif;aiff;flac;mp3;ogg;m4a;aac;mp4;mov;m4v;avi;mkv;webm;wmv;png;jpg;jpeg;bmp;gif;tif;tiff;mid;midi");
 }
 inline StringArray gridFiles(const StringArray &paths, bool includeLyrics = false) {
     StringArray result;
