@@ -722,8 +722,14 @@ struct IpadTimelineViewport: Equatable {
     var leadingFraction = 0.0
     var minimumStart: Double { -span * leadingFraction }
     var end: Double { start + span }
-    mutating func reset(duration: Double) {
-        span = min(maximumSpan, 300, max(30, duration.isFinite ? duration : 30)); start = minimumStart
+    mutating func restoreZoom(_ zoom: Double, width: CGFloat, leadingSpace: Double, cursor: Double) {
+        guard width.isFinite, width > 1 else { return }
+        resizeLeadingSpace(leadingSpace, width: width)
+        let restored = zoom.isFinite ? zoom : 1
+        let scale = max(TimelineZoomLimits.minimumZoom(viewportWidth: width), min(TimelineZoomLimits.maximum, restored))
+        span = min(maximumSpan, max(Self.minimumSpan, Double(width) / (10 * scale)))
+        start = minimumStart
+        center(on: cursor)
     }
     mutating func resizeLeadingSpace(_ margin: Double, width: Double) {
         guard width.isFinite, width > 1 else { return }

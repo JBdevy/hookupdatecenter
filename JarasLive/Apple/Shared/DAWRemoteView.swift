@@ -5375,6 +5375,7 @@ private struct RemoteNativeTimeline: View {
     @State private var contentCache = IpadTimelineContentCache()
     @State private var snapTiming = TimelineScrollEndCache()
     @State private var viewport = IpadTimelineViewport()
+    @State private var drawableTimelineWidth: CGFloat?
     @State private var retainedWindow: IpadTimelineRenderWindow?
     @State private var playbackControl = IpadTimelinePlaybackControl()
     @State private var itemHeadersHidden = false
@@ -5417,6 +5418,29 @@ private struct RemoteNativeTimeline: View {
         if state.subPlaying { return state.subPlayPosition ?? position }
         if state.playing { return position }
         return state.editPosition ?? position
+    }
+    private func restoreNativeZoom() {
+        guard local, let width = drawableTimelineWidth else { return }
+        viewport.restoreZoom(scrolling.zoomControl.savedScale, width: width, leadingSpace: TimelineAppearanceDefaults.leadingSpace,
+                             cursor: timelineFocus?.position ?? zoomCursor)
+        retainedWindow = IpadTimelineRenderWindow(viewport)
+    }
+    private func resizeNativeViewport(_ width: CGFloat) {
+        guard local, width.isFinite, width > 1, width != drawableTimelineWidth else { return }
+        let opening = drawableTimelineWidth == nil
+        drawableTimelineWidth = width
+        if opening { restoreNativeZoom() }
+        else {
+            viewport.resizeLeadingSpace(TimelineAppearanceDefaults.leadingSpace, width: width)
+            retainedWindow = IpadTimelineRenderWindow(viewport)
+        }
+    }
+    private func applyZoom(_ factor: Double) {
+        let previous = viewport.span
+        viewport.zoom(factor: factor, centeredOn: zoomCursor)
+        if local, viewport.span != previous, let width = drawableTimelineWidth {
+            scrolling.zoomControl.rememberZoom(Double(width) / (10 * viewport.span))
+        }
     }
     private var nativeContent: IpadTimelineContent? {
         guard local, let show = localShow else { return nil }
@@ -5501,17 +5525,19 @@ private struct RemoteNativeTimeline: View {
             HStack(spacing: 0) {
                 Group {
                     if local, let localShow {
-                        IpadTimelinePlaybackSurface(control: playbackControl, show: localShow,
-                            viewport: viewport, window: renderWindow, size: size,
-                            gridTop: gridTop, timeHeight: nativeBands.tickHeight,
-                            follow: continuousScroll,
-                            colors: [state.playCursorColor ?? UInt32(TimelineAppearanceDefaults.playCursor),
-                                     state.editCursorColor ?? UInt32(TimelineAppearanceDefaults.editCursor),
-                                     UInt32(TimelineAppearanceDefaults.subPlayCursor)],
-                            rebase: { retainedWindow = IpadTimelineRenderWindow($0) },
-                            scrollingChanged: { itemHeadersHidden = $0 }) {
-                                timelineContent(width: size.width * span / viewport.span, height: size.height)
-                            }
+                        if drawableTimelineWidth != nil {
+                            IpadTimelinePlaybackSurface(control: playbackControl, show: localShow,
+                                viewport: viewport, window: renderWindow, size: size,
+                                gridTop: gridTop, timeHeight: nativeBands.tickHeight,
+                                follow: continuousScroll,
+                                colors: [state.playCursorColor ?? UInt32(TimelineAppearanceDefaults.playCursor),
+                                         state.editCursorColor ?? UInt32(TimelineAppearanceDefaults.editCursor),
+                                         UInt32(TimelineAppearanceDefaults.subPlayCursor)],
+                                rebase: { retainedWindow = IpadTimelineRenderWindow($0) },
+                                scrollingChanged: { itemHeadersHidden = $0 }) {
+                                    timelineContent(width: size.width * span / viewport.span, height: size.height)
+                                }
+                        }
                     } else { timelineContent(width: size.width, height: size.height) }
                 }
                 .frame(width: size.width, height: size.height)
@@ -5550,7 +5576,7 @@ private struct RemoteNativeTimeline: View {
                             pan: { translation, width in
                                 pauseScrollFollowing(); viewport.pan(pixels: translation, width: width)
                             }, zoom: { scale, _ in
-                                pauseScrollFollowing(); viewport.zoom(factor: scale, centeredOn: zoomCursor)
+                                pauseScrollFollowing(); applyZoom(scale)
                             })
                     }
                 }
@@ -5560,15 +5586,8 @@ private struct RemoteNativeTimeline: View {
                         .padding(.top, gridTop)
                 }
             }
-            .onAppear {
-                if local { viewport.resizeLeadingSpace(TimelineAppearanceDefaults.leadingSpace, width: size.width) }
-            }
-            .onChange(of: size.width) { width in
-                if local {
-                    viewport.resizeLeadingSpace(TimelineAppearanceDefaults.leadingSpace, width: width)
-                    retainedWindow = IpadTimelineRenderWindow(viewport)
-                }
-            }
+            .onAppear { resizeNativeViewport(size.width) }
+            .onChange(of: size.width, perform: resizeNativeViewport)
         }.clipped().background(remoteColor(local ? UInt32(localBackgroundColor) :
             state.gridBackgroundColor ?? UInt32(TimelineThemeColor.background.defaultColor(for: .current))))
             // Keep the presenter outside the cached/lazy item rows. Receiving
@@ -5599,22 +5618,31 @@ private struct RemoteNativeTimeline: View {
             .onAppear {
                 scrolling.pointerEditing = local
                 scrolling.manualGridScroll = local ? { pauseScrollFollowing() } : nil
-                if local { viewport.reset(duration: state.duration); viewport.center(on: zoomCursor); retainedWindow = IpadTimelineRenderWindow(viewport) }
             }
-            .onDisappear { scrolling.manualGridScroll = nil; scrolling.pointerEditing = false; cancelPointer(); cancelItemMix() }
+            .onDisappear {
+                scrolling.manualGridScroll = nil; scrolling.pointerEditing = false; cancelPointer(); cancelItemMix()
+                if local { scrolling.zoomControl.flushZoom() }
+            }
             .onChange(of: scrolling.pointerReset) { _ in
                 cancelPointer(); cancelItemMix()
                 selectedRegionID = nil; regionContextMenu = nil
                 rulerSelectionAnchor = nil; rulerSelectionEnd = nil
             }
-            .onChange(of: state.project) { _ in cancelPointer(); cancelItemMix(); closeVolume() }
+            .onChange(of: state.project) { _ in
+                cancelPointer(); cancelItemMix(); closeVolume()
+                restoreNativeZoom()
+            }
             .onChange(of: localShow?.timelineActiveLockOptions) { options in if options != 0 { cancelPointer() } }
             .onChange(of: timelineFocus) { request in
                 if local, let request { gestureControl.cancelMotion(); viewport.center(on: request.position); playbackControl.controller?.navigate(to: viewport) }
             }
             .onChange(of: state.song) { _ in
                 cancelPointer(); cancelItemMix(); closeVolume(); scrolling.pointerReset = UUID()
-                if local { gestureControl.cancelMotion(); viewport.reset(duration: state.duration); viewport.center(on: timelineFocus?.position ?? zoomCursor); retainedWindow = IpadTimelineRenderWindow(viewport) }
+                if local {
+                    gestureControl.cancelMotion()
+                    viewport.center(on: timelineFocus?.position ?? zoomCursor)
+                    retainedWindow = IpadTimelineRenderWindow(viewport)
+                }
             }
             .onChange(of: viewport) { next in
                 if retainedWindow?.needsRebase(next) != false { retainedWindow = IpadTimelineRenderWindow(next) }
@@ -5624,12 +5652,12 @@ private struct RemoteNativeTimeline: View {
                 guard local else { return }
                 pauseScrollFollowing()
                 gestureControl.cancelMotion()
-                viewport.zoom(factor: viewport.span / span, centeredOn: zoomCursor)
+                applyZoom(viewport.span / span)
             }
             .onChange(of: continuousScroll) { enabled in if !enabled { itemHeadersHidden = false } }
             .onChange(of: state.playing) { playing in if !playing { itemHeadersHidden = false } }
-            .accessibilityAction(named: Text("Zoom in")) { if local { viewport.zoom(factor: 1.5, centeredOn: zoomCursor) } }
-            .accessibilityAction(named: Text("Zoom out")) { if local { viewport.zoom(factor: 1 / 1.5, centeredOn: zoomCursor) } }
+            .accessibilityAction(named: Text("Zoom in")) { if local { applyZoom(1.5) } }
+            .accessibilityAction(named: Text("Zoom out")) { if local { applyZoom(1 / 1.5) } }
     }
     private var minimumTrackRowHeight: Double { RemoteNativeGridMetrics.minimumTrackHeight(local: local) }
     private func timelineContent(width: Double, height: Double) -> some View {
@@ -6027,7 +6055,7 @@ private struct RemoteNativeTimeline: View {
             scrolling.resizeSelectedTracks(by: delta.y == 0 ? delta.x : delta.y)
         } else if modifiers.contains(.shift) || abs(delta.x) > abs(delta.y) {
             viewport.pan(pixels: Double(delta.x == 0 ? delta.y : delta.x), width: visibleWidth(width))
-        } else { viewport.zoom(factor: exp(Double(delta.y) * 0.009), centeredOn: zoomCursor) }
+        } else { applyZoom(exp(Double(delta.y) * 0.009)) }
     }
     private func ruler(width: CGFloat, marks: [TimelineTimeRuler.Tick], song: Song?) -> some View {
         let heads = tempoHeads(width: width, song: song)
@@ -9168,6 +9196,26 @@ private final class IpadMixerMeterView: UIView {
     @Published private(set) var maximumSpan = IpadTimelineViewport().maximumSpan
     @Published private(set) var memory: Double?
     let requests = PassthroughSubject<Double, Never>()
+    private var pendingScale: Double?
+    private var saveTask: Task<Void, Never>?
+    var savedScale: Double { pendingScale ?? TimelineViewportPreferences.zoom }
+
+    func rememberZoom(_ scale: Double) {
+        pendingScale = scale
+        saveTask?.cancel()
+        saveTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 160_000_000)
+            if !Task.isCancelled { self?.flushZoom() }
+        }
+    }
+
+    func flushZoom() {
+        saveTask?.cancel()
+        saveTask = nil
+        guard let scale = pendingScale else { return }
+        pendingScale = nil
+        TimelineViewportPreferences.saveZoom(scale)
+    }
 
     func display(_ viewport: IpadTimelineViewport) {
         if maximumSpan != viewport.maximumSpan { maximumSpan = viewport.maximumSpan }

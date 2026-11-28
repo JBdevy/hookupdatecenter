@@ -1,6 +1,6 @@
 var viewport = IpadTimelineViewport()
-viewport.reset(duration: 1200)
-require(viewport.start == 0 && viewport.span == 300, "Long projects begin with a useful free viewport")
+viewport.restoreZoom(0.1, width: 300, leadingSpace: 0, cursor: 0)
+require(viewport.start == 0 && viewport.span == 300, "Opening uses the saved timeline scale")
 viewport.pan(pixels: -400, width: 400)
 require(viewport.start == 300 && viewport.end == 600, "Horizontal scroll reaches another region without selecting it")
 let anchor = viewport.start + viewport.span * 0.25
@@ -28,8 +28,8 @@ viewport.pan(pixels: 1e12, width: 1)
 require(viewport.start == 0, "Left scroll stops at timeline origin")
 viewport.pan(pixels: -1e12, width: 1)
 require(abs(viewport.end - 604800) < 1e-8, "Right scroll stays within the transport time domain")
-viewport.reset(duration: 0)
-require(viewport.span == 30 && viewport.start == 0, "Empty project retains editable free grid")
+viewport.restoreZoom(1, width: 300, leadingSpace: 0, cursor: 0)
+require(viewport.span == 30 && viewport.start == 0, "The default scale retains editable free grid")
 print("IPAD_STANDALONE_FREE_TIMELINE_PAN_PINCH_ANCHOR_AND_BOUNDS_OK")
 viewport.reveal(900)
 require(viewport.start <= 900 && viewport.end >= 900 && viewport.span == 30, "Selecting distant song reveals playhead without fitting/changing zoom")
@@ -95,6 +95,24 @@ require(abs(viewport.start - overview.start) < 1e-8 && viewport.span == overview
 viewport.pan(pixels: -400, width: 400)
 require(abs(viewport.start - (1200 + overview.span)) < 1e-8 && viewport.span == overview.span, "The zoom limit still allows scrolling to the rest of a long project")
 print("IPAD_DESKTOP_MINIMUM_ZOOM_LIMIT_AND_ANCHOR_STABILITY_OK")
+
+for width: CGFloat in [412, 1024, 1366] {
+    let requested = TimelineZoomLimits.minimum / 40
+    var reopened = IpadTimelineViewport()
+    reopened.restoreZoom(requested, width: width, leadingSpace: 6, cursor: 3200)
+    require(abs(reopened.span - reopened.maximumSpan) < 1e-9,
+            "An old saved zoom is clamped against the measured width before the first projection")
+    require(abs(reopened.start + reopened.span / 2 - 3200) < 1e-9, "The reopened view keeps the edit cursor in view")
+    let zoomAfterGesture = Double(width) / (10 * (reopened.span * 0.5))
+    reopened.restoreZoom(zoomAfterGesture, width: width, leadingSpace: 6, cursor: 3200)
+    require(abs(Double(width) / (10 * reopened.span) - zoomAfterGesture) < 1e-9,
+            "Reopening restores a valid scale chosen in the native grid")
+}
+var fallback = IpadTimelineViewport()
+fallback.restoreZoom(.nan, width: 412, leadingSpace: 6, cursor: 0)
+require(abs(fallback.span - 41.2) < 1e-9 && fallback.start == fallback.minimumStart,
+        "Invalid legacy values use the shared default and respect the leading space")
+print("IPAD_OLD_VIEWPORT_ZOOM_CLAMPED_BEFORE_REOPEN_PROJECTION_OK")
 
 // Playback can advance at display cadence while the item drawing remains
 // unchanged for many frames; rebasing must preserve every world coordinate.
