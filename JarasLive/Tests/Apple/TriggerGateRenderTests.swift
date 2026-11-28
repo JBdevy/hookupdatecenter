@@ -50,7 +50,7 @@ final class InputState {
             settings = NativeFXSettings(); settings.instances = [instance]; settings.inserted = [instance.effectKey]; triggerKey = instance.effectKey
         }
         chain.apply(settings); chain.observe([triggerKey]); precondition(chain.sampleErrors.isEmpty)
-        precondition(abs(chain.triggerTailDuration - 0.1) < 0.0001, "Trigger sample tail must remain audible after its source item ends")
+        precondition(abs(chain.sampleEffectTailDuration - 0.1) < 0.0001, "Trigger sample tail must remain audible after its source item ends")
         engine.prepare(); try engine.start(); input.impulses = true
         let output = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 512)!
         var rendered: [Float] = [], right: [Float] = []
