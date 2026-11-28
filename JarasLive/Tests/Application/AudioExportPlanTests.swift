@@ -59,12 +59,16 @@ final class AudioExportPlanTests: XCTestCase {
             XCTAssertEqual(selected.jobs.count, source == .masterAndTracks ? 2 : 1)
         }
     }
-    func testItemExportFiltersSpecialTracksAndUsesEachAudioItemsBounds() {
+    func testItemExportIncludesMovieSoundtracksAndUsesEachAudioItemsBounds() {
         var project = Project.empty(name: "Mixed selection")
         var tracks: [Track] = []
         for kind in TrackKind.allCases {
             var track = Track(id: UUID(), name: kind.rawValue, role: TrackRole(rawValue: kind.rawValue))
-            track.clips = [AudioClip(id: UUID(), name: "Same.wav", startTime: 10, duration: 2, sourceOffset: 3, audioFile: AudioFile(path: "source.wav"))]
+            let file = kind == .video ? "source.mov" : "source.wav"
+            track.clips = [AudioClip(id: UUID(), name: "Same.wav", startTime: 10, duration: 2, sourceOffset: 3, audioFile: AudioFile(path: file))]
+            if kind == .video {
+                track.clips.append(AudioClip(id: UUID(), name: "Poster", startTime: 20, duration: 5, audioFile: AudioFile(path: "poster.png")))
+            }
             tracks.append(track)
         }
         var inherited = Track(id: UUID(), name: "Inherited", role: .other)
@@ -79,11 +83,12 @@ final class AudioExportPlanTests: XCTestCase {
         let selection = Set(tracks.flatMap(\.clips).map(\.id))
         for format in AudioExportFormat.allCases {
             let plan = AudioExportPlan(project: project, song: project.songs[0], source: .stems, bounds: .project, template: "%stem", tracks: [], clips: selection, regions: [], format: format)
-            XCTAssertEqual(plan.jobs.count, 2)
-            XCTAssertEqual(plan.jobs.map(\.fileName), ["Same." + format.fileExtension, "Same - 001." + format.fileExtension])
-            XCTAssertEqual(plan.jobs.map(\.start), [10, 35])
-            XCTAssertEqual(plan.jobs.map(\.duration), [2, 4])
-            XCTAssertTrue(plan.jobs.allSatisfy { job in tracks.first { $0.id == job.track }?.kind == .standard })
+            XCTAssertEqual(plan.jobs.map(\.fileNameStem), ["Same", "Same", "Same"])
+            XCTAssertEqual(plan.jobs.map(\.fileName), ["Same", "Same - 001", "Same - 002"].map { $0 + "." + format.fileExtension })
+            XCTAssertEqual(plan.jobs.map(\.start), [10, 10, 35])
+            XCTAssertEqual(plan.jobs.map(\.duration), [2, 2, 4])
+            let expected = tracks.filter { $0.kind == .standard || $0.kind == .video }.map(\.id)
+            XCTAssertEqual(plan.jobs.compactMap(\.track), expected)
         }
         XCTAssertEqual(project, original)
     }
